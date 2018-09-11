@@ -134,8 +134,8 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(OperationContext*,
-                                                                     UUID) const override {
+    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(
+        OperationContext* opCtx, NamespaceStringOrUUID nssOrUUID) const override {
         MONGO_UNREACHABLE;
     }
 
@@ -173,6 +173,12 @@ public:
                                                         const NamespaceString&,
                                                         const MatchExpression*) const override {
         MONGO_UNREACHABLE;
+    }
+
+    bool uniqueKeyIsSupportedByIndex(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                     const NamespaceString& nss,
+                                     const std::set<FieldPath>& uniqueKeyPaths) const override {
+        return true;
     }
 };
 }  // namespace mongo

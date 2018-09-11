@@ -36,6 +36,7 @@
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/s/client/shard.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/util/string_map.h"
 
@@ -74,7 +75,7 @@ public:
         /**
          * True if the participant has been chosen as the coordinator for its transaction.
          */
-        bool isCoordinator();
+        bool isCoordinator() const;
 
         /**
          * Mark this participant as a node that has been successfully sent a command.
@@ -125,11 +126,23 @@ public:
      */
     void computeAtClusterTimeForOneShard(OperationContext* opCtx, const ShardId& shardId);
 
+    /**
+     * Sets the atClusterTime for the current transaction to the latest time in the router's logical
+     * clock.
+     */
+    void setAtClusterTimeToLatestTime(OperationContext* opCtx);
+
     bool isCheckedOut();
 
     const LogicalSessionId& getSessionId() const;
 
     boost::optional<ShardId> getCoordinatorId() const;
+
+    /**
+     * Commits the transaction. For transactions with multiple participants, this will initiate
+     * the two phase commit procedure.
+     */
+    Shard::CommandResponse commitTransaction(OperationContext* opCtx);
 
     /**
      * Extract the runtimne state attached to the operation context. Returns nullptr if none is
@@ -138,6 +151,16 @@ public:
     static TransactionRouter* get(OperationContext* opCtx);
 
 private:
+    /**
+     * Run basic commit for transactions that touched a single shard.
+     */
+    Shard::CommandResponse _commitSingleShardTransaction(OperationContext* opCtx);
+
+    /**
+     * Run two phase commit for transactions that touched multiple shards.
+     */
+    Shard::CommandResponse _commitMultiShardTransaction(OperationContext* opCtx);
+
     const LogicalSessionId _sessionId;
     TxnNumber _txnNumber{kUninitializedTxnNumber};
 

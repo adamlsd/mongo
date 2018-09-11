@@ -39,6 +39,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/client/fetcher.h"
+#include "mongo/db/audit.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/test_commands_enabled.h"
@@ -1276,7 +1277,7 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
         // This assumes the read concern is "local" level.
         // We need to wait for all committed writes to be visible, even in the oplog (which uses
         // special visibility rules).
-        _externalState->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+        _storage->waitForAllEarlierOplogWritesToBeVisible(opCtx);
     }
 
     stdx::unique_lock<stdx::mutex> lock(_mutex);
@@ -1699,13 +1700,14 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
 
     const long long termAtStart = _topCoord->getTerm();
 
-    status = _topCoord->prepareForStepDownAttempt();
-    if (!status.isOK()) {
+    auto statusWithAbortFn = _topCoord->prepareForStepDownAttempt();
+    if (!statusWithAbortFn.isOK()) {
         // This will cause us to fail if we're already in the process of stepping down.
         // It is also possible to get here even if we're done stepping down via another path,
         // and this will also elicit a failure from this call.
-        return status;
+        return statusWithAbortFn.getStatus();
     }
+    const auto& abortFn = statusWithAbortFn.getValue();
 
     // Update _canAcceptNonLocalWrites from the TopologyCoordinator now that we're in the middle
     // of a stepdown attempt.  This will prevent us from accepting writes so that if our stepdown
@@ -1741,7 +1743,7 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
         _performPostMemberStateUpdateAction(action);
     };
     ScopeGuard onExitGuard = MakeGuard([&] {
-        _topCoord->abortAttemptedStepDownIfNeeded();
+        abortFn();
         updateMemberState();
     });
 
@@ -2265,6 +2267,9 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
     if (args.force) {
         newConfigObj = incrementConfigVersionByRandom(newConfigObj);
     }
+
+    BSONObj oldConfigObj = oldConfig.toBSON();
+    audit::logReplSetReconfig(opCtx->getClient(), &newConfigObj, &oldConfigObj);
 
     Status status = newConfig.initialize(newConfigObj, oldConfig.getReplicaSetId());
     if (!status.isOK()) {

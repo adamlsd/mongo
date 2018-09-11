@@ -31,8 +31,10 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/s/txn_two_phase_commit_cmds_gen.h"
+#include "mongo/db/s/sharding_state.h"
+#include "mongo/db/transaction_coordinator_commands_impl.h"
 #include "mongo/db/transaction_participant.h"
 
 namespace mongo {
@@ -82,9 +84,30 @@ public:
                 "Transaction isn't in progress",
                 txnParticipant->inMultiDocumentTransaction());
 
+        if (txnParticipant->transactionIsPrepared()) {
+            auto& replClient = repl::ReplClientInfo::forClient(opCtx->getClient());
+            auto prepareOpTime = txnParticipant->getPrepareOpTime();
+            // Set the client optime to be prepareOpTime if it's not already later than
+            // prepareOpTime.
+            // This ensures that we wait for writeConcern and that prepareOpTime will be committed.
+            if (prepareOpTime > replClient.getLastOp()) {
+                replClient.setLastOp(prepareOpTime);
+            }
+
+            invariant(opCtx->recoveryUnit()->getPrepareTimestamp() == prepareOpTime.getTimestamp(),
+                      str::stream() << "recovery unit prepareTimestamp: "
+                                    << opCtx->recoveryUnit()->getPrepareTimestamp().toString()
+                                    << " participant prepareOpTime: "
+                                    << prepareOpTime.toString());
+
+            result.append("prepareTimestamp", prepareOpTime.getTimestamp());
+            return true;
+        }
+
         // Add prepareTimestamp to the command response.
         auto timestamp = txnParticipant->prepareTransaction(opCtx);
         result.append("prepareTimestamp", timestamp);
+
         return true;
     }
 } prepareTransactionCmd;
@@ -96,7 +119,23 @@ public:
     public:
         using InvocationBase::InvocationBase;
 
-        void typedRun(OperationContext* opCtx) {}
+        void typedRun(OperationContext* opCtx) {
+            // Only config servers or initialized shard servers can act as transaction coordinators.
+            if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
+                uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
+            }
+
+            uassert(
+                ErrorCodes::CommandNotSupported,
+                "'voteCommitTransaction' is only supported in feature compatibility version 4.2",
+                (serverGlobalParams.featureCompatibility.getVersion() ==
+                 ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42));
+
+            const auto& cmd = request();
+
+            txn::recvVoteCommit(
+                opCtx, cmd.getShardId(), 0 /* TODO (SERVER-36584) pass real prepareTimestamp */);
+        }
 
     private:
         bool supportsWriteConcern() const override {
@@ -131,7 +170,21 @@ public:
     public:
         using InvocationBase::InvocationBase;
 
-        void typedRun(OperationContext* opCtx) {}
+        void typedRun(OperationContext* opCtx) {
+            // Only config servers or initialized shard servers can act as transaction coordinators.
+            if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
+                uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
+            }
+
+            uassert(ErrorCodes::CommandNotSupported,
+                    "'voteAbortTransaction' is only supported in feature compatibility version 4.2",
+                    (serverGlobalParams.featureCompatibility.getVersion() ==
+                     ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42));
+
+            const auto& cmd = request();
+
+            txn::recvVoteAbort(opCtx, cmd.getShardId());
+        }
 
     private:
         bool supportsWriteConcern() const override {
@@ -167,26 +220,33 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
-            auto txnParticipant = TransactionParticipant::get(opCtx);
-            uassert(ErrorCodes::CommandFailed,
-                    "commitTransaction must be run within a transaction",
-                    txnParticipant);
-
-            // commitTransaction is retryable.
-            if (txnParticipant->transactionIsCommitted()) {
-                // We set the client last op to the last optime observed by the system to ensure
-                // that we wait for the specified write concern on an optime greater than or equal
-                // to the commit oplog entry.
-                auto& replClient = repl::ReplClientInfo::forClient(opCtx->getClient());
-                replClient.setLastOpToSystemLastOpTime(opCtx);
-                return;
+            // Only config servers or initialized shard servers can act as transaction coordinators.
+            if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
+                uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
             }
 
-            uassert(ErrorCodes::NoSuchTransaction,
-                    "Transaction isn't in progress",
-                    txnParticipant->inMultiDocumentTransaction());
+            uassert(ErrorCodes::CommandNotSupported,
+                    "'coordinateCommitTransaction' is only supported in feature compatibility "
+                    "version 4.2",
+                    (serverGlobalParams.featureCompatibility.getVersion() ==
+                     ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42));
 
-            txnParticipant->commitUnpreparedTransaction(opCtx);
+            const auto& cmd = request();
+
+            // Convert the participant list array into a set, and assert that all participants in
+            // the list are unique.
+            // TODO (PM-564): Propagate the 'readOnly' flag down into the TransactionCoordinator.
+            std::set<ShardId> participantList;
+            for (const auto& participant : cmd.getParticipants()) {
+                const auto shardId = participant.getShardId();
+                uassert(ErrorCodes::InvalidOptions,
+                        str::stream() << "participant list contained duplicate shardId " << shardId,
+                        std::find(participantList.begin(), participantList.end(), shardId) ==
+                            participantList.end());
+                participantList.insert(shardId);
+            }
+
+            txn::recvCoordinateCommit(opCtx, participantList);
         }
 
     private:

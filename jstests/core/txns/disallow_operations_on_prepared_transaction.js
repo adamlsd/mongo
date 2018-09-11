@@ -22,8 +22,6 @@
     const sessionDB = session.getDatabase(dbName);
     const sessionColl = sessionDB.getCollection(collName);
 
-    // TODO SERVER-35813: uncomment this test
-    /*
     jsTestLog("Test that you can call prepareTransaction on a prepared transaction.");
     session.startTransaction();
     assert.commandWorked(sessionColl.insert({_id: 1}));
@@ -31,7 +29,6 @@
     let secondTimestamp = PrepareHelpers.prepareTransaction(session);
     assert.eq(firstTimestamp, secondTimestamp);
     session.abortTransaction();
-    */
 
     jsTestLog("Test that you can call commitTransaction on a prepared transaction.");
     session.startTransaction();
@@ -52,16 +49,6 @@
     jsTestLog("Test that you can't run an aggregation on a prepared transaction.");
     assert.commandFailedWithCode(assert.throws(function() {
         sessionColl.aggregate({$match: {}});
-    }),
-                                 ErrorCodes.PreparedTransactionInProgress);
-
-    jsTestLog("Test that you can't run coordinateCommitTransaction on a prepared transaction.");
-    assert.commandFailedWithCode(sessionDB.adminCommand({
-        coordinateCommitTransaction: 1,
-        participants: [],
-        txnNumber: NumberLong(session.getTxnNumber_forTesting()),
-        stmtId: NumberInt(1),
-        autocommit: false
     }),
                                  ErrorCodes.PreparedTransactionInProgress);
 

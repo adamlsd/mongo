@@ -111,33 +111,34 @@ using logger::LogComponent;
 // session for commands that can take a lock and then run another whitelisted command in
 // DBDirectClient. Otherwise, the nested command would try to check out a session under a lock,
 // which is not allowed.
-const StringMap<int> sessionCheckoutWhitelist = {{"abortTransaction", 1},
-                                                 {"aggregate", 1},
-                                                 {"applyOps", 1},
-                                                 {"commitTransaction", 1},
-                                                 {"coordinateCommitTransaction", 1},
-                                                 {"count", 1},
-                                                 {"dbHash", 1},
-                                                 {"delete", 1},
-                                                 {"distinct", 1},
-                                                 {"doTxn", 1},
-                                                 {"explain", 1},
-                                                 {"filemd5", 1},
-                                                 {"find", 1},
-                                                 {"findandmodify", 1},
-                                                 {"findAndModify", 1},
-                                                 {"geoNear", 1},
-                                                 {"geoSearch", 1},
-                                                 {"getMore", 1},
-                                                 {"group", 1},
-                                                 {"insert", 1},
-                                                 {"killCursors", 1},
-                                                 {"mapReduce", 1},
-                                                 {"prepareTransaction", 1},
-                                                 {"refreshLogicalSessionCacheNow", 1},
-                                                 {"update", 1},
-                                                 {"voteAbortTransaction", 1},
-                                                 {"voteCommitTransaction", 1}};
+const StringMap<int> sessionCommandAutomaticCheckOutWhiteList = {
+    {"abortTransaction", 1},
+    {"aggregate", 1},
+    {"applyOps", 1},
+    {"commitTransaction", 1},
+    {"count", 1},
+    {"dbHash", 1},
+    {"delete", 1},
+    {"distinct", 1},
+    {"doTxn", 1},
+    {"explain", 1},
+    {"filemd5", 1},
+    {"find", 1},
+    {"findandmodify", 1},
+    {"findAndModify", 1},
+    {"geoNear", 1},
+    {"geoSearch", 1},
+    {"getMore", 1},
+    {"group", 1},
+    {"insert", 1},
+    {"killCursors", 1},
+    {"mapReduce", 1},
+    {"prepareTransaction", 1},
+    {"refreshLogicalSessionCacheNow", 1},
+    {"update", 1}};
+
+const StringMap<int> sessionCommandNoCheckOutWhiteList = {
+    {"coordinateCommitTransaction", 1}, {"voteAbortTransaction", 1}, {"voteCommitTransaction", 1}};
 
 bool shouldActivateFailCommandFailPoint(const BSONObj& data, StringData cmdName) {
     if (cmdName == "configureFailPoint"_sd)  // Banned even if in failCommands.
@@ -501,6 +502,7 @@ bool runCommandImpl(OperationContext* opCtx,
                     !txnParticipant->inMultiDocumentTransaction() ||
                     invocation->definition()->getName() == "commitTransaction" ||
                     invocation->definition()->getName() == "abortTransaction" ||
+                    invocation->definition()->getName() == "prepareTransaction" ||
                     invocation->definition()->getName() == "doTxn");
 
         auto lastOpBeforeRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
@@ -642,7 +644,8 @@ void execCommandDatabase(OperationContext* opCtx,
         // using to service an earlier operation in the command's chain. To avoid this, only check
         // out sessions for commands that require them.
         const bool shouldCheckoutSession = static_cast<bool>(opCtx->getTxnNumber()) &&
-            sessionCheckoutWhitelist.find(command->getName()) != sessionCheckoutWhitelist.cend();
+            sessionCommandAutomaticCheckOutWhiteList.find(command->getName()) !=
+                sessionCommandAutomaticCheckOutWhiteList.cend();
 
         // Parse the arguments specific to multi-statement transactions.
         boost::optional<bool> startMultiDocTxn = boost::none;
@@ -669,11 +672,15 @@ void execCommandDatabase(OperationContext* opCtx,
             uassert(ErrorCodes::OperationNotSupportedInTransaction,
                     str::stream() << "It is illegal to run command " << command->getName()
                                   << " in a multi-document transaction.",
-                    shouldCheckoutSession || !autocommitVal || command->getName() == "doTxn");
+                    shouldCheckoutSession || !autocommitVal || command->getName() == "doTxn" ||
+                        sessionCommandNoCheckOutWhiteList.find(command->getName()) !=
+                            sessionCommandNoCheckOutWhiteList.cend());
             uassert(50768,
                     str::stream() << "It is illegal to provide a txnNumber for command "
                                   << command->getName(),
-                    shouldCheckoutSession || !opCtx->getTxnNumber());
+                    shouldCheckoutSession || !opCtx->getTxnNumber() ||
+                        sessionCommandNoCheckOutWhiteList.find(command->getName()) !=
+                            sessionCommandNoCheckOutWhiteList.cend());
         }
 
         if (autocommitVal) {
@@ -803,12 +810,6 @@ void execCommandDatabase(OperationContext* opCtx,
                 _extractReadConcern(invocation.get(), request.body, upconvertToSnapshot));
         }
 
-        if (readConcernArgs.getArgsAtClusterTime()) {
-            uassert(ErrorCodes::InvalidOptions,
-                    "atClusterTime is only used for testing",
-                    getTestCommandsEnabled());
-        }
-
         if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
             uassert(ErrorCodes::InvalidOptions,
                     "readConcern level snapshot is only valid in multi-statement transactions",
@@ -893,12 +894,14 @@ void execCommandDatabase(OperationContext* opCtx,
             if (!opCtx->getClient()->isInDirectClient()) {
                 // We already have the StaleConfig exception, so just swallow any errors due to
                 // refresh
-                onShardVersionMismatch(opCtx, sce->getNss(), sce->getVersionReceived()).ignore();
+                onShardVersionMismatchNoExcept(opCtx, sce->getNss(), sce->getVersionReceived())
+                    .ignore();
             }
         } else if (auto sce = e.extraInfo<StaleDbRoutingVersion>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
-                onDbVersionMismatch(
-                    opCtx, sce->getDb(), sce->getVersionReceived(), sce->getVersionWanted());
+                onDbVersionMismatchNoExcept(
+                    opCtx, sce->getDb(), sce->getVersionReceived(), sce->getVersionWanted())
+                    .ignore();
             }
         } else if (auto cannotImplicitCreateCollInfo =
                        e.extraInfo<CannotImplicitlyCreateCollectionInfo>()) {
@@ -1077,7 +1080,8 @@ DbResponse receivedQuery(OperationContext* opCtx,
             if (!opCtx->getClient()->isInDirectClient()) {
                 // We already have the StaleConfig exception, so just swallow any errors due to
                 // refresh
-                onShardVersionMismatch(opCtx, sce->getNss(), sce->getVersionReceived()).ignore();
+                onShardVersionMismatchNoExcept(opCtx, sce->getNss(), sce->getVersionReceived())
+                    .ignore();
             }
         }
 
@@ -1120,7 +1124,7 @@ void receivedInsert(OperationContext* opCtx, const NamespaceString& nsString, co
 
     for (const auto& obj : insertOp.getDocuments()) {
         Status status =
-            AuthorizationSession::get(opCtx->getClient())->checkAuthForInsert(opCtx, nsString, obj);
+            AuthorizationSession::get(opCtx->getClient())->checkAuthForInsert(opCtx, nsString);
         audit::logInsertAuthzCheck(opCtx->getClient(), nsString, obj, status.code());
         uassertStatusOK(status);
     }

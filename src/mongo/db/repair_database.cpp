@@ -59,17 +59,12 @@
 
 namespace mongo {
 
-using std::endl;
-using std::string;
-
-using IndexVersion = IndexDescriptor::IndexVersion;
-
 StatusWith<IndexNameObjs> getIndexNameObjs(OperationContext* opCtx,
                                            DatabaseCatalogEntry* dbce,
                                            CollectionCatalogEntry* cce,
                                            stdx::function<bool(const std::string&)> filter) {
     IndexNameObjs ret;
-    std::vector<string>& indexNames = ret.first;
+    std::vector<std::string>& indexNames = ret.first;
     std::vector<BSONObj>& indexSpecs = ret.second;
     {
         // Fetch all indexes
@@ -82,38 +77,21 @@ StatusWith<IndexNameObjs> getIndexNameObjs(OperationContext* opCtx,
 
         indexSpecs.reserve(indexNames.size());
 
-        for (size_t i = 0; i < indexNames.size(); i++) {
-            const string& name = indexNames[i];
+        for (const auto& name : indexNames) {
             BSONObj spec = cce->getIndexSpec(opCtx, name);
-
-            IndexVersion newIndexVersion = IndexVersion::kV0;
-            {
-                BSONObjBuilder bob;
-
-                for (auto&& indexSpecElem : spec) {
-                    auto indexSpecElemFieldName = indexSpecElem.fieldNameStringData();
-                    if (IndexDescriptor::kIndexVersionFieldName == indexSpecElemFieldName) {
-                        IndexVersion indexVersion =
-                            static_cast<IndexVersion>(indexSpecElem.numberInt());
-                        if (IndexVersion::kV0 == indexVersion) {
-                            // We automatically upgrade v=0 indexes to v=1 indexes.
-                            newIndexVersion = IndexVersion::kV1;
-                        } else {
-                            newIndexVersion = indexVersion;
-                        }
-
-                        bob.append(IndexDescriptor::kIndexVersionFieldName,
-                                   static_cast<int>(newIndexVersion));
-                    } else {
-                        bob.append(indexSpecElem);
-                    }
-                }
-
-                indexSpecs.push_back(bob.obj());
+            using IndexVersion = IndexDescriptor::IndexVersion;
+            IndexVersion indexVersion = IndexVersion::kV1;
+            if (auto indexVersionElem = spec[IndexDescriptor::kIndexVersionFieldName]) {
+                auto indexVersionNum = indexVersionElem.numberInt();
+                invariant(indexVersionNum == static_cast<int>(IndexVersion::kV1) ||
+                          indexVersionNum == static_cast<int>(IndexVersion::kV2));
+                indexVersion = static_cast<IndexVersion>(indexVersionNum);
             }
+            invariant(spec.isOwned());
+            indexSpecs.push_back(spec);
 
             const BSONObj key = spec.getObjectField("key");
-            const Status keyStatus = index_key_validate::validateKeyPattern(key, newIndexVersion);
+            const Status keyStatus = index_key_validate::validateKeyPattern(key, indexVersion);
             if (!keyStatus.isOK()) {
                 return Status(
                     ErrorCodes::CannotCreateIndex,
@@ -246,14 +224,48 @@ Status rebuildIndexesOnCollection(OperationContext* opCtx,
     return Status::OK();
 }
 
+namespace {
+Status repairCollections(OperationContext* opCtx,
+                         StorageEngine* engine,
+                         const std::string& dbName) {
+
+    DatabaseCatalogEntry* dbce = engine->getDatabaseCatalogEntry(opCtx, dbName);
+
+    std::list<std::string> colls;
+    dbce->getCollectionNamespaces(&colls);
+
+    for (std::list<std::string>::const_iterator it = colls.begin(); it != colls.end(); ++it) {
+        // Don't check for interrupt after starting to repair a collection otherwise we can
+        // leave data in an inconsistent state. Interrupting between collections is ok, however.
+        opCtx->checkForInterrupt();
+
+        log() << "Repairing collection " << *it;
+
+        Status status = engine->repairRecordStore(opCtx, *it);
+        if (!status.isOK())
+            return status;
+
+        CollectionCatalogEntry* cce = dbce->getCollectionCatalogEntry(*it);
+        auto swIndexNameObjs = getIndexNameObjs(opCtx, dbce, cce);
+        if (!swIndexNameObjs.isOK())
+            return swIndexNameObjs.getStatus();
+
+        status = rebuildIndexesOnCollection(opCtx, dbce, cce, swIndexNameObjs.getValue());
+        if (!status.isOK())
+            return status;
+    }
+    return Status::OK();
+}
+}  // namespace
+
 Status repairDatabase(OperationContext* opCtx, StorageEngine* engine, const std::string& dbName) {
     DisableDocumentValidation validationDisabler(opCtx);
 
     // We must hold some form of lock here
     invariant(opCtx->lockState()->isLocked());
-    invariant(dbName.find('.') == string::npos);
+    invariant(dbName.find('.') == std::string::npos);
 
-    log() << "repairDatabase " << dbName << endl;
+    log() << "repairDatabase " << dbName;
 
     BackgroundOperation::assertNoBgOpInProgForDb(dbName);
 
@@ -286,6 +298,12 @@ Status repairDatabase(OperationContext* opCtx, StorageEngine* engine, const std:
         }
     });
 
+    auto status = repairCollections(opCtx, engine, dbName);
+    if (!status.isOK()) {
+        severe() << "Failed to repair database " << dbName << ": " << status.reason();
+        return status;
+    }
+
     DatabaseCatalogEntry* dbce = engine->getDatabaseCatalogEntry(opCtx, dbName);
 
     std::list<std::string> colls;
@@ -311,10 +329,9 @@ Status repairDatabase(OperationContext* opCtx, StorageEngine* engine, const std:
         if (!status.isOK())
             return status;
 
-        // TODO: uncomment once SERVER-16869
-        // engine->flushAllFiles(true);
+        engine->flushAllFiles(opCtx, true);
     }
 
     return Status::OK();
 }
-}
+}  // namespace mongo

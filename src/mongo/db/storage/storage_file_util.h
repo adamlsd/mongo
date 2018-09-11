@@ -1,7 +1,7 @@
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
+ *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU Affero General Public License, version 3,
  *    as published by the Free Software Foundation.
  *
@@ -28,30 +28,30 @@
 
 #pragma once
 
+#include "mongo/platform/basic.h"
+
+#include <boost/filesystem.hpp>
+
+#include "mongo/base/status.h"
+
 namespace mongo {
 
-class OperationContext;
+/**
+ * Perform an fsync on the file.
+ */
+Status fsyncFile(const boost::filesystem::path& path);
 
 /**
- * Used for yielding while data is fetched from disk.
- *
- * @see RecordStore::recordNeedsFetch
+ * Perform an fsync on the parent directory of 'file'.
  */
-class RecordFetcher {
-public:
-    virtual ~RecordFetcher() {}
+Status fsyncParentDirectory(const boost::filesystem::path& file);
 
-    /**
-     * Performs any setup which is needed prior to yielding locks.
-     */
-    virtual void setup(OperationContext* opCtx) = 0;
-
-    /**
-     * Called after locks are yielded in order to bring data into memory.
-     *
-     * Should not be called more than once.
-     */
-    virtual void fetch() = 0;
-};
+/**
+ * Perform a filesystem rename from 'source' to 'dest'. Performs an fsync on the destination file
+ * and the parent directories of both 'source' and 'dest'.
+ *
+ * Returns a FileRenameFailed error if the destination file already exists.
+ */
+Status fsyncRename(const boost::filesystem::path& source, const boost::filesystem::path& dest);
 
 }  // namespace mongo

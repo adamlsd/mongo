@@ -42,6 +42,7 @@
 #include "mongo/config.h"
 #include "mongo/db/auth/sasl_command_constants.h"
 #include "mongo/db/server_options.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/rpc/protocol.h"
 #include "mongo/shell/shell_utils.h"
 #include "mongo/transport/message_compressor_registry.h"
@@ -59,6 +60,11 @@ using std::string;
 using std::vector;
 
 ShellGlobalParams shellGlobalParams;
+
+// SERVER-36807: Limit --setShellParameter to SetParameters we know we want to expose.
+const std::set<std::string> kSetShellParameterWhitelist = {
+    "disabledSecureAllocatorDomains",
+};
 
 Status addMongoShellOptions(moe::OptionSection* options) {
     options->addOptionChaining(
@@ -214,6 +220,11 @@ Status addMongoShellOptions(moe::OptionSection* options) {
         moe::Switch,
         "automatically retry write operations upon transient network errors");
 
+    options->addOptionChaining("disableImplicitSessions",
+                               "disableImplicitSessions",
+                               moe::Switch,
+                               "do not automatically create and use implicit sessions");
+
     options
         ->addOptionChaining(
             "rpcProtocols", "rpcProtocols", moe::String, " none, opQueryOnly, opMsgOnly, all")
@@ -226,6 +237,14 @@ Status addMongoShellOptions(moe::OptionSection* options) {
 
     options->addOptionChaining(
         "jsHeapLimitMB", "jsHeapLimitMB", moe::Int, "set the js scope's heap size limit");
+
+    options
+        ->addOptionChaining("setShellParameter",
+                            "setShellParameter",
+                            moe::StringMap,
+                            "Set a configurable parameter")
+        .composing()
+        .hidden();
 
     return Status::OK();
 }
@@ -375,6 +394,9 @@ Status storeMongoShellOptions(const moe::Environment& params,
     if (params.count("retryWrites")) {
         shellGlobalParams.shouldRetryWrites = true;
     }
+    if (params.count("disableImplicitSessions")) {
+        shellGlobalParams.shouldUseImplicitSessions = false;
+    }
     if (params.count("rpcProtocols")) {
         std::string protos = params["rpcProtocols"].as<string>();
         auto parsedRPCProtos = rpc::parseProtocolSet(protos);
@@ -468,6 +490,31 @@ Status storeMongoShellOptions(const moe::Environment& params,
     if (!ret.isOK())
         return ret;
 
+    if (params.count("setShellParameter")) {
+        auto ssp = params["setShellParameter"].as<std::map<std::string, std::string>>();
+        auto map = ServerParameterSet::getGlobal()->getMap();
+        for (auto it : ssp) {
+            const auto& name = it.first;
+            auto paramIt = map.find(name);
+            if (paramIt == map.end() || !kSetShellParameterWhitelist.count(name)) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "Unknown --setShellParameter '" << name << "'"};
+            }
+            auto* param = paramIt->second;
+            if (!param->allowedToChangeAtStartup()) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "Cannot use --setShellParameter to set '" << name
+                                      << "' at startup"};
+            }
+            auto status = param->setFromString(it.second);
+            if (!status.isOK()) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "Bad value for parameter '" << name << "': "
+                                      << status.reason()};
+            }
+        }
+    }
+
     return Status::OK();
 }
 
@@ -493,16 +540,22 @@ void redactPasswordOptions(int argc, char** argv) {
             }
         }
         if (arg.startsWith(kLongPasswordOption)) {
-            char* toRedact;
+            char* toRedact = nullptr;
             // Handle --password password
             if ((arg == kLongPasswordOption) && (i + 1 < argc)) {
                 toRedact = argv[++i];
                 // Handle --password=password
-            } else {
+            } else if (arg.size() != kLongPasswordOption.size()) {
                 toRedact = argv[i] + kLongPasswordOption.size();
                 // It's not valid to do --passwordpassword, make sure there's an = separator
                 invariant(*(toRedact++) == '=');
             }
+
+            // If there's nothing to redact, just exit
+            if (!toRedact) {
+                continue;
+            }
+
             // The arg should be null-terminated, replace everything up to \0 to 'x'
             while (*toRedact) {
                 *toRedact++ = 'x';

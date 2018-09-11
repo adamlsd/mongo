@@ -122,10 +122,8 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(OperationContext*,
-                                                                     UUID) const final {
-        MONGO_UNREACHABLE;
-    }
+    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(
+        OperationContext* opCtx, NamespaceStringOrUUID nssOrUUID) const final;
 
     StatusWith<std::unique_ptr<Pipeline, PipelineDeleter>> makePipeline(
         const std::vector<BSONObj>& rawPipeline,
@@ -163,6 +161,14 @@ public:
                                                         const NamespaceString&,
                                                         const MatchExpression*) const final {
         MONGO_UNREACHABLE;
+    }
+
+    bool uniqueKeyIsSupportedByIndex(const boost::intrusive_ptr<ExpressionContext>&,
+                                     const NamespaceString&,
+                                     const std::set<FieldPath>& uniqueKeyPaths) const final {
+        // TODO SERVER-36047 we'll have to contact the primary shard for the database to ask for the
+        // index specs.
+        return true;
     }
 
 protected:

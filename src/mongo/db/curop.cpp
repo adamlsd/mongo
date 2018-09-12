@@ -129,7 +129,7 @@ BSONObj upconvertGetMoreEntry(const NamespaceString& nss, CursorId cursorId, int
                           boost::none,  // awaitDataTimeout
                           boost::none,  // term
                           boost::none,  // lastKnownCommittedOpTime
-                          false)        // tempOptInToDocumentSequences
+                          GetMoreRequest::kDoNotUseDocumentSequences)
         .toBSON();
 }
 

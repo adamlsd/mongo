@@ -64,7 +64,7 @@ GetMoreRequest::GetMoreRequest(NamespaceString namespaceString,
                                boost::optional<Milliseconds> awaitDataTimeout,
                                boost::optional<long long> term,
                                boost::optional<repl::OpTime> lastKnownCommittedOpTime,
-                               bool tempOptInToDocumentSequences)
+                               UseDocumentSequencesChoice tempOptInToDocumentSequences)
     : nss(std::move(namespaceString)),
       cursorid(id),
       batchSize(sizeOfBatch),
@@ -105,7 +105,8 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
     boost::optional<Milliseconds> awaitDataTimeout;
     boost::optional<long long> term;
     boost::optional<repl::OpTime> lastKnownCommittedOpTime;
-    bool tempOptInToDocumentSequences = false;
+    GetMoreRequest::UseDocumentSequencesChoice tempOptInToDocumentSequences =
+        GetMoreRequest::kDoNotUseDocumentSequences;
 
     for (BSONElement el : cmdObj) {
         const auto fieldName = el.fieldNameStringData();
@@ -123,7 +124,8 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
                             << "Field 'tempOptInToDocumentSequences' must be of type bool in: "
                             << cmdObj};
             }
-            tempOptInToDocumentSequences = el.Bool();
+            tempOptInToDocumentSequences =
+                GetMoreRequest::UseDocumentSequencesChoice(el.Bool());
         } else if (fieldName == kCollectionField) {
             if (el.type() != BSONType::String) {
                 return {ErrorCodes::TypeMismatch,

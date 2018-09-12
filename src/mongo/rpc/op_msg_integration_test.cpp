@@ -233,7 +233,13 @@ TEST(OpMsg, ServerHandlesExhaustCorrectly) {
     // Construct getMore request with exhaust flag. Set batch size so we will need multiple batches
     // to exhaust the cursor.
     int batchSize = 2;
-    GetMoreRequest gmr(nss, cursorId, batchSize, boost::none, boost::none, boost::none);
+    GetMoreRequest gmr(nss,
+                       cursorId,
+                       batchSize,
+                       boost::none,
+                       boost::none,
+                       boost::none,
+                       GetMoreRequest::kDoNotUseDocumentSequences);
     opMsgRequest = OpMsgRequest::fromDBAndBody(nss.db(), gmr.toBSON());
     request = opMsgRequest.serialize();
     OpMsg::setFlag(&request, OpMsg::kExhaustSupported);

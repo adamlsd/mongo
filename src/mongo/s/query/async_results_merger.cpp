@@ -354,7 +354,7 @@ Status AsyncResultsMerger::_askForNextBatch(WithLock, size_t remoteIndex) {
                                     _awaitDataTimeout,
                                     boost::none,
                                     boost::none,
-                                    false)
+                                    GetMoreRequest::kDoNotUseDocumentSequences)
                          .toBSON();
 
     if (_params.getSessionId()) {

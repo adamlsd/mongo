@@ -47,6 +47,11 @@ struct GetMoreRequest {
      */
     GetMoreRequest();
 
+    enum UseDocumentSequencesChoice : bool {
+        kDoNotUseDocumentSequences = false,
+        kUseDocumentSequences = true,
+    };
+
     /**
      * Construct from values for each field.
      */
@@ -56,7 +61,7 @@ struct GetMoreRequest {
                    boost::optional<Milliseconds> awaitDataTimeout,
                    boost::optional<long long> term,
                    boost::optional<repl::OpTime> lastKnownCommittedOpTime,
-                   bool tempOptInToDocumentSequences);
+                   UseDocumentSequencesChoice tempOptInToDocumentSequences);
 
     /**
      * Construct a GetMoreRequest from the command specification and db name.

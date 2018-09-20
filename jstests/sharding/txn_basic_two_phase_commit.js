@@ -126,11 +126,34 @@
 
     setUp(lsid, txnNumber);
 
-    // Simulate that all participants vote to commit.
+    // Simulate that mongos sends 'prepare' with the coordinator's id to the non-coordinator
+    // participants.
+    const participant1PrepareTimestamp = assert
+                                             .commandWorked(participant1.adminCommand({
+                                                 prepareTransaction: 1,
+                                                 coordinatorId: coordinator.shardName,
+                                                 lsid: lsid,
+                                                 txnNumber: NumberLong(txnNumber),
+                                                 stmtId: NumberInt(0),
+                                                 autocommit: false
+                                             }))
+                                             .prepareTimestamp;
+    const participant2PrepareTimestamp = assert
+                                             .commandWorked(participant2.adminCommand({
+                                                 prepareTransaction: 1,
+                                                 coordinatorId: coordinator.shardName,
+                                                 lsid: lsid,
+                                                 txnNumber: NumberLong(txnNumber),
+                                                 stmtId: NumberInt(0),
+                                                 autocommit: false
+                                             }))
+                                             .prepareTimestamp;
+
+    // Simulate that all participants vote to commit (remove this under SERVER-36304).
     assert.commandWorked(coordinator.adminCommand({
         voteCommitTransaction: 1,
         shardId: participant1.shardName,
-        prepareTimestamp: Timestamp(0, 0),
+        prepareTimestamp: participant1PrepareTimestamp,
         lsid: lsid,
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
@@ -139,7 +162,7 @@
     assert.commandWorked(coordinator.adminCommand({
         voteCommitTransaction: 1,
         shardId: participant2.shardName,
-        prepareTimestamp: Timestamp(0, 0),
+        prepareTimestamp: participant2PrepareTimestamp,
         lsid: lsid,
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),

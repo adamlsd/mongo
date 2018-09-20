@@ -313,22 +313,53 @@ void QueryPlannerIXSelect::getFields(const MatchExpression* node,
 }
 
 // static
-void QueryPlannerIXSelect::findRelevantIndices(const stdx::unordered_set<std::string>& fields,
-                                               const std::vector<IndexEntry>& allIndices,
-                                               std::vector<IndexEntry>* out) {
+std::vector<IndexEntry> QueryPlannerIXSelect::findIndexesByHint(
+    const BSONObj& hintedIndex, const std::vector<IndexEntry>& allIndices) {
+    std::vector<IndexEntry> out;
+    BSONElement firstHintElt = hintedIndex.firstElement();
+    if (firstHintElt.fieldNameStringData() == "$hint"_sd &&
+        firstHintElt.type() == BSONType::String) {
+        auto hintName = firstHintElt.valueStringData();
+        for (auto&& entry : allIndices) {
+            if (entry.identifier.catalogName == hintName) {
+                LOG(5) << "Hint by name specified, restricting indices to "
+                       << entry.keyPattern.toString();
+                out.push_back(entry);
+            }
+        }
+    } else {
+        for (auto&& entry : allIndices) {
+            if (SimpleBSONObjComparator::kInstance.evaluate(entry.keyPattern == hintedIndex)) {
+                LOG(5) << "Hint specified, restricting indices to " << hintedIndex.toString();
+                out.push_back(entry);
+            }
+        }
+    }
+
+    return out;
+}
+
+// static
+std::vector<IndexEntry> QueryPlannerIXSelect::findRelevantIndices(
+    const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndices) {
+
+    std::vector<IndexEntry> out;
     for (auto&& entry : allIndices) {
         BSONObjIterator it(entry.keyPattern);
         BSONElement elt = it.next();
         if (fields.end() != fields.find(elt.fieldName())) {
-            out->push_back(entry);
+            out.push_back(entry);
         }
     }
+
+    return out;
 }
 
 std::vector<IndexEntry> QueryPlannerIXSelect::expandIndexes(
-    const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndexes) {
+    const stdx::unordered_set<std::string>& fields,
+    const std::vector<IndexEntry>& relevantIndices) {
     std::vector<IndexEntry> out;
-    for (auto&& entry : allIndexes) {
+    for (auto&& entry : relevantIndices) {
         if (entry.type == IndexType::INDEX_ALLPATHS) {
             expandIndex(entry, fields, &out);
         } else {
@@ -686,6 +717,7 @@ void QueryPlannerIXSelect::_rateIndices(MatchExpression* node,
 // static
 void QueryPlannerIXSelect::stripInvalidAssignments(MatchExpression* node,
                                                    const vector<IndexEntry>& indices) {
+    stripInvalidAssignmentsToAllPathsIndexes(node, indices);
     stripInvalidAssignmentsToTextIndexes(node, indices);
 
     if (MatchExpression::GEO != node->matchType() &&
@@ -869,6 +901,34 @@ void QueryPlannerIXSelect::stripInvalidAssignmentsToPartialIndices(
     for (size_t i = 0; i < indices.size(); ++i) {
         if (indices[i].filterExpr) {
             stripInvalidAssignmentsToPartialIndexRoot(node, i, indices[i]);
+        }
+    }
+}
+
+//
+// AllPaths index invalid assignments.
+//
+void QueryPlannerIXSelect::stripInvalidAssignmentsToAllPathsIndexes(
+    MatchExpression* root, const vector<IndexEntry>& indices) {
+    for (size_t idx = 0; idx < indices.size(); ++idx) {
+        // Skip over all indexes except $**.
+        if (indices[idx].type != IndexType::INDEX_ALLPATHS) {
+            continue;
+        }
+        // If we have a $** index, check whether we have a TEXT node in the MatchExpression tree.
+        const std::function<MatchExpression*(MatchExpression*)> findTextNode = [&](auto* node) {
+            if (node->matchType() == MatchExpression::TEXT) {
+                return node;
+            }
+            for (size_t i = 0; i < node->numChildren(); ++i) {
+                if (auto* foundNode = findTextNode(node->getChild(i)))
+                    return foundNode;
+            }
+            return static_cast<MatchExpression*>(nullptr);
+        };
+        // If so, remove the $** index from the node's relevant tags.
+        if (auto* textNode = findTextNode(root)) {
+            removeIndexRelevantTag(textNode, idx);
         }
     }
 }

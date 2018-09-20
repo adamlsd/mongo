@@ -50,7 +50,8 @@ protected:
 
     void addAllPathsIndex(BSONObj keyPattern,
                           const std::set<std::string>& multikeyPathSet = {},
-                          BSONObj starPathsTempName = BSONObj{}) {
+                          BSONObj starPathsTempName = BSONObj{},
+                          MatchExpression* partialFilterExpr = nullptr) {
         // Convert the set of std::string to a set of FieldRef.
         std::set<FieldRef> multikeyFieldRefs;
         for (auto&& path : multikeyPathSet) {
@@ -69,7 +70,7 @@ protected:
                                             false,  // sparse
                                             false,  // unique
                                             IndexEntry::Identifier{kIndexName},
-                                            nullptr,  // partialFilterExpression
+                                            partialFilterExpr,
                                             std::move(infoObj),
                                             nullptr});  // collator
     }
@@ -585,11 +586,81 @@ TEST_F(QueryPlannerAllPathsTest, InBasicOrEquivalent) {
         "bounds: {'$_path': [['a','a',true,true]], a: [[1,1,true,true],[2,2,true,true]]}}}}}");
 }
 
-// TODO SERVER-35335: Add testing for Min/Max.
-// TODO SERVER-36517: Add testing for DISTINCT_SCAN.
-// TODO SERVER-35336: Add testing for partialFilterExpression.
-// TODO SERVER-35331: Add testing for hints.
-// TODO SERVER-36145: Add testing for non-blocking sort.
+TEST_F(QueryPlannerAllPathsTest, PartialIndexCanAnswerPredicateOnFilteredField) {
+    auto filterObj = fromjson("{a: {$gt: 0}}");
+    auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
+    addAllPathsIndex(BSON("$**" << 1), {}, BSONObj{}, filterExpr.get());
+
+    runQuery(fromjson("{a: {$gte: 5}}"));
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: null, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, a: 1},"
+        "bounds: {'$_path': [['a','a',true,true]], a: [[5,Infinity,true,true]]}}}}}");
+
+    runQuery(fromjson("{a: 5}"));
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: null, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, a: 1},"
+        "bounds: {'$_path': [['a','a',true,true]], a: [[5,5,true,true]]}}}}}");
+
+    runQuery(fromjson("{a: {$gte: 1, $lte: 10}}"));
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: null, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, a: 1},"
+        "bounds: {'$_path': [['a','a',true,true]], a: [[1,10,true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerAllPathsTest, PartialIndexDoesNotAnswerPredicatesExcludedByFilter) {
+    // Must keep 'filterObj' around since match expressions will store pointers into the BSON they
+    // were parsed from.
+    auto filterObj = fromjson("{a: {$gt: 0}}");
+    auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
+    addAllPathsIndex(BSON("$**" << 1), {}, BSONObj{}, filterExpr.get());
+
+    runQuery(fromjson("{a: {$gte: -1}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$lte: 10}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$eq: 0}}"));
+    assertHasOnlyCollscan();
+}
+
+TEST_F(QueryPlannerAllPathsTest, PartialIndexCanAnswerPredicateOnUnrelatedField) {
+    auto filterObj = fromjson("{a: {$gt: 0}}");
+    auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
+    addAllPathsIndex(BSON("$**" << 1), {}, BSONObj{}, filterExpr.get());
+
+    // Test when the field query is not included by the partial filter expression.
+    runQuery(fromjson("{b: {$gte: -1}, a: {$gte: 5}}"));
+    assertNumSolutions(2U);
+    assertSolutionExists(
+        "{fetch: {filter: {a: {$gte: 5}}, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, b: 1},"
+        "bounds: {'$_path': [['b','b',true,true]], b: [[-1,Infinity,true,true]]}}}}}");
+    assertSolutionExists(
+        "{fetch: {filter: {b: {$gte: -1}}, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, a: 1},"
+        "bounds: {'$_path': [['a','a',true,true]], a: [[5,Infinity,true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerAllPathsTest, PartialIndexWithExistsTrueFilterCanAnswerExistenceQuery) {
+    auto filterObj = fromjson("{x: {$exists: true}}");
+    auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
+    addAllPathsIndex(BSON("$**" << 1), {}, BSONObj{}, filterExpr.get());
+    runQuery(fromjson("{x: {$exists: true}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: null, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, x: 1},"
+        "bounds: {'$_path': [['x','x',true,true],['x.','x/',true,false]], x: "
+        "[['MinKey','MaxKey',true,true]]}}}}}");
+}
 
 //
 // Index intersection tests.
@@ -667,5 +738,164 @@ TEST_F(QueryPlannerAllPathsTest, AllPathsIndexDoesNotParticipateInIndexIntersect
     assertSolutionExists(
         "{fetch: {filter:{b:{$gt:10}}, node: {ixscan: {filter: null, pattern: {$_path:1, a:1}}}}}");
 }
+
+//
+// AllPaths and $text index tests.
+//
+
+TEST_F(QueryPlannerAllPathsTest, AllPathsIndexDoesNotSupplyCandidatePlanForTextSearch) {
+    addAllPathsIndex(BSON("$**" << 1));
+    addIndex(BSON("a" << 1 << "_fts"
+                      << "text"
+                      << "_ftsx"
+                      << 1));
+
+    // Confirm that the allPaths index generates candidate plans for queries which do not include a
+    // $text predicate.
+    runQuery(fromjson("{a: 10, b: 10}"));
+    ASSERT_EQUALS(getNumSolutions(), 2U);
+    assertSolutionExists(
+        "{fetch: {filter: {b: 10}, node: {ixscan: {filter: null, pattern: {'$_path': 1, a: 1}}}}}");
+    assertSolutionExists(
+        "{fetch: {filter: {a: 10}, node: {ixscan: {filter: null, pattern: {'$_path': 1, b: 1}}}}}");
+
+    // Confirm that the allPaths index does not produce any candidate plans when a query includes a
+    // $text predicate, even for non-$text predicates which may be present in the query.
+    runQuery(fromjson("{a: 10, b: 10, $text: {$search: 'banana'}}"));
+    ASSERT_EQUALS(getNumSolutions(), 1U);
+    assertSolutionExists(
+        "{fetch: {filter: {b: 10}, node: {text: {prefix: {a: 10}, search: 'banana'}}}}");
+}
+
+TEST_F(QueryPlannerAllPathsTest, AllPathsDoesNotSupportNegationPredicate) {
+    // AllPaths indexes can't support negation queries because they are sparse, and {a: {$ne: 5}}
+    // will match documents which don't have an "a" field.
+    addAllPathsIndex(BSON("$**" << 1));
+    runQuery(fromjson("{a: {$ne: 5}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$not: {$gt: 3, $lt: 5}}}"));
+    assertHasOnlyCollscan();
+}
+
+TEST_F(QueryPlannerAllPathsTest,
+       AllPathsDoesNotSupportNegationPredicateInsideElemMatchMultiKeyPath) {
+    // Logically, there's no reason a (sparse) allPaths index could not support a negation inside a
+    // "$elemMatch value", but it is not something we've implemented.
+    addAllPathsIndex(BSON("$**" << 1), {"a"});
+    runQuery(fromjson("{a: {$elemMatch: {$ne: 5}}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$elemMatch: {$not: {$gt: 3, $lt: 5}}}}"));
+    assertHasOnlyCollscan();
+}
+
+TEST_F(QueryPlannerAllPathsTest, AllPathsDoesNotSupportNegationPredicateInsideElemMatch) {
+    // Test the case where we use $elemMatch on a path which isn't even multikey. In this case,
+    // we'd know up front that the results would be empty, but this is not an optimization we
+    // support.
+    addAllPathsIndex(BSON("$**" << 1));
+    runQuery(fromjson("{a: {$elemMatch: {$ne: 5}}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$elemMatch: {$not: {$gt: 3, $lt: 5}}}}"));
+    assertHasOnlyCollscan();
+}
+
+//
+// Hinting with all paths index tests.
+//
+
+TEST_F(QueryPlannerTest, ChooseAllPathsIndexHint) {
+    addIndex(BSON("$**" << 1));
+    addIndex(BSON("x" << 1));
+
+    runQueryHint(fromjson("{x: {$eq: 1}}"), BSON("$**" << 1));
+
+    assertNumSolutions(1U);
+    assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
+}
+
+TEST_F(QueryPlannerTest, ChooseAllPathsIndexHintByName) {
+    addIndex(BSON("$**" << 1), nullptr, "allPaths");
+    addIndex(BSON("x" << 1));
+
+    runQueryHint(fromjson("{x: {$eq: 1}}"),
+                 BSON("$hint"
+                      << "allPaths"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
+}
+
+TEST_F(QueryPlannerTest, ChooseAllPathsIndexHintWithPath) {
+    addIndex(BSON("x.$**" << 1));
+    addIndex(BSON("x" << 1));
+
+    runQueryHint(fromjson("{x: {$eq: 1}}"), BSON("x.$**" << 1));
+
+    assertNumSolutions(1U);
+    assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
+}
+
+TEST_F(QueryPlannerTest, ChooseAllPathsIndexHintWithOr) {
+    addIndex(BSON("$**" << 1));
+    addIndex(BSON("x" << 1 << "y" << 1));
+
+    runQueryHint(fromjson("{$or: [{x: 1}, {y: 1}]}"), BSON("$**" << 1));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {node: {or: {nodes: [{ixscan: {pattern: {$_path: 1, x: 1}}},"
+        " {ixscan: {pattern: {$_path: 1, y: 1}}}]}}}}");
+}
+
+TEST_F(QueryPlannerTest, ChooseAllPathsIndexHintWithCompoundIndex) {
+    addIndex(BSON("$**" << 1));
+    addIndex(BSON("x" << 1 << "y" << 1));
+
+    runQueryHint(fromjson("{x: 1, y: 1}"), BSON("$**" << 1));
+
+    assertNumSolutions(2U);
+    assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
+    assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, y: 1}}}}}");
+}
+
+TEST_F(QueryPlannerTest, QueryNotInAllPathsIndexHint) {
+    addIndex(BSON("a.$**" << 1));
+    addIndex(BSON("x" << 1));
+
+    runQueryHint(fromjson("{x: {$eq: 1}}"), BSON("a.$**" << 1));
+    assertNumSolutions(0U);
+}
+
+TEST_F(QueryPlannerTest, AllPathsIndexDoesNotExist) {
+    addIndex(BSON("x" << 1));
+
+    runInvalidQueryHint(fromjson("{x: {$eq: 1}}"), BSON("$**" << 1));
+}
+
+TEST_F(QueryPlannerTest, AllPathsIndexHintWithPartialFilter) {
+    auto filterObj = fromjson("{a: {$gt: 100}}");
+    auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
+    addIndex(BSON("$**" << 1), filterExpr.get());
+
+    runQueryHint(fromjson("{a: {$eq: 1}}"), BSON("$**" << 1));
+    assertNumSolutions(0U);
+}
+
+TEST_F(QueryPlannerTest, MultipleAllPathsIndexesHintWithPartialFilter) {
+    auto filterObj = fromjson("{a: {$gt: 100}, b: {$gt: 100}}");
+    auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
+    addIndex(BSON("$**" << 1), filterExpr.get());
+
+    runQueryHint(fromjson("{a: {$eq: 1}, b: {$eq: 1}}"), BSON("$**" << 1));
+    assertNumSolutions(0U);
+}
+
+// TODO SERVER-35335: Add testing for Min/Max.
+// TODO SERVER-36517: Add testing for DISTINCT_SCAN.
+// TODO SERVER-35331: Add testing for hints.
+// TODO SERVER-36145: Add testing for non-blocking sort.
 
 }  // namespace mongo

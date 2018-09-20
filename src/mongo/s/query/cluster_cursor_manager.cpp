@@ -572,7 +572,22 @@ void ClusterCursorManager::appendActiveSessions(LogicalSessionIdSet* lsids) cons
     }
 }
 
-std::vector<GenericCursor> ClusterCursorManager::getAllCursors() const {
+GenericCursor ClusterCursorManager::CursorEntry::cursorToGenericCursor(
+    CursorId cursorId, const NamespaceString& ns) const {
+    invariant(_cursor);
+    GenericCursor gc;
+    gc.setCursorId(cursorId);
+    gc.setNs(ns);
+    gc.setLsid(_cursor->getLsid());
+    gc.setNDocsReturned(_cursor->getNumReturnedSoFar());
+    gc.setTailable(_cursor->isTailable());
+    gc.setAwaitData(_cursor->isTailableAndAwaitData());
+    gc.setOriginatingCommand(_cursor->getOriginatingCommand());
+    gc.setNoCursorTimeout(getLifetimeType() == CursorLifetime::Immortal);
+    return gc;
+}
+
+std::vector<GenericCursor> ClusterCursorManager::getIdleCursors() const {
     std::vector<GenericCursor> cursors;
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);
@@ -581,16 +596,13 @@ std::vector<GenericCursor> ClusterCursorManager::getAllCursors() const {
         for (const auto& cursorIdEntryPair : nsContainerPair.second.entryMap) {
             const CursorEntry& entry = cursorIdEntryPair.second;
 
-            if (entry.isKillPending()) {
-                // Don't include sessions for killed cursors.
+            if (entry.isKillPending() || entry.getOperationUsingCursor()) {
+                // Don't include sessions for killed or pinned cursors.
                 continue;
             }
 
-            cursors.emplace_back();
-            auto& gc = cursors.back();
-            gc.setId(cursorIdEntryPair.first);
-            gc.setNs(nsContainerPair.first);
-            gc.setLsid(entry.getLsid());
+            cursors.emplace_back(
+                entry.cursorToGenericCursor(cursorIdEntryPair.first, nsContainerPair.first));
         }
     }
 

@@ -123,7 +123,11 @@ BSONObj appendReadConcernForTxn(BSONObj cmd,
     if (cmd.hasField(repl::ReadConcernArgs::kReadConcernFieldName)) {
         repl::ReadConcernArgs existingReadConcernArgs;
         dassert(existingReadConcernArgs.initialize(cmd));
-        dassert(existingReadConcernArgs.getLevel() == readConcernArgs.getLevel());
+        // There may be no read concern level if the user only specified afterClusterTime and the
+        // transaction provided the default level.
+        dassert(existingReadConcernArgs.getLevel() == readConcernArgs.getLevel() ||
+                !existingReadConcernArgs.hasLevel());
+
         return atClusterTime
             ? at_cluster_time_util::appendAtClusterTime(std::move(cmd), *atClusterTime)
             : cmd;
@@ -148,18 +152,36 @@ BSONObjBuilder appendFieldsForStartTransaction(BSONObj cmd,
     return bob;
 }
 
+// Commands that are idempotent in a transaction context and can be blindly retried in the middle of
+// a transaction. Aggregate with $out is disallowed in a transaction, so aggregates must be read
+// operations.
+const StringMap<int> alwaysRetryableCmds = {
+    {"aggregate", 1}, {"distinct", 1}, {"find", 1}, {"getMore", 1}, {"killCursors", 1}};
+
 }  // unnamed namespace
 
 TransactionRouter::Participant::Participant(bool isCoordinator,
-                                            TxnNumber txnNumber,
-                                            repl::ReadConcernArgs readConcernArgs)
-    : _isCoordinator(isCoordinator), _txnNumber(txnNumber), _readConcernArgs(readConcernArgs) {}
+                                            StmtId stmtIdCreatedAt,
+                                            SharedTransactionOptions sharedOptions)
+    : _isCoordinator(isCoordinator),
+      _stmtIdCreatedAt(stmtIdCreatedAt),
+      _sharedOptions(sharedOptions) {}
 
 BSONObj TransactionRouter::Participant::attachTxnFieldsIfNeeded(BSONObj cmd) {
     auto isTxnCmd = isTransactionCommand(cmd);  // check first before moving cmd.
 
-    BSONObjBuilder newCmd = (_state == State::kMustStart && !isTxnCmd)
-        ? appendFieldsForStartTransaction(std::move(cmd), _readConcernArgs, _atClusterTime)
+    // The first command sent to a participant must start a transaction, unless it is a transaction
+    // command, which don't support the options that start transactions, i.e. starTransaction and
+    // readConcern. Otherwise the command must not have a read concern.
+    bool mustStartTransaction = _state == State::kMustStart && !isTxnCmd;
+
+    if (!mustStartTransaction) {
+        dassert(!cmd.hasField(repl::ReadConcernArgs::kReadConcernFieldName));
+    }
+
+    BSONObjBuilder newCmd = mustStartTransaction
+        ? appendFieldsForStartTransaction(
+              std::move(cmd), _sharedOptions.readConcernArgs, _sharedOptions.atClusterTime)
         : BSONObjBuilder(std::move(cmd));
 
     if (_isCoordinator) {
@@ -169,28 +191,32 @@ BSONObj TransactionRouter::Participant::attachTxnFieldsIfNeeded(BSONObj cmd) {
     newCmd.append(kAutoCommitField, false);
 
     if (!newCmd.hasField(OperationSessionInfo::kTxnNumberFieldName)) {
-        newCmd.append(OperationSessionInfo::kTxnNumberFieldName, _txnNumber);
+        newCmd.append(OperationSessionInfo::kTxnNumberFieldName, _sharedOptions.txnNumber);
     } else {
         auto osi =
             OperationSessionInfoFromClient::parse("OperationSessionInfo"_sd, newCmd.asTempObj());
-        invariant(_txnNumber == *osi.getTxnNumber());
+        invariant(_sharedOptions.txnNumber == *osi.getTxnNumber());
     }
 
     return newCmd.obj();
-}
-
-TransactionRouter::Participant::State TransactionRouter::Participant::getState() {
-    return _state;
 }
 
 bool TransactionRouter::Participant::isCoordinator() const {
     return _isCoordinator;
 }
 
+bool TransactionRouter::Participant::mustStartTransaction() const {
+    return _state == State::kMustStart;
+}
+
 void TransactionRouter::Participant::markAsCommandSent() {
     if (_state == State::kMustStart) {
         _state = State::kStarted;
     }
+}
+
+StmtId TransactionRouter::Participant::getStmtIdCreatedAt() const {
+    return _stmtIdCreatedAt;
 }
 
 TransactionRouter* TransactionRouter::get(OperationContext* opCtx) {
@@ -200,10 +226,6 @@ TransactionRouter* TransactionRouter::get(OperationContext* opCtx) {
     }
 
     return opCtxSession.get();
-}
-
-void TransactionRouter::Participant::setAtClusterTime(const LogicalTime atClusterTime) {
-    _atClusterTime = atClusterTime;
 }
 
 TransactionRouter::TransactionRouter(LogicalSessionId sessionId)
@@ -226,9 +248,14 @@ boost::optional<ShardId> TransactionRouter::getCoordinatorId() const {
 }
 
 TransactionRouter::Participant& TransactionRouter::getOrCreateParticipant(const ShardId& shard) {
-    auto iter = _participants.find(shard.toString());
+    // Remove the shard from the abort list if it is present.
+    _orphanedParticipants.erase(shard.toString());
 
+    auto iter = _participants.find(shard.toString());
     if (iter != _participants.end()) {
+        // TODO SERVER-36589: Once mongos aborts transactions by only sending abortTransaction to
+        // shards that have been successfully contacted we should be able to add an invariant here
+        // to ensure the atClusterTime on the participant matches that on the transaction router.
         return iter->second;
     }
 
@@ -242,22 +269,90 @@ TransactionRouter::Participant& TransactionRouter::getOrCreateParticipant(const 
     // The transaction must have been started with a readConcern.
     invariant(!_readConcernArgs.isEmpty());
 
-    auto participant =
-        TransactionRouter::Participant(isFirstParticipant, _txnNumber, _readConcernArgs);
     // TODO SERVER-36589: Once mongos aborts transactions by only sending abortTransaction to shards
     // that have been successfully contacted we should be able to add an invariant here to ensure
     // that an atClusterTime has been chosen if the read concern level is snapshot.
-    if (_atClusterTime) {
-        participant.setAtClusterTime(*_atClusterTime);
-    }
 
-    auto resultPair = _participants.try_emplace(shard.toString(), std::move(participant));
+    auto resultPair = _participants.try_emplace(
+        shard.toString(),
+        TransactionRouter::Participant(
+            isFirstParticipant,
+            _latestStmtId,
+            SharedTransactionOptions{_txnNumber, _readConcernArgs, _atClusterTime}));
 
     return resultPair.first->second;
 }
 
 const LogicalSessionId& TransactionRouter::getSessionId() const {
     return _sessionId;
+}
+
+bool TransactionRouter::_canContinueOnStaleShardOrDbError(StringData cmdName) const {
+    // We can always retry on the first overall statement.
+    if (_latestStmtId == _firstStmtId) {
+        return true;
+    }
+
+    if (alwaysRetryableCmds.count(cmdName)) {
+        return true;
+    }
+
+    return false;
+}
+
+void TransactionRouter::onStaleShardOrDbError(StringData cmdName) {
+    // TODO SERVER-37210: Implicitly abort the entire transaction if this uassert throws.
+    uassert(ErrorCodes::NoSuchTransaction,
+            "Transaction was aborted due to cluster data placement change",
+            _canContinueOnStaleShardOrDbError(cmdName));
+
+    // Remove each participant created at the most recent statement id and add them to the orphaned
+    // list because the retry attempt isn't guaranteed to retarget them. Participants created
+    // earlier are already fixed in the participant list, so they should not be removed.
+    for (auto&& it = _participants.begin(); it != _participants.end();) {
+        auto participant = it++;
+        if (participant->second.getStmtIdCreatedAt() == _latestStmtId) {
+            _orphanedParticipants.try_emplace(participant->first);
+            _participants.erase(participant);
+        }
+    }
+
+    // If there are no more participants, also clear the coordinator id because a new one must be
+    // chosen by the retry.
+    if (_participants.empty()) {
+        _coordinatorId.reset();
+        return;
+    }
+
+    // If this is not the first command, the coordinator must have been chosen and successfully
+    // contacted in an earlier command, and thus must not be in the orphaned list.
+    invariant(_coordinatorId);
+    invariant(_orphanedParticipants.count(*_coordinatorId) == 0);
+}
+
+bool TransactionRouter::_canContinueOnSnapshotError() const {
+    return _latestStmtId == _firstStmtId;
+}
+
+void TransactionRouter::onSnapshotError() {
+    // TODO SERVER-37210: Implicitly abort the entire transaction if this uassert throws.
+    uassert(ErrorCodes::NoSuchTransaction,
+            "Transaction was aborted due to snapshot error on subsequent transaction statement",
+            _canContinueOnSnapshotError());
+
+    // Add each participant to the orphaned list because the retry attempt isn't guaranteed to
+    // re-target it.
+    for (const auto& participant : _participants) {
+        _orphanedParticipants.try_emplace(participant.first);
+    }
+
+    // New transactions must be started on each contacted participant since the retry will select a
+    // new read timestamp.
+    _participants.clear();
+    _coordinatorId.reset();
+
+    // Reset the global snapshot timestamp so the retry will select a new one.
+    _atClusterTime.reset();
 }
 
 void TransactionRouter::computeAtClusterTime(OperationContext* opCtx,
@@ -363,6 +458,7 @@ void TransactionRouter::beginOrContinueTxn(OperationContext* opCtx,
     }
 
     if (_txnNumber == txnNumber) {
+        ++_latestStmtId;
         return;
     }
 
@@ -370,6 +466,11 @@ void TransactionRouter::beginOrContinueTxn(OperationContext* opCtx,
     _participants.clear();
     _coordinatorId.reset();
     _atClusterTime.reset();
+
+    // TODO SERVER-37115: Parse statement ids from the client and remember the statement id of the
+    // command that started the transaction, if one was included.
+    _latestStmtId = kDefaultFirstStmtId;
+    _firstStmtId = kDefaultFirstStmtId;
 }
 
 

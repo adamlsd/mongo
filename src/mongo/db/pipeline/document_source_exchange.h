@@ -33,7 +33,7 @@
 
 #include "mongo/bson/ordering.h"
 #include "mongo/db/pipeline/document_source.h"
-#include "mongo/db/pipeline/document_source_exchange_gen.h"
+#include "mongo/db/pipeline/exchange_spec_gen.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
 
@@ -41,6 +41,8 @@ namespace mongo {
 
 class Exchange : public RefCountable {
     static constexpr size_t kInvalidThreadId{std::numeric_limits<size_t>::max()};
+    static constexpr size_t kMaxBufferSize = 100 * 1024 * 1024;  // 100 MB
+    static constexpr size_t kMaxNumberConsumers = 100;
 
     /**
      * Convert the BSON representation of boundaries (as deserialized off the wire) to the internal

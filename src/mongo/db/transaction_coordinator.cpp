@@ -41,27 +41,14 @@ using Action = TransactionCoordinator::StateMachine::Action;
 using Event = TransactionCoordinator::StateMachine::Event;
 using State = TransactionCoordinator::StateMachine::State;
 
-namespace {
-const Session::Decoration<boost::optional<TransactionCoordinator>> getTransactionCoordinator =
-    Session::declareDecoration<boost::optional<TransactionCoordinator>>();
-}  // namespace
-
-boost::optional<TransactionCoordinator>& TransactionCoordinator::get(OperationContext* opCtx) {
-    auto session = OperationContextSession::get(opCtx);
-    return getTransactionCoordinator(session);
-}
-
-void TransactionCoordinator::create(Session* session) {
-    invariant(!getTransactionCoordinator(session));
-    getTransactionCoordinator(session).emplace();
-}
-
 Action TransactionCoordinator::recvCoordinateCommit(const std::set<ShardId>& participants) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
     _participantList.recordFullList(participants);
     return _stateMachine.onEvent(Event::kRecvParticipantList);
 }
 
-Action TransactionCoordinator::recvVoteCommit(const ShardId& shardId, int prepareTimestamp) {
+Action TransactionCoordinator::recvVoteCommit(const ShardId& shardId, Timestamp prepareTimestamp) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
     _participantList.recordVoteCommit(shardId, prepareTimestamp);
 
     auto event = (_participantList.allParticipantsVotedCommit()) ? Event::kRecvFinalVoteCommit
@@ -70,21 +57,21 @@ Action TransactionCoordinator::recvVoteCommit(const ShardId& shardId, int prepar
 }
 
 Action TransactionCoordinator::recvVoteAbort(const ShardId& shardId) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
     _participantList.recordVoteAbort(shardId);
     return _stateMachine.onEvent(Event::kRecvVoteAbort);
 }
 
+Action TransactionCoordinator::recvTryAbort() {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    return _stateMachine.onEvent(Event::kRecvTryAbort);
+}
+
 void TransactionCoordinator::recvCommitAck(const ShardId& shardId) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
     _participantList.recordCommitAck(shardId);
     if (_participantList.allParticipantsAckedCommit()) {
         _stateMachine.onEvent(Event::kRecvFinalCommitAck);
-    }
-}
-
-void TransactionCoordinator::recvAbortAck(const ShardId& shardId) {
-    _participantList.recordAbortAck(shardId);
-    if (_participantList.allParticipantsAckedAbort()) {
-        _stateMachine.onEvent(Event::kRecvFinalAbortAck);
     }
 }
 
@@ -107,39 +94,37 @@ const std::map<State, std::map<Event, TransactionCoordinator::StateMachine::Tran
     TransactionCoordinator::StateMachine::transitionTable = {
         // clang-format off
         {State::kWaitingForParticipantList, {
-            {Event::kRecvVoteAbort,         {Action::kSendAbort, State::kWaitingForAbortAcks}},
+            {Event::kRecvVoteAbort,         {Action::kSendAbort, State::kAborted}},
             {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {State::kWaitingForVotes}},
+            {Event::kRecvTryAbort,          {Action::kSendAbort, State::kAborted}},
         }},
         {State::kWaitingForVotes, {
-            {Event::kRecvVoteAbort,         {Action::kSendAbort, State::kWaitingForAbortAcks}},
+            {Event::kRecvVoteAbort,         {Action::kSendAbort, State::kAborted}},
             {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
             {Event::kRecvFinalVoteCommit,   {Action::kSendCommit, State::kWaitingForCommitAcks}},
-        }},
-        {State::kWaitingForAbortAcks, {
-            {Event::kRecvVoteAbort,         {}},
-            {Event::kRecvVoteCommit,        {}},
-            {Event::kRecvParticipantList,   {}},
-            {Event::kRecvFinalAbortAck,     {State::kAborted}},
+            {Event::kRecvTryAbort,          {Action::kSendAbort, State::kAborted}},
         }},
         {State::kAborted, {
             {Event::kRecvVoteAbort,         {}},
             {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
-            {Event::kRecvFinalAbortAck,     {}},
+            {Event::kRecvTryAbort,          {}},
         }},
         {State::kWaitingForCommitAcks, {
             {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
             {Event::kRecvFinalVoteCommit,   {Action::kSendCommit}},
             {Event::kRecvFinalCommitAck,    {State::kCommitted}},
+            {Event::kRecvTryAbort,          {}},
         }},
         {State::kCommitted, {
             {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
             {Event::kRecvFinalVoteCommit,   {}},
             {Event::kRecvFinalCommitAck,    {}},
+            {Event::kRecvTryAbort,          {}},
         }},
         {State::kBroken, {}},
         // clang-format on
@@ -177,7 +162,7 @@ void TransactionCoordinator::ParticipantList::recordFullList(
 }
 
 void TransactionCoordinator::ParticipantList::recordVoteCommit(const ShardId& shardId,
-                                                               int prepareTimestamp) {
+                                                               Timestamp prepareTimestamp) {
     if (!_fullListReceived) {
         _recordParticipant(shardId);
     }
@@ -204,11 +189,11 @@ void TransactionCoordinator::ParticipantList::recordVoteCommit(const ShardId& sh
     } else {
         uassert(ErrorCodes::InternalError,
                 str::stream() << "Transaction commit coordinator received prepareTimestamp "
-                              << prepareTimestamp
+                              << prepareTimestamp.toStringPretty()
                               << " from participant "
                               << shardId.toString()
                               << " that previously reported prepareTimestamp "
-                              << participant.prepareTimestamp,
+                              << participant.prepareTimestamp->toStringPretty(),
                 *participant.prepareTimestamp == prepareTimestamp);
     }
 }
@@ -234,10 +219,7 @@ void TransactionCoordinator::ParticipantList::recordVoteAbort(const ShardId& sha
                       << " that previously voted to commit",
         participant.vote != Participant::Vote::kCommit);
 
-    if (participant.vote == Participant::Vote::kUnknown) {
-        participant.vote = Participant::Vote::kAbort;
-        participant.ack = Participant::Ack::kAbort;
-    }
+    participant.vote = Participant::Vote::kAbort;
 }
 
 void TransactionCoordinator::ParticipantList::recordCommitAck(const ShardId& shardId) {
@@ -251,17 +233,6 @@ void TransactionCoordinator::ParticipantList::recordCommitAck(const ShardId& sha
     it->second.ack = Participant::Ack::kCommit;
 }
 
-void TransactionCoordinator::ParticipantList::recordAbortAck(const ShardId& shardId) {
-    auto it = _participants.find(shardId);
-    uassert(
-        ErrorCodes::InternalError,
-        str::stream() << "Transaction commit coordinator processed 'abort' ack from participant "
-                      << shardId.toString()
-                      << " not in participant list",
-        it != _participants.end());
-    it->second.ack = Participant::Ack::kAbort;
-}
-
 bool TransactionCoordinator::ParticipantList::allParticipantsVotedCommit() const {
     return _fullListReceived && std::all_of(_participants.begin(),
                                             _participants.end(),
@@ -270,19 +241,24 @@ bool TransactionCoordinator::ParticipantList::allParticipantsVotedCommit() const
                                             });
 }
 
-bool TransactionCoordinator::ParticipantList::allParticipantsAckedAbort() const {
-    return std::all_of(
-        _participants.begin(), _participants.end(), [](const std::pair<ShardId, Participant>& i) {
-            return i.second.ack == Participant::Ack::kAbort;
-        });
-}
-
 bool TransactionCoordinator::ParticipantList::allParticipantsAckedCommit() const {
     invariant(_fullListReceived);
     return std::all_of(
         _participants.begin(), _participants.end(), [](const std::pair<ShardId, Participant>& i) {
             return i.second.ack == Participant::Ack::kCommit;
         });
+}
+
+Timestamp TransactionCoordinator::ParticipantList::getHighestPrepareTimestamp() const {
+    invariant(_fullListReceived);
+    Timestamp highestPrepareTimestamp = Timestamp::min();
+    for (const auto& participant : _participants) {
+        invariant(participant.second.prepareTimestamp);
+        if (*participant.second.prepareTimestamp > highestPrepareTimestamp) {
+            highestPrepareTimestamp = *participant.second.prepareTimestamp;
+        }
+    }
+    return highestPrepareTimestamp;
 }
 
 std::set<ShardId> TransactionCoordinator::ParticipantList::getNonAckedCommitParticipants() const {
@@ -296,15 +272,15 @@ std::set<ShardId> TransactionCoordinator::ParticipantList::getNonAckedCommitPart
     return nonAckedCommitParticipants;
 }
 
-std::set<ShardId> TransactionCoordinator::ParticipantList::getNonAckedAbortParticipants() const {
-    std::set<ShardId> nonAckedAbortParticipants;
+std::set<ShardId> TransactionCoordinator::ParticipantList::getNonVotedAbortParticipants() const {
+    std::set<ShardId> nonVotedAbortParticipants;
     for (const auto& kv : _participants) {
-        if (kv.second.ack != Participant::Ack::kAbort) {
+        if (kv.second.vote != Participant::Vote::kAbort) {
             invariant(kv.second.ack == Participant::Ack::kNone);
-            nonAckedAbortParticipants.insert(kv.first);
+            nonVotedAbortParticipants.insert(kv.first);
         }
     }
-    return nonAckedAbortParticipants;
+    return nonVotedAbortParticipants;
 }
 
 void TransactionCoordinator::ParticipantList::_recordParticipant(const ShardId& shardId) {

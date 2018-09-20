@@ -1,16 +1,13 @@
-test_kind: js_test
+test_kind: cpp_integration_test
 
 selector:
-  roots:
-  - src/mongo/db/modules/*/jstests/rlp/*.js
+  root: build/integration_tests.txt
 
 executor:
   archive:
     hooks:
       - ValidateCollections
-  config:
-    shell_options:
-      readMode: commands
+  config: {}
   hooks:
   - class: ValidateCollections
   - class: CleanEveryN
@@ -18,7 +15,7 @@ executor:
   fixture:
     class: MongoDFixture
     mongod_options:
-      basisTechRootDirectory: /opt/basis
+      auditDestination: console
       set_parameters:
         enableTestCommands: 1
-        rlpEnableExperimentalLanguagesForTesting: true
+        auditAuthorizationSuccess: 1

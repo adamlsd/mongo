@@ -1,5 +1,5 @@
-/*
- *    Copyright (C) 2015 MongoDB Inc.
+/**
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,46 +26,15 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/rpc/metadata/audit_metadata.h"
+#include <memory>
 
-#include <utility>
-
-#include "mongo/base/status_with.h"
-#include "mongo/bson/util/bson_extract.h"
-#include "mongo/db/auth/role_name.h"
-#include "mongo/db/auth/user_name.h"
+#include "mongo/db/logical_session_cache.h"
+#include "mongo/db/service_liaison.h"
 
 namespace mongo {
-namespace rpc {
 
-const OperationContext::Decoration<AuditMetadata> AuditMetadata::get =
-    OperationContext::declareDecoration<AuditMetadata>();
+std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheEmbedded();
 
-AuditMetadata::AuditMetadata(boost::optional<UsersAndRoles> impersonatedUsersAndRoles)
-    : _impersonatedUsersAndRoles(std::move(impersonatedUsersAndRoles)) {}
-
-#if !defined(MONGO_ENTERPRISE_VERSION)
-
-StatusWith<AuditMetadata> AuditMetadata::readFromMetadata(const BSONObj&) {
-    return AuditMetadata{};
-}
-
-StatusWith<AuditMetadata> AuditMetadata::readFromMetadata(const BSONElement&) {
-    return AuditMetadata{};
-}
-
-Status AuditMetadata::writeToMetadata(BSONObjBuilder*) const {
-    return Status::OK();
-}
-
-#endif
-
-const boost::optional<AuditMetadata::UsersAndRoles>& AuditMetadata::getImpersonatedUsersAndRoles()
-    const {
-    return _impersonatedUsersAndRoles;
-}
-
-}  // namespace rpc
 }  // namespace mongo

@@ -1,5 +1,5 @@
-/*
- *    Copyright (C) 2015 MongoDB Inc.
+/**
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,58 +26,30 @@
  *    it in the license file.
  */
 
-#pragma once
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
 
-#include <boost/optional.hpp>
-#include <vector>
+#include "mongo/platform/basic.h"
 
-#include "mongo/base/disallow_copying.h"
-#include "mongo/db/auth/role_name.h"
-#include "mongo/db/auth/user_name.h"
-#include "mongo/db/operation_context.h"
+#include <memory>
+
+#include "mongo/embedded/logical_session_cache_factory_embedded.h"
+
+#include "mongo/db/logical_session_cache_impl.h"
+#include "mongo/db/service_liaison_mongod.h"
+#include "mongo/db/sessions_collection_standalone.h"
+#include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
-class BSONObj;
-class BSONObjBuilder;
-class Status;
-template <typename T>
-class StatusWith;
 
-namespace rpc {
+std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheEmbedded() {
+    auto liaison = std::make_unique<ServiceLiaisonMongod>();
 
-/**
- * This class comprises the request metadata fields involving auditing.
- */
-class AuditMetadata {
-public:
-    static const OperationContext::Decoration<AuditMetadata> get;
+    // Set up the logical session cache
+    auto sessionsColl = std::make_shared<SessionsCollectionStandalone>();
 
-    // Decorable requires a default constructor.
-    AuditMetadata() = default;
+    return stdx::make_unique<LogicalSessionCacheImpl>(
+        std::move(liaison), std::move(sessionsColl), nullptr, LogicalSessionCacheImpl::Options{});
+}
 
-    static StatusWith<AuditMetadata> readFromMetadata(const BSONObj& metadataObj);
-
-    /**
-     * Parses AuditMetadata from a pre-extracted BSONElement. When reading a metadata object, this
-     * form is more efficient as it permits parsing the metadata in one pass.
-     */
-    static StatusWith<AuditMetadata> readFromMetadata(const BSONElement& metadataElem);
-
-    Status writeToMetadata(BSONObjBuilder* metadataBob) const;
-
-    using UsersAndRoles = std::tuple<std::vector<UserName>, std::vector<RoleName>>;
-
-    const boost::optional<UsersAndRoles>& getImpersonatedUsersAndRoles() const;
-
-    AuditMetadata(boost::optional<UsersAndRoles> impersonatedUsersAndRoles);
-
-    static StringData fieldName() {
-        return "$audit";
-    }
-
-private:
-    boost::optional<UsersAndRoles> _impersonatedUsersAndRoles;
-};
-
-}  // namespace rpc
 }  // namespace mongo

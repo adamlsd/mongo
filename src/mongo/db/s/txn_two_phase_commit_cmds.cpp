@@ -32,9 +32,10 @@
 
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
+#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/sharding_state.h"
-#include "mongo/db/transaction_coordinator_commands_impl.h"
+#include "mongo/db/transaction_coordinator_service.h"
 #include "mongo/db/transaction_participant.h"
 
 namespace mongo {
@@ -105,7 +106,7 @@ public:
         }
 
         // Add prepareTimestamp to the command response.
-        auto timestamp = txnParticipant->prepareTransaction(opCtx);
+        auto timestamp = txnParticipant->prepareTransaction(opCtx, {});
         result.append("prepareTimestamp", timestamp);
 
         return true;
@@ -133,8 +134,12 @@ public:
 
             const auto& cmd = request();
 
-            txn::recvVoteCommit(
-                opCtx, cmd.getShardId(), 0 /* TODO (SERVER-36584) pass real prepareTimestamp */);
+            TransactionCoordinatorService::get(opCtx)->voteCommit(
+                opCtx,
+                opCtx->getLogicalSessionId().get(),
+                opCtx->getTxnNumber().get(),
+                cmd.getShardId(),
+                cmd.getPrepareTimestamp());
         }
 
     private:
@@ -183,7 +188,10 @@ public:
 
             const auto& cmd = request();
 
-            txn::recvVoteAbort(opCtx, cmd.getShardId());
+            TransactionCoordinatorService::get(opCtx)->voteAbort(opCtx,
+                                                                 opCtx->getLogicalSessionId().get(),
+                                                                 opCtx->getTxnNumber().get(),
+                                                                 cmd.getShardId());
         }
 
     private:
@@ -246,7 +254,30 @@ public:
                 participantList.insert(shardId);
             }
 
-            txn::recvCoordinateCommit(opCtx, participantList);
+            TransactionCoordinatorService::get(opCtx)->coordinateCommit(
+                opCtx,
+                opCtx->getLogicalSessionId().get(),
+                opCtx->getTxnNumber().get(),
+                participantList);
+
+            // Execute the 'prepare' logic on the local participant (the router does not send a
+            // separate 'prepare' message to the coordinator shard.
+            {
+                OperationContextSessionMongod checkOutSession(
+                    opCtx, true, false, boost::none, false);
+
+                auto txnParticipant = TransactionParticipant::get(opCtx);
+
+                txnParticipant->unstashTransactionResources(opCtx, "prepareTransaction");
+                ScopeGuard guard = MakeGuard([&txnParticipant, opCtx]() {
+                    txnParticipant->abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
+                });
+
+                txnParticipant->prepareTransaction(opCtx, {});
+
+                txnParticipant->stashTransactionResources(opCtx);
+                guard.Dismiss();
+            }
         }
 
     private:

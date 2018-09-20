@@ -71,6 +71,7 @@
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/storage_file_util.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/db/storage/storage_repair_observer.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_extensions.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
@@ -159,48 +160,6 @@ std::string WiredTigerFileVersion::getDowngradeString() {
     return "compatibility=(release=3.1)";
 }
 
-namespace {
-void openWiredTiger(const std::string& path,
-                    WT_EVENT_HANDLER* eventHandler,
-                    const std::string& wtOpenConfig,
-                    WT_CONNECTION** connOut,
-                    WiredTigerFileVersion* fileVersionOut) {
-    std::string configStr = wtOpenConfig + ",compatibility=(require_min=\"3.1.0\")";
-    int ret = wiredtiger_open(path.c_str(), eventHandler, configStr.c_str(), connOut);
-    if (!ret) {
-        *fileVersionOut = {WiredTigerFileVersion::StartupVersion::IS_40};
-        return;
-    }
-
-    // Arbiters do not replicate the FCV document. Due to arbiter FCV semantics on 4.0, shutting
-    // down a 4.0 arbiter may either downgrade the data files to WT compatibility 2.9 or 3.0. Thus,
-    // 4.2 binaries must allow starting up on 2.9 and 3.0 files.
-    configStr = wtOpenConfig + ",compatibility=(require_min=\"3.0.0\")";
-    ret = wiredtiger_open(path.c_str(), eventHandler, configStr.c_str(), connOut);
-    if (!ret) {
-        *fileVersionOut = {WiredTigerFileVersion::StartupVersion::IS_36};
-        return;
-    }
-
-    configStr = wtOpenConfig + ",compatibility=(require_min=\"2.9.0\")";
-    ret = wiredtiger_open(path.c_str(), eventHandler, configStr.c_str(), connOut);
-    if (!ret) {
-        *fileVersionOut = {WiredTigerFileVersion::StartupVersion::IS_34};
-        return;
-    }
-
-    severe() << "Failed to start up WiredTiger under any compatibility version.";
-    if (ret == EINVAL) {
-        fassertFailedNoTrace(28561);
-    }
-
-    severe() << "Reason: " << wtRCToStatus(ret).reason();
-    severe() << "Failed to open a WiredTiger connection. This may be due to metadata corruption. "
-             << kWTRepairMsg;
-    fassertFailedNoTrace(28595);
-}
-}  // namespace
-
 using std::set;
 using std::string;
 
@@ -282,6 +241,26 @@ public:
 
             const Timestamp stableTimestamp = _wiredTigerKVEngine->getStableTimestamp();
             const Timestamp initialDataTimestamp = _wiredTigerKVEngine->getInitialDataTimestamp();
+
+            // The amount of oplog to keep is primarily dictated by a user setting. However, in
+            // unexpected cases, durable, recover to a timestamp storage engines may need to play
+            // forward from an oplog entry that would otherwise be truncated by the user
+            // setting. Furthermore with prepared transactions, oplog entries can refer to
+            // previous oplog entries.
+            //
+            // Live (replication) rollback will replay oplogs from exactly the stable
+            // timestamp. With prepared transactions, it may require some additional entries prior
+            // to the stable timestamp. These requirements are summarized in
+            // `getOplogNeededForRollback`. Truncating the oplog at this point is sufficient for
+            // in-memory configurations, but could cause an unrecoverable scenario if the node
+            // crashed and has to play from the last stable checkpoint.
+            //
+            // By recording the oplog needed for rollback "now", then taking a stable checkpoint,
+            // we can safely assume that the oplog needed for crash recovery has caught up to the
+            // recorded value. After the checkpoint, this value will be published such that actors
+            // which truncate the oplog can read an updated value.
+            const Timestamp oplogNeededForRollback =
+                _wiredTigerKVEngine->getOplogNeededForRollback();
             try {
                 // Three cases:
                 //
@@ -316,8 +295,10 @@ public:
                     WT_SESSION* s = session->getSession();
                     invariantWTOK(s->checkpoint(s, "use_timestamp=true"));
 
-                    // Publish the checkpoint time after the checkpoint becomes durable.
+                    // Now that the checkpoint is durable, publish the previously recorded stable
+                    // timestamp and oplog needed to recover from it.
                     _lastStableCheckpointTimestamp.store(stableTimestamp.asULL());
+                    _oplogNeededForCrashRecovery.store(oplogNeededForRollback.asULL());
                 }
             } catch (const WriteConflictException&) {
                 // Temporary: remove this after WT-3483
@@ -363,6 +344,10 @@ public:
         return _lastStableCheckpointTimestamp.load();
     }
 
+    std::uint64_t getOplogNeededForCrashRecovery() const {
+        return _oplogNeededForCrashRecovery.load();
+    }
+
     void shutdown() {
         _shuttingDown.store(true);
         {
@@ -391,6 +376,7 @@ private:
     // checkpoint might have used a newer stable timestamp if stable was updated concurrently with
     // checkpointing.
     AtomicWord<std::uint64_t> _lastStableCheckpointTimestamp;
+    AtomicWord<std::uint64_t> _oplogNeededForCrashRecovery;
 };
 
 namespace {
@@ -545,7 +531,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
 
     string config = ss.str();
     log() << "wiredtiger_open config: " << config;
-    openWiredTiger(path, _eventHandler.getWtEventHandler(), config, &_conn, &_fileVersion);
+    _openWiredTiger(path, config);
     _eventHandler.setStartupSuccessful();
     _wtOpenConfig = config;
 
@@ -569,7 +555,8 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     if (!_readOnly && !_ephemeral) {
         if (!_recoveryTimestamp.isNull()) {
             setInitialDataTimestamp(_recoveryTimestamp);
-            setStableTimestamp(_recoveryTimestamp);
+            // The `maximumTruncationTimestamp` is not persisted, so choose a conservative value.
+            setStableTimestamp(_recoveryTimestamp, Timestamp::min());
         }
 
         _checkpointThread =
@@ -615,6 +602,64 @@ void WiredTigerKVEngine::appendGlobalStats(BSONObjBuilder& b) {
         bbb.done();
     }
     bb.done();
+}
+
+void WiredTigerKVEngine::_openWiredTiger(const std::string& path, const std::string& wtOpenConfig) {
+    std::string configStr = wtOpenConfig + ",compatibility=(require_min=\"3.1.0\")";
+
+    auto wtEventHandler = _eventHandler.getWtEventHandler();
+
+    int ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
+    if (!ret) {
+        _fileVersion = {WiredTigerFileVersion::StartupVersion::IS_40};
+        return;
+    }
+
+    // Arbiters do not replicate the FCV document. Due to arbiter FCV semantics on 4.0, shutting
+    // down a 4.0 arbiter may either downgrade the data files to WT compatibility 2.9 or 3.0. Thus,
+    // 4.2 binaries must allow starting up on 2.9 and 3.0 files.
+    configStr = wtOpenConfig + ",compatibility=(require_min=\"3.0.0\")";
+    ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
+    if (!ret) {
+        _fileVersion = {WiredTigerFileVersion::StartupVersion::IS_36};
+        return;
+    }
+
+    configStr = wtOpenConfig + ",compatibility=(require_min=\"2.9.0\")";
+    ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
+    if (!ret) {
+        _fileVersion = {WiredTigerFileVersion::StartupVersion::IS_34};
+        return;
+    }
+
+    warning() << "Failed to start up WiredTiger under any compatibility version.";
+    if (ret == EINVAL) {
+        fassertFailedNoTrace(28561);
+    }
+
+    if (ret == WT_TRY_SALVAGE) {
+        warning() << "WiredTiger metadata corruption detected";
+
+        if (!_inRepairMode) {
+            severe() << kWTRepairMsg;
+            fassertFailedNoTrace(50944);
+        }
+
+        warning() << "Attempting to salvage WiredTiger metadata";
+        configStr = wtOpenConfig + ",salvage=true";
+        ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
+        if (!ret) {
+            StorageRepairObserver::get(getGlobalServiceContext())
+                ->onModification("WiredTiger metadata salvaged");
+            return;
+        }
+
+        severe() << "Failed to salvage WiredTiger metadata: " + wtRCToStatus(ret).reason();
+        fassertFailedNoTrace(50947);
+    }
+
+    severe() << "Reason: " << wtRCToStatus(ret).reason();
+    fassertFailedNoTrace(28595);
 }
 
 void WiredTigerKVEngine::cleanShutdown() {
@@ -1314,7 +1359,8 @@ MONGO_FAIL_POINT_DEFINE(WTPreserveSnapshotHistoryIndefinitely);
 
 }  // namespace
 
-void WiredTigerKVEngine::setStableTimestamp(Timestamp stableTimestamp) {
+void WiredTigerKVEngine::setStableTimestamp(Timestamp stableTimestamp,
+                                            boost::optional<Timestamp> maximumTruncationTimestamp) {
     if (stableTimestamp.isNull()) {
         return;
     }
@@ -1351,6 +1397,24 @@ void WiredTigerKVEngine::setStableTimestamp(Timestamp stableTimestamp) {
     // set_timestamp above ignores backwards in time values unless 'force' is set.
     if (prevStable < stableTimestamp) {
         _stableTimestamp.store(stableTimestamp.asULL());
+    }
+
+    // After publishing a stable timestamp to WT, we can publish the updated value for the
+    // necessary oplog to keep. Calls to this method require the min(stableTimestamp,
+    // maximumTruncationTimestamp) to be monotonically increasing. This allows us to safely record
+    // and publish a single value without additional concurrency control.
+    if (maximumTruncationTimestamp) {
+        // Until we discover otherwise, assume callers expect to obey the contract for proper
+        // oplog truncation.
+        DEV invariant(_oplogNeededForRollback.load() <=
+                      std::min(maximumTruncationTimestamp->asULL(), stableTimestamp.asULL()));
+        _oplogNeededForRollback.store(
+            std::min(maximumTruncationTimestamp->asULL(), stableTimestamp.asULL()));
+    } else {
+        // If there is no maximumTruncationTimestamp at this stable timestamp, WT is free to
+        // truncate the oplog to any value behind the last stable timestamp, once it is
+        // checkpointed.
+        _oplogNeededForRollback.store(stableTimestamp.asULL());
     }
 
     if (_checkpointThread && !_checkpointThread->hasTriggeredFirstStableCheckpoint()) {
@@ -1574,6 +1638,26 @@ boost::optional<Timestamp> WiredTigerKVEngine::getLastStableRecoveryTimestamp() 
     }
 
     return boost::none;
+}
+
+Timestamp WiredTigerKVEngine::getOplogNeededForRollback() const {
+    // TODO: SERVER-36982 intends to allow holding onto minimum history (in front of the stable
+    // timestamp). If that results in never calling `StorageEngine::setStableTimestamp`, oplog
+    // will never be truncated. This method will need to be updated to accomodate that case, most
+    // simply by having this return `Timestamp::max()`.
+    return Timestamp(_oplogNeededForRollback.load());
+}
+
+boost::optional<Timestamp> WiredTigerKVEngine::getOplogNeededForCrashRecovery() const {
+    if (_ephemeral) {
+        return boost::none;
+    }
+
+    return Timestamp(_checkpointThread->getOplogNeededForCrashRecovery());
+}
+
+Timestamp WiredTigerKVEngine::getPinnedOplog() const {
+    return getOplogNeededForCrashRecovery().value_or(getOplogNeededForRollback());
 }
 
 bool WiredTigerKVEngine::supportsReadConcernSnapshot() const {

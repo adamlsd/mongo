@@ -43,7 +43,11 @@ class MobileIndex : public SortedDataInterface {
 public:
     MobileIndex(OperationContext* opCtx, const IndexDescriptor* desc, const std::string& ident);
 
-    MobileIndex(bool isUnique, const Ordering& ordering, const std::string& ident);
+    MobileIndex(bool isUnique,
+                const Ordering& ordering,
+                const std::string& ident,
+                const std::string& collectionNamespace,
+                const std::string& indexName);
 
     virtual ~MobileIndex() {}
 
@@ -110,8 +114,6 @@ public:
 protected:
     bool _isDup(OperationContext* opCtx, const BSONObj& key, RecordId recId);
 
-    Status _dupKeyError(const BSONObj& key);
-
     /**
      * Performs the deletion from the table matching the given key.
      */
@@ -135,6 +137,9 @@ protected:
     const Ordering _ordering;
     const KeyString::Version _keyStringVersion = KeyString::kLatestVersion;
     const std::string _ident;
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
 };
 
 class MobileIndexStandard final : public MobileIndex {

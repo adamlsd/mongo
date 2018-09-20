@@ -71,6 +71,18 @@ variables:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
+- &benchrun_embedded_template
+  name: benchrun_embedded_template
+  depends_on:
+  - generate_benchrun_embedded_files
+  commands:
+  - func: "do benchmark embedded setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --help
+      run_multiple_jobs: false
+  - func: "send benchmark results"
+
 - &jepsen_config_vars
   jepsen_key_time_limit: --key-time-limit 15
   jepsen_protocol_version: --protocol-version 1
@@ -186,6 +198,7 @@ variables:
   - benchrun_embedded_queries
   - benchrun_embedded_remove
   - benchrun_embedded_update
+  - generate_benchrun_embedded_files
 
 - &replica_sets_auth
   name: replica_sets_auth
@@ -469,6 +482,8 @@ variables:
   - name: buildscripts_test
   - name: ese
   - name: external_auth
+    distros:
+    - windows-64-2016
   - name: jsCore
   - name: jsCore_ese
   - name: jsCore_decimal
@@ -791,7 +806,7 @@ functions:
     params:
       aws_key: ${aws_key}
       aws_secret: ${aws_secret}
-      remote_file: ${project}/benchrun_embedded/benchrun_json_files.tgz
+      remote_file: ${project}/${build_variant}/${revision}/benchrun_json_files.tgz
       bucket: mciuploads
       extract_to: src/benchrun_embedded/testcases
 
@@ -1425,7 +1440,6 @@ functions:
           PATH="$path_value"                              \
               AWS_PROFILE=${aws_profile_remote}           \
               ${gcov_environment}                         \
-              ${rlp_environment}                          \
               ${lang_environment}                         \
               ${san_options}                              \
               ${san_symbolizer}                           \
@@ -1503,7 +1517,7 @@ functions:
 
         ${activate_virtualenv}
         set +o errexit
-        ${compile_env|} $python ./buildscripts/scons.py ${compile_flags|} ${task_compile_flags|} ${scons_cache_args|} $extra_args ${targets} ${additional_targets|} MONGO_VERSION=${version}
+        ${compile_env|} $python ./buildscripts/scons.py ${compile_flags|} ${task_compile_flags|} ${task_compile_flags_extra|} ${scons_cache_args|} $extra_args ${targets} ${additional_targets|} MONGO_VERSION=${version}
         exit_status=$?
         # If compile fails we do not run any tests
         if [ $exit_status -ne 0 ]; then
@@ -1732,6 +1746,10 @@ functions:
           set +o errexit
           npm test > npm_test-${task_id}.log 2>&1
           if [ $? -ne 0 ]; then
+            echo "jstestfuzz self-tests failure"
+            branch=$(git symbolic-ref --short HEAD)
+            commit=$(git show -s --pretty=format:"%h - %an, %ar: %s")
+            echo "Git branch: $branch, commit: $commit"
             which node
             node --version
             which npm
@@ -1916,7 +1934,7 @@ functions:
           --edition ${multiversion_edition|base}             \
           --platform ${multiversion_platform|linux}          \
           --architecture ${multiversion_architecture|x86_64} \
-          --useLatest 3.2 3.4 3.6 4.0
+          --useLatest 3.2 3.4 3.6 4.0 4.0.1
 
   "do snmp setup" :
     command: shell.exec
@@ -2277,6 +2295,66 @@ functions:
             --userHost $USER@${private_ip_address}           \
             --sshConnectionOptions "$ssh_connection_options" \
             --retries ${ssh_retries|0}                       \
+            --commands "$cmds"
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          if [ "Windows_NT" = "$OS" ]; then
+            exit 0
+          fi
+          # Enable core dumps on non-Windows remote hosts.
+          # The core pattern must specify a director, since mongod --fork will chdir("/")
+          # and cannot generate a core dump there (see SERVER-21635).
+          # We need to reboot the host for the core limits to take effect.
+          ${set_sudo}
+          core_pattern=${remote_dir}/dump_%e.%p.core
+          sysctl_conf=/etc/sysctl.conf
+          cmds="ulimit -a"
+          cmds="$cmds; echo \"$USER - core unlimited\" | $sudo tee -a /etc/security/limits.conf"
+          cmds="$cmds; if [ -f $sysctl_conf ]"
+          cmds="$cmds; then grep ^kernel.core_pattern $sysctl_conf"
+          cmds="$cmds;    if [ \$? -eq  0 ]"
+          cmds="$cmds;    then $sudo sed -i \"s,kernel.core_pattern=.*,kernel.core_pattern=$core_pattern,\" $sysctl_conf"
+          cmds="$cmds;    else echo \"kernel.core_pattern=$core_pattern\" | $sudo tee -a $sysctl_conf"
+          cmds="$cmds;    fi"
+          cmds="$cmds; else echo Cannot change the core pattern and no core dumps will be generated."
+          cmds="$cmds; fi"
+          cmds="$cmds; $sudo reboot"
+          ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
+          ${activate_virtualenv}
+          $python buildscripts/remote_operations.py          \
+            --verbose                                        \
+            --userHost $USER@${private_ip_address}           \
+            --sshConnectionOptions "$ssh_connection_options" \
+            --retries ${ssh_retries|0}                       \
+            --commands "$cmds"
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          if [ "Windows_NT" = "$OS" ]; then
+            exit 0
+          fi
+          # Always exit successfully, as this is just informational.
+          trap 'echo "Trapped exit code $?, exiting with 0"; exit 0' EXIT
+          # Print the ulimit & kernel.core_pattern
+          cmds="uptime"
+          cmds="$cmds; ulimit -a"
+          cmds="$cmds; if [ -f /sbin/sysctl ]"
+          cmds="$cmds; then /sbin/sysctl kernel.core_pattern"
+          cmds="$cmds; fi"
+          ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
+          ${activate_virtualenv}
+          $python buildscripts/remote_operations.py          \
+            --verbose                                        \
+            --userHost $USER@${private_ip_address}           \
+            --sshConnectionOptions "$ssh_connection_options" \
+            --retries ${ssh_retries|3}                       \
             --commands "$cmds"
 
     - command: shell.exec
@@ -3539,12 +3617,9 @@ tasks:
           VERSION=${version}
           WORKDIR=${workdir}
 
-          CDRIVER_VERSION=1.12.0
-          rm -rf mongo-c-driver-$CDRIVER_VERSION
           rm -rf mongo-c-driver
-          curl -LO https://github.com/mongodb/mongo-c-driver/releases/download/$CDRIVER_VERSION/mongo-c-driver-$CDRIVER_VERSION.tar.gz
-          tar xzf mongo-c-driver-$CDRIVER_VERSION.tar.gz
-          mv mongo-c-driver-$CDRIVER_VERSION mongo-c-driver
+
+          git clone --branch r1.13 --depth 1 https://github.com/mongodb/mongo-c-driver.git
           cd mongo-c-driver
 
           trap "cat CMakeFiles/CMakeOutput.log" EXIT
@@ -3561,7 +3636,6 @@ tasks:
         task_compile_flags: &embedded_sdk_compile_flags >-
           --install-mode=hygienic
           --js-engine=none
-          --link-model=dynamic
           --prefix='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION'
           --dbg=off
           --opt=size
@@ -3571,6 +3645,8 @@ tasks:
           --wiredtiger=off
           --allocator=system
           CPPPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/include/libbson-1.0 $BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/include/libmongoc-1.0'
+        task_compile_flags_extra: >-
+          --link-model=dynamic-sdk
 
 - name: embedded_sdk_s3_put
   commands:
@@ -3603,6 +3679,8 @@ tasks:
       vars:
         targets: install-embedded-test
         task_compile_flags: *embedded_sdk_compile_flags
+        task_compile_flags_extra: >-
+          --link-model=dynamic
 
 - name: embedded_sdk_tests_s3_put
   commands:
@@ -3640,6 +3718,7 @@ tasks:
 
           if [ ${enable_embedded_tests|false} = "ios_tvos_simulator" -a $(command -v xcrun) ]; then
             find ./lib -type f -name "*.dylib" -print0 | xargs -0 -L 1 xcrun codesign -s -
+            find ./Frameworks -type f -name "*" '!' -name "*.*" -print0 | xargs -0 -L 1 xcrun codesign -s -
           fi
 
     - command: shell.exec
@@ -4049,6 +4128,63 @@ tasks:
   - func: "send benchmark results"
 
 - <<: *task_template
+  name: generate_benchrun_embedded_files
+  commands:
+  - func: "git get project"
+  - func: "fetch binaries"
+  - func: "extract binaries"
+  - command: shell.exec
+    params:
+      working_dir: src
+      script: |
+        set -o errexit
+        set -o verbose
+
+        ${activate_virtualenv}
+
+        mkdir -p /data/db
+        rm -rf /data/db/*
+
+        ./mongod --fork --logpath=/data/db/mongod.log
+        PATH="$(pwd):$PATH" ./src/third_party/scripts/mongo-perf_get_sources.sh
+        ./mongo --eval 'db.getSiblingDB("admin").shutdownServer()'
+  - command: archive.targz_pack
+    params:
+      target: "src/benchrun_json_files.tgz"
+      source_dir: "${workdir}/src/benchrun_embedded/testcases"
+      include:
+      - "**.json"
+  - command: s3.put
+    params:
+      aws_key: ${aws_key}
+      aws_secret: ${aws_secret}
+      local_file: src/benchrun_json_files.tgz
+      remote_file: ${project}/${build_variant}/${revision}/benchrun_json_files.tgz
+      bucket: mciuploads
+      permissions: public-read
+      content_type: ${content_type|application/gzip}
+      display_name: benchrun embedded JSON config files
+
+- <<: *task_template
+  name: upload_benchrun_embedded_files
+  depends_on:
+  - generate_benchrun_embedded_files
+  patchable: false
+  commands:
+  - command: s3Copy.copy
+    params:
+      aws_key: ${aws_key}
+      aws_secret: ${aws_secret}
+      s3_copy_files:
+      - source:
+          path: ${project}/${build_variant}/${revision}/benchrun_json_files.tgz
+          bucket: mciuploads
+        destination:
+          path: ${project}/benchrun_embedded/benchrun_json_files.tgz
+          bucket: mciuploads
+        build_variants: [rhel-62-64-bit-mobile]
+
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_aggregation
   commands:
   - func: "do benchmark embedded setup"
@@ -4058,7 +4194,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_commands
   commands:
   - func: "do benchmark embedded setup"
@@ -4068,7 +4204,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_insert
   commands:
   - func: "do benchmark embedded setup"
@@ -4078,7 +4214,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_misc
   commands:
   - func: "do benchmark embedded setup"
@@ -4088,7 +4224,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_mixed_and_multi
   commands:
   - func: "do benchmark embedded setup"
@@ -4098,7 +4234,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_queries
   commands:
   - func: "do benchmark embedded setup"
@@ -4108,7 +4244,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_remove
   commands:
   - func: "do benchmark embedded setup"
@@ -4118,7 +4254,7 @@ tasks:
       run_multiple_jobs: false
   - func: "send benchmark results"
 
-- <<: *task_template
+- <<: *benchrun_embedded_template
   name: benchrun_embedded_update
   commands:
   - func: "do benchmark embedded setup"
@@ -4869,6 +5005,15 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: integration_tests_standalone_audit
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=integration_tests_standalone_audit --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: integration_tests_replset
   commands:
   - func: "do setup"
@@ -5364,15 +5509,6 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=concurrency_simultaneous_replication --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: rlp
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=rlp --storageEngine=wiredTiger
-      run_multiple_jobs: true
 
 - <<: *task_template
   name: read_concern_linearizable_passthrough
@@ -9378,6 +9514,8 @@ buildvariants:
     - windows-64-vs2015-large
   - name: ese
   - name: external_auth
+    distros:
+    - windows-64-2016
   - name: jsCore
   - name: jsCore_ese
   - name: jsCore_decimal
@@ -9392,6 +9530,8 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
   - name: replica_sets_auth_0
   - name: replica_sets_auth_1
   - name: replica_sets_auth_2
@@ -10152,21 +10292,17 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_macosx.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk macosx --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
         -DCMAKE_SYSTEM_PROCESSOR=x86_64
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk macosx --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch x86_64 -isysroot $(xcrun --sdk macosx --show-sdk-path) -mmacosx-version-min=10.10 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch x86_64 -isysroot $(xcrun --sdk macosx --show-sdk-path) -mmacosx-version-min=10.10 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_C_FLAGS="-arch x86_64 -mmacosx-version-min=10.10 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch x86_64 -mmacosx-version-min=10.10 -flto"
     disable_unit_tests: true
     enable_embedded_tests: native
     dump_scons_config_on_failure: true
@@ -10185,20 +10321,16 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_ios.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk iphoneos --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch arm64 -fembed-bitcode -isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch arm64 -fembed-bitcode -isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
+        -DCMAKE_C_FLAGS="-arch arm64 -fembed-bitcode -miphoneos-version-min=10.2 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch arm64 -fembed-bitcode -miphoneos-version-min=10.2 -flto"
     disable_unit_tests: true
     dump_scons_config_on_failure: true
   tasks:
@@ -10216,20 +10348,16 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_ios_sim.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch x86_64 -fembed-bitcode -isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch x86_64 -fembed-bitcode -isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
+        -DCMAKE_C_FLAGS="-arch x86_64 -fembed-bitcode -miphoneos-version-min=10.2 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch x86_64 -fembed-bitcode -miphoneos-version-min=10.2 -flto"
     disable_unit_tests: true
     enable_embedded_tests: ios_tvos_simulator
     ios_sim_device: iPhone-7
@@ -10250,20 +10378,16 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_tvos.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk appletvos --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch arm64 -fembed-bitcode -isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.2 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch arm64 -fembed-bitcode -isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.2 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk appletvos --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
+        -DCMAKE_C_FLAGS="-arch arm64 -fembed-bitcode -mtvos-version-min=10.2 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch arm64 -fembed-bitcode -mtvos-version-min=10.2 -flto"
     disable_unit_tests: true
     dump_scons_config_on_failure: true
   tasks:
@@ -10281,20 +10405,16 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_tvos_sim.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk appletvsimulator --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch x86_64 -fembed-bitcode -isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.2 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch x86_64 -fembed-bitcode -isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.2 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk appletvsimulator --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
+        -DCMAKE_C_FLAGS="-arch x86_64 -fembed-bitcode -mtvos-version-min=10.2 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch x86_64 -fembed-bitcode -mtvos-version-min=10.2 -flto"
     disable_unit_tests: true
     enable_embedded_tests: ios_tvos_simulator
     ios_sim_device: Apple-TV-1080p
@@ -10315,20 +10435,16 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_watchos.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk watchos --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch armv7k -fembed-bitcode -isysroot $(xcrun --sdk watchos --show-sdk-path) -mwatchos-version-min=4.2 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch armv7k -fembed-bitcode -isysroot $(xcrun --sdk watchos --show-sdk-path) -mwatchos-version-min=4.2 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk watchos --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
+        -DCMAKE_C_FLAGS="-arch armv7k -fembed-bitcode -mwatchos-version-min=4.2 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch armv7k -fembed-bitcode -mwatchos-version-min=4.2 -flto"
     disable_unit_tests: true
     dump_scons_config_on_failure: true
   tasks:
@@ -10346,20 +10462,16 @@ buildvariants:
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
       --variables-files=etc/scons/xcode_watchos_sim.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DTHREADS_PTHREAD_ARG=2
-        -DCMAKE_SYSTEM_NAME=Darwin
-        -DCMAKE_FIND_ROOT_PATH="$(xcrun --sdk watchsimulator --show-sdk-path);$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
-        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
-        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch i386 -fembed-bitcode -isysroot $(xcrun --sdk watchsimulator --show-sdk-path) -mwatchos-version-min=4.2 -flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-arch i386 -fembed-bitcode -isysroot $(xcrun --sdk watchsimulator --show-sdk-path) -mwatchos-version-min=4.2 -flto"
-        -DCMAKE_INSTALL_NAME_DIR=@rpath
+        -DCMAKE_OSX_SYSROOT="$(xcrun --sdk watchsimulator --show-sdk-path)"
+        -DENABLE_APPLE_FRAMEWORK=ON
+        -DCMAKE_INSTALL_BINDIR=Frameworks
+        -DCMAKE_C_FLAGS="-arch i386 -fembed-bitcode -mwatchos-version-min=4.2 -flto"
+        -DCMAKE_SHARED_LINKER_FLAGS="-arch i386 -fembed-bitcode -mwatchos-version-min=4.2 -flto"
     disable_unit_tests: true
     enable_embedded_tests: ios_tvos_simulator
     ios_sim_device: Apple-Watch-Series-3-42mm
@@ -10380,13 +10492,11 @@ buildvariants:
       -j$(grep -c ^processor /proc/cpuinfo)
       --variables-files=etc/scons/mongodbtoolchain_gcc.vars
       LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
-      --lto
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DCMAKE_C_COMPILER=/opt/mongodbtoolchain/v2/bin/gcc
         -DCMAKE_CXX_COMPILER=/opt/mongodbtoolchain/v2/bin/g++
         -DCMAKE_C_FLAGS="-flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
         -DCMAKE_INSTALL_RPATH=\$ORIGIN/../lib
     disable_unit_tests: true
     enable_embedded_tests: native
@@ -10410,6 +10520,7 @@ buildvariants:
       LIBS=clang_rt.builtins-arm-android
       LIBPATH="$(dirname $($(dirname $(pwd))/android_toolchain-arm-21/bin/clang -print-file-name=libclang_rt.builtins-arm-android.a)) \$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
       --lto
+      AR=$(dirname $(pwd))/android_toolchain-arm-21/bin/llvm-ar
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DANDROID_NATIVE_API_LEVEL=21
@@ -10450,6 +10561,7 @@ buildvariants:
       --cxx-std=17
       LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
       --lto
+      AR=$(dirname $(pwd))/android_toolchain-arm64-21/bin/llvm-ar
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DANDROID_NATIVE_API_LEVEL=21
@@ -10490,6 +10602,7 @@ buildvariants:
       --cxx-std=17
       LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
       --lto
+      AR=$(dirname $(pwd))/android_toolchain-x86_64-21/bin/llvm-ar
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
         -DANDROID_NATIVE_API_LEVEL=21
@@ -10561,8 +10674,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: linux
     push_arch: x86_64-enterprise-rhel62
-    rlp_environment: MONGOD_UNITTEST_RLP_LANGUAGE_TEST_BTROOT=/opt/basis
-    compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
+    compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     multiversion_platform: rhel62
     multiversion_edition: enterprise
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
@@ -10665,6 +10777,7 @@ buildvariants:
   - name: integration_tests_replset
   - name: integration_tests_sharded
   - name: integration_tests_standalone
+  - name: integration_tests_standalone_audit
   - name: jsCore
   - name: jsCore_ese
   - name: jsCore_auth
@@ -10788,7 +10901,6 @@ buildvariants:
   - name: retryable_writes_jscore_stepdown_passthrough
     distros:
     - rhel62-large
-  - name: rlp
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_collections_jscore_passthrough
@@ -12696,9 +12808,8 @@ buildvariants:
   - rhel62-small
   batchtime: 1440 # 1 day
   expansions: &enterprise-rhel-62-64-bit-inmem-expansions
-    rlp_environment: MONGOD_UNITTEST_RLP_LANGUAGE_TEST_BTROOT=/opt/basis
     test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling,uses_transactions
-    compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
+    compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     multiversion_platform: rhel62
     multiversion_edition: enterprise
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
@@ -12798,7 +12909,6 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: retryable_writes_jscore_passthrough
   - name: retryable_writes_jscore_stepdown_passthrough
-  - name: rlp
   - name: rollback_fuzzer
   - name: sasl
   - name: session_jscore_passthrough
@@ -12866,7 +12976,6 @@ buildvariants:
       -j$(grep -c ^processor /proc/cpuinfo)
       --mobile-se=on
       --variables-files=etc/scons/mongodbtoolchain_gcc.vars
-      CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include"
       MONGO_DISTMOD=rhel62
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     scons_cache_scope: shared
@@ -12913,6 +13022,7 @@ buildvariants:
   - name: disk_mobile
   - name: failpoints
   - name: failpoints_auth
+  - name: generate_benchrun_embedded_files
   - name: integration_tests_standalone
   - name: jsCore
   - name: jsCore_auth
@@ -12930,6 +13040,7 @@ buildvariants:
   - name: powercycle_mobile
   - name: serial_run
   - name: session_jscore_passthrough
+  - name: upload_benchrun_embedded_files
 
 - name: ubuntu1604-arm64-mobile
   display_name: "Ubuntu 16.04 arm64 (mobile)"

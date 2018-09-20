@@ -98,7 +98,7 @@ bool handleCursorCommand(OperationContext* opCtx,
 
     if (cursors.size() > 1) {
 
-        uassert(50943,
+        uassert(50957,
                 "$exchange is not compatible with document sequences",
                 !request.getTempOptInToDocumentSequences());
 

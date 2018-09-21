@@ -1,5 +1,3 @@
-// mongo/unittest/unittest_main.cpp
-
 /*    Copyright 2010 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -87,9 +85,9 @@ int main(int argc, char** argv, char** envp) {
     invariant(environment.get("list", &list));
     invariant(environment.get("repeat", &repeat));
     // The default values of "suite" "filter" and "verbose" are empty.
-    environment.get("suite", &suites).ignore();
-    environment.get("filter", &filter).ignore();
-    environment.get("verbose", &verbose).ignore();
+    environment.get("suite", &suites).ignore("This ought not fail.");
+    environment.get("filter", &filter).ignore("This ought not fail.");
+    environment.get("verbose", &verbose).ignore("This ought not fail.");
 
     if (std::any_of(verbose.cbegin(), verbose.cend(), [](char ch) { return ch != 'v'; })) {
         std::cerr << "The string for the --verbose option cannot contain characters other than 'v'"

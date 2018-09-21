@@ -50,7 +50,7 @@ DEATH_TEST(CompareNodeTest, InitFailsForEmptyElement, "Invariant failure modExpr
     auto update = fromjson("{$max: {}}");
     boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     CompareNode node(CompareNode::CompareMode::kMax);
-    node.init(update["$max"].embeddedObject().firstElement(), expCtx).ignore();
+    node.init(update["$max"].embeddedObject().firstElement(), expCtx).ignore("This test dies, so it's okay to discard this error");
 }
 
 TEST_F(CompareNodeTest, ApplyMaxSameNumber) {

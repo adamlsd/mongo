@@ -163,7 +163,9 @@ public:
                     _opCtx.getServiceContext(), _defaultReplSettings)));
             repl::ReplicationCoordinator::get(getGlobalServiceContext())
                 ->setFollowerMode(repl::MemberState::RS_PRIMARY)
-                .ignore();
+                .ignore(
+                    "If something fails in teardown of this test helper, there's not much we can "
+                    "do.  The test will probably fail though.");
 
             getGlobalServiceContext()->getTransportLayer()->shutdown();
 

@@ -682,8 +682,12 @@ void AsyncResultsMerger::_scheduleKillCursors(WithLock, OperationContext* opCtx)
             executor::RemoteCommandRequest request(
                 remote.getTargetHost(), _params.getNss().db().toString(), cmdObj, opCtx);
 
-            // Send kill request; discard callback handle, if any, or failure report, if not.
-            _executor->scheduleRemoteCommand(request, [](auto const&) {}).getStatus().ignore();
+            // Send kill request
+            _executor->scheduleRemoteCommand(request, [](auto const&) {})
+                .getStatus()
+                .ignore(
+                    "It is okay to discard callback handle, if any, or failure report, if not, "
+                    "since this is part of a teardown operation");
         }
     }
 }

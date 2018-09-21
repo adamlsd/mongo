@@ -718,7 +718,7 @@ TEST(MatchExpressionParserArrayTest, AllElemMatchBadMixed) {
     // equality first, $elemMatch second
     BSONObj bad2 = fromjson("{x: {$all: [3, {$elemMatch: {y: 1}}]}}");
     StatusWithMatchExpression result2 = MatchExpressionParser::parse(bad2, expCtx);
-    ASSERT_FALSE(result1.isOK());
+    ASSERT_FALSE(result2.isOK());
 
     // $elemMatch first, object second
     BSONObj bad3 = fromjson("{x: {$all: [{$elemMatch: {y: 1}}, {z: 1}]}}");

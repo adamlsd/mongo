@@ -539,7 +539,7 @@ void shardCollection(OperationContext* opCtx,
                     nss.ns(),
                     BSON("version" << initialChunks.collVersion().toString()),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 }
 
 std::vector<TagsType> getExistingTags(OperationContext* opCtx, const NamespaceString& nss) {

@@ -49,7 +49,8 @@ DEATH_TEST(CurrentDateNodeTest, InitFailsForEmptyElement, "Invariant failure mod
     auto update = fromjson("{$currentDate: {}}");
     boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     CurrentDateNode node;
-    node.init(update["$currentDate"].embeddedObject().firstElement(), expCtx).ignore();
+    node.init(update["$currentDate"].embeddedObject().firstElement(), expCtx)
+        .ignore("We expect this test to die, success here doesn't matter.");
 }
 
 TEST(CurrentDateNodeTest, InitWithNonBoolNonObjectFails) {

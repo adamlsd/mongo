@@ -411,7 +411,6 @@ TEST_F(DBsClonerTest, InvalidConstruction) {
 
 TEST_F(DBsClonerTest, StartupReturnsListDatabasesScheduleErrorButDoesNotInvokeCompletionCallback) {
     Status result = getDetectableErrorStatus();
-    Status expectedResult{ErrorCodes::BadValue, "foo"};
     DatabasesCloner cloner{&getStorage(),
                            &getExecutor(),
                            &getDbWorkThreadPool(),
@@ -431,7 +430,6 @@ TEST_F(DBsClonerTest, StartupReturnsListDatabasesScheduleErrorButDoesNotInvokeCo
 
 TEST_F(DBsClonerTest, StartupReturnsShuttingDownInProgressAfterShutdownIsCalled) {
     Status result = getDetectableErrorStatus();
-    Status expectedResult{ErrorCodes::BadValue, "foo"};
     DatabasesCloner cloner{&getStorage(),
                            &getExecutor(),
                            &getDbWorkThreadPool(),
@@ -452,7 +450,6 @@ TEST_F(DBsClonerTest, StartupReturnsShuttingDownInProgressAfterShutdownIsCalled)
 
 TEST_F(DBsClonerTest, StartupReturnsInternalErrorAfterSuccessfulStartup) {
     Status result = getDetectableErrorStatus();
-    Status expectedResult{ErrorCodes::BadValue, "foo"};
     DatabasesCloner cloner{&getStorage(),
                            &getExecutor(),
                            &getDbWorkThreadPool(),
@@ -574,7 +571,6 @@ TEST_F(DBsClonerTest, FailsOnListDatabases) {
 }
 
 TEST_F(DBsClonerTest, DatabasesClonerResendsListDatabasesRequestOnRetriableError) {
-    Status result{Status::OK()};
     DatabasesCloner cloner{&getStorage(),
                            &getExecutor(),
                            &getDbWorkThreadPool(),

@@ -184,7 +184,7 @@ int dbtestsMain(int argc, char** argv, char** envp) {
     fastClock->advance(Seconds(1));
     service->setFastClockSource(std::move(fastClock));
 
-    auto preciseClock = stdx::make_unique<ClockSourceMock>();
+    auto preciseClock = std::make_unique<ClockSourceMock>();
     // See above.
     preciseClock->advance(Seconds(1));
     service->setPreciseClockSource(std::move(preciseClock));
@@ -198,11 +198,13 @@ int dbtestsMain(int argc, char** argv, char** envp) {
             new repl::ReplicationCoordinatorMock(service, replSettings)));
     repl::ReplicationCoordinator::get(getGlobalServiceContext())
         ->setFollowerMode(repl::MemberState::RS_PRIMARY)
-        .ignore();
+        .ignore(
+            "It is okay to ignore a failure here, if something went horribly wrong, the dbtest "
+            "executable will probably crash");
 
-    auto storageMock = stdx::make_unique<repl::StorageInterfaceMock>();
+    auto storageMock = std::make_unique<repl::StorageInterfaceMock>();
     repl::DropPendingCollectionReaper::set(
-        service, stdx::make_unique<repl::DropPendingCollectionReaper>(storageMock.get()));
+        service, std::make_unique<repl::DropPendingCollectionReaper>(storageMock.get()));
 
     getGlobalAuthorizationManager()->setAuthEnabled(false);
     ScriptEngine::setup();

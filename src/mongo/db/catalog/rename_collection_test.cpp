@@ -1071,7 +1071,7 @@ TEST_F(RenameCollectionTest, RenameCollectionAcrossDatabaseDropsTemporaryCollect
     _opObserver->onInsertsThrows = true;
     _opObserver->oplogEntries.clear();
     ASSERT_THROWS_CODE(
-        renameCollection(_opCtx.get(), _sourceNss, _targetNssDifferentDb, {}).ignore(),
+        renameCollection(_opCtx.get(), _sourceNss, _targetNssDifferentDb, {}),
         AssertionException,
         ErrorCodes::OperationFailed);
     _checkOplogEntries(_opObserver->oplogEntries, {"create", "index", "drop"});

@@ -107,7 +107,7 @@ void refreshRecipientRoutingTable(OperationContext* opCtx,
     executor::TaskExecutor* const executor =
         Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
     auto noOp = [](const executor::TaskExecutor::RemoteCommandCallbackArgs&) {};
-    executor->scheduleRemoteCommand(request, noOp).getStatus().ignore();
+    executor->scheduleRemoteCommand(request, noOp).getStatus().ignore("Fire and forget a no-op");
 }
 
 Status checkCollectionEpochMatches(const ScopedCollectionMetadata& metadata, OID expectedEpoch) {
@@ -233,7 +233,7 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
                                << "to"
                                << _args.getToShardId()),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     _cloneAndCommitTimer.reset();
 
@@ -583,7 +583,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                                << "counts"
                                << _recipientCloneCounts),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     const ChunkRange range(_args.getMinKey(), _args.getMaxKey());
 
@@ -646,7 +646,7 @@ void MigrationSourceManager::cleanupOnError(OperationContext* opCtx) {
                                << "to"
                                << _args.getToShardId()),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     try {
         _cleanup(opCtx);

@@ -333,7 +333,8 @@ void SyncSourceResolver::_firstOplogEntryFetcherCallback(
 
     auto status = _scheduleRBIDRequest(candidate, earliestOpTimeSeen);
     if (!status.isOK()) {
-        _finishCallback(status).ignore();
+        _finishCallback(status).ignore(
+            "We cannot do anything if the callback can't finish this time.");
     }
 }
 
@@ -398,7 +399,8 @@ void SyncSourceResolver::_rbidRequestCallback(
         return;
     }
 
-    _finishCallback(candidate, rbid).ignore();
+    _finishCallback(candidate, rbid)
+        .ignore("We cannot do anything if the callback cannot be finished at this point.");
 }
 
 Status SyncSourceResolver::_compareRequiredOpTimeWithQueryResponse(
@@ -478,7 +480,7 @@ void SyncSourceResolver::_requiredOpTimeFetcherCallback(
         return;
     }
 
-    _finishCallback(candidate, rbid).ignore();
+    _finishCallback(candidate, rbid).transitional_ignore();
 }
 
 Status SyncSourceResolver::_chooseAndProbeNextSyncSource(OpTime earliestOpTimeSeen) {

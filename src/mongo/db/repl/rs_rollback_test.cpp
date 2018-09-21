@@ -2212,7 +2212,7 @@ TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutTxnTableUUIDIsFatal) {
                   << lsid.toBSON());
 
     FixUpInfo fui;
-    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber, false).ignore(),
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber, false),
                   RSFatalException);
 }
 

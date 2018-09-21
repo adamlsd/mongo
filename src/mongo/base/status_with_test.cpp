@@ -95,7 +95,7 @@ TEST(StatusWith, ignoreTest) {
     auto function = []() -> StatusWith<bool> { return false; };
 
     // Compile only test:
-    function().getStatus().ignore();
+    function().getStatus().ignore("This is just a test of ignore");
 }
 
 }  // namespace

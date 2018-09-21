@@ -145,11 +145,24 @@
  *    MONGO_COMPILER_NORETURN. In almost all cases MONGO_UNREACHABLE is preferred.
  *
  *
+ * MONGO_WARN_UNUSED_VARIABLE_CLASS
+ *
+ *    Tells the compiler that a class defines a type for which checking results is necessary.  Types
+ *    thus defined turn variables of that type into "must use variable" style.
+ *
+ *
  * MONGO_WARN_UNUSED_RESULT_CLASS
  *
  *    Tells the compiler that a class defines a type for which checking results is necessary.  Types
  *    thus defined turn functions returning them into "must check results" style functions.  Preview
  *    of the `[[nodiscard]]` C++17 attribute.
+ *
+ *
+ * MONGO_WARN_UNUSED_RESULT_FUNCTION
+ *
+ *    Tells the compiler that a function returns a value for which consuming the result is
+ *    necessary.  Functions thus defined are "must check results" style functions.  Preview of the
+ *    `[[nodiscard]]` C++17 attribute.
  */
 
 

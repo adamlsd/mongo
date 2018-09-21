@@ -761,7 +761,7 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
         ->catalogClient()
         ->logChange(
             opCtx, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     // Ensure the added shard is visible to this process.
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
@@ -835,7 +835,7 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
                         "",
                         BSON("shard" << name),
                         ShardingCatalogClient::kLocalWriteConcern)
-            .ignore();
+            .ignore("TODO: Move to unchecked logChange()");
 
         return ShardDrainingStatus::STARTED;
     }
@@ -891,7 +891,7 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
                     "",
                     BSON("shard" << name),
                     ShardingCatalogClient::kLocalWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     return ShardDrainingStatus::COMPLETED;
 }

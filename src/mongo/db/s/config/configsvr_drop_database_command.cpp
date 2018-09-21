@@ -179,7 +179,7 @@ public:
                         dbname,
                         BSONObj(),
                         ShardingCatalogClient::kMajorityWriteConcern)
-            .ignore();
+            .transitional_ignore();
 
         result.append("dropped", dbname);
         return true;

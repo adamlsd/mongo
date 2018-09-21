@@ -233,7 +233,7 @@ TEST_F(SyncTailTest, SyncApplyNoNamespaceBadOp) {
     const BSONObj op = BSON("op"
                             << "x");
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync),
         ExceptionFor<ErrorCodes::BadValue>);
 }
 
@@ -250,7 +250,7 @@ TEST_F(SyncTailTest, SyncApplyBadOp) {
                             << "ns"
                             << "test.t");
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync),
         ExceptionFor<ErrorCodes::BadValue>);
 }
 
@@ -258,7 +258,7 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentDatabaseMissing) {
     NamespaceString nss("test.t");
     auto op = makeOplogEntry(OpTypeEnum::kInsert, nss, {});
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary),
         ExceptionFor<ErrorCodes::NamespaceNotFound>);
 }
 
@@ -274,7 +274,7 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLookupByUUIDFails) {
     NamespaceString otherNss(nss.getSisterNS("othername"));
     auto op = makeOplogEntry(OpTypeEnum::kInsert, otherNss, kUuid);
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary),
         ExceptionFor<ErrorCodes::NamespaceNotFound>);
 }
 
@@ -294,7 +294,7 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionMissing) {
     // implicitly create the collection and lock the database in MODE_X.
     auto op = makeOplogEntry(OpTypeEnum::kInsert, nss, {});
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary),
         ExceptionFor<ErrorCodes::NamespaceNotFound>);
     ASSERT_FALSE(collectionExists(_opCtx.get(), nss));
 }
@@ -383,7 +383,7 @@ TEST_F(SyncTailTest, SyncApplyCommandThrowsException) {
                                     << "t"));
     // This test relies on the namespace type check in applyCommand_inlock().
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync),
         ExceptionFor<ErrorCodes::InvalidNamespace>);
 }
 
@@ -394,7 +394,7 @@ DEATH_TEST_F(SyncTailTest, MultiApplyAbortsWhenNoOperationsAreGiven, "!ops.empty
                       getStorageInterface(),
                       noopApplyOperationFn,
                       writerPool.get());
-    syncTail.multiApply(_opCtx.get(), {}).getStatus().ignore();
+    syncTail.multiApply(_opCtx.get(), {}).getStatus().ignore("Death test expecting !ops.empty()");
 }
 
 bool _testOplogEntryIsForCappedCollection(OperationContext* opCtx,

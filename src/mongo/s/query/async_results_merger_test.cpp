@@ -1806,7 +1806,7 @@ DEATH_TEST_F(AsyncResultsMergerTest,
 
     ASSERT_FALSE(arm->ready());
     arm->detachFromOperationContext();
-    arm->scheduleGetMores().ignore();  // Should crash.
+    arm->scheduleGetMores().ignore("Should crash");
 }
 
 TEST_F(AsyncResultsMergerTest, ShouldNotScheduleGetMoresWithoutAnOperationContext) {

@@ -285,7 +285,7 @@ DEATH_TEST(ErrorExtraInfo, InvariantAllRegistered, "Invariant failure parsers::"
 
 #ifdef MONGO_CONFIG_DEBUG_BUILD
 DEATH_TEST(ErrorExtraInfo, DassertShouldHaveExtraInfo, "Fatal Assertion 40680") {
-    Status(ErrorCodes::ForTestingErrorExtraInfo, "");
+    Status(ErrorCodes::ForTestingErrorExtraInfo, "").ignore("Death test, expecting fatal assertion.");
 }
 #else
 TEST(ErrorExtraInfo, ConvertCodeOnMissingExtraInfo) {

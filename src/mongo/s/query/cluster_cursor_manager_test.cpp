@@ -581,7 +581,8 @@ TEST_F(ClusterCursorManagerTest, StatsPinCursor) {
                                                ClusterCursorManager::CursorLifetime::Mortal,
                                                UserNameIterator()));
     auto pinnedCursor =
-        getManager()->checkOutCursor(nss, cursorId, _opCtx.get(), successAuthChecker);
+        uassertStatusOK( getManager()->checkOutCursor(nss, cursorId, _opCtx.get(),
+successAuthChecker));
     ASSERT_EQ(1U, getManager()->stats().cursorsPinned);
 }
 
@@ -650,7 +651,8 @@ TEST_F(ClusterCursorManagerTest, StatsKillPinnedCursor) {
                                                ClusterCursorManager::CursorLifetime::Mortal,
                                                UserNameIterator()));
     auto pinnedCursor =
-        getManager()->checkOutCursor(nss, cursorId, _opCtx.get(), successAuthChecker);
+        uassertStatusOK(getManager()->checkOutCursor(nss, cursorId, _opCtx.get(),
+successAuthChecker));
     ASSERT_EQ(1U, getManager()->stats().cursorsPinned);
 
     killCursorFromDifferentOpCtx(nss, cursorId);
@@ -912,7 +914,8 @@ TEST_F(ClusterCursorManagerTest, PinnedCursorDestructorKill) {
                                                    ClusterCursorManager::CursorLifetime::Mortal,
                                                    UserNameIterator()));
         auto pinnedCursor =
-            getManager()->checkOutCursor(nss, cursorId, _opCtx.get(), successAuthChecker);
+            uassertStatusOK(getManager()->checkOutCursor(nss, cursorId, _opCtx.get(),
+successAuthChecker));
     }
     ASSERT(isMockCursorKilled(0));
 }

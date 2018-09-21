@@ -173,7 +173,7 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
                     nss.ns(),
                     BSONObj(),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     auto shardsStatus =
         catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
@@ -354,7 +354,7 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
                     nss.ns(),
                     BSONObj(),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 
     return Status::OK();
 }
@@ -453,7 +453,7 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                     nss.ns(),
                     BSON("version" << initialChunks.collVersion().toString()),
                     ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+        .ignore("TODO: Move to unchecked logChange()");
 }
 
 void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(OperationContext* opCtx) {

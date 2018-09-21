@@ -54,12 +54,12 @@ class StringBuilderImpl;
  * determine an error's cause. It further clarifies the error with a textual
  * description, and code-specific extra info (a subclass of ErrorExtraInfo).
  */
-class MONGO_WARN_UNUSED_RESULT_CLASS Status {
+class MONGO_WARN_UNUSED_RESULT_CLASS MONGO_WARN_UNUSED_VARIABLE_CLASS Status {
 public:
     /**
      * This is the best way to construct an OK status.
      */
-    static inline Status OK();
+    MONGO_WARN_UNUSED_RESULT_FUNCTION static inline Status OK();
 
     /**
      * Builds an error status given the error code and a textual description of what
@@ -110,7 +110,7 @@ public:
      *
      * No-op when called on an OK status.
      */
-    Status withReason(StringData newReason) const;
+    MONGO_WARN_UNUSED_RESULT_FUNCTION Status withReason(StringData newReason) const;
 
     /**
      * Returns a new Status with the same data as this, but with the reason string prefixed with
@@ -119,7 +119,7 @@ public:
      *
      * No-op when called on an OK status.
      */
-    Status withContext(StringData reasonPrefix) const;
+    MONGO_WARN_UNUSED_RESULT_FUNCTION Status withContext(StringData reasonPrefix) const;
     void addContext(StringData reasonPrefix) {
         *this = this->withContext(reasonPrefix);
     }
@@ -127,20 +127,20 @@ public:
     /**
      * Only compares codes. Ignores reason strings.
      */
-    bool operator==(const Status& other) const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator==(const Status& other) const {
         return code() == other.code();
     }
-    bool operator!=(const Status& other) const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator!=(const Status& other) const {
         return !(*this == other);
     }
 
     /**
      * Compares this Status's code with an error code.
      */
-    bool operator==(const ErrorCodes::Error other) const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator==(const ErrorCodes::Error other) const {
         return code() == other;
     }
-    bool operator!=(const ErrorCodes::Error other) const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator!=(const ErrorCodes::Error other) const {
         return !(*this == other);
     }
 
@@ -148,9 +148,9 @@ public:
     // accessors
     //
 
-    inline bool isOK() const;
+    MONGO_WARN_UNUSED_RESULT_FUNCTION inline bool isOK() const;
 
-    inline ErrorCodes::Error code() const;
+    MONGO_WARN_UNUSED_RESULT_FUNCTION inline ErrorCodes::Error code() const;
 
     inline std::string codeString() const;
 
@@ -205,7 +205,11 @@ public:
     /**
      * Call this method to indicate that it is your intention to ignore a returned status.
      */
-    void ignore() const noexcept {}
+    template <std::size_t kStringLength>
+        void ignore(const char (&message)[kStringLength]) const noexcept {
+        MONGO_STATIC_ASSERT(kStringLength > 0);
+        MONGO_STATIC_ASSERT(kStringLength > 10);
+    }
 
     /**
      * This method is a transitional tool, to facilitate transition to compile-time enforced status
@@ -257,9 +261,11 @@ private:
     static inline void unref(ErrorInfo* error);
 };
 
-inline bool operator==(const ErrorCodes::Error lhs, const Status& rhs);
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline bool operator==(const ErrorCodes::Error lhs,
+                                                         const Status& rhs);
 
-inline bool operator!=(const ErrorCodes::Error lhs, const Status& rhs);
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline bool operator!=(const ErrorCodes::Error lhs,
+                                                         const Status& rhs);
 
 std::ostream& operator<<(std::ostream& os, const Status& status);
 

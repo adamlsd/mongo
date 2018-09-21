@@ -221,7 +221,11 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
     {
         // Mirror what happens if the config.version document is rolled back.
         ON_BLOCK_EXIT([&] {
-            replicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY).ignore();
+            replicationCoordinator()
+                ->setFollowerMode(repl::MemberState::RS_PRIMARY)
+                .ignore(
+                    "If this fails during a rollback, we can't handle it, so we just have to "
+                    "ignore it.");
         });
         ASSERT_OK(replicationCoordinator()->setFollowerMode(repl::MemberState::RS_ROLLBACK));
         auto opCtx = operationContext();

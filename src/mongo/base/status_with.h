@@ -83,7 +83,7 @@ using StatusOrStatusWith = std::conditional_t<std::is_void<T>::value, Status, St
  * }
  */
 template <typename T>
-class MONGO_WARN_UNUSED_RESULT_CLASS StatusWith {
+class MONGO_WARN_UNUSED_RESULT_CLASS MONGO_WARN_UNUSED_VARIABLE_CLASS StatusWith {
     MONGO_STATIC_ASSERT_MSG(!isStatusOrStatusWith<T>,
                             "StatusWith<Status> and StatusWith<StatusWith<T>> are banned.");
 
@@ -115,21 +115,21 @@ public:
      */
     StatusWith(T t) : _status(Status::OK()), _t(std::move(t)) {}
 
-    const T& getValue() const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION const T& getValue() const {
         dassert(isOK());
         return *_t;
     }
 
-    T& getValue() {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION T& getValue() {
         dassert(isOK());
         return *_t;
     }
 
-    const Status& getStatus() const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION const Status& getStatus() const {
         return _status;
     }
 
-    bool isOK() const {
+    MONGO_WARN_UNUSED_RESULT_FUNCTION bool isOK() const {
         return _status.isOK();
     }
 
@@ -205,22 +205,22 @@ bool operator!=(const T& val, const StatusWith<T>& sw) {
 //
 
 template <typename T>
-bool operator==(const StatusWith<T>& sw, const Status& status) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator==(const StatusWith<T>& sw, const Status& status) {
     return sw.getStatus() == status;
 }
 
 template <typename T>
-bool operator==(const Status& status, const StatusWith<T>& sw) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator==(const Status& status, const StatusWith<T>& sw) {
     return status == sw.getStatus();
 }
 
 template <typename T>
-bool operator!=(const StatusWith<T>& sw, const Status& status) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator!=(const StatusWith<T>& sw, const Status& status) {
     return !(sw == status);
 }
 
 template <typename T>
-bool operator!=(const Status& status, const StatusWith<T>& sw) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator!=(const Status& status, const StatusWith<T>& sw) {
     return !(status == sw);
 }
 
@@ -229,22 +229,26 @@ bool operator!=(const Status& status, const StatusWith<T>& sw) {
 //
 
 template <typename T>
-bool operator==(const StatusWith<T>& sw, const ErrorCodes::Error code) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator==(const StatusWith<T>& sw,
+                                                  const ErrorCodes::Error code) {
     return sw.getStatus() == code;
 }
 
 template <typename T>
-bool operator==(const ErrorCodes::Error code, const StatusWith<T>& sw) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator==(const ErrorCodes::Error code,
+                                                  const StatusWith<T>& sw) {
     return code == sw.getStatus();
 }
 
 template <typename T>
-bool operator!=(const StatusWith<T>& sw, const ErrorCodes::Error code) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator!=(const StatusWith<T>& sw,
+                                                  const ErrorCodes::Error code) {
     return !(sw == code);
 }
 
 template <typename T>
-bool operator!=(const ErrorCodes::Error code, const StatusWith<T>& sw) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION bool operator!=(const ErrorCodes::Error code,
+                                                  const StatusWith<T>& sw) {
     return !(code == sw);
 }
 

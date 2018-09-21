@@ -388,7 +388,7 @@ void ShardRemote::runFireAndForgetCommand(OperationContext* opCtx,
                      cmdObj,
                      [](const RemoteCommandCallbackArgs&) {})
         .getStatus()
-        .ignore();
+        .ignore("We fire and forget, so if something did not work, we can forget it.");
 }
 
 StatusWith<ShardRemote::AsyncCmdHandle> ShardRemote::_scheduleCommand(

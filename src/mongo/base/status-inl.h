@@ -29,7 +29,7 @@
 
 namespace mongo {
 
-inline Status Status::OK() {
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline Status Status::OK() {
     return Status();
 }
 
@@ -59,11 +59,11 @@ inline Status::~Status() {
     unref(_error);
 }
 
-inline bool Status::isOK() const {
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline bool Status::isOK() const {
     return !_error;
 }
 
-inline ErrorCodes::Error Status::code() const {
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline ErrorCodes::Error Status::code() const {
     return _error ? _error->code : ErrorCodes::OK;
 }
 
@@ -87,11 +87,13 @@ inline void Status::unref(ErrorInfo* error) {
         delete error;
 }
 
-inline bool operator==(const ErrorCodes::Error lhs, const Status& rhs) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline bool operator==(const ErrorCodes::Error lhs,
+                                                         const Status& rhs) {
     return rhs == lhs;
 }
 
-inline bool operator!=(const ErrorCodes::Error lhs, const Status& rhs) {
+MONGO_WARN_UNUSED_RESULT_FUNCTION inline bool operator!=(const ErrorCodes::Error lhs,
+                                                         const Status& rhs) {
     return rhs != lhs;
 }
 

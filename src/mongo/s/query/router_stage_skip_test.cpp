@@ -63,13 +63,13 @@ TEST(RouterStageSkipTest, SkipIsOne) {
     ASSERT_BSONOBJ_EQ(*secondResult.getValue().getResult(), BSON("a" << 3));
 
     // Once end-of-stream is reached, the skip stage should keep returning boost::none.
-    auto thirdResult = skipStage->next(RouterExecStage::ExecContext::kInitialFind);
+    const auto thirdResult = skipStage->next(RouterExecStage::ExecContext::kInitialFind);
     ASSERT_OK(thirdResult.getStatus());
     ASSERT(thirdResult.getValue().isEOF());
 
     auto fourthResult = skipStage->next(RouterExecStage::ExecContext::kInitialFind);
-    ASSERT_OK(thirdResult.getStatus());
-    ASSERT(thirdResult.getValue().isEOF());
+    ASSERT_OK(fourthResult.getStatus());
+    ASSERT(fourthResult.getValue().isEOF());
 }
 
 TEST(RouterStageSkipTest, SkipIsThree) {

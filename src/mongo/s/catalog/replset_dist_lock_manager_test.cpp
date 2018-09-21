@@ -700,7 +700,11 @@ TEST_F(ReplSetDistLockManagerFixture, UnlockUntilNoError) {
                          StringData why) { lockSessionID = lockSessionIDArg; },
         retLockDoc);
 
-    { auto lockStatus = distLock()->lock(operationContext(), "test", "why", Milliseconds(0)); }
+    {
+        auto lockStatus = distLock()->lock(operationContext(), "test", "why", Milliseconds(0));
+        Status status = lockStatus.getStatus();
+        std::move(status).transitional_ignore();
+    }
 
     bool didTimeout = false;
     {
@@ -798,7 +802,11 @@ TEST_F(ReplSetDistLockManagerFixture, MultipleQueuedUnlock) {
 
     {
         auto lockStatus = distLock()->lock(operationContext(), "test", "why", Milliseconds(0));
+        Status status1 = lockStatus.getStatus();
+        std::move(status1).transitional_ignore();
         auto otherStatus = distLock()->lock(operationContext(), "lock", "why", Milliseconds(0));
+        Status status2 = otherStatus.getStatus();
+        std::move(status2).transitional_ignore();
     }
 
     bool didTimeout = false;

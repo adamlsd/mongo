@@ -190,7 +190,8 @@ TEST(BSONValidate, Fuzz) {
         // to compare outputs against (BSONObj::valid() is a wrapper for validateBSON()).
         // Thus, the reason for this test is to ensure that validateBSON() doesn't trip
         // any ASAN or UBSAN check when fed fuzzed input.
-        validateBSON(fuzzed.objdata(), fuzzed.objsize(), BSONVersion::kLatest).isOK();
+        validateBSON(fuzzed.objdata(), fuzzed.objsize(), BSONVersion::kLatest)
+            .ignore("This could fail, as the input has been fuzzed");
     }
 }
 

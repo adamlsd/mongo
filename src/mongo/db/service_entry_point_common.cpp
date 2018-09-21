@@ -894,22 +894,26 @@ void execCommandDatabase(OperationContext* opCtx,
         // If we got a stale config, wait in case the operation is stuck in a critical section
         if (auto sce = e.extraInfo<StaleConfigInfo>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
-                // We already have the StaleConfig exception, so just swallow any errors due to
-                // refresh
                 onShardVersionMismatchNoExcept(opCtx, sce->getNss(), sce->getVersionReceived())
-                    .ignore();
+                    .ignore(
+                        "We already have the StaleConfig exception, so just swallow any errors due "
+                        "to refresh");
             }
         } else if (auto sce = e.extraInfo<StaleDbRoutingVersion>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
                 onDbVersionMismatchNoExcept(
                     opCtx, sce->getDb(), sce->getVersionReceived(), sce->getVersionWanted())
-                    .ignore();
+                    .ignore(
+                        "We already have the StaleDbRoutingVersion exception, so just swallow any "
+                        "errors due to refresh");
             }
         } else if (auto cannotImplicitCreateCollInfo =
                        e.extraInfo<CannotImplicitlyCreateCollectionInfo>()) {
             if (ShardingState::get(opCtx)->enabled()) {
                 onCannotImplicitlyCreateCollection(opCtx, cannotImplicitCreateCollInfo->getNss())
-                    .ignore();
+                    .ignore(
+                        "We already have the CannotImplicitlyCreateCollectionInfo exception, so "
+                        "just swallow any errors due to refresh");
             }
         } else if (e.code() == ErrorCodes::SnapshotTooOld) {
             // SnapshotTooOld errors indicate that PIT ops are failing to find an available snapshot
@@ -1080,10 +1084,10 @@ DbResponse receivedQuery(OperationContext* opCtx,
         // If we got a stale config, wait in case the operation is stuck in a critical section
         if (auto sce = e.extraInfo<StaleConfigInfo>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
-                // We already have the StaleConfig exception, so just swallow any errors due to
-                // refresh
                 onShardVersionMismatchNoExcept(opCtx, sce->getNss(), sce->getVersionReceived())
-                    .ignore();
+                    .ignore(
+                        "We already have the StaleConfig exception, so just swallow any errors due "
+                        "to refresh");
             }
         }
 

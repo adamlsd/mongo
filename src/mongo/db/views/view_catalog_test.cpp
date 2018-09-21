@@ -233,8 +233,7 @@ TEST_F(ReplViewCatalogFixture, CreateViewWithPipelineFailsOnIneligibleStage) {
     auto invalidPipeline = BSON_ARRAY(BSON("$changeStream" << BSONObj()));
 
     ASSERT_THROWS_CODE(
-        viewCatalog.createView(opCtx.get(), viewName, viewOn, invalidPipeline, emptyCollation)
-            .ignore(),
+        viewCatalog.createView(opCtx.get(), viewName, viewOn, invalidPipeline, emptyCollation),
         AssertionException,
         ErrorCodes::OptionNotSupportedOnView);
 }
@@ -248,8 +247,7 @@ TEST_F(ReplViewCatalogFixture, CreateViewWithPipelineFailsOnIneligibleStagePersi
                                            << "someOtherCollection"));
 
     ASSERT_THROWS_CODE(
-        viewCatalog.createView(opCtx.get(), viewName, viewOn, invalidPipeline, emptyCollation)
-            .ignore(),
+        viewCatalog.createView(opCtx.get(), viewName, viewOn, invalidPipeline, emptyCollation),
         AssertionException,
         ErrorCodes::OptionNotSupportedOnView);
 }
@@ -425,7 +423,7 @@ TEST_F(ReplViewCatalogFixture, ModifyViewWithPipelineFailsOnIneligibleStage) {
 
     // Now attempt to replace it with a pipeline containing $changeStream.
     ASSERT_THROWS_CODE(
-        viewCatalog.modifyView(opCtx.get(), viewName, viewOn, invalidPipeline).ignore(),
+        viewCatalog.modifyView(opCtx.get(), viewName, viewOn, invalidPipeline),
         AssertionException,
         ErrorCodes::OptionNotSupportedOnView);
 }

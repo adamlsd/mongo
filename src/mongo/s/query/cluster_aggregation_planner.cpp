@@ -50,6 +50,7 @@
 #include "mongo/s/query/router_stage_skip.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/s/shard_key_pattern.h"
+#include "mongo/s/transaction/transaction_router.h"
 
 namespace mongo {
 namespace cluster_aggregation_planner {
@@ -341,7 +342,7 @@ boost::optional<ShardedExchangePolicy> walkPipelineBackwardsTrackingShardKey(
                                                          : ExchangePolicyEnum::kRange);
     exchangeSpec.setKey(newShardKey.toBSON());
     exchangeSpec.setBoundaries(std::move(boundaries));
-    exchangeSpec.setConsumers(consumerIds.size());
+    exchangeSpec.setConsumers(shardToConsumer.size());
     exchangeSpec.setConsumerIds(std::move(consumerIds));
 
     return ShardedExchangePolicy{std::move(exchangeSpec), std::move(consumerShards)};
@@ -383,9 +384,22 @@ void addMergeCursorsSource(Pipeline* mergePipeline,
     armParams.setTailableMode(mergePipeline->getContext()->tailableMode);
     armParams.setNss(mergePipeline->getContext()->ns);
 
-    OperationSessionInfo sessionInfo;
-    sessionInfo.setSessionId(opCtx->getLogicalSessionId());
+    OperationSessionInfoFromClient sessionInfo;
+    boost::optional<LogicalSessionFromClient> lsidFromClient;
+
+    auto lsid = opCtx->getLogicalSessionId();
+    if (lsid) {
+        lsidFromClient.emplace(lsid->getId());
+        lsidFromClient->setUid(lsid->getUid());
+    }
+
+    sessionInfo.setSessionId(lsidFromClient);
     sessionInfo.setTxnNumber(opCtx->getTxnNumber());
+
+    if (TransactionRouter::get(opCtx)) {
+        sessionInfo.setAutocommit(false);
+    }
+
     armParams.setOperationSessionInfo(sessionInfo);
 
     // For change streams, we need to set up a custom stage to establish cursors on new shards when

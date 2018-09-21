@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -28,46 +28,39 @@
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <vector>
-
-#include "mongo/client/remote_command_targeter.h"
+#include "mongo/s/async_requests_sender.h"
 
 namespace mongo {
 
-class ReplicaSetMonitor;
-
 /**
- * Implements a replica-set backed remote command targeter, which monitors the specified
- * replica set and responds to state changes.
+ * Wrapper for AsyncRequestSender that attaches multi-statement transaction related fields to
+ * remote requests and also perform multi-statement transaction related post processing when
+ * receiving responses.
  */
-class RemoteCommandTargeterRS final : public RemoteCommandTargeter {
+class MultiStatementTransactionRequestsSender {
 public:
     /**
-     * Instantiates a new targeter for the specified replica set and seed hosts. The RS name
-     * and the seed hosts must match.
+     * Constructs a new MultiStatementTransactionRequestsSender. The OperationContext* and
+     * TaskExecutor* must
+     * remain valid for the lifetime of the ARS.
      */
-    RemoteCommandTargeterRS(const std::string& rsName, const std::vector<HostAndPort>& seedHosts);
+    MultiStatementTransactionRequestsSender(
+        OperationContext* opCtx,
+        executor::TaskExecutor* executor,
+        StringData dbName,
+        const std::vector<AsyncRequestsSender::Request>& requests,
+        const ReadPreferenceSetting& readPreference,
+        Shard::RetryPolicy retryPolicy);
 
-    ConnectionString connectionString() override;
+    bool done();
 
-    StatusWith<HostAndPort> findHost(OperationContext* opCtx,
-                                     const ReadPreferenceSetting& readPref) override;
+    AsyncRequestsSender::Response next();
 
-    Future<HostAndPort> findHostWithMaxWait(const ReadPreferenceSetting& readPref,
-                                            Milliseconds maxWait) override;
-
-    void markHostNotMaster(const HostAndPort& host, const Status& status) override;
-
-    void markHostUnreachable(const HostAndPort& host, const Status& status) override;
+    void stopRetrying();
 
 private:
-    // Name of the replica set which this targeter maintains
-    const std::string _rsName;
-
-    // Monitor for this replica set
-    std::shared_ptr<ReplicaSetMonitor> _rsMonitor;
+    OperationContext* _opCtx;
+    AsyncRequestsSender _ars;
 };
 
 }  // namespace mongo

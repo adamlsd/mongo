@@ -80,6 +80,20 @@ public:
                                BSONObj cmdObj,
                                rpc::ReplyBuilderInterface* result);
 
+    /**
+     * Retries a command that was previously run on a view by resolving the view as an aggregation
+     * against the underlying collection.
+     *
+     * On success, populates `result` with the command response.  This function will reset
+	 * the result.
+     * 
+     */
+    static Status retryOnViewError(OperationContext* opCtx,
+                                   const AggregationRequest& request,
+                                   const ResolvedView& resolvedView,
+                                   const NamespaceString& requestedNss,
+                                   rpc::ReplyBuilderInterface* result);
+
 private:
     static void uassertAllShardsSupportExplain(
         const std::vector<AsyncRequestsSender::Response>& shardResults);

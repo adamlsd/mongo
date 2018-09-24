@@ -1255,7 +1255,7 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
     bodyBuilder.appendElementsUnique(CommandHelpers::filterCommandReplyForPassthrough(result));
 
     auto status = getStatusFromCommandResult(bodyBuilder.asTempObj());
-    if (auto resolvedView = status.extraInfo<ResolvedView>()) {
+    if (status.extraInfo<ResolvedView>()) {
         bodyBuilder.doneFast();
     }
 

@@ -1,7 +1,7 @@
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
+ *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU Affero General Public License, version 3,
  *    as published by the Free Software Foundation.
  *
@@ -26,26 +26,54 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/s/catalog/dist_lock_catalog.h"
+#include <wiredtiger.h>
+
+#include "mongo/db/operation_context.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 
 namespace mongo {
 
-const WriteConcernOptions DistLockCatalog::kLocalWriteConcern(1,
-                                                              WriteConcernOptions::SyncMode::UNSET,
-                                                              Milliseconds(0));
+/**
+ * This is an object wrapper for WT_CURSOR. It obtains a cursor from the WiredTigerSession and is
+ * responsible for returning or closing the cursor when destructed.
+ */
+class WiredTigerCursor {
+public:
+    WiredTigerCursor(const std::string& uri,
+                     uint64_t tableID,
+                     bool allowOverwrite,
+                     OperationContext* opCtx);
 
-const WriteConcernOptions DistLockCatalog::kMajorityWriteConcern(
-    WriteConcernOptions::kMajority,
-    // Note: Even though we're setting UNSET here, kMajority implies JOURNAL if journaling is
-    // supported by this mongod.
-    WriteConcernOptions::SyncMode::UNSET,
-    WriteConcernOptions::kWriteConcernTimeoutSystem);
+    ~WiredTigerCursor();
 
-DistLockCatalog::DistLockCatalog() = default;
+    WT_CURSOR* get() const {
+        // TODO(SERVER-16816): assertInActiveTxn();
+        return _cursor;
+    }
 
-DistLockCatalog::ServerInfo::ServerInfo(Date_t time, OID _electionId)
-    : serverTime(std::move(time)), electionId(std::move(_electionId)) {}
+    WT_CURSOR* operator->() const {
+        return get();
+    }
 
-}  // namespace mongo
+    WiredTigerSession* getSession() {
+        return _session;
+    }
+
+    void reset();
+
+    void assertInActiveTxn() const {
+        _ru->assertInActiveTxn();
+    }
+
+protected:
+    uint64_t _tableID;
+    WiredTigerRecoveryUnit* _ru;
+    WiredTigerSession* _session;
+    bool _readOnce;
+
+    WT_CURSOR* _cursor = nullptr;  // Owned
+};
+}

@@ -62,6 +62,7 @@
 #include "mongo/db/repl/repl_set_request_votes_args.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_process.h"
+#include "mongo/db/repl/replication_state_transition_lock_guard.h"
 #include "mongo/db/repl/rslog.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/topology_coordinator.h"
@@ -1664,61 +1665,41 @@ void ReplicationCoordinatorImpl::waitForStepDownAttempt_forTest() {
     }
 }
 
-Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
-                                            const bool force,
-                                            const Milliseconds& waitTime,
-                                            const Milliseconds& stepdownTime) {
+void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
+                                          const bool force,
+                                          const Milliseconds& waitTime,
+                                          const Milliseconds& stepdownTime) {
 
     const Date_t startTime = _replExecutor->now();
     const Date_t stepDownUntil = startTime + stepdownTime;
     const Date_t waitUntil = startTime + waitTime;
 
-    if (!getMemberState().primary()) {
-        // Note this check is inherently racy - it's always possible for the node to
-        // stepdown from some other path before we acquire the global exclusive lock.  This check
-        // is just to try to save us from acquiring the global X lock unnecessarily.
-        return {ErrorCodes::NotMaster, "not primary so can't step down"};
-    }
+    // Note this check is inherently racy - it's always possible for the node to stepdown from some
+    // other path before we acquire the global exclusive lock.  This check is just to try to save us
+    // from acquiring the global X lock unnecessarily.
+    uassert(ErrorCodes::NotMaster, "not primary so can't step down", getMemberState().primary());
 
+    ReplicationStateTransitionLockGuard::Args transitionArgs;
+    // Kill all user operations to help us get the global lock faster, as well as to ensure that
+    // operations that are no longer safe to run (like writes) get killed.
+    transitionArgs.killUserOperations = true;
     // Using 'force' sets the default for the wait time to zero, which means the stepdown will
     // fail if it does not acquire the lock immediately. In such a scenario, we use the
     // stepDownUntil deadline instead.
-    auto lockDeadline = force ? stepDownUntil : waitUntil;
+    transitionArgs.lockDeadline = force ? stepDownUntil : waitUntil;
 
-    auto globalLock = stdx::make_unique<Lock::GlobalLock>(opCtx,
-                                                          MODE_X,
-                                                          lockDeadline,
-                                                          Lock::InterruptBehavior::kThrow,
-                                                          Lock::GlobalLock::EnqueueOnly());
-
-    // We've requested the global exclusive lock which will stop new operations from coming in,
-    // but existing operations could take a long time to finish, so kill all user operations
-    // to help us get the global lock faster.
-    _externalState->killAllUserOperations(opCtx);
-
-    globalLock->waitForLockUntil(lockDeadline);
-    if (!globalLock->isLocked()) {
-        return {ErrorCodes::ExceededTimeLimit,
-                "Could not acquire the global shared lock before the deadline for stepdown"};
-    }
+    ReplicationStateTransitionLockGuard transitionGuard(opCtx, transitionArgs);
+    invariant(opCtx->lockState()->isW());
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
-    auto status = opCtx->checkForInterruptNoAssert();
-    if (!status.isOK()) {
-        return status;
-    }
+    opCtx->checkForInterrupt();
 
     const long long termAtStart = _topCoord->getTerm();
 
-    auto statusWithAbortFn = _topCoord->prepareForStepDownAttempt();
-    if (!statusWithAbortFn.isOK()) {
-        // This will cause us to fail if we're already in the process of stepping down.
-        // It is also possible to get here even if we're done stepping down via another path,
-        // and this will also elicit a failure from this call.
-        return statusWithAbortFn.getStatus();
-    }
-    const auto& abortFn = statusWithAbortFn.getValue();
+    // This will cause us to fail if we're already in the process of stepping down, or if we've
+    // already successfully stepped down via another path.
+    auto abortFn = uassertStatusOK(_topCoord->prepareForStepDownAttempt());
 
     // Update _canAcceptNonLocalWrites from the TopologyCoordinator now that we're in the middle
     // of a stepdown attempt.  This will prevent us from accepting writes so that if our stepdown
@@ -1758,57 +1739,50 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
         updateMemberState();
     });
 
-    try {
+    auto waitTimeout = std::min(waitTime, stepdownTime);
+    auto lastAppliedOpTime = _getMyLastAppliedOpTime_inlock();
 
-        auto waitTimeout = std::min(waitTime, stepdownTime);
-        auto lastAppliedOpTime = _getMyLastAppliedOpTime_inlock();
+    // Set up a waiter which will be signalled when we process a heartbeat or updatePosition
+    // and have a majority of nodes at our optime.
+    stdx::condition_variable condVar;
+    const WriteConcernOptions waiterWriteConcern(
+        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::NONE, waitTimeout);
+    ThreadWaiter waiter(lastAppliedOpTime, &waiterWriteConcern, &condVar);
+    WaiterGuard guard(&_replicationWaiterList, &waiter);
 
-        // Set up a waiter which will be signalled when we process a heartbeat or updatePosition
-        // and have a majority of nodes at our optime.
-        stdx::condition_variable condVar;
-        const WriteConcernOptions waiterWriteConcern(
-            WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::NONE, waitTimeout);
-        ThreadWaiter waiter(lastAppliedOpTime, &waiterWriteConcern, &condVar);
-        WaiterGuard guard(&_replicationWaiterList, &waiter);
+    while (!_topCoord->attemptStepDown(
+        termAtStart, _replExecutor->now(), waitUntil, stepDownUntil, force)) {
 
-        while (!_topCoord->attemptStepDown(
-            termAtStart, _replExecutor->now(), waitUntil, stepDownUntil, force)) {
+        // The stepdown attempt failed. We now release the global lock to allow secondaries
+        // to read the oplog, then wait until enough secondaries are caught up for us to
+        // finish stepdown.
+        transitionGuard.releaseGlobalLock();
+        invariant(!opCtx->lockState()->isLocked());
 
-            // The stepdown attempt failed. We now release the global lock to allow secondaries
-            // to read the oplog, then wait until enough secondaries are caught up for us to
-            // finish stepdown.
-            globalLock.reset();
-            invariant(!opCtx->lockState()->isLocked());
+        // Make sure we re-acquire the global lock before returning so that we're always holding
+        // the global lock when the onExitGuard set up earlier runs.
+        ON_BLOCK_EXIT([&] {
+            // Need to release _mutex before re-acquiring the global lock to preserve lock
+            // acquisition order rules.
+            lk.unlock();
 
-            // Make sure we re-acquire the global lock before returning so that we're always holding
-            // the global lock when the onExitGuard set up earlier runs.
-            ON_BLOCK_EXIT([&] {
-                // Need to release _mutex before re-acquiring the global lock to preserve lock
-                // acquisition order rules.
-                lk.unlock();
+            // Need to re-acquire the global lock before re-attempting stepdown.
+            // We use no timeout here even though that means the lock acquisition could take
+            // longer than the stepdown window.  If that happens, the call to _tryToStepDown
+            // immediately after will error.  Since we'll need the global lock no matter what to
+            // clean up a failed stepdown attempt, we might as well spend whatever time we need
+            // to acquire it now.  For the same reason, we also disable lock acquisition
+            // interruption, to guarantee that we get the lock eventually.
+            transitionGuard.reacquireGlobalLock();
+            invariant(opCtx->lockState()->isW());
+            lk.lock();
+        });
 
-                // Need to re-acquire the global lock before re-attempting stepdown.
-                // We use no timeout here even though that means the lock acquisition could take
-                // longer than the stepdown window.  If that happens, the call to _tryToStepDown
-                // immediately after will error.  Since we'll need the global lock no matter what to
-                // clean up a failed stepdown attempt, we might as well spend whatever time we need
-                // to acquire it now.  For the same reason, we also disable lock acquisition
-                // interruption, to guarantee that we get the lock eventually.
-                UninterruptibleLockGuard noInterrupt(opCtx->lockState());
-                globalLock.reset(new Lock::GlobalLock(opCtx, MODE_X));
-                invariant(globalLock->isLocked());
-                lk.lock();
-            });
-
-            // We ignore the case where waitForConditionOrInterruptUntil returns
-            // stdx::cv_status::timeout because in that case coming back around the loop and calling
-            // attemptStepDown again will cause attemptStepDown to return ExceededTimeLimit with
-            // the proper error message.
-            opCtx->waitForConditionOrInterruptUntil(
-                condVar, lk, std::min(stepDownUntil, waitUntil));
-        }
-    } catch (const DBException& e) {
-        return e.toStatus();
+        // We ignore the case where waitForConditionOrInterruptUntil returns
+        // stdx::cv_status::timeout because in that case coming back around the loop and calling
+        // attemptStepDown again will cause attemptStepDown to return ExceededTimeLimit with
+        // the proper error message.
+        opCtx->waitForConditionOrInterruptUntil(condVar, lk, std::min(stepDownUntil, waitUntil));
     }
 
     // Stepdown success!
@@ -1825,7 +1799,6 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     if (!force && enableElectionHandoff.load()) {
         _performElectionHandoff();
     }
-    return Status::OK();
 }
 
 void ReplicationCoordinatorImpl::_performElectionHandoff() {
@@ -2281,7 +2254,7 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
     }
 
     BSONObj oldConfigObj = oldConfig.toBSON();
-    audit::logReplSetReconfig(opCtx->getClient(), &newConfigObj, &oldConfigObj);
+    audit::logReplSetReconfig(opCtx->getClient(), &oldConfigObj, &newConfigObj);
 
     Status status = newConfig.initialize(newConfigObj, oldConfig.getReplicaSetId());
     if (!status.isOK()) {

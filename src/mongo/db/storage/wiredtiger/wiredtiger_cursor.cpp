@@ -1,7 +1,7 @@
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
+ *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU Affero General Public License, version 3,
  *    as published by the Free Software Foundation.
  *
@@ -28,24 +28,40 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/s/catalog/dist_lock_catalog.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_cursor.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 
 namespace mongo {
 
-const WriteConcernOptions DistLockCatalog::kLocalWriteConcern(1,
-                                                              WriteConcernOptions::SyncMode::UNSET,
-                                                              Milliseconds(0));
+WiredTigerCursor::WiredTigerCursor(const std::string& uri,
+                                   uint64_t tableID,
+                                   bool allowOverwrite,
+                                   OperationContext* opCtx) {
+    _tableID = tableID;
+    _ru = WiredTigerRecoveryUnit::get(opCtx);
+    _session = _ru->getSession();
+    _readOnce = _ru->getReadOnce();
 
-const WriteConcernOptions DistLockCatalog::kMajorityWriteConcern(
-    WriteConcernOptions::kMajority,
-    // Note: Even though we're setting UNSET here, kMajority implies JOURNAL if journaling is
-    // supported by this mongod.
-    WriteConcernOptions::SyncMode::UNSET,
-    WriteConcernOptions::kWriteConcernTimeoutSystem);
+    if (_readOnce) {
+        _cursor = _session->getReadOnceCursor(uri, allowOverwrite);
+    } else {
+        _cursor = _session->getCursor(uri, tableID, allowOverwrite);
+    }
+}
 
-DistLockCatalog::DistLockCatalog() = default;
+WiredTigerCursor::~WiredTigerCursor() {
+    dassert(_ru->getReadOnce() == _readOnce);
 
-DistLockCatalog::ServerInfo::ServerInfo(Date_t time, OID _electionId)
-    : serverTime(std::move(time)), electionId(std::move(_electionId)) {}
+    // Read-once cursors will never take cursors from the cursor cache, and should never release
+    // cursors into the cursor cache.
+    if (_readOnce) {
+        _session->closeCursor(_cursor);
+    } else {
+        _session->releaseCursor(_tableID, _cursor);
+    }
+}
 
+void WiredTigerCursor::reset() {
+    invariantWTOK(_cursor->reset(_cursor));
+}
 }  // namespace mongo

@@ -184,6 +184,8 @@ void OpMsg::shareOwnershipWith(const ConstSharedBuffer& buffer) {
 }
 
 auto OpMsgBuilder::beginDocSequence(StringData name) -> DocSequenceBuilder {
+    invariant(_state != kBody);
+    invariant(_state != kDone);
     invariant(_state == kEmpty || _state == kDocSequence);
     invariant(!_openBuilder);
     _openBuilder = true;

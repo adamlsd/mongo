@@ -52,7 +52,7 @@ const char kInternalLatestOplogTimestampField[] = "$_internalLatestOplogTimestam
 }  // namespace
 
 CursorResponseBuilder::CursorResponseBuilder(rpc::ReplyBuilderInterface* replyBuilder,
-                                             Options options = Options())
+                                             Options options)
     : _options(options), _replyBuilder(replyBuilder) {
     if (_options.useDocumentSequences) {
         _docSeqBuilder.emplace(_replyBuilder->getDocSequenceBuilder(

@@ -83,9 +83,9 @@ OpMsgRequest opMsgRequestFromAnyProtocol(const Message& unownedMessage) {
 std::unique_ptr<ReplyBuilderInterface> makeReplyBuilder(Protocol protocol) {
     switch (protocol) {
         case Protocol::kOpMsg:
-            return stdx::make_unique<OpMsgReplyBuilder>();
+            return std::make_unique<OpMsgReplyBuilder>();
         case Protocol::kOpQuery:
-            return stdx::make_unique<LegacyReplyBuilder>();
+            return std::make_unique<LegacyReplyBuilder>();
     }
     MONGO_UNREACHABLE;
 }

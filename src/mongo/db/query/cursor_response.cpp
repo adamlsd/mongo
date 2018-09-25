@@ -280,7 +280,6 @@ void CursorResponse::_addToReply(ResponseType responseType,
                                  bool useDocumentSequences,
                                  bool appendWriteConcern,
                                  rpc::ReplyBuilderInterface* reply) const {
-    auto bob = reply->getBodyBuilder();
     if (useDocumentSequences) {
 
         const char* batchFieldName = (responseType == ResponseType::InitialResponse)
@@ -293,6 +292,7 @@ void CursorResponse::_addToReply(ResponseType responseType,
             }
         }
     }
+    auto bob = reply->getBodyBuilder();
     _appendCursor(responseType, useDocumentSequences, appendWriteConcern, &bob);
 }
 

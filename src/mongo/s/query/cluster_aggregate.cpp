@@ -1097,7 +1097,7 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
         auto tailMode = liteParsedPipeline.hasChangeStream()
             ? TailableModeEnum::kTailableAndAwaitData
             : TailableModeEnum::kNormal;
-        auto CursorResponse = uassertStatusOK(storePossibleCursor(
+        auto cursorResponse = uassertStatusOK(storePossibleCursor(
             opCtx, namespaces.requestedNss, shard->getId(), cmdResponse, tailMode));
         result = cmdResponse.response;
     }

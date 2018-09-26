@@ -70,7 +70,7 @@ public:
                                    const BSONObj& cmdObj,
                                    boost::optional<ExplainOptions::Verbosity> verbosity,
                                    rpc::ReplyBuilderInterface* result) {
-            auto aggregationRequest =
+            const auto aggregationRequest =
                 uassertStatusOK(AggregationRequest::parseFromBSON(dbname, cmdObj, verbosity));
 
             const auto& nss = aggregationRequest.getNamespaceString();

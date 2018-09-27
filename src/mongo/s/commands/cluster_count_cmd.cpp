@@ -271,7 +271,6 @@ public:
                 return aggRequestOnView.getStatus();
             }
 
-            auto bodyBuilder = result->getBodyBuilder();
             return ClusterAggregate::retryOnViewError(
                 opCtx, aggRequestOnView.getValue(), *ex.extraInfo<ResolvedView>(), nss, result);
         }

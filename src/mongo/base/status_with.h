@@ -28,7 +28,6 @@
 #pragma once
 
 #include <boost/optional.hpp>
-#include <cstddef>
 #include <iosfwd>
 #include <type_traits>
 #include <utility>
@@ -53,7 +52,7 @@ class StatusWith;
 
 // Using extern constexpr to prevent the compiler from allocating storage as a poor man's c++17
 // inline constexpr variable.
-// TODO delete extern in c++17 because inline is the default for constexper variables.
+// TODO delete extern in c++17 because inline is the default for constexpr variables.
 template <typename T>
 extern constexpr bool isStatusWith = false;
 template <typename T>

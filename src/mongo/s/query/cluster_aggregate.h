@@ -85,8 +85,8 @@ public:
      * against the underlying collection.
      *
      * On success, populates `result` with the command response.  This function will reset
-	 * the result.
-     * 
+     * the result.
+     *
      */
     static Status retryOnViewError(OperationContext* opCtx,
                                    const AggregationRequest& request,

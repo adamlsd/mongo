@@ -131,6 +131,9 @@ string optionString(size_t options) {
             case QueryPlannerParams::OPLOG_SCAN_WAIT_FOR_VISIBLE:
                 ss << "OPLOG_SCAN_WAIT_FOR_VISIBLE ";
                 break;
+            case QueryPlannerParams::STRICT_DISTINCT_ONLY:
+                ss << "STRICT_DISTINCT_ONLY ";
+                break;
             case QueryPlannerParams::DEFAULT:
                 MONGO_UNREACHABLE;
                 break;
@@ -147,6 +150,10 @@ static BSONObj getKeyFromQuery(const BSONObj& keyPattern, const BSONObj& query) 
 static bool indexCompatibleMaxMin(const BSONObj& obj,
                                   const CollatorInterface* queryCollator,
                                   const IndexEntry& indexEntry) {
+    if (indexEntry.type == IndexType::INDEX_ALLPATHS) {
+        return false;
+    }
+
     BSONObjIterator kpIt(indexEntry.keyPattern);
     BSONObjIterator objIt(obj);
 

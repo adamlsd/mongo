@@ -58,7 +58,7 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_aggregation_planner.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
@@ -69,7 +69,7 @@
 #include "mongo/s/query/router_stage_pipeline.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/s/transaction/transaction_router.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/socket_utils.h"
@@ -382,8 +382,8 @@ struct DispatchShardPipelineResults {
     // How many exchange producers are running the shard part of splitPipeline.
     size_t numProducers;
 
-    // Placement of exchange consumers; if there is no exchange then the vector is empty.
-    std::vector<ShardId> consumerShards;
+    // The exchange specification if the query can run with the exchange otherwise boost::none.
+    boost::optional<cluster_aggregation_planner::ShardedExchangePolicy> exchangeSpec;
 };
 
 /**
@@ -531,8 +531,7 @@ DispatchShardPipelineResults dispatchShardPipeline(
                                         std::move(pipeline),
                                         targetedCommand,
                                         shardIds.size(),
-                                        exchangeSpec ? exchangeSpec->consumerShards
-                                                     : std::vector<ShardId>()};
+                                        exchangeSpec};
 }
 
 DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
@@ -548,7 +547,7 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
 
     // For all consumers construct a request with appropriate cursor ids and send to shards.
     std::vector<std::pair<ShardId, BSONObj>> requests;
-    auto numConsumers = shardDispatchResults->consumerShards.size();
+    auto numConsumers = shardDispatchResults->exchangeSpec->consumerShards.size();
     for (size_t idx = 0; idx < numConsumers; ++idx) {
 
         // Pick this consumer's cursors from producers.
@@ -576,7 +575,8 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
         auto consumerCmdObj = createCommandForTargetedShards(
             opCtx, aggRequest, pipeline, collationObj, boost::none, false);
 
-        requests.emplace_back(shardDispatchResults->consumerShards[idx], consumerCmdObj);
+        requests.emplace_back(shardDispatchResults->exchangeSpec->consumerShards[idx],
+                              consumerCmdObj);
     }
     auto cursors = establishCursors(opCtx,
                                     Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
@@ -605,15 +605,34 @@ Status appendExplainResults(DispatchShardPipelineResults&& dispatchResults,
                             BSONObjBuilder* result) {
     if (dispatchResults.splitPipeline) {
         auto* mergePipeline = dispatchResults.splitPipeline->mergePipeline.get();
-        *result << "mergeType"
-                << (mergePipeline->canRunOnMongos()
-                        ? "mongos"
-                        : mergePipeline->needsPrimaryShardMerger() ? "primaryShard" : "anyShard")
-                << "splitPipeline"
-                << Document{{"shardsPart",
-                             dispatchResults.splitPipeline->shardsPipeline->writeExplainOps(
-                                 *mergeCtx->explain)},
-                            {"mergerPart", mergePipeline->writeExplainOps(*mergeCtx->explain)}};
+        const char* mergeType = [&]() {
+            if (mergePipeline->canRunOnMongos()) {
+                return "mongos";
+            } else if (dispatchResults.exchangeSpec) {
+                return "exchange";
+            } else if (mergePipeline->needsPrimaryShardMerger()) {
+                return "primaryShard";
+            } else {
+                return "anyShard";
+            }
+        }();
+
+        *result << "mergeType" << mergeType;
+
+        MutableDocument pipelinesDoc;
+        pipelinesDoc.addField("shardsPart",
+                              Value(dispatchResults.splitPipeline->shardsPipeline->writeExplainOps(
+                                  *mergeCtx->explain)));
+        if (dispatchResults.exchangeSpec) {
+            BSONObjBuilder bob;
+            dispatchResults.exchangeSpec->exchangeSpec.serialize(&bob);
+            bob.append("consumerShards", dispatchResults.exchangeSpec->consumerShards);
+            pipelinesDoc.addField("exchange", Value(bob.obj()));
+        }
+        pipelinesDoc.addField("mergerPart",
+                              Value(mergePipeline->writeExplainOps(*mergeCtx->explain)));
+
+        *result << "splitPipeline" << pipelinesDoc.freeze();
     } else {
         *result << "splitPipeline" << BSONNULL;
     }
@@ -1140,8 +1159,8 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             result);
     }
 
-    // If we have the exchange operator then dispatch all consumers.
-    if (!shardDispatchResults.consumerShards.empty()) {
+    // If we have the exchange spec then dispatch all consumers.
+    if (shardDispatchResults.exchangeSpec) {
         shardDispatchResults = dispatchExchangeConsumerPipeline(expCtx,
                                                                 namespaces.executionNss,
                                                                 cmdObj,

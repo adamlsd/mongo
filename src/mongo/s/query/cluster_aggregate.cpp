@@ -1227,26 +1227,29 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
             "command failed because can not establish a snapshot"));
     }
 
-    BSONObj result;
-    boost::optional<CursorResponse> cursorResp;
-    if (aggRequest.getExplain()) {
-        // If this was an explain, then we get back an explain result object rather than a cursor.
-        result = cmdResponse.response;
-    } else {
-        auto tailMode = liteParsedPipeline.hasChangeStream()
-            ? TailableModeEnum::kTailableAndAwaitData
-            : TailableModeEnum::kNormal;
-        cursorResp = uassertStatusOK(storePossibleCursor(
-            opCtx, namespaces.requestedNss, shard->getId(), cmdResponse, tailMode));
-        result = cmdResponse.response;
-    }
+    BSONObj result = [&] {
+        if (aggRequest.getExplain()) {
+            // If this was an explain, then we get back an explain result object rather than a
+            // cursor.
+            return cmdResponse.response;
+        } else {
+            const auto tailMode = liteParsedPipeline.hasChangeStream()
+                ? TailableModeEnum::kTailableAndAwaitData
+                : TailableModeEnum::kNormal;
+            const auto cursorResp = uassertStatusOK(storePossibleCursor(
+                opCtx, namespaces.requestedNss, shard->getId(), cmdResponse, tailMode));
 
-    // First append the properly constructed writeConcernError and Cursor. It will then be skipped
-    // in appendElementsUnique.
-    if (cursorResp) {
-        cursorResp->addToReplyWithoutWriteConcern(
-            CursorResponse::ResponseType::InitialResponse, useDocSequences, out);
-    }
+            // First append the properly constructed writeConcernError and Cursor. It will then be
+            // skipped
+            // in appendElementsUnique.
+            if (cursorResp) {
+                cursorResp->addToReplyWithoutWriteConcern(
+                    CursorResponse::ResponseType::InitialResponse, useDocSequences, out);
+            }
+            return cmdResponse.response;
+        }
+    }();
+
     auto bodyBuilder = out->getBodyBuilder();
     if (auto wcErrorElem = result["writeConcernError"]) {
         appendWriteConcernErrorToCmdResponse(shard->getId(), wcErrorElem, bodyBuilder);
@@ -1254,7 +1257,7 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
 
     bodyBuilder.appendElementsUnique(CommandHelpers::filterCommandReplyForPassthrough(result));
 
-    auto status = getStatusFromCommandResult(bodyBuilder.asTempObj());
+    const auto status = getStatusFromCommandResult(bodyBuilder.asTempObj());
     if (status.extraInfo<ResolvedView>()) {
         bodyBuilder.doneFast();
     }

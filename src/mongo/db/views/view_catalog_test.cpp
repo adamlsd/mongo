@@ -220,8 +220,7 @@ TEST_F(ViewCatalogFixture, CreateViewWithPipelineFailsOnInvalidStageName) {
 
     auto invalidPipeline = BSON_ARRAY(BSON("INVALID_STAGE_NAME" << 1));
     ASSERT_THROWS(
-        viewCatalog.createView(opCtx.get(), viewName, viewOn, invalidPipeline, emptyCollation)
-            .transitional_ignore(),
+        viewCatalog.createView(opCtx.get(), viewName, viewOn, invalidPipeline, emptyCollation),
         AssertionException);
 }
 

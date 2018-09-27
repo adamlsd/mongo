@@ -152,13 +152,22 @@
                                            ::mongo::StringData(EXPECTED_WHAT));              \
                              }))
 
+#ifdef __GNUC__
 // The `(void) 0`s are to permit more readable formatting of these in-macro pragma statements.
-#define UNIT_TEST_EXECUTION_HELPER(STATEMENT)                      \
-    _Pragma("GCC diagnostic push")(void) 0;                        \
-    _Pragma("GCC diagnostic ignored \"-Wunused\"")(void) 0;        \
-    _Pragma("GCC diagnostic ignored \"-Wunused-result\"")(void) 0; \
-    STATEMENT;                                                     \
-    _Pragma("GCC diagnostic pop")
+#define UNIT_TEST_EXECUTION_HELPER(STATEMENT)                          \
+    do {                                                               \
+        _Pragma("GCC diagnostic push")(void) 0;                        \
+        _Pragma("GCC diagnostic ignored \"-Wunused\"")(void) 0;        \
+        _Pragma("GCC diagnostic ignored \"-Wunused-result\"")(void) 0; \
+        STATEMENT;                                                     \
+        _Pragma("GCC diagnostic pop")(void) 0;                         \
+    } while (false)
+#else
+#define UNIT_TEST_EXECUTION_HELPER(STATEMENT)                          \
+    do {                                                               \
+        STATEMENT;                                                     \
+    } while (false)
+#endif
 
 /**
  * Behaves like ASSERT_THROWS, above, but also calls CHECK(caughtException) which may contain

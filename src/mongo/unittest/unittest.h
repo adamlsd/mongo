@@ -152,6 +152,14 @@
                                            ::mongo::StringData(EXPECTED_WHAT));              \
                              }))
 
+// The `(void) 0`s are to permit more readable formatting of these in-macro pragma statements.
+#define UNIT_TEST_EXECUTION_HELPER(STATEMENT)                      \
+    _Pragma("GCC diagnostic push")(void) 0;                        \
+    _Pragma("GCC diagnostic ignored \"-Wunused\"")(void) 0;        \
+    _Pragma("GCC diagnostic ignored \"-Wunused-result\"")(void) 0; \
+    STATEMENT;                                                     \
+    _Pragma("GCC diagnostic pop")
+
 /**
  * Behaves like ASSERT_THROWS, above, but also calls CHECK(caughtException) which may contain
  * additional assertions.
@@ -159,7 +167,7 @@
 #define ASSERT_THROWS_WITH_CHECK(STATEMENT, EXCEPTION_TYPE, CHECK)             \
     do {                                                                       \
         try {                                                                  \
-            STATEMENT;                                                         \
+            UNIT_TEST_EXECUTION_HELPER(STATEMENT);                             \
             FAIL("Expected statement " #STATEMENT " to throw " #EXCEPTION_TYPE \
                  " but it threw nothing.");                                    \
         } catch (const EXCEPTION_TYPE& ex) {                                   \

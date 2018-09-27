@@ -53,7 +53,7 @@
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/catalog/type_tags.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/clone_collection_options_from_primary_shard_gen.h"
 #include "mongo/s/request_types/shard_collection_gen.h"
@@ -369,7 +369,8 @@ void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss)
     // Use readConcern local to guarantee we see any chunks that have been written and may
     // become committed; readConcern majority will not see the chunks if they have not made it
     // to the majority snapshot.
-    repl::ReadConcernArgs readConcern(repl::ReadConcernLevel::kLocalReadConcern);
+    repl::ReadConcernArgs readConcern(Grid::get(opCtx)->configOpTime(),
+                                      repl::ReadConcernLevel::kMajorityReadConcern);
     readConcern.appendInfo(&countBuilder);
 
     auto cmdResponse = uassertStatusOK(

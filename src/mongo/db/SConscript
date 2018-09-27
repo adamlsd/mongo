@@ -602,8 +602,6 @@ env.CppUnitTest(
     ],
 )
 
-# TODO: This library should probably be folded into catalog_raii,
-# with which it is currently circular.
 env.Library(
     target='db_raii',
     source=[
@@ -636,6 +634,7 @@ env.Library(
         'transaction_history_iterator.cpp',
         env.Idlc('session_txn_record.idl')[0],
         env.Idlc('transactions_stats.idl')[0],
+        env.Idlc('transaction_commit_decision.idl')[0],
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/stats/fill_locker_info',
@@ -750,6 +749,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/auth/auth',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
+        '$BUILD_DIR/mongo/db/s/sharding_runtime_d',
         '$BUILD_DIR/mongo/db/storage/storage_engine_common',
         '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
@@ -806,14 +806,19 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         'handle_request_response',
+        'introspect',
+        'lasterror',
+        'query_exec',
         'snapshot_window_util',
+        '$BUILD_DIR/mongo/db/audit',
         '$BUILD_DIR/mongo/db/auth/auth',
         '$BUILD_DIR/mongo/db/auth/authprivilege',
         '$BUILD_DIR/mongo/db/command_can_run_here',
         '$BUILD_DIR/mongo/db/ops/write_ops_exec',
         '$BUILD_DIR/mongo/db/rw_concern_d',
-        '$BUILD_DIR/mongo/db/s/sharding_runtime_d',
+        '$BUILD_DIR/mongo/db/s/sharding_api_d',
         '$BUILD_DIR/mongo/db/stats/counters',
+        '$BUILD_DIR/mongo/db/stats/top',
         '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
         '$BUILD_DIR/mongo/db/storage/storage_engine_metadata',
     ],
@@ -1129,6 +1134,7 @@ env.Library(
         "stats/counters",
         "stats/serveronly_stats",
         "stats/top",
+        "storage/biggie/storage_biggie",
         "storage/devnull/storage_devnull",
         "storage/ephemeral_for_test/storage_ephemeral_for_test",
         "storage/storage_engine_lock_file",
@@ -1354,7 +1360,7 @@ env.Library(
         'sessions_collection_sharded',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/s/commands/cluster_commands_helpers',
+        '$BUILD_DIR/mongo/s/sharding_router_api',
     ]
 )
 

@@ -52,9 +52,10 @@
 // GCC < 7.
 #if !defined(MONGO_WARN_UNUSED_RESULT_CLASS)
 #define MONGO_WARN_UNUSED_RESULT_CLASS [[gnu::warn_unused_result]]
+#endif
+#if !defined(MONGO_WARN_UNUSED_RESULT_FUNCTION)
 #define MONGO_WARN_UNUSED_RESULT_FUNCTION [[gnu::warn_unused_result]]
 #endif
-
 #else
 #define MONGO_COMPILER_COLD_FUNCTION __attribute__((__cold__))
 #define MONGO_COMPILER_NORETURN __attribute__((__noreturn__, __cold__))
@@ -62,6 +63,8 @@
 // GCC 7 added support for [[nodiscard]] with the semantics we want.
 #if !defined(MONGO_WARN_UNUSED_RESULT_CLASS)
 #define MONGO_WARN_UNUSED_RESULT_CLASS
+#endif
+#if !defined(MONGO_WARN_UNUSED_RESULT_FUNCTION)
 #define MONGO_WARN_UNUSED_RESULT_FUNCTION [[gnu::warn_unused_result]]
 #endif
 

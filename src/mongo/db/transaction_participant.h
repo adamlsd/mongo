@@ -352,9 +352,7 @@ public:
                          boost::optional<bool> autocommit,
                          boost::optional<bool> startTransaction);
 
-    void beginTransactionUnconditionally(TxnNumber txnNumber);
-
-    static Status isValid(StringData dbName, StringData cmdName);
+    void beginOrContinueTransactionUnconditionally(TxnNumber txnNumber);
 
     void transitionToPreparedforTest() {
         stdx::lock_guard<stdx::mutex> lk(_mutex);

@@ -211,8 +211,7 @@ BSONObj genericTransformForShards(MutableDocument&& cmdForShards,
 
     if (shardId) {
         if (auto txnRouter = TransactionRouter::get(opCtx)) {
-            auto& participant = txnRouter->getOrCreateParticipant(*shardId);
-            aggCmd = participant.attachTxnFieldsIfNeeded(aggCmd);
+            aggCmd = txnRouter->attachTxnFieldsIfNeeded(*shardId, aggCmd);
         }
     }
 
@@ -292,8 +291,7 @@ BSONObj createCommandForMergingShard(const AggregationRequest& request,
     auto aggCmd = mergeCmd.freeze().toBson();
 
     if (auto txnRouter = TransactionRouter::get(mergeCtx->opCtx)) {
-        auto& participant = txnRouter->getOrCreateParticipant(shardId);
-        aggCmd = participant.attachTxnFieldsIfNeeded(aggCmd);
+        aggCmd = txnRouter->attachTxnFieldsIfNeeded(shardId, aggCmd);
     }
 
     // agg creates temp collection and should handle implicit create separately.
@@ -1232,11 +1230,6 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
         !shard->isConfig() ? appendShardVersion(std::move(cmdObj), ChunkVersion::UNSHARDED())
                            : std::move(cmdObj),
         Shard::RetryPolicy::kIdempotent));
-
-    if (txnRouter) {
-        auto& participant = txnRouter->getOrCreateParticipant(shardId);
-        participant.markAsCommandSent();
-    }
 
     if (ErrorCodes::isStaleShardVersionError(cmdResponse.commandStatus.code())) {
         uassertStatusOK(

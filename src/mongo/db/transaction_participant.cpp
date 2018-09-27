@@ -81,39 +81,6 @@ MONGO_FAIL_POINT_DEFINE(hangAfterReservingPrepareTimestamp);
 
 const auto getTransactionParticipant = Session::declareDecoration<TransactionParticipant>();
 
-// The command names that are allowed in a multi-document transaction.
-const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
-                                        {"aggregate", 1},
-                                        {"commitTransaction", 1},
-                                        {"coordinateCommitTransaction", 1},
-                                        {"delete", 1},
-                                        {"distinct", 1},
-                                        {"doTxn", 1},
-                                        {"find", 1},
-                                        {"findandmodify", 1},
-                                        {"findAndModify", 1},
-                                        {"geoSearch", 1},
-                                        {"getMore", 1},
-                                        {"insert", 1},
-                                        {"killCursors", 1},
-                                        {"prepareTransaction", 1},
-                                        {"update", 1},
-                                        {"voteAbortTransaction", 1},
-                                        {"voteCommitTransaction", 1}};
-
-// The command names that are allowed in a multi-document transaction only when test commands are
-// enabled.
-const StringMap<int> txnCmdForTestingWhitelist = {{"dbHash", 1}};
-
-// The commands that can be run on the 'admin' database in multi-document transactions.
-const StringMap<int> txnAdminCommands = {{"abortTransaction", 1},
-                                         {"commitTransaction", 1},
-                                         {"coordinateCommitTransaction", 1},
-                                         {"doTxn", 1},
-                                         {"prepareTransaction", 1},
-                                         {"voteAbortTransaction", 1},
-                                         {"voteCommitTransaction", 1}};
-
 // The command names that are allowed in a prepared transaction.
 const StringMap<int> preparedTxnCmdWhitelist = {
     {"abortTransaction", 1}, {"commitTransaction", 1}, {"prepareTransaction", 1}};
@@ -260,9 +227,12 @@ void TransactionParticipant::beginOrContinue(TxnNumber txnNumber,
     _beginMultiDocumentTransaction(lg, txnNumber);
 }
 
-void TransactionParticipant::beginTransactionUnconditionally(TxnNumber txnNumber) {
+void TransactionParticipant::beginOrContinueTransactionUnconditionally(TxnNumber txnNumber) {
     stdx::lock_guard<stdx::mutex> lg(_mutex);
-    _beginMultiDocumentTransaction(lg, txnNumber);
+    // Continuing transaction unconditionally is a no-op since we don't check any on-disk state.
+    if (_activeTxnNumber != txnNumber) {
+        _beginMultiDocumentTransaction(lg, txnNumber);
+    }
 }
 
 void TransactionParticipant::setSpeculativeTransactionOpTime(
@@ -302,8 +272,13 @@ TransactionParticipant::OplogSlotReserver::OplogSlotReserver(OperationContext* o
     // The new transaction should have an empty locker, and thus we do not need to save it.
     invariant(opCtx->lockState()->getClientState() == Locker::ClientState::kInactive);
     _locker = opCtx->swapLockState(stdx::make_unique<LockerImpl>());
+    // Inherit the locking setting from the original one.
+    opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(
+        _locker->shouldConflictWithSecondaryBatchApplication());
     _locker->unsetThreadId();
 
+    // OplogSlotReserver is only used by primary, so always set max transaction lock timeout.
+    invariant(opCtx->writesAreReplicated());
     // This thread must still respect the transaction lock timeout, since it can prevent the
     // transaction from making progress.
     auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
@@ -337,6 +312,9 @@ TransactionParticipant::TxnResources::TxnResources(OperationContext* opCtx, bool
     opCtx->setWriteUnitOfWork(nullptr);
 
     _locker = opCtx->swapLockState(stdx::make_unique<LockerImpl>());
+    // Inherit the locking setting from the original one.
+    opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(
+        _locker->shouldConflictWithSecondaryBatchApplication());
     if (!keepTicket) {
         _locker->releaseTicket();
     }
@@ -345,9 +323,12 @@ TransactionParticipant::TxnResources::TxnResources(OperationContext* opCtx, bool
     // This thread must still respect the transaction lock timeout, since it can prevent the
     // transaction from making progress.
     auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
-    if (maxTransactionLockMillis >= 0) {
+    if (opCtx->writesAreReplicated() && maxTransactionLockMillis >= 0) {
         opCtx->lockState()->setMaxLockTimeout(Milliseconds(maxTransactionLockMillis));
     }
+
+    // On secondaries, max lock timeout must not be set.
+    invariant(opCtx->writesAreReplicated() || !opCtx->lockState()->hasMaxLockTimeout());
 
     _recoveryUnit = opCtx->releaseRecoveryUnit();
     opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(
@@ -504,9 +485,12 @@ void TransactionParticipant::unstashTransactionResources(OperationContext* opCtx
         // to acquire a lock. This is to avoid deadlocks and minimize non-transaction
         // operation performance degradations.
         auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
-        if (maxTransactionLockMillis >= 0) {
+        if (opCtx->writesAreReplicated() && maxTransactionLockMillis >= 0) {
             opCtx->lockState()->setMaxLockTimeout(Milliseconds(maxTransactionLockMillis));
         }
+
+        // On secondaries, max lock timeout must not be set.
+        invariant(opCtx->writesAreReplicated() || !opCtx->lockState()->hasMaxLockTimeout());
 
         stdx::lock_guard<stdx::mutex> lm(_metricsMutex);
         _transactionMetricsObserver.onUnstash(ServerTransactionsMetrics::get(opCtx),
@@ -699,16 +683,7 @@ void TransactionParticipant::commitUnpreparedTransaction(OperationContext* opCtx
 void TransactionParticipant::commitPreparedTransaction(OperationContext* opCtx,
                                                        Timestamp commitTimestamp) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    try {
-        _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
-    } catch (...) {
-        // It is illegal for committing a prepared transaction to fail for any reason, other than an
-        // invalid command, so we crash instead.
-        severe() << "Caught exception beginning commit of prepared transaction "
-                 << opCtx->getTxnNumber() << " on " << _getSession()->getSessionId().toBSON()
-                 << ": " << exceptionToStatus();
-        std::terminate();
-    }
+    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
     uassert(ErrorCodes::InvalidOptions,
             "commitTransaction cannot provide commitTimestamp to unprepared transaction.",
@@ -1056,30 +1031,6 @@ void TransactionParticipant::_checkIsCommandValidWithTxnState(WithLock wl,
                           << " a prepared transaction",
             !_txnState.isPrepared(wl) ||
                 preparedTxnCmdWhitelist.find(cmdName) != preparedTxnCmdWhitelist.cend());
-}
-
-Status TransactionParticipant::isValid(StringData dbName, StringData cmdName) {
-    if (cmdName == "count"_sd) {
-        return {ErrorCodes::OperationNotSupportedInTransaction,
-                "Cannot run 'count' in a multi-document transaction. Please see "
-                "http://dochub.mongodb.org/core/transaction-count for a recommended alternative."};
-    }
-
-    if (txnCmdWhitelist.find(cmdName) == txnCmdWhitelist.cend() &&
-        !(getTestCommandsEnabled() &&
-          txnCmdForTestingWhitelist.find(cmdName) != txnCmdForTestingWhitelist.cend())) {
-        return {ErrorCodes::OperationNotSupportedInTransaction,
-                str::stream() << "Cannot run '" << cmdName << "' in a multi-document transaction."};
-    }
-
-    if (dbName == "config"_sd || dbName == "local"_sd ||
-        (dbName == "admin"_sd && txnAdminCommands.find(cmdName) == txnAdminCommands.cend())) {
-        return {ErrorCodes::OperationNotSupportedInTransaction,
-                str::stream() << "Cannot run command against the '" << dbName
-                              << "' database in a transaction"};
-    }
-
-    return Status::OK();
 }
 
 BSONObj TransactionParticipant::reportStashedState() const {

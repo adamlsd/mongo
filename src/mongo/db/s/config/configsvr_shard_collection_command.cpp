@@ -767,13 +767,17 @@ public:
         shardsvrShardCollectionRequest.setGetUUIDfromPrimaryShard(
             request.getGetUUIDfromPrimaryShard());
 
-        auto cmdResponse = uassertStatusOK(primaryShard->runCommandWithFixedRetryAttempts(
-            opCtx,
-            ReadPreferenceSetting(ReadPreference::PrimaryOnly),
-            "admin",
-            CommandHelpers::appendMajorityWriteConcern(CommandHelpers::appendPassthroughFields(
-                cmdObj, shardsvrShardCollectionRequest.toBSON())),
-            Shard::RetryPolicy::kIdempotent));
+        // TODO(SERVER-37354): Remove the 'runWithoutInterruption' block.
+        auto cmdResponse = opCtx->runWithoutInterruption([&] {
+            return uassertStatusOK(primaryShard->runCommandWithFixedRetryAttempts(
+                opCtx,
+                ReadPreferenceSetting(ReadPreference::PrimaryOnly),
+                "admin",
+                CommandHelpers::appendMajorityWriteConcern(CommandHelpers::appendPassthroughFields(
+                    cmdObj, shardsvrShardCollectionRequest.toBSON())),
+                Shard::RetryPolicy::kIdempotent));
+        });
+
 
         if (cmdResponse.commandStatus != ErrorCodes::CommandNotFound) {
             uassertStatusOK(cmdResponse.commandStatus);

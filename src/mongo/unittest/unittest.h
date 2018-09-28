@@ -152,9 +152,22 @@
                                            ::mongo::StringData(EXPECTED_WHAT));              \
                              }))
 
+/**
+ * This internal helper is used to ignore warnings about unused results.  Some unit tests which test
+ * `ASSERT_THROWS` and its variations are used on functions which both throw and return `Status` or
+ * `StatusWith` objects.  Although such function designs are undesirable, they do exist, presently.
+ * Therefore this internal helper macro is used by `ASSERT_THROWS` and its variations to silence
+ * such warnings without forcing the caller to invoke `.ignore()` on the called function.
+ *
+ * NOTE: This macro should NOT be used inside regular unit test code to ignore unchecked `Status` or
+ * `StatusWith` instances -- if a `Status` or `StatusWith` result is to be ignored, please use the
+ * normal `.ignore()` code.  This macro exists only to make using `ASSERT_THROWS` less inconvenient
+ * on functions which both throw and return `Status` or `StatusWith`.
+ */
+//#define UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(STATEMENT)
 #ifdef __GNUC__
 // The `(void) 0`s are to permit more readable formatting of these in-macro pragma statements.
-#define UNIT_TEST_EXECUTION_HELPER(STATEMENT)                          \
+#define UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(STATEMENT)   \
     do {                                                               \
         _Pragma("GCC diagnostic push")(void) 0;                        \
         _Pragma("GCC diagnostic ignored \"-Wunused\"")(void) 0;        \
@@ -163,9 +176,9 @@
         _Pragma("GCC diagnostic pop")(void) 0;                         \
     } while (false)
 #else
-#define UNIT_TEST_EXECUTION_HELPER(STATEMENT)                          \
-    do {                                                               \
-        STATEMENT;                                                     \
+#define UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(STATEMENT) \
+    do {                                                             \
+        STATEMENT;                                                   \
     } while (false)
 #endif
 
@@ -176,7 +189,7 @@
 #define ASSERT_THROWS_WITH_CHECK(STATEMENT, EXCEPTION_TYPE, CHECK)             \
     do {                                                                       \
         try {                                                                  \
-            UNIT_TEST_EXECUTION_HELPER(STATEMENT);                             \
+            UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(STATEMENT);      \
             FAIL("Expected statement " #STATEMENT " to throw " #EXCEPTION_TYPE \
                  " but it threw nothing.");                                    \
         } catch (const EXCEPTION_TYPE& ex) {                                   \

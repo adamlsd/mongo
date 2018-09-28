@@ -49,12 +49,14 @@
 #include "mongo/db/commands/fsync.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/multi_key_path_tracker.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/repl/applier_helpers.h"
 #include "mongo/db/repl/apply_ops.h"
@@ -207,7 +209,7 @@ void ApplyBatchFinalizerForJournal::_run() {
 NamespaceString parseUUIDOrNs(OperationContext* opCtx, const OplogEntry& oplogEntry) {
     auto optionalUuid = oplogEntry.getUuid();
     if (!optionalUuid) {
-        return oplogEntry.getNamespace();
+        return oplogEntry.getNss();
     }
 
     const auto& uuid = optionalUuid.get();
@@ -302,9 +304,16 @@ Status SyncTail::syncApply(OperationContext* opCtx,
         });
     } else if (opType == OpTypeEnum::kCommand) {
         return writeConflictRetry(opCtx, "syncApply_command", nss.ns(), [&] {
-            // a command may need a global write lock. so we will conservatively go
-            // ahead and grab one here. suboptimal. :-(
-            Lock::GlobalWrite globalWriteLock(opCtx);
+            // A command may need a global write lock. so we will conservatively go
+            // ahead and grab one for non-transaction commands.
+            // Transactions have to acquire the same locks on secondaries as on primary.
+            boost::optional<Lock::GlobalWrite> globalWriteLock;
+
+            // TODO SERVER-37180 Remove this double-parsing.
+            const StringData commandName(op["o"].embeddedObject().firstElementFieldName());
+            if (!op.getBoolField("prepare") && commandName != "abortTransaction") {
+                globalWriteLock.emplace(opCtx);
+            }
 
             // special case apply for commands to avoid implicit database creation
             Status status = applyCommand_inlock(opCtx, op, oplogApplicationMode);
@@ -497,7 +506,7 @@ void fillWriterVectors(OperationContext* opCtx,
     CachedCollectionProperties collPropertiesCache;
 
     for (auto&& op : *ops) {
-        StringMapTraits::HashedKey hashedNs(op.getNamespace().ns());
+        StringMapTraits::HashedKey hashedNs(op.getNss().ns());
         uint32_t hash = hashedNs.hash();
 
         // We need to track all types of ops, including type 'n' (these are generated from chunk
@@ -534,11 +543,7 @@ void fillWriterVectors(OperationContext* opCtx,
 
         // Extract applyOps operations and fill writers with extracted operations using this
         // function.
-        if (op.isCommand() && op.getCommandType() == OplogEntry::CommandType::kApplyOps) {
-            if (op.shouldPrepare()) {
-                // TODO (SERVER-35307) mark operations as needing prepare.
-                continue;
-            }
+        if (op.getCommandType() == OplogEntry::CommandType::kApplyOps && !op.shouldPrepare()) {
             try {
                 derivedOps->emplace_back(ApplyOps::extractOperations(op));
 
@@ -930,8 +935,9 @@ bool SyncTail::tryPopAndWaitForMore(OperationContext* opCtx,
     // Oplog entries on 'system.views' should also be processed one at a time. View catalog
     // immediately reflects changes for each oplog entry so we can see inconsistent view catalog if
     // multiple oplog entries on 'system.views' are being applied out of the original order.
-    if ((entry.isCommand() && entry.getCommandType() != OplogEntry::CommandType::kApplyOps) ||
-        entry.getNamespace().isSystemDotViews()) {
+    if ((entry.isCommand() &&
+         (entry.getCommandType() != OplogEntry::CommandType::kApplyOps || entry.shouldPrepare())) ||
+        entry.getNss().isSystemDotViews()) {
         if (ops->getCount() == 1) {
             // apply commands one-at-a-time
             _consume(opCtx, oplogBuffer);
@@ -1018,7 +1024,7 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
 
         BSONObj query = BSONObjBuilder().append(idElem).obj();
         BSONObj missingObj;
-        auto nss = oplogEntry.getNamespace();
+        auto nss = oplogEntry.getNss();
         try {
             auto uuid = oplogEntry.getUuid();
             if (!uuid) {
@@ -1131,7 +1137,10 @@ Status multiSyncApply(OperationContext* opCtx,
 
     UnreplicatedWritesBlock uwb(opCtx);
     DisableDocumentValidation validationDisabler(opCtx);
-    ShouldNotConflictWithSecondaryBatchApplicationBlock shouldNotConflictBlock(opCtx->lockState());
+    // Since we swap the locker in stash / unstash transaction resources,
+    // ShouldNotConflictWithSecondaryBatchApplicationBlock will touch the locker that has been
+    // destroyed by unstash in its destructor. Thus we set the flag explicitly.
+    opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
 
     // Explicitly start future read transactions without a timestamp.
     opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNoTimestamp);
@@ -1153,7 +1162,7 @@ Status multiSyncApply(OperationContext* opCtx,
         MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo();
 
         for (auto it = ops->cbegin(); it != ops->cend(); ++it) {
-            const auto& entry = **it;
+            const OplogEntry& entry = **it;
 
             // If we are successful in grouping and applying inserts, advance the current iterator
             // past the end of the inserted group of entries.
@@ -1165,6 +1174,22 @@ Status multiSyncApply(OperationContext* opCtx,
 
             // If we didn't create a group, try to apply the op individually.
             try {
+                // The write on transaction table may be applied concurrently, so refreshing state
+                // from disk may read that write, causing starting a new transaction on an existing
+                // txnNumber. Thus, we start a new transaction without refreshing state from disk.
+                boost::optional<OperationContextSessionMongodWithoutRefresh> sessionTxnState;
+                if (entry.shouldPrepare() ||
+                    entry.getCommandType() == OplogEntry::CommandType::kAbortTransaction) {
+                    // The update on transaction table may be scheduled to the same writer.
+                    invariant(ops->size() <= 2);
+                    // Transaction operations are in its own batch, so we can modify their opCtx.
+                    invariant(entry.getSessionId());
+                    invariant(entry.getTxnNumber());
+                    opCtx->setLogicalSessionId(*entry.getSessionId());
+                    opCtx->setTxnNumber(*entry.getTxnNumber());
+                    // Check out the session, with autoCommit = false and startMultiDocTxn = true.
+                    sessionTxnState.emplace(opCtx);
+                }
                 const Status status = SyncTail::syncApply(opCtx, entry.raw, oplogApplicationMode);
 
                 if (!status.isOK()) {

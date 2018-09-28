@@ -495,9 +495,8 @@ public:
 
         log() << "Attempting to step down in response to replSetStepDown command";
 
-        status = ReplicationCoordinator::get(opCtx)->stepDown(
+        ReplicationCoordinator::get(opCtx)->stepDown(
             opCtx, force, Seconds(secondaryCatchUpPeriodSecs), Seconds(stepDownForSecs));
-        uassertStatusOK(status);
         return true;
     }
 
@@ -692,7 +691,8 @@ public:
 
         log() << "Received replSetStepUp request";
 
-        status = ReplicationCoordinator::get(opCtx)->stepUpIfEligible();
+        const bool skipDryRun = cmdObj["skipDryRun"].trueValue();
+        status = ReplicationCoordinator::get(opCtx)->stepUpIfEligible(skipDryRun);
 
         if (!status.isOK()) {
             log() << "replSetStepUp request failed" << causedBy(status);

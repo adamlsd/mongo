@@ -27,7 +27,8 @@
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
-
+#define LOG_FOR_TRANSACTION(level) \
+    MONGO_LOG_COMPONENT(level, ::mongo::logger::LogComponent::kTransaction)
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/session.h"
@@ -122,8 +123,7 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
             }
 
             // applyOps oplog entry marks the commit of a transaction.
-            if (entry.isCommand() &&
-                entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps) {
+            if (entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps) {
                 result.transactionCommitted = true;
             }
         } catch (const DBException& ex) {
@@ -435,6 +435,9 @@ void Session::_beginOrContinueTxn(WithLock wl, TxnNumber txnNumber) {
 
     invariant(txnNumber > _activeTxnNumber);
     _setActiveTxn(wl, txnNumber);
+
+    LOG_FOR_TRANSACTION(4) << "New transaction started with txnNumber: " << txnNumber
+                           << " on session with lsid " << getSessionId().getId();
 }
 
 void Session::_checkTxnValid(WithLock, TxnNumber txnNumber) const {
@@ -628,8 +631,7 @@ boost::optional<repl::OplogEntry> Session::createMatchingTransactionTableUpdate(
         newTxnRecord.setLastWriteOpTime(entry.getOpTime());
         newTxnRecord.setLastWriteDate(*entry.getWallClockTime());
 
-        if (entry.isCommand() &&
-            entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps) {
+        if (entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps) {
             newTxnRecord.setState(entry.shouldPrepare() ? DurableTxnStateEnum::kPrepared
                                                         : DurableTxnStateEnum::kCommitted);
         }
@@ -680,6 +682,15 @@ void Session::unlockTxnNumber() {
 
     _isTxnNumberLocked = false;
     _txnNumberLockConflictStatus = boost::none;
+}
+
+bool Session::isLockedTxnNumber(const TxnNumber expectedLockedNumber) const {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    invariant(_activeTxnNumber == expectedLockedNumber,
+              str::stream() << "Expected TxnNumber: " << expectedLockedNumber
+                            << ", Active TxnNumber: "
+                            << _activeTxnNumber);
+    return _isTxnNumberLocked;
 }
 
 void Session::setCurrentOperation(OperationContext* currentOperation) {

@@ -49,6 +49,7 @@
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/stats/storage_stats.h"
+#include "mongo/db/storage/backup_cursor_hooks.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/grid.h"
@@ -71,7 +72,7 @@ namespace {
  * Builds an ordered insert op on namespace 'nss' and documents to be written 'objs'.
  */
 Insert buildInsertOp(const NamespaceString& nss,
-                     const std::vector<BSONObj>& objs,
+                     std::vector<BSONObj>&& objs,
                      bool bypassDocValidation) {
     Insert insertOp(nss);
     insertOp.setDocuments(std::move(objs));
@@ -90,8 +91,8 @@ Insert buildInsertOp(const NamespaceString& nss,
  * Note that 'queries' and 'updates' must be the same length.
  */
 Update buildUpdateOp(const NamespaceString& nss,
-                     const std::vector<BSONObj>& queries,
-                     const std::vector<BSONObj>& updates,
+                     std::vector<BSONObj>&& queries,
+                     std::vector<BSONObj>&& updates,
                      bool upsert,
                      bool multi,
                      bool bypassDocValidation) {
@@ -101,8 +102,8 @@ Update buildUpdateOp(const NamespaceString& nss,
         for (size_t index = 0; index < queries.size(); ++index) {
             updateEntries.push_back([&] {
                 UpdateOpEntry entry;
-                entry.setQ(queries[index]);
-                entry.setU(updates[index]);
+                entry.setQ(std::move(queries[index]));
+                entry.setU(std::move(updates[index]));
                 entry.setUpsert(upsert);
                 entry.setMulti(multi);
                 return entry;
@@ -172,9 +173,9 @@ bool MongoDInterface::isSharded(OperationContext* opCtx, const NamespaceString& 
 
 void MongoDInterface::insert(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                              const NamespaceString& ns,
-                             const std::vector<BSONObj>& objs) {
-    auto insertOp = buildInsertOp(ns, objs, expCtx->bypassDocumentValidation);
-    auto writeResults = performInserts(expCtx->opCtx, insertOp);
+                             std::vector<BSONObj>&& objs) {
+    auto writeResults = performInserts(
+        expCtx->opCtx, buildInsertOp(ns, std::move(objs), expCtx->bypassDocumentValidation));
 
     // Only need to check that the final result passed because the inserts are ordered and the batch
     // will stop on the first failure.
@@ -183,13 +184,17 @@ void MongoDInterface::insert(const boost::intrusive_ptr<ExpressionContext>& expC
 
 void MongoDInterface::update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                              const NamespaceString& ns,
-                             const std::vector<BSONObj>& queries,
-                             const std::vector<BSONObj>& updates,
+                             std::vector<BSONObj>&& queries,
+                             std::vector<BSONObj>&& updates,
                              bool upsert,
                              bool multi) {
-    auto updateOp =
-        buildUpdateOp(ns, queries, updates, upsert, multi, expCtx->bypassDocumentValidation);
-    auto writeResults = performUpdates(expCtx->opCtx, updateOp);
+    auto writeResults = performUpdates(expCtx->opCtx,
+                                       buildUpdateOp(ns,
+                                                     std::move(queries),
+                                                     std::move(updates),
+                                                     upsert,
+                                                     multi,
+                                                     expCtx->bypassDocumentValidation));
 
     // Only need to check that the final result passed because the updates are ordered and the batch
     // will stop on the first failure.
@@ -393,9 +398,9 @@ std::pair<std::vector<FieldPath>, bool> MongoDInterface::collectDocumentKeyField
     return {result, true};
 }
 
-std::vector<GenericCursor> MongoDInterface::getCursors(
-    const intrusive_ptr<ExpressionContext>& expCtx) const {
-    return CursorManager::getAllCursors(expCtx->opCtx);
+std::vector<GenericCursor> MongoDInterface::getIdleCursors(
+    const intrusive_ptr<ExpressionContext>& expCtx, CurrentOpUserMode userMode) const {
+    return CursorManager::getIdleCursors(expCtx->opCtx, userMode);
 }
 
 boost::optional<Document> MongoDInterface::lookupSingleDocument(
@@ -433,24 +438,22 @@ boost::optional<Document> MongoDInterface::lookupSingleDocument(
     return lookedUpDocument;
 }
 
-void MongoDInterface::fsyncLock(OperationContext* opCtx) {
-    auto backupCursorService = BackupCursorService::get(opCtx->getServiceContext());
-    backupCursorService->fsyncLock(opCtx);
-}
-
-void MongoDInterface::fsyncUnlock(OperationContext* opCtx) {
-    auto backupCursorService = BackupCursorService::get(opCtx->getServiceContext());
-    backupCursorService->fsyncUnlock(opCtx);
-}
-
 BackupCursorState MongoDInterface::openBackupCursor(OperationContext* opCtx) {
-    auto backupCursorService = BackupCursorService::get(opCtx->getServiceContext());
-    return backupCursorService->openBackupCursor(opCtx);
+    auto backupCursorHooks = BackupCursorHooks::get(opCtx->getServiceContext());
+    if (backupCursorHooks->enabled()) {
+        return backupCursorHooks->openBackupCursor(opCtx);
+    } else {
+        uasserted(50956, "Backup cursors are an enterprise only feature.");
+    }
 }
 
 void MongoDInterface::closeBackupCursor(OperationContext* opCtx, std::uint64_t cursorId) {
-    auto backupCursorService = BackupCursorService::get(opCtx->getServiceContext());
-    backupCursorService->closeBackupCursor(opCtx, cursorId);
+    auto backupCursorHooks = BackupCursorHooks::get(opCtx->getServiceContext());
+    if (backupCursorHooks->enabled()) {
+        backupCursorHooks->closeBackupCursor(opCtx, cursorId);
+    } else {
+        uasserted(50955, "Backup cursors are an enterprise only feature.");
+    }
 }
 
 std::vector<BSONObj> MongoDInterface::getMatchingPlanCacheEntryStats(
@@ -522,7 +525,8 @@ BSONObj MongoDInterface::_reportCurrentOpForClient(OperationContext* opCtx,
         }
 
         // Append lock stats before returning.
-        if (auto lockerInfo = clientOpCtx->lockState()->getLockerInfo()) {
+        if (auto lockerInfo = clientOpCtx->lockState()->getLockerInfo(
+                CurOp::get(*clientOpCtx)->getLockStatsBase())) {
             fillLockerInfo(*lockerInfo, builder);
         }
     }
@@ -584,28 +588,36 @@ std::unique_ptr<CollatorInterface> MongoDInterface::_getCollectionDefaultCollato
 
 void MongoDInterfaceShardServer::insert(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                         const NamespaceString& ns,
-                                        const std::vector<BSONObj>& objs) {
+                                        std::vector<BSONObj>&& objs) {
     BatchedCommandResponse response;
     BatchWriteExecStats stats;
 
-    auto insertOp = buildInsertOp(ns, objs, expCtx->bypassDocumentValidation);
-    ClusterWriter::write(expCtx->opCtx, BatchedCommandRequest(insertOp), &stats, &response);
+    ClusterWriter::write(
+        expCtx->opCtx,
+        BatchedCommandRequest(buildInsertOp(ns, std::move(objs), expCtx->bypassDocumentValidation)),
+        &stats,
+        &response);
     // TODO SERVER-35403: Add more context for which shard produced the error.
     uassertStatusOKWithContext(response.toStatus(), "Insert failed: ");
 }
 
 void MongoDInterfaceShardServer::update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                         const NamespaceString& ns,
-                                        const std::vector<BSONObj>& queries,
-                                        const std::vector<BSONObj>& updates,
+                                        std::vector<BSONObj>&& queries,
+                                        std::vector<BSONObj>&& updates,
                                         bool upsert,
                                         bool multi) {
     BatchedCommandResponse response;
     BatchWriteExecStats stats;
-
-    auto updateOp =
-        buildUpdateOp(ns, queries, updates, upsert, multi, expCtx->bypassDocumentValidation);
-    ClusterWriter::write(expCtx->opCtx, BatchedCommandRequest(updateOp), &stats, &response);
+    ClusterWriter::write(expCtx->opCtx,
+                         BatchedCommandRequest(buildUpdateOp(ns,
+                                                             std::move(queries),
+                                                             std::move(updates),
+                                                             upsert,
+                                                             multi,
+                                                             expCtx->bypassDocumentValidation)),
+                         &stats,
+                         &response);
     // TODO SERVER-35403: Add more context for which shard produced the error.
     uassertStatusOKWithContext(response.toStatus(), "Update failed: ");
 }

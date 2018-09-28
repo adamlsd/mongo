@@ -77,7 +77,7 @@ const char kMigratedChunkVersionField[] = "migratedChunkVersion";
 const char kWriteConcernField[] = "writeConcern";
 const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
                                                 WriteConcernOptions::SyncMode::UNSET,
-                                                Seconds(15));
+                                                WriteConcernOptions::kWriteConcernTimeoutMigration);
 
 /**
  * Best-effort attempt to ensure the recipient shard has refreshed its routing table to
@@ -470,7 +470,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
             UninterruptibleLockGuard noInterrupt(opCtx->lockState());
             AutoGetCollection autoColl(opCtx, getNss(), MODE_IX, MODE_X);
             if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, getNss())) {
-                CollectionShardingRuntime::get(opCtx, getNss())->refreshMetadata(opCtx, nullptr);
+                CollectionShardingRuntime::get(opCtx, getNss())->clearFilteringMetadata();
                 uassertStatusOK(status.withContext(
                     str::stream() << "Unable to verify migration commit for chunk: "
                                   << redact(_args.toString())
@@ -506,7 +506,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
         UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetCollection autoColl(opCtx, getNss(), MODE_IX, MODE_X);
 
-        CollectionShardingRuntime::get(opCtx, getNss())->refreshMetadata(opCtx, nullptr);
+        CollectionShardingRuntime::get(opCtx, getNss())->clearFilteringMetadata();
 
         log() << "Failed to refresh metadata after a "
               << (migrationCommitStatus.isOK() ? "failed commit attempt" : "successful commit")

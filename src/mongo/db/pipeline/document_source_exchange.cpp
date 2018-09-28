@@ -41,6 +41,9 @@
 
 namespace mongo {
 
+constexpr size_t Exchange::kMaxBufferSize;
+constexpr size_t Exchange::kMaxNumberConsumers;
+
 const char* DocumentSourceExchange::getSourceName() const {
     return "$_internalExchange";
 }
@@ -63,13 +66,20 @@ Exchange::Exchange(ExchangeSpec spec, std::unique_ptr<Pipeline, PipelineDeleter>
     : _spec(std::move(spec)),
       _keyPattern(_spec.getKey().getOwned()),
       _ordering(extractOrdering(_keyPattern)),
-      _boundaries(extractBoundaries(_spec.getBoundaries())),
-      _consumerIds(extractConsumerIds(_spec.getConsumerids(), _spec.getConsumers())),
+      _boundaries(extractBoundaries(_spec.getBoundaries(), _ordering)),
+      _consumerIds(extractConsumerIds(_spec.getConsumerIds(), _spec.getConsumers())),
       _policy(_spec.getPolicy()),
       _orderPreserving(_spec.getOrderPreserving()),
       _maxBufferSize(_spec.getBufferSize()),
       _pipeline(std::move(pipeline)) {
     uassert(50901, "Exchange must have at least one consumer", _spec.getConsumers() > 0);
+
+    uassert(50951,
+            str::stream() << "Specified exchange buffer size (" << _maxBufferSize
+                          << ") exceeds the maximum allowable amount ("
+                          << kMaxBufferSize
+                          << ").",
+            _maxBufferSize <= kMaxBufferSize);
 
     for (int idx = 0; idx < _spec.getConsumers(); ++idx) {
         _consumers.emplace_back(std::make_unique<ExchangeBuffer>());
@@ -89,7 +99,7 @@ Exchange::Exchange(ExchangeSpec spec, std::unique_ptr<Pipeline, PipelineDeleter>
 }
 
 std::vector<std::string> Exchange::extractBoundaries(
-    const boost::optional<std::vector<BSONObj>>& obj) {
+    const boost::optional<std::vector<BSONObj>>& obj, Ordering ordering) {
     std::vector<std::string> ret;
 
     if (!obj) {
@@ -103,22 +113,51 @@ std::vector<std::string> Exchange::extractBoundaries(
             kb << "" << elem;
         }
 
-        KeyString key{KeyString::Version::V1, kb.obj(), Ordering::make(BSONObj())};
+        KeyString key{KeyString::Version::V1, kb.obj(), ordering};
         std::string keyStr{key.getBuffer(), key.getSize()};
 
         ret.emplace_back(std::move(keyStr));
     }
+
+    uassert(50960, str::stream() << "Exchange range boundaries are not valid", ret.size() > 1);
 
     for (size_t idx = 1; idx < ret.size(); ++idx) {
         uassert(50893,
                 str::stream() << "Exchange range boundaries are not in ascending order.",
                 ret[idx - 1] < ret[idx]);
     }
+
+    BSONObjBuilder kbMin;
+    BSONObjBuilder kbMax;
+    for (int i = 0; i < obj->front().nFields(); ++i) {
+        kbMin << "" << MINKEY;
+        kbMax << "" << MAXKEY;
+    }
+
+    KeyString minKey{KeyString::Version::V1, kbMin.obj(), ordering};
+    KeyString maxKey{KeyString::Version::V1, kbMax.obj(), ordering};
+    StringData minKeyStr{minKey.getBuffer(), minKey.getSize()};
+    StringData maxKeyStr{maxKey.getBuffer(), maxKey.getSize()};
+
+    uassert(50958,
+            str::stream() << "Exchange lower bound must be the minkey.",
+            ret.front() == minKeyStr);
+    uassert(50959,
+            str::stream() << "Exchange upper bound must be the maxkey.",
+            ret.back() == maxKeyStr);
+
     return ret;
 }
 
 std::vector<size_t> Exchange::extractConsumerIds(
     const boost::optional<std::vector<std::int32_t>>& consumerIds, size_t nConsumers) {
+
+    uassert(50950,
+            str::stream() << "Specified number of exchange consumers (" << nConsumers
+                          << ") exceeds the maximum allowable amount ("
+                          << kMaxNumberConsumers
+                          << ").",
+            nConsumers <= kMaxNumberConsumers);
 
     std::vector<size_t> ret;
 

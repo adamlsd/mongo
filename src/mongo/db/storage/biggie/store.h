@@ -347,10 +347,14 @@ public:
     using const_reverse_iterator = reverse_radix_iterator<const_pointer, const value_type&>;
 
     // Constructor
+    RadixStore(const RadixStore& other) {
+        _root = other._root;
+    }
+
     RadixStore() {
-        _root = std::make_shared<RadixStore::Node>();
-        _numElems = 0;
-        _sizeElems = 0;
+        _root = std::make_shared<Node>();
+        _root->_numSubtreeElems = 0;
+        _root->_sizeSubtreeElems = 0;
     }
 
     ~RadixStore() = default;
@@ -361,7 +365,7 @@ public:
         RadixStore::const_iterator other_iter = other.begin();
 
         while (iter != this->end()) {
-            if (*iter != *other_iter) {
+            if (other_iter == other.end() || *iter != *other_iter) {
                 return false;
             }
 
@@ -374,22 +378,22 @@ public:
 
     // Capacity
     bool empty() const {
-        return _numElems == 0;
+        return _root->_numSubtreeElems == 0;
     }
 
     size_type size() const {
-        return _numElems;
+        return _root->_numSubtreeElems;
     }
 
     size_type dataSize() const {
-        return _sizeElems;
+        return _root->_sizeSubtreeElems;
     }
 
     // Modifiers
     void clear() noexcept {
         _root = std::make_shared<Node>();
-        _numElems = 0;
-        _sizeElems = 0;
+        _root->_numSubtreeElems = 0;
+        _root->_sizeSubtreeElems = 0;
     }
 
     std::pair<const_iterator, bool> insert(value_type&& value) {
@@ -400,13 +404,7 @@ public:
         if (item != nullptr || key.size() == 0)
             return std::make_pair(end(), false);
 
-        auto result = _upsertWithCopyOnSharedNodes(key, std::move(value));
-        if (result.second) {
-            _numElems++;
-            _sizeElems += m.size();
-        }
-
-        return result;
+        return _upsertWithCopyOnSharedNodes(key, std::move(value));
     }
 
     std::pair<const_iterator, bool> update(value_type&& value) {
@@ -418,14 +416,7 @@ public:
         if (item == RadixStore::end())
             return std::make_pair(item, false);
 
-        size_t sizeOfRemovedNode = item->second.size();
-        auto result = _upsertWithCopyOnSharedNodes(key, std::move(value));
-        if (result.second) {
-            _sizeElems -= sizeOfRemovedNode;
-            _sizeElems += m.size();
-        }
-
-        return result;
+        return _upsertWithCopyOnSharedNodes(key, std::move(value), item->second.size());
     }
 
     size_type erase(const Key& key) {
@@ -470,11 +461,22 @@ public:
                 // If this node is uniquely owned, simply set that child node to null and
                 // "cut" off that branch of our tree
                 last->children[firstChar] = nullptr;
+                last->_numSubtreeElems -= 1;
+                last->_sizeSubtreeElems -= sizeOfRemovedNode;
                 _compressOnlyChild(last);
+
+                while (!context.empty()) {
+                    last = context.back().first;
+                    context.pop_back();
+                    last->_numSubtreeElems -= 1;
+                    last->_sizeSubtreeElems -= sizeOfRemovedNode;
+                }
             } else {
                 // If it's not uniquely owned, copy 'last' before deleting the node that
                 // matches key.
                 std::shared_ptr<Node> child = std::make_shared<Node>(*last);
+                child->_numSubtreeElems = last->_numSubtreeElems - 1;
+                child->_sizeSubtreeElems = last->_sizeSubtreeElems - sizeOfRemovedNode;
                 child->children[firstChar] = nullptr;
 
                 // 'last' may only have one child, in which case we need to evaluate
@@ -490,104 +492,40 @@ public:
                     context.pop_back();
 
                     node = std::make_shared<Node>(*last);
+                    node->_numSubtreeElems = last->_numSubtreeElems - 1;
+                    node->_sizeSubtreeElems = last->_sizeSubtreeElems - sizeOfRemovedNode;
                     node->children[firstChar] = child;
                     child = node;
                 }
                 _root = node;
             }
+
+
         } else {
             // The to-be deleted node is an internal node, and therefore updating its data to be
             // boost::none will "delete" it
-            _upsertWithCopyOnSharedNodes(key, boost::none);
+            _upsertWithCopyOnSharedNodes(key, boost::none, -1 * sizeOfRemovedNode);
         }
 
-        _numElems--;
-        _sizeElems -= sizeOfRemovedNode;
         return 1;
     }
 
-    // Returns a Store that has all changes from both 'this' and 'other' compared to base.
-    // Throws merge_conflict_exception if there are merge conflicts.
-    RadixStore merge3(const RadixStore& base, const RadixStore& other) const {
-        RadixStore store;
-
-        // Merges all differences between this and base, along with modifications from other.
-        RadixStore::const_iterator iter = this->begin();
-        while (iter != this->end()) {
-            const value_type val = *iter;
-            RadixStore::const_iterator baseIter = base.find(val.first);
-            RadixStore::const_iterator otherIter = other.find(val.first);
-
-            if (baseIter != base.end() && otherIter != other.end()) {
-                if (val.second != baseIter->second && otherIter->second != baseIter->second) {
-                    // Throws exception if there are conflicting modifications.
-                    throw merge_conflict_exception();
-                }
-
-                if (val.second != baseIter->second) {
-                    // Merges non-conflicting insertions from this.
-                    store.insert(RadixStore::value_type(val));
-                } else {
-                    // Merges non-conflicting modifications from other or no modifications.
-                    store.insert(RadixStore::value_type(*otherIter));
-                }
-            } else if (baseIter != base.end() && otherIter == other.end()) {
-                if (val.second != baseIter->second) {
-                    // Throws exception if modifications from this conflict with deletions from
-                    // other.
-                    throw merge_conflict_exception();
-                }
-            } else if (baseIter == base.end()) {
-                if (otherIter != other.end()) {
-                    // Throws exception if insertions from this conflict with insertions from other.
-                    throw merge_conflict_exception();
-                }
-
-                // Merges insertions from this.
-                store.insert(RadixStore::value_type(val));
-            }
-            iter++;
-        }
-
-        // Merges insertions and deletions from other.
-        RadixStore::const_iterator other_iter = other.begin();
-        for (; other_iter != other.end(); other_iter++) {
-            const value_type otherVal = *other_iter;
-            RadixStore::const_iterator baseIter = base.find(otherVal.first);
-            RadixStore::const_iterator thisIter = this->find(otherVal.first);
-
-            if (baseIter == base.end()) {
-                // Merges insertions from other.
-                store.insert(RadixStore::value_type(otherVal));
-            } else if (thisIter == this->end() && otherVal.second != baseIter->second) {
-                // Throws exception if modifications from this conflict with deletions from other.
-                throw merge_conflict_exception();
-            }
-        }
-
-        return store;
+    void merge3(const RadixStore& base, const RadixStore& other) {
+        std::vector<std::shared_ptr<Node>> context;
+        _merge3Helper(this->_root, base._root, other._root, context);
     }
 
-    // iterators
+    // Iterators
     const_iterator begin() const noexcept {
-        if (_numElems == 0) {
+        if (this->empty())
             return RadixStore::end();
-        }
 
-        auto node = _root;
-        while (node->data == boost::none) {
-            for (auto child : node->children) {
-                if (child != nullptr) {
-                    node = child;
-                    break;
-                }
-            }
-        }
-        return RadixStore::const_iterator(_root, node.get());
+        Node* node = _begin(_root);
+        return RadixStore::const_iterator(_root, node);
     }
 
     const_reverse_iterator rbegin() const noexcept {
-        if (_numElems == 0)
+        if (this->empty())
             return RadixStore::rend();
 
         auto node = _root;
@@ -640,7 +578,7 @@ public:
             }
 
             node = node->children[idx].get();
-            // We may eventually need to search this node's parent for larger children
+            // We may eventually need to search this node's parent for larger children.
             idx += 1;
             size_t mismatchIdx = _comparePrefix(node->trieKey, charKey + depth, key.size() - depth);
 
@@ -691,8 +629,8 @@ public:
 
             for (auto iter = idx + node->children.begin(); iter != node->children.end(); ++iter) {
                 if (*iter != nullptr) {
-                    // There exists a node with a key larger than the one given, traverse to this
-                    // node which will be the left-most node in this sub-tree.
+                    // There exists a node with a key larger than the one given, traverse to
+                    // this node which will be the left-most node in this sub-tree.
                     node = iter->get();
                     while (node->data == boost::none) {
                         for (auto iter = node->children.begin(); iter != node->children.end();
@@ -754,6 +692,8 @@ private:
 
         Node(std::vector<uint8_t> key) : trieKey(key) {
             children.fill(nullptr);
+            _numSubtreeElems = 0;
+            _sizeSubtreeElems = 0;
         }
 
         bool isLeaf() {
@@ -767,9 +707,13 @@ private:
         std::vector<uint8_t> trieKey;
         boost::optional<value_type> data;
         std::array<std::shared_ptr<Node>, 256> children;
+
+    private:
+        size_type _numSubtreeElems = 0;
+        size_type _sizeSubtreeElems = 0;
     };
 
-    /*
+    /**
      * Return a string representation of all the nodes in this tree.
      * The string will look like:
      *
@@ -803,11 +747,22 @@ private:
     }
 
     Node* _findNode(const Key& key) const {
-        int depth = 0;
-        uint8_t childFirstChar = static_cast<uint8_t>(key.front());
-        auto node = _root->children[childFirstChar];
-
+        unsigned int depth = 0;
         const char* charKey = key.data();
+
+        // If the root node's triekey is not empty (tree is a subtree - as done so by merge), then
+        // examine the root key first.
+        for (unsigned int i = 0; i < _root->trieKey.size(); i++) {
+            if (charKey[i] != _root->trieKey[i])
+                return nullptr;
+            depth++;
+
+            if (depth >= key.size())
+                return _root.get();
+        }
+
+        uint8_t childFirstChar = static_cast<uint8_t>(charKey[depth]);
+        auto node = _root->children[childFirstChar];
 
         while (node != nullptr) {
 
@@ -836,9 +791,27 @@ private:
      * 'key' is the key which can be followed to find the data.
      * 'value' is the data to be inserted or updated. It can be an empty value in which case it is
      * equivalent to removing that data from the tree.
+     * 'sizeDiff' is used to determine the change in number of elements and size for the tree. If it
+     * is positive, then we are updating an element, and the sizeDiff represents the size of the
+     * original element (and value contains the size of new element). If it is negative, that means
+     * we are removing an element that has a size of sizeDiff (which is negative to indicate
+     * deletion).
      */
-    std::pair<const_iterator, bool> _upsertWithCopyOnSharedNodes(
-        Key key, boost::optional<value_type> value) {
+    std::pair<const_iterator, bool> _upsertWithCopyOnSharedNodes(Key key,
+                                                                 boost::optional<value_type> value,
+                                                                 int sizeDiff = 0) {
+
+        int elemNum = 1;
+        int elemSize = 0;
+        if (sizeDiff > 0) {
+            elemNum = 0;
+            elemSize = value->second.size() - sizeDiff;
+        } else if (value == boost::none || sizeDiff < 0) {
+            elemNum = -1;
+            elemSize = sizeDiff;
+        } else {
+            elemSize = value->second.size();
+        }
 
         const char* charKey = key.data();
         int depth = 0;
@@ -849,16 +822,25 @@ private:
 
         // Copy root if it is not uniquely owned.
         if (_root.use_count() > 1) {
+            auto tmp = _root;
             _root = std::make_shared<Node>(*_root.get());
+            _root->_numSubtreeElems = tmp->_numSubtreeElems;
+            _root->_sizeSubtreeElems = tmp->_sizeSubtreeElems;
         }
+
+        _root->_numSubtreeElems += elemNum;
+        _root->_sizeSubtreeElems += elemSize;
 
         std::shared_ptr<Node> prev = _root;
         while (node != nullptr) {
-            // Copy node if it is not uniquely owned. A unique node will always have two pointers
-            // to it. One for the parent node and one for the 'node' variable.
-            // 'prev' should always be uniquely owned and so we should be able to modify it.
-            if (node.use_count() > 2) {
+            // Copy node if it is not uniquely owned. A unique node, in this case, will have 3
+            // pointers to it. One for the parent node, one for the 'node' variable and one for
+            // the 'old' variable. 'prev' should always be uniquely owned and so we should be able
+            // to modify it.
+            if (node.use_count() > 3) {
                 node = std::make_shared<Node>(*old.get());
+                node->_numSubtreeElems = old->_numSubtreeElems;
+                node->_sizeSubtreeElems = old->_sizeSubtreeElems;
                 prev->children[old->trieKey.front()] = node;
             }
 
@@ -879,11 +861,15 @@ private:
                     // Make a child with whatever is left of the new key.
                     newKey = _makeKey(charKey + depth, key.size() - depth);
                     auto newChild = _addChild(newNode, newKey, value);
+                    newNode->_numSubtreeElems += 1;
+                    newNode->_sizeSubtreeElems += value->second.size();
                     it = const_iterator(_root, newChild.get());
                 } else {
                     // The new key is a prefix of an existing key, and has its own node,
                     // so we don't need to add any new nodes.
                     newNode->data.emplace(value->first, value->second);
+                    newNode->_numSubtreeElems += 1;
+                    newNode->_sizeSubtreeElems += value->second.size();
                 }
 
                 // Change the current node's trieKey and make a child of the new node.
@@ -900,9 +886,14 @@ private:
                 } else {
                     node->data.emplace(value->first, value->second);
                 }
+                node->_numSubtreeElems += elemNum;
+                node->_sizeSubtreeElems += elemSize;
                 const_iterator it(_root, node.get());
                 return std::pair<const_iterator, bool>(it, true);
             }
+
+            node->_numSubtreeElems += elemNum;
+            node->_sizeSubtreeElems += elemSize;
 
             depth += node->trieKey.size();
             childFirstChar = static_cast<const uint8_t>(charKey[depth]);
@@ -922,7 +913,7 @@ private:
         return std::pair<const_iterator, bool>(it, true);
     }
 
-    /*
+    /**
      * Return a uint8_t vector with the first 'count' characters of
      * 'old'.
      */
@@ -935,7 +926,7 @@ private:
         return key;
     }
 
-    /*
+    /**
      * Return a uint8_t vector with the [pos, pos+count) characters from old.
      */
     std::vector<uint8_t> _makeKey(std::vector<uint8_t> old, size_t pos, size_t count) {
@@ -946,7 +937,7 @@ private:
         return key;
     }
 
-    /*
+    /**
      * Add a child with trieKey 'key' and value 'value' to 'node'.
      */
     std::shared_ptr<Node> _addChild(std::shared_ptr<Node> node,
@@ -955,6 +946,12 @@ private:
         std::shared_ptr<Node> newNode = std::make_shared<Node>(key);
         if (value != boost::none) {
             newNode->data.emplace(value->first, value->second);
+            newNode->_numSubtreeElems = 1;
+            newNode->_sizeSubtreeElems = value->second.size();
+        }
+        if (node->children[key.front()] != nullptr) {
+            newNode->_numSubtreeElems = node->children[key.front()]->_numSubtreeElems;
+            newNode->_sizeSubtreeElems = node->children[key.front()]->_sizeSubtreeElems;
         }
         node->children[key.front()] = newNode;
         return newNode;
@@ -967,14 +964,13 @@ private:
     * statically under RadixStore.
     *
     * This assumes that the key is present in the tree.
-    *
     */
     static std::vector<Node*> _buildContext(Key key, Node* node) {
         std::vector<Node*> context;
         context.push_back(node);
 
         const char* charKey = key.data();
-        size_t depth = 0;
+        size_t depth = node->trieKey.size();
 
         while (depth < key.size()) {
             uint8_t c = static_cast<uint8_t>(charKey[depth]);
@@ -985,11 +981,9 @@ private:
         return context;
     }
 
-    /*
+    /**
      * Return the index at which 'key1' and 'key2' differ.
-     *
      * This function will interpret the bytes in 'key2' as unsigned values.
-     *
      */
     size_t _comparePrefix(std::vector<uint8_t> key1, const char* key2, size_t len2) const {
         size_t smaller = std::min(key1.size(), len2);
@@ -1004,16 +998,12 @@ private:
         return i;
     }
 
-    /*
-     * Compresses a child node into its parent if necessary.
-     *
-     * This is required when an erase results in a node with no value
-     * and only one child.
-     *
+    /**
+     * Compresses a child node into its parent if necessary. This is required when an erase results
+     * in a node with no value and only one child.
      */
     void _compressOnlyChild(Node* node) {
-        // Don't compress if this node has an actual value associated with it
-        // or is the root.
+        // Don't compress if this node has an actual value associated with it or is the root.
         if (node->data != boost::none || node->trieKey.empty()) {
             return;
         }
@@ -1040,9 +1030,260 @@ private:
         node->children = onlyChild->children;
     }
 
+    std::shared_ptr<Node> _makeBranchUnique(std::vector<std::shared_ptr<Node>>& context) {
+
+        if (context.empty())
+            return nullptr;
+
+        auto node = context.front();
+        auto parent = node;
+        bool unique = node.use_count() - 1 == 1;
+        unsigned int idx = 1;
+
+        if (!unique) {
+            // The first node should always be the root node, so if it is not unique, it is
+            // necessary to create a new uniquely owned root node.
+            _root = std::make_shared<Node>(*node.get());
+            parent = _root;
+            context[0] = _root;
+
+            // If the context only contains the root, and it was copied, return the new root.
+            if (context.size() == 1)
+                return _root;
+
+            node = context[idx];
+        } else {
+            // Move down the the tree to first non-unique node.
+            while (unique && idx < context.size()) {
+                parent = node;
+                node = context[idx];
+                unique = node.use_count() - 1 == 1;
+                idx++;
+            }
+        }
+
+        // Create copies of the nodes until the leaf node.
+        std::shared_ptr<Node> newNode = node;
+        for (; idx < context.size(); idx++) {
+            node = context[idx];
+            newNode = std::make_shared<Node>(*node.get());
+            parent->children[node->trieKey.front()] = newNode;
+            parent = newNode;
+            context[idx] = newNode;
+        }
+
+        return newNode;
+    }
+
+    /**
+     * Resolves conflicts within subtrees due to the complicated structure of path-compressed radix
+     * tries.
+     */
+    void mergeResolveConflict(std::shared_ptr<Node> current,
+                              const std::shared_ptr<Node>& baseNode,
+                              const std::shared_ptr<Node>& otherNode) {
+
+        // Merges all differences between this and base, along with modifications from other.
+
+        // Find the first node with data in the sub-tree where current is root.
+        Node* node = _begin(current);
+        RadixStore::const_iterator iter = const_iterator(current, node);
+        RadixStore base, other;
+        base._root = baseNode;
+        other._root = otherNode;
+
+        while (iter != this->end()) {
+            const value_type val = *iter;
+            RadixStore::const_iterator baseIter = base.find(val.first);
+            RadixStore::const_iterator otherIter = other.find(val.first);
+
+            if (baseIter != base.end() && otherIter != other.end()) {
+                if (val.second != baseIter->second && otherIter->second != baseIter->second) {
+                    // Throws exception if there are conflicting modifications.
+                    throw merge_conflict_exception();
+                }
+
+                if (val.second != baseIter->second) {
+                    // Merges non-conflicting insertions from this.
+                    this->insert(RadixStore::value_type(val));
+                } else {
+                    // Merges non-conflicting modifications from other or no modifications.
+                    this->insert(RadixStore::value_type(*otherIter));
+                }
+            } else if (baseIter != base.end() && otherIter == other.end()) {
+                if (val.second != baseIter->second) {
+                    // Throws exception if modifications from this conflict with deletions from
+                    // other.
+                    throw merge_conflict_exception();
+                }
+            } else if (baseIter == base.end()) {
+                if (otherIter != other.end()) {
+                    // Throws exception if insertions from this conflict with insertions from other.
+                    throw merge_conflict_exception();
+                }
+
+                // Merges insertions from this.
+                this->insert(RadixStore::value_type(val));
+            }
+            iter++;
+        }
+
+        // Merges insertions and deletions from other.
+        for (const value_type otherVal : other) {
+            RadixStore::const_iterator baseIter = base.find(otherVal.first);
+            RadixStore::const_iterator thisIter = this->find(otherVal.first);
+
+            if (baseIter == base.end()) {
+                // Merges insertions from other.
+                this->insert(RadixStore::value_type(otherVal));
+            } else if (thisIter == this->end() && otherVal.second != baseIter->second) {
+                // Throws exception if modifications from this conflict with deletions from other.
+                throw merge_conflict_exception();
+            }
+        }
+
+        // Merges insertions and deletions from other.
+        for (const value_type baseVal : base) {
+            RadixStore::const_iterator otherIter = other.find(baseVal.first);
+            RadixStore::const_iterator thisIter = this->find(baseVal.first);
+
+            if (otherIter == other.end() && thisIter != this->end()) {
+                // If 'base' and 'current' trees contain a node not present in 'other', erase it.
+                this->erase(baseVal.first);
+            }
+        }
+    }
+
+
+    /**
+     * Returns a Store that has all changes from both 'this' and 'other' compared to base.
+     * Throws merge_conflict_exception if there are merge conflicts.
+     */
+    std::pair<int, int> _merge3Helper(std::shared_ptr<Node> current,
+                                      const std::shared_ptr<Node>& base,
+                                      const std::shared_ptr<Node>& other,
+                                      std::vector<std::shared_ptr<Node>>& context) {
+        // Remember the number of elements, and the size of the elements that changed to
+        // properly update parent nodes in our recursive stack.
+        int sizeDelta = 0;
+        int numDelta = 0;
+        context.push_back(current);
+
+        for (unsigned int key = 0; key < 256; ++key) {
+            std::shared_ptr<Node> node = current->children[key];
+            std::shared_ptr<Node> baseNode = base->children[key];
+            std::shared_ptr<Node> otherNode = other->children[key];
+            bool unique = node != otherNode && node != baseNode;
+
+            // If the current tree does not have this node, check if the other trees do.
+            if (node == nullptr) {
+                if (baseNode == nullptr && otherNode != nullptr) {
+                    // If base and 'this' do NOT have this branch, but other does, then
+                    // merge in the other's branch.
+                    sizeDelta += other->children[key]->_sizeSubtreeElems;
+                    numDelta += other->children[key]->_numSubtreeElems;
+
+                    current = _makeBranchUnique(context);
+                    current->children[key] = other->children[key];
+                } else if (baseNode != nullptr && otherNode != nullptr && baseNode == otherNode) {
+                    // Don't do anything since it means that master + base have a branch
+                    // that current does not, indicnating that current removed that branch.
+                } else if (baseNode != nullptr && otherNode == nullptr) {
+                    // In this case, master and current trees remove the same branch, but it
+                    // is still a write conflict.
+                    throw merge_conflict_exception();
+                } else if (baseNode != nullptr && otherNode != nullptr && baseNode != otherNode) {
+                    // In this case, current removes a branch that was updated by master
+                    // hence a conflict.
+                    throw merge_conflict_exception();
+                }
+            } else {
+                if (!unique) {
+                    if (baseNode != nullptr && otherNode != nullptr && baseNode == otherNode) {
+                        // Do nothing because current has changed the branch since all nodes
+                        // are shared between the three trees.
+                    } else if (baseNode != nullptr && otherNode == nullptr) {
+                        // Other has a deleted branch that must also be removed from 'this' tree.
+                        sizeDelta -= current->children[key]->_sizeSubtreeElems;
+                        numDelta -= current->children[key]->_numSubtreeElems;
+
+                        current = _makeBranchUnique(context);
+                        current->children[key] = nullptr;
+
+                    } else if (baseNode != nullptr && otherNode != nullptr && baseNode == node) {
+                        // If other and current point to the same node, then master changed
+                        // something.
+                        sizeDelta += other->children[key]->_sizeSubtreeElems -
+                            current->children[key]->_sizeSubtreeElems;
+                        numDelta += other->children[key]->_numSubtreeElems -
+                            current->children[key]->_numSubtreeElems;
+
+                        current = _makeBranchUnique(context);
+                        current->children[key] = other->children[key];
+                    }
+                } else {
+                    // Current node is a unique pointer.
+                    if (baseNode == nullptr && otherNode == nullptr) {
+                        // Do nothing because current has added a new branch.
+                    } else if (baseNode != nullptr && otherNode != nullptr &&
+                               baseNode == otherNode) {
+                        // Do nothing because current has changed the branch.
+                    } else if (baseNode != nullptr && otherNode != nullptr &&
+                               baseNode != otherNode) {
+                        // If all three are unique and leaf nodes, then it is a merge conflict.
+                        if (node->isLeaf() && baseNode->isLeaf() && otherNode->isLeaf())
+                            throw merge_conflict_exception();
+
+                        // If the keys are all the exact same, then we can keep recursing.
+                        // Otherwise, we manually resolve the differences element by element. The
+                        // structure of compressed radix tries makes it difficult to compare the
+                        // trees node by node, hence the reason for resolving these differences
+                        // element by element.
+                        if (node->trieKey == baseNode->trieKey &&
+                            baseNode->trieKey == otherNode->trieKey) {
+                            std::pair<int, int> diff =
+                                _merge3Helper(node, baseNode, otherNode, context);
+                            numDelta += diff.first;
+                            sizeDelta += diff.second;
+                        } else {
+                            mergeResolveConflict(node, baseNode, otherNode);
+                        }
+
+                    } else if (baseNode != nullptr && otherNode == nullptr) {
+                        // Throw a write conflict since current has modified a branch but
+                        // master has removed it.
+                        throw merge_conflict_exception();
+                    } else if (baseNode == nullptr && otherNode != nullptr) {
+                        // Throw a write conflict since both current and master added branches that
+                        // were nonexistent in base.
+                        throw merge_conflict_exception();
+                    }
+                }
+            }
+        }
+
+        current->_numSubtreeElems += numDelta;
+        current->_sizeSubtreeElems += sizeDelta;
+        return std::make_pair(numDelta, sizeDelta);
+    }
+
+    Node* _begin(const std::shared_ptr<Node> root) const noexcept {
+        auto node = root;
+        while (node->data == boost::none) {
+            if (node->children.empty())
+                return nullptr;
+
+            for (auto child : node->children) {
+                if (child != nullptr) {
+                    node = child;
+                    break;
+                }
+            }
+        }
+        return node.get();
+    }
+
     std::shared_ptr<Node> _root;
-    size_type _numElems;
-    size_type _sizeElems;
 };
 
 using StringStore = RadixStore<std::string, std::string>;

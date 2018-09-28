@@ -79,6 +79,16 @@ privileges causes an authorization failure. If an individual privilege specifies
 "removeWhenTestingAuthzFailure: false", then that privilege will not be removed when testing for
 authorization failure.
 
+9) commandArgs
+
+Set of options to be passed to your 'command' function. Can be used to send different versions of
+the command depending on the testcase being run.
+
+10) skipTest
+
+Add "skipTest: <function>" to not run the test for more complex reasons. The function is passed
+one argument, the connection object.
+
 */
 
 // constants
@@ -1052,10 +1062,18 @@ var authCommandsLib = {
         },
         {
           testname: "aggregate_out_legacy",
-          command: {aggregate: "foo", pipeline: [{$out: "foo_out"}], cursor: {}},
+          command: function(state, args) {
+              return {
+                  aggregate: "foo",
+                  pipeline: [{$out: "foo_out"}],
+                  cursor: {},
+                  bypassDocumentValidation: args.bypassDocumentValidation,
+              };
+          },
           testcases: [
               {
                 runOnDb: firstDbName,
+                commandArgs: {bypassDocumentValidation: false},
                 roles: {readWrite: 1, readWriteAnyDatabase: 1, dbOwner: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
@@ -1065,25 +1083,43 @@ var authCommandsLib = {
               },
               {
                 runOnDb: secondDbName,
+                commandArgs: {bypassDocumentValidation: false},
                 roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: secondDbName, collection: "foo"}, actions: ["find"]},
                     {resource: {db: secondDbName, collection: "foo_out"}, actions: ["insert"]},
                     {resource: {db: secondDbName, collection: "foo_out"}, actions: ["remove"]}
+                ]
+              },
+              {
+                runOnDb: firstDbName,
+                commandArgs: {bypassDocumentValidation: true},
+                // Note that the built-in role must have 'bypassDocumentValidation' for this test.
+                roles: {dbOwner: 1, root: 1, __system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {
+                      resource: {db: firstDbName, collection: "foo_out"},
+                      actions: ["insert", "remove", "bypassDocumentValidation"]
+                    },
                 ]
               },
           ]
         },
         {
           testname: "aggregate_out_replace_collection",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: {to: "foo_out", mode: "replaceCollection"}}],
-              cursor: {}
+          command: function(state, args) {
+              return {
+                  aggregate: "foo",
+                  pipeline: [{$out: {db: args.targetDB, to: "foo_out", mode: "replaceCollection"}}],
+                  cursor: {},
+                  bypassDocumentValidation: args.bypassDocumentValidation,
+              };
           },
           testcases: [
               {
                 runOnDb: firstDbName,
+                commandArgs: {targetDB: firstDbName, bypassDocumentValidation: false},
                 roles: {readWrite: 1, readWriteAnyDatabase: 1, dbOwner: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
@@ -1093,6 +1129,7 @@ var authCommandsLib = {
               },
               {
                 runOnDb: secondDbName,
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: false},
                 roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: secondDbName, collection: "foo"}, actions: ["find"]},
@@ -1100,18 +1137,36 @@ var authCommandsLib = {
                     {resource: {db: secondDbName, collection: "foo_out"}, actions: ["remove"]}
                 ]
               },
+              {
+                runOnDb: firstDbName,
+                commandArgs: {targetDB: firstDbName, bypassDocumentValidation: true},
+                // Note that the built-in role must have 'bypassDocumentValidation' for this test.
+                roles: {dbOwner: 1, root: 1, __system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {
+                      resource: {db: firstDbName, collection: "foo_out"},
+                      actions: ["insert", "remove", "bypassDocumentValidation"]
+                    },
+                ]
+              },
+              // TODO SERVER-36832: Test with mode "replaceCollection" to a foreign database.
           ]
         },
         {
           testname: "aggregate_out_insert_documents",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: {to: "foo_out", mode: "insertDocuments"}}],
-              cursor: {}
+          command: function(state, args) {
+              return {
+                  aggregate: "foo",
+                  pipeline: [{$out: {db: args.targetDB, to: "foo_out", mode: "insertDocuments"}}],
+                  cursor: {},
+                  bypassDocumentValidation: args.bypassDocumentValidation,
+              };
           },
           testcases: [
               {
                 runOnDb: firstDbName,
+                commandArgs: {targetDB: firstDbName, bypassDocumentValidation: false},
                 roles: {readWrite: 1, readWriteAnyDatabase: 1, dbOwner: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
@@ -1120,24 +1175,66 @@ var authCommandsLib = {
               },
               {
                 runOnDb: secondDbName,
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: false},
                 roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: secondDbName, collection: "foo"}, actions: ["find"]},
                     {resource: {db: secondDbName, collection: "foo_out"}, actions: ["insert"]},
                 ]
               },
+              {
+                runOnDb: firstDbName,
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: false},
+                roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {resource: {db: secondDbName, collection: "foo_out"}, actions: ["insert"]},
+                ]
+              },
+              // Test for bypassDocumentValidation.
+              {
+                runOnDb: firstDbName,
+                commandArgs: {targetDB: firstDbName, bypassDocumentValidation: true},
+                // Note that the built-in role must have 'bypassDocumentValidation' for this test.
+                roles: {dbOwner: 1, root: 1, __system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {
+                      resource: {db: firstDbName, collection: "foo_out"},
+                      actions: ["insert", "bypassDocumentValidation"]
+                    },
+                ]
+              },
+              // Test for bypassDocumentValidation to a foreign database.
+              {
+                runOnDb: firstDbName,
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: true},
+                // Note that the built-in role must have 'bypassDocumentValidation' for this test.
+                roles: {root: 1, __system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {
+                      resource: {db: secondDbName, collection: "foo_out"},
+                      actions: ["insert", "bypassDocumentValidation"]
+                    },
+                ]
+              },
           ]
         },
         {
           testname: "aggregate_out_replace_documents",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: {to: "foo_out", mode: "replaceDocuments"}}],
-              cursor: {}
+          command: function(state, args) {
+              return {
+                  aggregate: "foo",
+                  pipeline: [{$out: {db: args.targetDB, to: "foo_out", mode: "replaceDocuments"}}],
+                  cursor: {},
+                  bypassDocumentValidation: args.bypassDocumentValidation,
+              };
           },
           testcases: [
               {
                 runOnDb: firstDbName,
+                commandArgs: {targetDB: firstDbName, bypassDocumentValidation: false},
                 roles: {readWrite: 1, readWriteAnyDatabase: 1, dbOwner: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
@@ -1147,6 +1244,7 @@ var authCommandsLib = {
               },
               {
                 runOnDb: secondDbName,
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: false},
                 roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: secondDbName, collection: "foo"}, actions: ["find"]},
@@ -1154,65 +1252,20 @@ var authCommandsLib = {
                     {resource: {db: secondDbName, collection: "foo_out"}, actions: ["update"]},
                 ]
               },
-          ]
-        },
-        {
-          testname: "aggregate_out_legacy_bypass_doc_validation",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: "foo_out"}],
-              cursor: {},
-              bypassDocumentValidation: true,
-          },
-          testcases: [
               {
                 runOnDb: firstDbName,
-                // Note that the built-in role must have 'bypassDocumentValidation' for this test.
-                roles: {dbOwner: 1, root: 1, __system: 1},
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: false},
+                roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
                 privileges: [
                     {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
-                    {
-                      resource: {db: firstDbName, collection: "foo_out"},
-                      actions: ["insert", "remove", "bypassDocumentValidation"]
-                    },
+                    {resource: {db: secondDbName, collection: "foo_out"}, actions: ["insert"]},
+                    {resource: {db: secondDbName, collection: "foo_out"}, actions: ["update"]},
                 ]
               },
-          ]
-        },
-        {
-          testname: "aggregate_out_replace_collection_bypass_doc_validation",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: {to: "foo_out", mode: "replaceCollection"}}],
-              cursor: {},
-              bypassDocumentValidation: true,
-          },
-          testcases: [
+              // Test for bypassDocumentValidation.
               {
                 runOnDb: firstDbName,
-                // Note that the built-in role must have 'bypassDocumentValidation' for this test.
-                roles: {dbOwner: 1, root: 1, __system: 1},
-                privileges: [
-                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
-                    {
-                      resource: {db: firstDbName, collection: "foo_out"},
-                      actions: ["insert", "remove", "bypassDocumentValidation"]
-                    },
-                ]
-              },
-          ]
-        },
-        {
-          testname: "aggregate_out_replace_documents_bypass_doc_validation",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: {to: "foo_out", mode: "replaceDocuments"}}],
-              cursor: {},
-              bypassDocumentValidation: true,
-          },
-          testcases: [
-              {
-                runOnDb: firstDbName,
+                commandArgs: {targetDB: firstDbName, bypassDocumentValidation: true},
                 // Note that the built-in role must have 'bypassDocumentValidation' for this test.
                 roles: {dbOwner: 1, root: 1, __system: 1},
                 privileges: [
@@ -1223,26 +1276,17 @@ var authCommandsLib = {
                     },
                 ]
               },
-          ]
-        },
-        {
-          testname: "aggregate_out_insert_documents_bypass_doc_validation",
-          command: {
-              aggregate: "foo",
-              pipeline: [{$out: {to: "foo_out", mode: "insertDocuments"}}],
-              cursor: {},
-              bypassDocumentValidation: true,
-          },
-          testcases: [
+              // Test for bypassDocumentValidation to a foreign database.
               {
                 runOnDb: firstDbName,
+                commandArgs: {targetDB: secondDbName, bypassDocumentValidation: true},
                 // Note that the built-in role must have 'bypassDocumentValidation' for this test.
-                roles: {dbOwner: 1, root: 1, __system: 1},
+                roles: {root: 1, __system: 1},
                 privileges: [
                     {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
                     {
-                      resource: {db: firstDbName, collection: "foo_out"},
-                      actions: ["insert", "bypassDocumentValidation"]
+                      resource: {db: secondDbName, collection: "foo_out"},
+                      actions: ["insert", "update", "bypassDocumentValidation"]
                     },
                 ]
               },
@@ -5906,6 +5950,10 @@ var authCommandsLib = {
           testname: "aggregate_$backupCursor",
           command: {aggregate: 1, cursor: {}, pipeline: [{$backupCursor: {}}]},
           skipSharded: true,
+          // Only enterprise knows of this aggregation stage.
+          skipTest:
+              (conn) =>
+                  !conn.getDB("admin").runCommand({buildInfo: 1}).modules.includes("enterprise"),
           testcases: [{
               runOnDb: adminDbName,
               roles: roles_hostManager,
@@ -5949,6 +5997,9 @@ var authCommandsLib = {
     runOneTest: function(conn, t, impls) {
         jsTest.log("Running test: " + t.testname);
 
+        if (t.skipTest && t.skipTest(conn)) {
+            return [];
+        }
         // some tests shouldn't run in a sharded environment
         if (t.skipSharded && this.isMongos(conn)) {
             return [];
@@ -5965,11 +6016,11 @@ var authCommandsLib = {
         return impls.runOneTest(conn, t);
     },
 
-    setup: function(conn, t, runOnDb) {
+    setup: function(conn, t, runOnDb, testcase) {
         var adminDb = conn.getDB(adminDbName);
         if (t.setup) {
             adminDb.auth("admin", "password");
-            var state = t.setup(runOnDb);
+            var state = t.setup(runOnDb, testcase);
             runOnDb.getLastError();
             adminDb.logout();
             return state;

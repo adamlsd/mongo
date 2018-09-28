@@ -213,6 +213,11 @@ public:
         long long getNumReturnedSoFar() const;
 
         /**
+         * Returns a GenericCursor version of the pinned cursor.
+         */
+        GenericCursor toGenericCursor() const;
+
+        /**
          * Stashes 'obj' to be returned later by this cursor. A cursor must be owned.
          */
         void queueResult(const ClusterQueryResult& result);
@@ -404,9 +409,9 @@ public:
     void appendActiveSessions(LogicalSessionIdSet* lsids) const;
 
     /**
-     * Returns a list of GenericCursors for all cursors in the cursor manager.
+     * Returns a list of GenericCursors for all idle (non-pinned) cursors in the cursor manager.
      */
-    std::vector<GenericCursor> getAllCursors() const;
+    std::vector<GenericCursor> getIdleCursors() const;
 
     std::pair<Status, int> killCursorsWithMatchingSessions(OperationContext* opCtx,
                                                            const SessionKiller::Matcher& matcher);
@@ -552,6 +557,14 @@ private:
         boost::optional<LogicalSessionId> getLsid() const {
             return _lsid;
         }
+
+        /**
+         * Creates a generic cursor from the cursor inside this entry. Should only be called on
+         * idle cursors. The caller must supply the cursorId and namespace because the CursorEntry
+         * does not have access to them.  Cannot be called if this CursorEntry does not own an
+         * underlying ClusterClientCursor.
+         */
+        GenericCursor cursorToGenericCursor(CursorId cursorId, const NamespaceString& ns) const;
 
         /**
          * Returns the cursor owned by this CursorEntry for an operation to use. Only one operation

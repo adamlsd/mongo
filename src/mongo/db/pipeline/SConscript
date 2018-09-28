@@ -270,6 +270,8 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
+        '$BUILD_DIR/mongo/db/generic_cursor',
+        'field_path',
     ]
 )
 
@@ -282,10 +284,12 @@ env.Library(
         '$BUILD_DIR/mongo/db/ops/write_ops_exec',
         '$BUILD_DIR/mongo/db/query_exec',
         '$BUILD_DIR/mongo/db/stats/top',
-        '$BUILD_DIR/mongo/db/storage/backup_cursor_service',
         '$BUILD_DIR/mongo/s/sharding_api',
         'mongo_process_common',
-    ]
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/storage/backup_cursor_hooks',
+    ],
 )
 
 env.Library(
@@ -295,7 +299,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/s/query/async_results_merger',
-        '$BUILD_DIR/mongo/s/commands/cluster_commands_helpers',
+        '$BUILD_DIR/mongo/s/sharding_router_api',
         'mongo_process_common',
     ]
 )
@@ -307,7 +311,6 @@ pipelineeEnv.Library(
     source=[
         'document_source.cpp',
         'document_source_add_fields.cpp',
-        'document_source_backup_cursor.cpp',
         'document_source_bucket.cpp',
         'document_source_bucket_auto.cpp',
         'document_source_change_stream.cpp',
@@ -353,6 +356,7 @@ pipelineeEnv.Library(
         'document_source_unwind.cpp',
         'pipeline.cpp',
         'sequential_document_cache.cpp',
+        'stage_constraints.cpp',
         'tee_buffer.cpp',
     ],
     LIBDEPS=[
@@ -534,7 +538,7 @@ env.Library(
         env.Idlc('document_source_change_stream.idl')[0],
         env.Idlc('document_source_list_sessions.idl')[0],
         env.Idlc('document_source_out.idl')[0],
-        env.Idlc('document_source_exchange.idl')[0],
+        env.Idlc('exchange_spec.idl')[0],
         'resume_token.cpp',
     ],
     LIBDEPS=[

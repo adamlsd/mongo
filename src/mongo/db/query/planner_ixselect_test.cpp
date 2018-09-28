@@ -1426,7 +1426,7 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesExcludeNonMatchingKeySubpath) {
 
 TEST(QueryPlannerIXSelectTest, AllPathsIndicesExcludeNonMatchingPathsWithInclusionProjection) {
     auto allPathsIndexEntry = makeIndexEntryWithInfoObj(
-        BSON("$**" << 1), {}, BSON("starPathsTempName" << BSON("abc" << 1 << "subpath.abc" << 1)));
+        BSON("$**" << 1), {}, BSON("wildcardProjection" << BSON("abc" << 1 << "subpath.abc" << 1)));
 
     stdx::unordered_set<string> fields = {"abc", "def", "subpath.abc", "subpath.def", "subpath"};
 
@@ -1438,7 +1438,7 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesExcludeNonMatchingPathsWithInclusi
 
 TEST(QueryPlannerIXSelectTest, AllPathsIndicesExcludeNonMatchingPathsWithExclusionProjection) {
     auto allPathsIndexEntry = makeIndexEntryWithInfoObj(
-        BSON("$**" << 1), {}, BSON("starPathsTempName" << BSON("abc" << 0 << "subpath.abc" << 0)));
+        BSON("$**" << 1), {}, BSON("wildcardProjection" << BSON("abc" << 0 << "subpath.abc" << 0)));
 
     stdx::unordered_set<string> fields = {"abc", "def", "subpath.abc", "subpath.def", "subpath"};
 
@@ -1453,7 +1453,7 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesWithInclusionProjectionAllowIdExcl
     auto allPathsIndexEntry = makeIndexEntryWithInfoObj(
         BSON("$**" << 1),
         {},
-        BSON("starPathsTempName" << BSON("_id" << 0 << "abc" << 1 << "subpath.abc" << 1)));
+        BSON("wildcardProjection" << BSON("_id" << 0 << "abc" << 1 << "subpath.abc" << 1)));
 
     stdx::unordered_set<string> fields = {
         "_id", "abc", "def", "subpath.abc", "subpath.def", "subpath"};
@@ -1468,7 +1468,7 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesWithInclusionProjectionAllowIdIncl
     auto allPathsIndexEntry = makeIndexEntryWithInfoObj(
         BSON("$**" << 1),
         {},
-        BSON("starPathsTempName" << BSON("_id" << 1 << "abc" << 1 << "subpath.abc" << 1)));
+        BSON("wildcardProjection" << BSON("_id" << 1 << "abc" << 1 << "subpath.abc" << 1)));
 
     stdx::unordered_set<string> fields = {
         "_id", "abc", "def", "subpath.abc", "subpath.def", "subpath"};
@@ -1484,7 +1484,7 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesWithExclusionProjectionAllowIdIncl
     auto allPathsIndexEntry = makeIndexEntryWithInfoObj(
         BSON("$**" << 1),
         {},
-        BSON("starPathsTempName" << BSON("_id" << 1 << "abc" << 0 << "subpath.abc" << 0)));
+        BSON("wildcardProjection" << BSON("_id" << 1 << "abc" << 0 << "subpath.abc" << 0)));
 
     stdx::unordered_set<string> fields = {
         "_id", "abc", "def", "subpath.abc", "subpath.def", "subpath"};
@@ -1498,7 +1498,7 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesWithExclusionProjectionAllowIdIncl
 
 TEST(QueryPlannerIXSelectTest, AllPathsIndicesIncludeMatchingInternalNodes) {
     auto allPathsIndexEntry = makeIndexEntryWithInfoObj(
-        BSON("$**" << 1), {}, BSON("starPathsTempName" << BSON("_id" << 1 << "subpath" << 1)));
+        BSON("$**" << 1), {}, BSON("wildcardProjection" << BSON("_id" << 1 << "subpath" << 1)));
 
     stdx::unordered_set<string> fields = {
         "_id", "abc", "def", "subpath.abc", "subpath.def", "subpath"};
@@ -1508,6 +1508,49 @@ TEST(QueryPlannerIXSelectTest, AllPathsIndicesIncludeMatchingInternalNodes) {
     std::vector<BSONObj> expectedKeyPatterns = {
         BSON("_id" << 1), BSON("subpath.abc" << 1), BSON("subpath.def" << 1), BSON("subpath" << 1)};
     ASSERT_TRUE(indexEntryKeyPatternsMatch(&expectedKeyPatterns, &result));
+}
+
+TEST(QueryPlannerIXSelectTest, AllPathsIndexSupported) {
+    ASSERT_FALSE(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(
+        parseMatchExpression(fromjson("{x: {abc: 1}}")).get()));
+    ASSERT_FALSE(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(
+        parseMatchExpression(fromjson("{x: {$lt: {abc: 1}}}")).get()));
+    ASSERT_FALSE(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(
+        parseMatchExpression(fromjson("{x: {$in: [1, 2, 3, {abc: 1}]}}")).get()));
+}
+
+TEST(QueryPlannerIXSelectTest, AllPathsIndexSupportedDoesNotTraverse) {
+    // The function will not traverse a node's children.
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(
+        parseMatchExpression(fromjson("{$or: [{z: {abc: 1}}]}")).get()));
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(
+        parseMatchExpression(fromjson("{x: 5, y: {abc: 1}}")).get()));
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(
+        parseMatchExpression(fromjson("{x: {$ne: {abc: 1}}}")).get()));
+}
+
+TEST(QueryPlannerIXSelectTest, SparseIndexSupported) {
+    auto filterAObj = fromjson("{x: null}");
+    const auto queryA = parseMatchExpression(filterAObj);
+    ASSERT_FALSE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(queryA.get(), false));
+    // When in an elemMatch, a comparison to null implies literal null, so it is always supported.
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(queryA.get(), true));
+
+    auto filterBObj = fromjson("{x: {$in: [1, 2, 3, null]}}");
+    const auto queryB = parseMatchExpression(filterBObj);
+    ASSERT_FALSE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(queryB.get(), false));
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(queryB.get(), true));
+}
+
+TEST(QueryPlannerIXSelectTest, SparseIndexSupportedDoesNotTraverse) {
+    // The function will not traverse a node's children.
+    const bool inElemMatch = false;
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(
+        parseMatchExpression(fromjson("{$or: [{z: null}]}")).get(), inElemMatch));
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(
+        parseMatchExpression(fromjson("{x: 5, y: null}")).get(), inElemMatch));
+    ASSERT_TRUE(QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(
+        parseMatchExpression(fromjson("{x: {$ne: null}}")).get(), inElemMatch));
 }
 
 }  // namespace

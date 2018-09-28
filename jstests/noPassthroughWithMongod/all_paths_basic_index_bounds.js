@@ -64,9 +64,16 @@
         {expression: {$exists: false}, bounds: null},
         {expression: {$eq: null}, bounds: null},
         {expression: {$ne: null}, bounds: null},
+        {expression: {$eq: {abc: 1}}, bounds: null},
+        {expression: {$lt: {abc: 1}}, bounds: null},
+        {expression: {$ne: {abc: 1}}, bounds: null},
+        {expression: {$lt: {abc: 1}, $gt: {abc: 1}}, bounds: null},
+        {expression: {$in: [{abc: 1}, 1, 2, 3]}, bounds: null},
+        {expression: {$in: [null, 1, 2, 3]}, bounds: null},
         {expression: {$ne: null, $exists: true}, bounds: ['[MinKey, MaxKey]'], subpathBounds: true},
         // In principle we could have tighter bounds for this. See SERVER-36765.
         {expression: {$eq: null, $exists: true}, bounds: ['[MinKey, MaxKey]'], subpathBounds: true},
+        {expression: {$eq: []}, bounds: ['[undefined, undefined]', '[[], []]']}
     ];
 
     // Given a keyPattern and (optional) pathProjection, this function builds a $** index on the
@@ -78,7 +85,7 @@
     function runAllPathsIndexTest(keyPattern, pathProjection, expectedPaths) {
         assert.commandWorked(coll.dropIndexes());
         assert.commandWorked(coll.createIndex(
-            keyPattern, pathProjection ? {starPathsTempName: pathProjection} : {}));
+            keyPattern, pathProjection ? {wildcardProjection: pathProjection} : {}));
 
         // The 'expectedPaths' argument is the set of paths which we expect to be indexed, based on
         // the keyPattern and projection. Make sure that the caller has provided this argument.
@@ -110,7 +117,11 @@
                 // and projection, or if the current operation is not supported by $** indexes,
                 // confirm that no indexed solution was found.
                 if (!expectedPaths.includes(path) || op.bounds === null) {
-                    assert.eq(ixScans.length, 0);
+                    assert.eq(ixScans.length,
+                              0,
+                              () => "Bounds check for operation: " + tojson(op) +
+                                  " failed. Expected no IXSCAN plans to be generated, but got " +
+                                  tojson(ixScans));
                     continue;
                 }
 
@@ -152,27 +163,24 @@
             const explainOutput = coll.find({$and: multiFieldPreds}).explain();
             const winningIxScan = getPlanStages(explainOutput.queryPlanner.winningPlan, "IXSCAN");
 
-            // Extract information about the rejected plans. We should have a number of AND_SORTED
-            // plans and one plain IXSCAN for each $** candidate index that wasn't the winner.
-            // TODO SERVER-36521: this should no longer generate AND_SORTED plans.
-            let rejectedAndSorted = [], rejectedIxScans = [];
+            // Extract information about the rejected plans. We should have one IXSCAN for each $**
+            // candidate that wasn't the winner. Before SERVER-36521 banned them for $** indexes, a
+            // number of AND_SORTED plans would also be generated here; we search for these in order
+            // to verify that no such plans now exist.
+            let rejectedIxScans = [], rejectedAndSorted = [];
             for (let rejectedPlan of explainOutput.queryPlanner.rejectedPlans) {
                 rejectedAndSorted =
                     rejectedAndSorted.concat(getPlanStages(rejectedPlan, "AND_SORTED"));
                 rejectedIxScans = rejectedIxScans.concat(getPlanStages(rejectedPlan, "IXSCAN"));
             }
 
-            // Calculate how many of the IXSCANs are within AND_SORTED stages.
-            const numAndSortedIxScans = ((count) => {
-                for (let andSorted of rejectedAndSorted)
-                    count += andSorted.inputStages.length;
-                return count;
-            })(0);
+            // Confirm that no AND_SORTED plans were generated.
+            assert.eq(rejectedAndSorted.length, 0);
 
             // We should find that one of the available $** subindexes has been chosen as the
             // winner, and all other candidate $** indexes are present in 'rejectedPlans'.
             assert.eq(winningIxScan.length, 1);
-            assert.eq(rejectedIxScans.length, numAndSortedIxScans + expectedPaths.length - 1);
+            assert.eq(rejectedIxScans.length, expectedPaths.length - 1);
 
             // Verify that each of the IXSCANs have the expected bounds and $_path key.
             for (let ixScan of winningIxScan.concat(rejectedIxScans)) {
@@ -216,7 +224,5 @@
         // Disable $** indexes once the tests have either completed or failed.
         assert.commandWorked(
             db.adminCommand({setParameter: 1, internalQueryAllowAllPathsIndexes: false}));
-        // TODO: SERVER-36444 remove this coll.drop because validation should work now.
-        coll.drop();
     }
 })();

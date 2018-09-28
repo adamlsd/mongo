@@ -186,6 +186,12 @@ public:
         _pos = n;
     }
 
+    /**
+     * Returns a generic cursor containing diagnostics about this cursor.
+     * The caller must either have this cursor pinned or hold a mutex from the cursor manager.
+     */
+    GenericCursor toGenericCursor() const;
+
     //
     // Timing.
     //
@@ -271,7 +277,7 @@ private:
     }
 
     // The ID of the ClientCursor. A value of 0 is used to mean that no cursor id has been assigned.
-    CursorId _cursorid = 0;
+    const CursorId _cursorid = 0;
 
     // Threads may read from this field even if they don't have the cursor pinned, as long as they
     // have the correct partition of the CursorManager locked (just like _authenticatedUsers).

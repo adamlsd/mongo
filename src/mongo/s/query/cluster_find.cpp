@@ -52,7 +52,7 @@
 #include "mongo/platform/overflow_arithmetic.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/async_results_merger.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
@@ -61,7 +61,7 @@
 #include "mongo/s/query/establish_cursors.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/s/transaction/transaction_router.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -81,6 +81,8 @@ static const BSONObj kGeoNearDistanceMetaProjection = BSON("$meta"
 // for the field name's null terminator + 1 byte per digit in the array index. The index can be no
 // more than 8 decimal digits since the response is at most 16MB, and 16 * 1024 * 1024 < 1 * 10^8.
 static const int kPerDocumentOverheadBytesUpperBound = 10;
+
+const char kFindCmdName[] = "find";
 
 /**
  * Given the QueryRequest 'qr' being executed by mongos, returns a copy of the query which is
@@ -238,6 +240,10 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
     params.isAllowPartialResults = query.getQueryRequest().isAllowPartialResults();
     params.lsid = opCtx->getLogicalSessionId();
     params.txnNumber = opCtx->getTxnNumber();
+
+    if (TransactionRouter::get(opCtx)) {
+        params.isAutoCommit = false;
+    }
 
     // This is the batchSize passed to each subsequent getMore command issued by the cursor. We
     // usually use the batchSize associated with the initial find, but as it is illegal to send a
@@ -438,11 +444,10 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
                                             << " retries");
                 throw;
             } else if (!ErrorCodes::isStaleShardVersionError(ex.code()) &&
-                       !ErrorCodes::isSnapshotError(ex.code()) &&
                        ex.code() != ErrorCodes::ShardNotFound) {
-                // Errors other than stale metadata, snapshot unavailable, or from trying to reach a
-                // non existent shard are fatal to the operation. Network errors and replication
-                // retries happen at the level of the AsyncResultsMerger.
+                // Errors other than stale metadata or from trying to reach a non existent shard are
+                // fatal to the operation. Network errors and replication retries happen at the
+                // level of the AsyncResultsMerger.
                 ex.addContext("Encountered non-retryable error during query");
                 throw;
             }
@@ -450,12 +455,12 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
             LOG(1) << "Received error status for query " << redact(query.toStringShort())
                    << " on attempt " << retries << " of " << kMaxRetries << ": " << redact(ex);
 
-            // Note: there is no need to refresh metadata on snapshot errors since the request
-            // failed because atClusterTime was too low, not because the wrong shards were targeted,
-            // and subsequent attempts will choose a later atClusterTime.
-            if (ErrorCodes::isStaleShardVersionError(ex.code()) ||
-                ex.code() == ErrorCodes::ShardNotFound) {
-                catalogCache->onStaleShardVersion(std::move(routingInfo));
+            catalogCache->onStaleShardVersion(std::move(routingInfo));
+
+            if (auto txnRouter = TransactionRouter::get(opCtx)) {
+                // A transaction can always continue on a stale version error during find because
+                // the operation must be idempotent.
+                txnRouter->onStaleShardOrDbError(kFindCmdName);
             }
         }
     }
@@ -570,6 +575,7 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         stdx::lock_guard<Client> lk(*opCtx->getClient());
         CurOp::get(opCtx)->setOriginatingCommand_inlock(
             pinnedCursor.getValue().getOriginatingCommand());
+        CurOp::get(opCtx)->setGenericCursor_inlock(pinnedCursor.getValue().toGenericCursor());
     }
 
     // If the 'waitAfterPinningCursorBeforeGetMoreBatch' fail point is enabled, set the 'msg'

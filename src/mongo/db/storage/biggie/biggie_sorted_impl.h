@@ -41,8 +41,11 @@ public:
     SortedDataBuilderInterface(OperationContext* opCtx,
                                bool dupsAllowed,
                                Ordering order,
-                               std::string prefix,
-                               std::string identEnd);
+                               const std::string& prefix,
+                               const std::string& identEnd,
+                               const std::string& collectionNamespace,
+                               const std::string& indexName,
+                               const BSONObj& keyPattern);
     SpecialFormatInserted commit(bool mayInterrupt) override;
     virtual StatusWith<SpecialFormatInserted> addKey(const BSONObj& key, const RecordId& loc);
 
@@ -54,6 +57,10 @@ private:
     // Prefix and identEnd for the ident.
     std::string _prefix;
     std::string _identEnd;
+    // Index metadata.
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
     // Whether or not we've already added something before.
     bool _hasLast;
     // This is the KeyString of the last key added.
@@ -168,13 +175,15 @@ private:
     // These two are the same as before.
     std::string _prefix;
     std::string _identEnd;
+    // Index metadata.
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
     // These are the keystring representations of the _prefix and the _identEnd.
     std::string _KSForIdentStart;
     std::string _KSForIdentEnd;
     // This stores whether or not the end position is inclusive.
     bool _isUnique;
-    // This stores whethert or not dups are allowed.
-    bool _dupsAllowed;
 };
 }  // namespace biggie
 }  // namespace mongo

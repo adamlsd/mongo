@@ -7,7 +7,10 @@ load('jstests/libs/sessions_collection.js');
     // implicit sessions.
     TestData.disableImplicitSessions = true;
 
-    var replTest = new ReplSetTest({name: 'refresh', nodes: 3});
+    var replTest = new ReplSetTest({
+        name: 'refresh',
+        nodes: [{rsConfig: {votes: 1, priority: 1}}, {rsConfig: {votes: 0, priority: 0}}]
+    });
     var nodes = replTest.startSet();
 
     replTest.initiate();
@@ -15,7 +18,7 @@ load('jstests/libs/sessions_collection.js');
     var primaryAdmin = primary.getDB("admin");
 
     replTest.awaitSecondaryNodes();
-    var secondary = replTest._slaves[0];
+    var secondary = replTest.getSecondary();
     var secondaryAdmin = secondary.getDB("admin");
 
     // Test that we can use sessions on the primary before the sessions collection exists.
@@ -30,22 +33,30 @@ load('jstests/libs/sessions_collection.js');
     // Test that we can use sessions on secondaries before the sessions collection exists.
     {
         validateSessionsCollection(primary, false, false);
+
+        replTest.awaitReplication();
         validateSessionsCollection(secondary, false, false);
 
         assert.commandWorked(secondaryAdmin.runCommand({startSession: 1}));
 
         validateSessionsCollection(primary, false, false);
+
+        replTest.awaitReplication();
         validateSessionsCollection(secondary, false, false);
     }
 
     // Test that a refresh on a secondary creates the sessions collection.
     {
         validateSessionsCollection(primary, false, false);
+
+        replTest.awaitReplication();
         validateSessionsCollection(secondary, false, false);
 
         assert.commandWorked(secondaryAdmin.runCommand({refreshLogicalSessionCacheNow: 1}));
 
         validateSessionsCollection(primary, true, true);
+
+        replTest.awaitReplication();
         validateSessionsCollection(secondary, true, true);
     }
     // Test that a refresh on the primary creates the sessions collection.
@@ -53,6 +64,8 @@ load('jstests/libs/sessions_collection.js');
         assert.commandWorked(primary.getDB("config").runCommand(
             {drop: "system.sessions", writeConcern: {w: "majority"}}));
         validateSessionsCollection(primary, false, false);
+
+        replTest.awaitReplication();
         validateSessionsCollection(secondary, false, false);
 
         assert.commandWorked(primaryAdmin.runCommand({refreshLogicalSessionCacheNow: 1}));

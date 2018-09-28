@@ -1,4 +1,4 @@
-/*
+/**
  *    Copyright (C) 2018 MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -53,6 +53,11 @@ class OperationContext;
 
 extern AtomicInt32 transactionLifetimeLimitSeconds;
 
+enum class SpeculativeTransactionOpTime {
+    kLastApplied,
+    kAllCommitted,
+};
+
 /**
  * A state machine that coordinates a distributed transaction commit with the transaction
  * coordinator.
@@ -84,6 +89,13 @@ public:
          * Returns a const pointer to the stashed lock state, or nullptr if no stashed locks exist.
          */
         const Locker* locker() const {
+            return _locker.get();
+        }
+
+        /**
+         * Same as above but non-const.
+         */
+        Locker* locker() {
             return _locker.get();
         }
 
@@ -127,82 +139,35 @@ public:
         OperationContext* _opCtx;
     };
 
+    TransactionParticipant() = default;
+
+    /**
+     * Obtains the transaction participant from an operation context on which the session has been
+     * checked-out.
+     */
     static TransactionParticipant* get(OperationContext* opCtx);
 
     /**
-     * This should only be used when session was obtained without checking it out.
+     * This should only be used when session was obtained without checking it out and its only user
+     * should be chunk migration.
      */
     static TransactionParticipant* getFromNonCheckedOutSession(Session* session);
 
-    TransactionParticipant() = default;
-
-    static boost::optional<TransactionParticipant>& get(Session* session);
-    static void create(Session* session);
-
-    class StateMachine {
-    public:
-        friend class TransactionParticipant;
-
-        // Note: We must differentiate the 'committed/aborted' and 'committed/aborted after prepare'
-        // states, because it is illegal to receive, for example, a prepare request after a
-        // commit/abort if no prepare was received before the commit/abort.
-        enum class State {
-            kUnprepared,
-            kAborted,
-            kCommitted,
-            kWaitingForDecision,
-            kAbortedAfterPrepare,
-            kCommittedAfterPrepare,
-
-            // The state machine transitions to this state when a message that is considered illegal
-            // to receive in a particular state is received. This indicates either a byzantine
-            // message, or that the transition table does not accurately reflect an asynchronous
-            // network.
-            kBroken,
-        };
-
-        // State machine inputs
-        enum class Event {
-            kRecvPrepare,
-            kVoteCommitRejected,
-            kRecvAbort,
-            kRecvCommit,
-        };
-
-        // State machine outputs
-        enum class Action {
-            kNone,
-            kPrepare,
-            kAbort,
-            kCommit,
-            kSendCommitAck,
-            kSendAbortAck,
-        };
-
-        Action onEvent(Event e);
-
-        State state() {
-            return _state;
-        }
-
-    private:
-        struct Transition {
-            Transition() : action(Action::kNone) {}
-            Transition(Action action) : action(action) {}
-            Transition(Action action, State state) : action(action), nextState(state) {}
-
-            Action action;
-            boost::optional<State> nextState;
-        };
-
-        static const std::map<State, std::map<Event, Transition>> transitionTable;
-        State _state{State::kUnprepared};
-    };
+    /**
+     * Kills the transaction if it is running, ensuring that it releases all resources, even if the
+     * transaction is in prepare().  Avoids writing any oplog entries or making any changes to the
+     * transaction table.  State for prepared transactions will be re-constituted at startup.
+     * Note that we don't take any active steps to prevent continued use of this
+     * TransactionParticipant after shutdown() is called, but we rely on callers to not
+     * continue using the TransactionParticipant once we are in shutdown.
+     */
+    void shutdown();
 
     /**
      * Called for speculative transactions to fix the optime of the snapshot to read from.
      */
-    void setSpeculativeTransactionOpTimeToLastApplied(OperationContext* opCtx);
+    void setSpeculativeTransactionOpTime(OperationContext* opCtx,
+                                         SpeculativeTransactionOpTime opTimeChoice);
 
     /**
      * Transfers management of transaction resources from the OperationContext to the Session.
@@ -232,8 +197,11 @@ public:
 
     /**
      * Puts a transaction into a prepared state and returns the prepareTimestamp.
+     *
+     * On secondary, the "prepareTimestamp" will be given in the oplog.
      */
-    Timestamp prepareTransaction(OperationContext* opCtx);
+    Timestamp prepareTransaction(OperationContext* opCtx,
+                                 boost::optional<repl::OpTime> prepareOptime);
 
     /**
      * Returns whether we are in a multi-document transaction, which means we have an active
@@ -366,6 +334,16 @@ public:
      */
     void abortActiveUnpreparedOrStashPreparedTransaction(OperationContext* opCtx);
 
+    /**
+     * If the transaction is not prepared, aborts the transaction and releases its resources.
+     * If the transaction is prepared, yields the transaction's locks and adds the Locker and
+     * LockSnapshot of the yielded locks to the end of the 'yieldedLocks' output vector.
+     *
+     * Not called with session checked out.
+     */
+    void abortOrYieldArbitraryTransaction(
+        std::vector<std::pair<Locker*, Locker::LockSnapshot>>* yieldedLocks);
+
     void addMultikeyPathInfo(MultikeyPathInfo info) {
         _multikeyPathInfo.push_back(std::move(info));
     }
@@ -391,11 +369,16 @@ public:
                          boost::optional<bool> autocommit,
                          boost::optional<bool> startTransaction);
 
-    static Status isValid(StringData dbName, StringData cmdName);
+    void beginOrContinueTransactionUnconditionally(TxnNumber txnNumber);
 
     void transitionToPreparedforTest() {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         _txnState.transitionTo(lk, TransactionState::kPrepared);
+    }
+
+    void transitionToAbortedforTest() {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        _txnState.transitionTo(lk, TransactionState::kAborted);
     }
 
     /**
@@ -520,26 +503,22 @@ private:
         return (s << txnState.toString());
     }
 
-    // Committing a transaction first changes its state to "Committing*" and writes to the oplog,
-    // then it changes the state to "Committed".
+    // Finishes committing the multi-document transaction after the storage-transaction has been
+    // committed, the oplog entry has been inserted into the oplog, and the transactions table has
+    // been updated.
+    void _finishCommitTransaction(WithLock lk, OperationContext* opCtx);
+
+    // Commits the storage-transaction on the OperationContext.
     //
-    // When a transaction is in "Committing" state, it's not allowed for other threads to change
-    // its state (i.e. abort the transaction), otherwise the on-disk state will diverge from the
-    // in-memory state.
-    // There are 3 cases where the transaction will be aborted.
-    // 1) abortTransaction command. Session check-out mechanism only allows one client to access a
-    // transaction.
-    // 2) killSession, stepdown, transaction timeout and any thread that aborts the transaction
-    // outside of session checkout. They can safely skip the committing transactions.
-    // 3) Migration. Should be able to skip committing transactions.
-    void _commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx);
+    // This should be called *without* the mutex being locked.
+    void _commitStorageTransaction(OperationContext* opCtx);
 
     // Stash transaction resources.
     void _stashActiveTransaction(WithLock, OperationContext* opCtx);
 
     // Abort the transaction if it's in one of the expected states and clean up the transaction
     // states associated with the opCtx.
-    void _abortActiveTransaction(WithLock,
+    void _abortActiveTransaction(stdx::unique_lock<stdx::mutex> lock,
                                  OperationContext* opCtx,
                                  TransactionState::StateSet expectedStates);
 
@@ -547,7 +526,9 @@ private:
     void _abortTransactionOnSession(WithLock);
 
     // Clean up the transaction resources unstashed on operation context.
-    void _cleanUpTxnResourceOnOpCtx(WithLock wl, OperationContext* opCtx);
+    void _cleanUpTxnResourceOnOpCtx(WithLock wl,
+                                    OperationContext* opCtx,
+                                    TransactionState::StateFlag terminationCause);
 
     // Checks if the current transaction number of this transaction still matches with the
     // parent session as well as the transaction number of the current operation context.
@@ -603,13 +584,13 @@ private:
     // Protects the member variables below.
     mutable stdx::mutex _mutex;
 
+    bool _inShutdown{false};
+
     // Holds transaction resources between network operations.
     boost::optional<TxnResources> _txnResourceStash;
 
     // Maintains the transaction state and the transition table for legal state transitions.
     TransactionState _txnState;
-
-    StateMachine _stateMachine;
 
     // Holds oplog data for operations which have been applied in the current multi-document
     // transaction.
@@ -656,77 +637,9 @@ private:
 
     // Tracks and updates transaction metrics upon the appropriate transaction event.
     TransactionMetricsObserver _transactionMetricsObserver;
+
+    // Tracks the Timestamp of the first oplog entry written by this TransactionParticipant.
+    boost::optional<Timestamp> _oldestOplogEntryTS;
 };
-
-inline StringBuilder& operator<<(StringBuilder& sb,
-                                 const TransactionParticipant::StateMachine::State& state) {
-    using State = TransactionParticipant::StateMachine::State;
-    switch (state) {
-        // clang-format off
-        case State::kUnprepared:                return sb << "Unprepared";
-        case State::kAborted:                   return sb << "Aborted";
-        case State::kCommitted:                 return sb << "Committed";
-        case State::kWaitingForDecision:        return sb << "WaitingForDecision";
-        case State::kAbortedAfterPrepare:       return sb << "AbortedAfterPrepare";
-        case State::kCommittedAfterPrepare:     return sb << "CommittedAfterPrepare";
-        case State::kBroken:                    return sb << "Broken";
-        // clang-format on
-        default:
-            MONGO_UNREACHABLE;
-    };
-}
-
-inline std::ostream& operator<<(std::ostream& os,
-                                const TransactionParticipant::StateMachine::State& state) {
-    StringBuilder sb;
-    sb << state;
-    return os << sb.str();
-}
-
-inline StringBuilder& operator<<(StringBuilder& sb,
-                                 const TransactionParticipant::StateMachine::Event& event) {
-    using Event = TransactionParticipant::StateMachine::Event;
-    switch (event) {
-        // clang-format off
-        case Event::kRecvPrepare:               return sb << "RecvPrepare";
-        case Event::kVoteCommitRejected:        return sb << "VoteCommitRejected";
-        case Event::kRecvAbort:                 return sb << "RecvAbort";
-        case Event::kRecvCommit:                return sb << "RecvCommit";
-        // clang-format on
-        default:
-            MONGO_UNREACHABLE;
-    };
-}
-
-inline std::ostream& operator<<(std::ostream& os,
-                                const TransactionParticipant::StateMachine::Event& event) {
-    StringBuilder sb;
-    sb << event;
-    return os << sb.str();
-}
-
-inline StringBuilder& operator<<(StringBuilder& sb,
-                                 const TransactionParticipant::StateMachine::Action& action) {
-    using Action = TransactionParticipant::StateMachine::Action;
-    switch (action) {
-        // clang-format off
-        case Action::kNone:                     return sb << "None";
-        case Action::kPrepare:                  return sb << "Prepare";
-        case Action::kAbort:                    return sb << "Abort";
-        case Action::kCommit:                   return sb << "Commit";
-        case Action::kSendCommitAck:            return sb << "SendCommitAck";
-        case Action::kSendAbortAck:             return sb << "SendAbortAck";
-        // clang-format on
-        default:
-            MONGO_UNREACHABLE;
-    };
-}
-
-inline std::ostream& operator<<(std::ostream& os,
-                                const TransactionParticipant::StateMachine::Action& action) {
-    StringBuilder sb;
-    sb << action;
-    return os << sb.str();
-}
 
 }  // namespace mongo

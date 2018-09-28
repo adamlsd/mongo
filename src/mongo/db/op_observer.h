@@ -81,7 +81,7 @@ public:
     virtual ~OpObserver() = default;
     virtual void onCreateIndex(OperationContext* opCtx,
                                const NamespaceString& nss,
-                               OptionalCollectionUUID uuid,
+                               CollectionUUID uuid,
                                BSONObj indexDoc,
                                bool fromMigrate) = 0;
     virtual void onInserts(OperationContext* opCtx,
@@ -243,10 +243,14 @@ public:
     /**
      * The onTransactionCommit method is called on the commit of an atomic transaction, before the
      * RecoveryUnit onCommit() is called.  It must not be called when no transaction is active.
-     * It accepts a 'wasPrepared' argument specifying if the transaction was prepared before commit
-     * was called.
+     *
+     * If the transaction was prepared, then 'commitOplogEntryOpTime' is passed in to be used as the
+     * OpTime of the oplog entry. The 'commitTimestamp' is the timestamp at which the multi-document
+     * transaction was committed. Either these fields should both be 'none' or neither should.
      */
-    virtual void onTransactionCommit(OperationContext* opCtx, bool wasPrepared) = 0;
+    virtual void onTransactionCommit(OperationContext* opCtx,
+                                     boost::optional<OplogSlot> commitOplogEntryOpTime,
+                                     boost::optional<Timestamp> commitTimestamp) = 0;
 
     /**
      * The onTransactionPrepare method is called when an atomic transaction is prepared. It must be
@@ -258,7 +262,8 @@ public:
 
     /**
      * The onTransactionAbort method is called when an atomic transaction aborts, before the
-     * RecoveryUnit onRollback() is called.  It must not be called when no transaction is active.
+     * RecoveryUnit onRollback() is called.  It must be called when the transaction to abort is
+     * active.
      */
     virtual void onTransactionAbort(OperationContext* opCtx) = 0;
 

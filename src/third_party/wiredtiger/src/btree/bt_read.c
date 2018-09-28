@@ -369,6 +369,43 @@ __evict_force_check(WT_SESSION_IMPL *session, WT_REF *ref)
 }
 
 /*
+ * __page_read_lookaside --
+ *	Figure out whether to instantiate content from lookaside on
+ *	page access.
+ */
+static inline int
+__page_read_lookaside(WT_SESSION_IMPL *session,
+    WT_REF *ref, uint32_t previous_state, uint32_t *final_statep)
+{
+	/*
+	 * Reading a lookaside ref for the first time, and not requiring the
+	 * history triggers a transition to WT_REF_LIMBO, if we are already
+	 * in limbo and still don't need the history - we are done.
+	 */
+	if (__wt_las_page_skip_locked(session, ref)) {
+		if (previous_state == WT_REF_LOOKASIDE) {
+			WT_STAT_CONN_INCR(
+			    session, cache_read_lookaside_skipped);
+			ref->page_las->eviction_to_lookaside = true;
+			*final_statep = WT_REF_LIMBO;
+		}
+		return (0);
+	}
+
+	/* Instantiate updates from the database's lookaside table. */
+	if (previous_state == WT_REF_LIMBO) {
+		WT_STAT_CONN_INCR(session, cache_read_lookaside_delay);
+		if (WT_SESSION_IS_CHECKPOINT(session))
+			WT_STAT_CONN_INCR(session,
+			    cache_read_lookaside_delay_checkpoint);
+	}
+
+	WT_RET(__las_page_instantiate(session, ref));
+	ref->page_las->eviction_to_lookaside = false;
+	return (0);
+}
+
+/*
  * __page_read --
  *	Read a page from the file.
  */
@@ -496,37 +533,27 @@ skip_read:
 		/* Move all records to a deleted state. */
 		WT_ERR(__wt_delete_page_instantiate(session, ref));
 		break;
-	case WT_REF_LOOKASIDE:
-		if (__wt_las_page_skip_locked(session, ref)) {
-			WT_STAT_CONN_INCR(
-			    session, cache_read_lookaside_skipped);
-			ref->page_las->eviction_to_lookaside = true;
-			final_state = WT_REF_LIMBO;
-			break;
-		}
-		/* FALLTHROUGH */
 	case WT_REF_LIMBO:
-		/* Instantiate updates from the database's lookaside table. */
-		if (previous_state == WT_REF_LIMBO) {
-			WT_STAT_CONN_INCR(session, cache_read_lookaside_delay);
-			if (WT_SESSION_IS_CHECKPOINT(session))
-				WT_STAT_CONN_INCR(session,
-				    cache_read_lookaside_delay_checkpoint);
-		}
-
-		WT_ERR(__las_page_instantiate(session, ref));
-		ref->page_las->eviction_to_lookaside = false;
+	case WT_REF_LOOKASIDE:
+		WT_ERR(__page_read_lookaside(
+		    session, ref, previous_state, &final_state));
 		break;
 	}
 
 	/*
-	 * We no longer need lookaside entries once the page is instantiated.
-	 * There's no reason for the lookaside remove to fail, but ignore it
-	 * if for some reason it fails, we've got a valid page.
+	 * Once the page is instantiated, we no longer need the history in
+	 * lookaside.  We leave the lookaside sweep thread to do most cleanup,
+	 * but it can only remove keys that skew newest (if there are entries
+	 * in the lookaside newer than the page, they need to be read back into
+	 * cache or they will be lost).
+	 *
+	 * There is no reason for the lookaside remove should fail, but ignore
+	 * it if for some reason it fails, we've got a valid page.
 	 *
 	 * Don't free WT_REF.page_las, there may be concurrent readers.
 	 */
-	if (final_state == WT_REF_MEM && ref->page_las != NULL)
+	if (final_state == WT_REF_MEM &&
+	    ref->page_las != NULL && !ref->page_las->skew_newest)
 		WT_IGNORE_RET(__wt_las_remove_block(
 		    session, ref->page_las->las_pageid, false));
 

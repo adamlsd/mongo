@@ -44,6 +44,7 @@
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/index_tag.h"
 #include "mongo/db/query/indexability.h"
+#include "mongo/db/query/planner_allpaths_helpers.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/util/log.h"
 
@@ -51,29 +52,14 @@ namespace mongo {
 
 namespace {
 
+namespace app = ::mongo::all_paths_planning;
+
 std::size_t numPathComponents(StringData path) {
     return FieldRef{path}.numParts();
 }
 
 /**
- * Returns a MultikeyPaths which indicates which components of 'indexedPath' are multikey, by
- * looking up multikeyness in 'multikeyPathSet'.
- */
-MultikeyPaths buildMultiKeyPathsForExpandedAllPathsIndexEntry(
-    const FieldRef& indexedPath, const std::set<FieldRef>& multikeyPathSet) {
-    FieldRef pathToLookup;
-    std::set<std::size_t> multikeyPathComponents;
-    for (size_t i = 0; i < indexedPath.numParts(); ++i) {
-        pathToLookup.appendPart(indexedPath.getPart(i));
-        if (multikeyPathSet.count(pathToLookup)) {
-            multikeyPathComponents.insert(i);
-        }
-    }
-    return {multikeyPathComponents};
-}
-
-/**
- * Given a single allPaths index, and a set of fields which are being queried, create a virtual
+ * Given a single allPaths index, and a set of fields which are being queried, create 'mock'
  * IndexEntry for each of the appropriate fields.
  */
 void expandIndex(const IndexEntry& allPathsIndex,
@@ -90,19 +76,29 @@ void expandIndex(const IndexEntry& allPathsIndex,
     invariant(allPathsIndex.multikeyPaths.empty());
 
     const auto projExec = AllPathsKeyGenerator::createProjectionExec(
-        allPathsIndex.keyPattern, allPathsIndex.infoObj.getObjectField("starPathsTempName"));
+        allPathsIndex.keyPattern, allPathsIndex.infoObj.getObjectField("wildcardProjection"));
 
     const auto projectedFields = projExec->applyProjectionToFields(fields);
 
+    const auto& includedPaths = projExec->getExhaustivePaths();
+
     out->reserve(out->size() + projectedFields.size());
     for (auto&& fieldName : projectedFields) {
+        // Convert string 'fieldName' into a FieldRef, to better facilitate the subsequent checks.
+        const auto queryPath = FieldRef{fieldName};
         // $** indices hold multikey metadata directly in the index keys, rather than in the index
         // catalog. In turn, the index key data is used to produce a set of multikey paths
         // in-memory. Here we convert this set of all multikey paths into a MultikeyPaths vector
         // which will indicate to the downstream planning code which components of 'fieldName' are
         // multikey.
-        auto multikeyPaths = buildMultiKeyPathsForExpandedAllPathsIndexEntry(
-            FieldRef{fieldName}, allPathsIndex.multikeyPathSet);
+        auto multikeyPaths = app::buildMultiKeyPathsForExpandedAllPathsIndexEntry(
+            queryPath, allPathsIndex.multikeyPathSet);
+
+        // Check whether a query on the current fieldpath is answerable by the $** index, given any
+        // numerical path components that may be present in the path string.
+        if (!app::validateNumericPathComponents(multikeyPaths, includedPaths, queryPath)) {
+            continue;
+        }
 
         // The expanded IndexEntry is only considered multikey if the particular path represented by
         // this IndexEntry has a multikey path component. For instance, suppose we have index {$**:
@@ -131,6 +127,20 @@ void expandIndex(const IndexEntry& allPathsIndex,
         out->push_back(std::move(entry));
     }
 }
+
+bool canUseAllPathsIndex(BSONElement elt, MatchExpression::MatchType matchType) {
+    if (elt.type() == BSONType::Object) {
+        return false;
+    }
+
+    if (elt.type() == BSONType::Array) {
+        // We only support equality to empty array.
+        return elt.embeddedObject().isEmpty() && matchType == MatchExpression::EQ;
+    }
+
+    return true;
+}
+
 }  // namespace
 
 bool QueryPlannerIXSelect::notEqualsNullCanUseIndex(const IndexEntry& index,
@@ -313,22 +323,53 @@ void QueryPlannerIXSelect::getFields(const MatchExpression* node,
 }
 
 // static
-void QueryPlannerIXSelect::findRelevantIndices(const stdx::unordered_set<std::string>& fields,
-                                               const std::vector<IndexEntry>& allIndices,
-                                               std::vector<IndexEntry>* out) {
+std::vector<IndexEntry> QueryPlannerIXSelect::findIndexesByHint(
+    const BSONObj& hintedIndex, const std::vector<IndexEntry>& allIndices) {
+    std::vector<IndexEntry> out;
+    BSONElement firstHintElt = hintedIndex.firstElement();
+    if (firstHintElt.fieldNameStringData() == "$hint"_sd &&
+        firstHintElt.type() == BSONType::String) {
+        auto hintName = firstHintElt.valueStringData();
+        for (auto&& entry : allIndices) {
+            if (entry.identifier.catalogName == hintName) {
+                LOG(5) << "Hint by name specified, restricting indices to "
+                       << entry.keyPattern.toString();
+                out.push_back(entry);
+            }
+        }
+    } else {
+        for (auto&& entry : allIndices) {
+            if (SimpleBSONObjComparator::kInstance.evaluate(entry.keyPattern == hintedIndex)) {
+                LOG(5) << "Hint specified, restricting indices to " << hintedIndex.toString();
+                out.push_back(entry);
+            }
+        }
+    }
+
+    return out;
+}
+
+// static
+std::vector<IndexEntry> QueryPlannerIXSelect::findRelevantIndices(
+    const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndices) {
+
+    std::vector<IndexEntry> out;
     for (auto&& entry : allIndices) {
         BSONObjIterator it(entry.keyPattern);
         BSONElement elt = it.next();
         if (fields.end() != fields.find(elt.fieldName())) {
-            out->push_back(entry);
+            out.push_back(entry);
         }
     }
+
+    return out;
 }
 
 std::vector<IndexEntry> QueryPlannerIXSelect::expandIndexes(
-    const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndexes) {
+    const stdx::unordered_set<std::string>& fields,
+    const std::vector<IndexEntry>& relevantIndices) {
     std::vector<IndexEntry> out;
-    for (auto&& entry : allIndexes) {
+    for (auto&& entry : relevantIndices) {
         if (entry.type == IndexType::INDEX_ALLPATHS) {
             expandIndex(entry, fields, &out);
         } else {
@@ -401,26 +442,9 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
     }
 
     if (indexedFieldType.empty()) {
-        // Can't use a sparse index for $eq with a null element, unless the equality is within a
-        // $elemMatch expression since the latter implies a match on the literal element 'null'.
-        //
-        // We can use a sparse index for $_internalExprEq with a null element. Expression language
-        // equality-to-null semantics are that only literal nulls match. Sparse indexes contain
-        // index keys for literal nulls, but not for missing elements.
-        if (exprtype == MatchExpression::EQ && index.sparse && !isChildOfElemMatchValue) {
-            const EqualityMatchExpression* expr = static_cast<const EqualityMatchExpression*>(node);
-            if (expr->getData().isNull()) {
-                return false;
-            }
-        }
-
-        // Can't use a sparse index for $in with a null element, unless the $eq is within a
-        // $elemMatch expression since the latter implies a match on the literal element 'null'.
-        if (exprtype == MatchExpression::MATCH_IN && index.sparse && !isChildOfElemMatchValue) {
-            const InMatchExpression* expr = static_cast<const InMatchExpression*>(node);
-            if (expr->hasNull()) {
-                return false;
-            }
+        // We can't use a sparse index for certain match expressions.
+        if (index.sparse && !nodeIsSupportedBySparseIndex(node, isChildOfElemMatchValue)) {
+            return false;
         }
 
         // We can't use a btree-indexed field for geo expressions.
@@ -487,6 +511,10 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
                 })) {
                 return false;
             }
+        }
+
+        if (index.type == IndexType::INDEX_ALLPATHS && !nodeIsSupportedByAllPathsIndex(node)) {
+            return false;
         }
 
         // We can only index EQ using text indices.  This is an artificial limitation imposed by
@@ -594,6 +622,58 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
     }
 }
 
+bool QueryPlannerIXSelect::nodeIsSupportedBySparseIndex(const MatchExpression* queryExpr,
+                                                        bool isInElemMatch) {
+    // The only types of queries which may not be supported by a sparse index are ones which have
+    // an equality to null (or an {$exists: false}), because of the language's "null or missing"
+    // semantics. {$exists: false} gets translated into a negation query (which a sparse index
+    // cannot answer), so this function only needs to check if the query performs an equality to
+    // null.
+
+    // Equality to null inside an $elemMatch implies a match on literal 'null'.
+    if (isInElemMatch) {
+        return true;
+    }
+
+    // Otherwise, we can't use a sparse index for $eq (or $lte, or $gte) with a null element.
+    //
+    // We can use a sparse index for $_internalExprEq with a null element. Expression language
+    // equality-to-null semantics are that only literal nulls match. Sparse indexes contain
+    // index keys for literal nulls, but not for missing elements.
+    const auto typ = queryExpr->matchType();
+    if (typ == MatchExpression::EQ) {
+        const auto* queryExprEquality = static_cast<const EqualityMatchExpression*>(queryExpr);
+        return !queryExprEquality->getData().isNull();
+    } else if (queryExpr->matchType() == MatchExpression::MATCH_IN) {
+        const auto* queryExprIn = static_cast<const InMatchExpression*>(queryExpr);
+        return !queryExprIn->hasNull();
+    }
+
+    return true;
+}
+
+bool QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex(const MatchExpression* queryExpr) {
+    // AllPaths indexes only store index keys for "leaf" nodes in an object. That is, they do not
+    // store keys for nested objects, meaning that any kind of comparison to an object or array
+    // cannot be answered by the index (including with a $in).
+
+    if (ComparisonMatchExpression::isComparisonMatchExpression(queryExpr)) {
+        const ComparisonMatchExpression* cmpExpr =
+            static_cast<const ComparisonMatchExpression*>(queryExpr);
+
+        return canUseAllPathsIndex(cmpExpr->getData(), cmpExpr->matchType());
+    } else if (queryExpr->matchType() == MatchExpression::MATCH_IN) {
+        const auto* queryExprIn = static_cast<const InMatchExpression*>(queryExpr);
+
+        return std::all_of(
+            queryExprIn->getEqualities().begin(),
+            queryExprIn->getEqualities().end(),
+            [](const BSONElement& elt) { return canUseAllPathsIndex(elt, MatchExpression::EQ); });
+    }
+
+    return true;
+}
+
 // static
 // This is the public method which does not accept an ElemMatchContext.
 void QueryPlannerIXSelect::rateIndices(MatchExpression* node,
@@ -686,6 +766,7 @@ void QueryPlannerIXSelect::_rateIndices(MatchExpression* node,
 // static
 void QueryPlannerIXSelect::stripInvalidAssignments(MatchExpression* node,
                                                    const vector<IndexEntry>& indices) {
+    stripInvalidAssignmentsToAllPathsIndexes(node, indices);
     stripInvalidAssignmentsToTextIndexes(node, indices);
 
     if (MatchExpression::GEO != node->matchType() &&
@@ -869,6 +950,34 @@ void QueryPlannerIXSelect::stripInvalidAssignmentsToPartialIndices(
     for (size_t i = 0; i < indices.size(); ++i) {
         if (indices[i].filterExpr) {
             stripInvalidAssignmentsToPartialIndexRoot(node, i, indices[i]);
+        }
+    }
+}
+
+//
+// AllPaths index invalid assignments.
+//
+void QueryPlannerIXSelect::stripInvalidAssignmentsToAllPathsIndexes(
+    MatchExpression* root, const vector<IndexEntry>& indices) {
+    for (size_t idx = 0; idx < indices.size(); ++idx) {
+        // Skip over all indexes except $**.
+        if (indices[idx].type != IndexType::INDEX_ALLPATHS) {
+            continue;
+        }
+        // If we have a $** index, check whether we have a TEXT node in the MatchExpression tree.
+        const std::function<MatchExpression*(MatchExpression*)> findTextNode = [&](auto* node) {
+            if (node->matchType() == MatchExpression::TEXT) {
+                return node;
+            }
+            for (size_t i = 0; i < node->numChildren(); ++i) {
+                if (auto* foundNode = findTextNode(node->getChild(i)))
+                    return foundNode;
+            }
+            return static_cast<MatchExpression*>(nullptr);
+        };
+        // If so, remove the $** index from the node's relevant tags.
+        if (auto* textNode = findTextNode(root)) {
+            removeIndexRelevantTag(textNode, idx);
         }
     }
 }

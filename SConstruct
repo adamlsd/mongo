@@ -469,7 +469,7 @@ add_option('variables-files',
     help="Specify variables files to load",
 )
 
-link_model_choices = ['auto', 'object', 'static', 'dynamic', 'dynamic-strict']
+link_model_choices = ['auto', 'object', 'static', 'dynamic', 'dynamic-strict', 'dynamic-sdk']
 add_option('link-model',
     choices=link_model_choices,
     default='auto',
@@ -609,7 +609,6 @@ def variable_tools_converter(val):
         "gziptool",
         'idl_tool',
         "jsheader",
-        "mergelib",
         "mongo_benchmark",
         "mongo_integrationtest",
         "mongo_unittest",
@@ -689,6 +688,14 @@ env_vars.Add('CXXFLAGS',
 # also override whatever the SCons platform defaults would be.
 env_vars.Add('ENV',
     help='Sets the environment for subprocesses')
+
+env_vars.Add('FRAMEWORKPATH',
+    help='Adds paths to the linker search path for darwin frameworks',
+    converter=variable_shlex_converter)
+
+env_vars.Add('FRAMEWORKS',
+    help='Adds extra darwin frameworks to link against',
+    converter=variable_shlex_converter)
 
 env_vars.Add('HOST_ARCH',
     help='Sets the native architecture of the compiler',
@@ -1282,8 +1289,8 @@ if link_model == "auto":
 
 # Windows can't currently support anything other than 'object' or 'static', until
 # we have both hygienic builds and have annotated functions for export.
-if env.TargetOSIs('windows') and link_model not in ['object', 'static']:
-    env.FatalError("Windows builds must use the 'object' or 'static' link models");
+if env.TargetOSIs('windows') and link_model not in ['object', 'static', 'dynamic-sdk']:
+    env.FatalError("Windows builds must use the 'object', 'dynamic-sdk', or 'static' link models")
 
 # The 'object' mode for libdeps is enabled by setting _LIBDEPS to $_LIBDEPS_OBJS. The other two
 # modes operate in library mode, enabled by setting _LIBDEPS to $_LIBDEPS_LIBS.
@@ -1292,11 +1299,24 @@ env['_LIBDEPS'] = '$_LIBDEPS_OBJS' if link_model == "object" else '$_LIBDEPS_LIB
 env['BUILDERS']['ProgramObject'] = env['BUILDERS']['StaticObject']
 env['BUILDERS']['LibraryObject'] = env['BUILDERS']['StaticObject']
 
+env['SHARPREFIX'] = '$LIBPREFIX'
+env['SHARSUFFIX'] = '${SHLIBSUFFIX}${LIBSUFFIX}'
+env['BUILDERS']['SharedArchive'] = SCons.Builder.Builder(
+    action=env['BUILDERS']['StaticLibrary'].action,
+    emitter='$SHAREMITTER',
+    prefix='$SHARPREFIX',
+    suffix='$SHARSUFFIX',
+    src_suffix=env['BUILDERS']['SharedLibrary'].src_suffix,
+)
+
 if link_model.startswith("dynamic"):
 
-    # Redirect the 'Library' target, which we always use instead of 'StaticLibrary' for things
-    # that can be built in either mode, to point to SharedLibrary.
-    env['BUILDERS']['Library'] = env['BUILDERS']['SharedLibrary']
+    def library(env, target, source, *args, **kwargs):
+        sharedLibrary = env.SharedLibrary(target, source, *args, **kwargs)
+        sharedArchive = env.SharedArchive(target, source=sharedLibrary[0].sources, *args, **kwargs)
+        return (sharedLibrary, sharedArchive)
+
+    env['BUILDERS']['Library'] = library
     env['BUILDERS']['LibraryObject'] = env['BUILDERS']['SharedObject']
 
     # TODO: Ideally, the conditions below should be based on a
@@ -1363,6 +1383,19 @@ if link_model.startswith("dynamic"):
                 if ('illegal_cyclic_or_unresolved_dependencies_whitelisted'
                     in target[0].get_env().get("LIBDEPS_TAGS", [])):
                     return ["-Wl,-undefined,dynamic_lookup"]
+                return []
+            env['LIBDEPS_TAG_EXPANSIONS'].append(libdeps_tags_expand_incomplete)
+    elif env.TargetOSIs('windows'):
+        if link_model == "dynamic-strict":
+            # Windows is strict by default
+            pass
+        else:
+            def libdeps_tags_expand_incomplete(source, target, env, for_signature):
+                # On windows, since it is strict by default, we need to add a flag
+                # when libraries are tagged incomplete.
+                if ('illegal_cyclic_or_unresolved_dependencies_whitelisted'
+                    in target[0].get_env().get("LIBDEPS_TAGS", [])):
+                    return ["/FORCE:UNRESOLVED"]
                 return []
             env['LIBDEPS_TAG_EXPANSIONS'].append(libdeps_tags_expand_incomplete)
     else:
@@ -2705,6 +2738,10 @@ def doConfigure(myenv):
                     not AddToLINKFLAGSIfSupported(myenv, '-flto'):
                 myenv.ConfError("Link time optimization requested, "
                     "but selected compiler does not honor -flto" )
+
+            if myenv.TargetOSIs('darwin'):
+                AddToLINKFLAGSIfSupported(myenv, '-Wl,-object_path_lto,${TARGET}.lto')
+
         else:
             myenv.ConfError("Don't know how to enable --lto on current toolchain")
 
@@ -3334,33 +3371,58 @@ def doConfigure(myenv):
  
     def CheckMongoCMinVersion(context):
         compile_test_body = textwrap.dedent("""
-        #include <mongoc.h>
+        #include <mongoc/mongoc.h>
 
-        #if !MONGOC_CHECK_VERSION(1,10,0)
+        #if !MONGOC_CHECK_VERSION(1,13,0)
         #error
         #endif
         """)
 
-        context.Message("Checking if mongoc version is 1.10.0 or newer...")
+        context.Message("Checking if mongoc version is 1.13.0 or newer...")
         result = context.TryCompile(compile_test_body, ".cpp")
         context.Result(result)
         return result
 
     conf.AddTest('CheckMongoCMinVersion', CheckMongoCMinVersion)
+    
+    if env.TargetOSIs('darwin'):
+        def CheckMongoCFramework(context):
+            context.Message("Checking for mongoc_get_major_version() in darwin framework mongoc...")
+            test_body = """
+            #include <mongoc/mongoc.h>
+
+            int main() {
+                mongoc_get_major_version();
+
+                return EXIT_SUCCESS;
+            }
+            """
+
+            lastFRAMEWORKS = context.env['FRAMEWORKS']
+            context.env.Append(FRAMEWORKS=['mongoc'])
+            result = context.TryLink(textwrap.dedent(test_body), ".c")
+            context.Result(result)
+            context.env['FRAMEWORKS'] = lastFRAMEWORKS
+            return result
+        
+        conf.AddTest('CheckMongoCFramework', CheckMongoCFramework)
 
     mongoc_mode = get_option('use-system-mongo-c')
     conf.env['MONGO_HAVE_LIBMONGOC'] = False
     if mongoc_mode != 'off':
-        conf.env['MONGO_HAVE_LIBMONGOC'] = conf.CheckLibWithHeader(
+        if conf.CheckLibWithHeader(
                 ["mongoc-1.0"],
-                ["mongoc.h"],
+                ["mongoc/mongoc.h"],
                 "C",
                 "mongoc_get_major_version();",
-                autoadd=False )
+                autoadd=False ):
+            conf.env['MONGO_HAVE_LIBMONGOC'] = "library" 
+        if not conf.env['MONGO_HAVE_LIBMONGOC'] and env.TargetOSIs('darwin') and conf.CheckMongoCFramework():
+            conf.env['MONGO_HAVE_LIBMONGOC'] = "framework"
         if not conf.env['MONGO_HAVE_LIBMONGOC'] and mongoc_mode == 'on':
             myenv.ConfError("Failed to find the required C driver headers")
         if conf.env['MONGO_HAVE_LIBMONGOC'] and not conf.CheckMongoCMinVersion():
-            myenv.ConfError("Version of mongoc is too old. Version 1.10+ required")
+            myenv.ConfError("Version of mongoc is too old. Version 1.13+ required")
 
     # ask each module to configure itself and the build environment.
     moduleconfig.configure_modules(mongo_modules, conf)
@@ -3450,7 +3512,8 @@ if get_option('install-mode') == 'hygienic':
     elif env['PLATFORM'] == 'darwin':
         env.AppendUnique(
             LINKFLAGS=[
-                '-Wl,-rpath,@loader_path/../lib'
+                '-Wl,-rpath,@loader_path/../lib',
+                '-Wl,-rpath,@loader_path/../Frameworks'
             ],
             SHLINKFLAGS=[
                 "-Wl,-install_name,@rpath/${TARGET.file}",

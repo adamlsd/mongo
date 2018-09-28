@@ -57,6 +57,7 @@ public:
         kCreateIndexes,
         kDropIndexes,
         kCommitTransaction,
+        kAbortTransaction,
     };
 
     // Current oplog version, should be the value of the v field in all oplog entries.
@@ -157,7 +158,7 @@ public:
     BSONObj raw;  // Owned.
 
 private:
-    CommandType _commandType;
+    CommandType _commandType = CommandType::kNotCommand;
 };
 
 std::ostream& operator<<(std::ostream& s, const OplogEntry& o);

@@ -72,6 +72,7 @@ struct SSLParams {
 #endif
 
     std::vector<Protocols> sslDisabledProtocols;  // --sslDisabledProtocols
+    std::vector<Protocols> tlsLogVersions;        // --tlsLogVersion
     bool sslWeakCertificateValidation = false;    // --sslWeakCertificateValidation
     bool sslFIPSMode = false;                     // --sslFIPSMode
     bool sslAllowInvalidCertificates = false;     // --sslAllowInvalidCertificates
@@ -81,6 +82,7 @@ struct SSLParams {
     bool disableNonSSLConnectionLoggingSet = false;
     bool suppressNoTLSPeerCertificateWarning =
         false;  // --setParameter suppressNoTLSPeerCertificateWarning
+    bool tlsWithholdClientCertificate = false;  // --setParameter tlsWithholdClientCertificate
 
     SSLParams() {
         sslMode.store(SSLMode_disabled);

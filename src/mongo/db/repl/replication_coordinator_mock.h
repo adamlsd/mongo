@@ -85,10 +85,10 @@ public:
     virtual ReplicationCoordinator::StatusAndDuration awaitReplication(
         OperationContext* opCtx, const OpTime& opTime, const WriteConcernOptions& writeConcern);
 
-    virtual Status stepDown(OperationContext* opCtx,
-                            bool force,
-                            const Milliseconds& waitTime,
-                            const Milliseconds& stepdownTime);
+    void stepDown(OperationContext* opCtx,
+                  bool force,
+                  const Milliseconds& waitTime,
+                  const Milliseconds& stepdownTime) override;
 
     virtual bool isMasterForReportingPurposes();
 
@@ -247,7 +247,7 @@ public:
     virtual ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const override;
     virtual void setIndexPrefetchConfig(const ReplSettings::IndexPrefetchConfig cfg) override;
 
-    virtual Status stepUpIfEligible() override;
+    virtual Status stepUpIfEligible(bool skipDryRun) override;
 
     /**
      * Sets the return value for calls to getConfig.

@@ -115,13 +115,6 @@ public:
     virtual Status initializeReplSetStorage(OperationContext* opCtx, const BSONObj& config) = 0;
 
     /**
-     * Waits for all committed writes to be visible in the oplog.  Committed writes will be hidden
-     * if there are uncommitted writes ahead of them, and some operations require that all committed
-     * writes are visible before proceeding. Throws if the oplog does not exist.
-     */
-    virtual void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) = 0;
-
-    /**
      * Called when a node on way to becoming a primary is ready to leave drain mode. It is called
      * outside of the global X lock and the replication coordinator mutex.
      *
@@ -181,6 +174,11 @@ public:
     virtual void setGlobalTimestamp(ServiceContext* service, const Timestamp& newTime) = 0;
 
     /**
+     * Checks if the oplog exists.
+     */
+    virtual bool oplogExists(OperationContext* opCtx) = 0;
+
+    /**
      * Gets the last optime of an operation performed on this host, from stable
      * storage.
      */
@@ -198,12 +196,6 @@ public:
      * This is used during stepdown, and transition out of primary.
      */
     virtual void closeConnections() = 0;
-
-    /**
-     * Kills all operations that have a Client that is associated with an incoming user
-     * connection. Also kills stashed transaction resources. Used during stepdown.
-     */
-    virtual void killAllUserOperations(OperationContext* opCtx) = 0;
 
     /**
      * Resets any active sharding metadata on this server and stops any sharding-related threads

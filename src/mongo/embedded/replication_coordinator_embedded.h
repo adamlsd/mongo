@@ -97,7 +97,7 @@ public:
     repl::ReplicationCoordinator::StatusAndDuration awaitReplication(
         OperationContext*, const repl::OpTime&, const WriteConcernOptions&) override;
 
-    Status stepDown(OperationContext*, bool, const Milliseconds&, const Milliseconds&) override;
+    void stepDown(OperationContext*, bool, const Milliseconds&, const Milliseconds&) override;
 
     Status checkIfWriteConcernCanBeSatisfied(const WriteConcernOptions&) const override;
 
@@ -219,7 +219,7 @@ public:
     repl::ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const override;
     void setIndexPrefetchConfig(const repl::ReplSettings::IndexPrefetchConfig) override;
 
-    Status stepUpIfEligible() override;
+    Status stepUpIfEligible(bool skipDryRun) override;
 
     Status abortCatchupIfNeeded() override;
 

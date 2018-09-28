@@ -1,13 +1,15 @@
 /**
  * Exercises the coordinator commands logic by simulating a basic two phase commit and basic two
  * phase abort.
+ *
+ * @tags: [uses_transactions]
  */
 (function() {
     const dbName = "test";
     const collName = "foo";
     const ns = dbName + "." + collName;
 
-    let st = new ShardingTest({shards: 3});
+    let st = new ShardingTest({shards: 3, causallyConsistent: true});
 
     let coordinator = st.shard0;
     let participant1 = st.shard1;
@@ -124,29 +126,19 @@
 
     setUp(lsid, txnNumber);
 
-    // Simulate that all participants vote to commit.
-    assert.commandWorked(coordinator.adminCommand({
-        voteCommitTransaction: 1,
-        shardId: participant1.shardName,
-        prepareTimestamp: Timestamp(0, 0),
+    // Simulate that mongos sends 'prepare' with the coordinator's id to the non-coordinator
+    // participants.
+    assert.commandWorked(participant1.adminCommand({
+        prepareTransaction: 1,
+        coordinatorId: coordinator.shardName,
         lsid: lsid,
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
         autocommit: false,
     }));
-    assert.commandWorked(coordinator.adminCommand({
-        voteCommitTransaction: 1,
-        shardId: participant2.shardName,
-        prepareTimestamp: Timestamp(0, 0),
-        lsid: lsid,
-        txnNumber: NumberLong(txnNumber),
-        stmtId: NumberInt(0),
-        autocommit: false,
-    }));
-    assert.commandWorked(coordinator.adminCommand({
-        voteCommitTransaction: 1,
-        shardId: coordinator.shardName,
-        prepareTimestamp: Timestamp(0, 0),
+    assert.commandWorked(participant2.adminCommand({
+        prepareTransaction: 1,
+        coordinatorId: coordinator.shardName,
         lsid: lsid,
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
@@ -154,7 +146,14 @@
     }));
 
     // Verify that the transaction was committed on all shards.
-    assert.eq(3, st.s.getDB(dbName).getCollection(collName).find().itcount());
+    // Use assert.soon(), because none of the above commands (prepareTransaction or
+    // coordinateCommitTransaction) currently block until the decision is made. Once
+    // coordinateCommitTransaction *blocks* until a commit decision is *written*, the test can pass
+    // the operationTime returned by coordinateCommitTransaction as 'afterClusterTime' in the read
+    // to ensure the read sees the transaction's writes (TODO SERVER-37165).
+    assert.soon(function() {
+        return 3 === st.s.getDB(dbName).getCollection(collName).find().itcount();
+    });
 
     st.stop();
 

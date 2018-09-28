@@ -188,7 +188,8 @@ public:
 
     void setJournalListener(JournalListener* jl) final;
 
-    virtual void setStableTimestamp(Timestamp stableTimestamp) override;
+    virtual void setStableTimestamp(Timestamp stableTimestamp,
+                                    boost::optional<Timestamp> maximumTruncationTimestamp) override;
 
     virtual void setInitialDataTimestamp(Timestamp initialDataTimestamp) override;
 
@@ -218,7 +219,15 @@ public:
 
     virtual Timestamp getAllCommittedTimestamp() const override;
 
-    bool supportsReadConcernSnapshot() const final;
+    bool supportsReadConcernSnapshot() const final override;
+
+    /*
+     * This function is called when replication has completed a batch.  In this function, we
+     * refresh our oplog visiblity read-at-timestamp value.
+     */
+    void replicationBatchIsComplete() const override;
+
+    bool isCacheUnderPressure(OperationContext* opCtx) const override;
 
     // wiredtiger specific
     // Calls WT_CONNECTION::reconfigure on the underlying WT_CONNECTION
@@ -263,12 +272,6 @@ public:
         return _oplogManager.get();
     }
 
-    /*
-     * This function is called when replication has completed a batch.  In this function, we
-     * refresh our oplog visiblity read-at-timestamp value.
-     */
-    void replicationBatchIsComplete() const override;
-
     /**
      * Sets the implementation for `initRsOplogBackgroundThread` (allowing tests to skip the
      * background job, for example). Intended to be called from a MONGO_INITIALIZER and therefore in
@@ -286,8 +289,6 @@ public:
 
     static void appendGlobalStats(BSONObjBuilder& b);
 
-    bool isCacheUnderPressure(OperationContext* opCtx) const override;
-
     /**
      * These are timestamp access functions for serverStatus to be able to report the actual
      * snapshot window size.
@@ -304,9 +305,45 @@ public:
      */
     boost::optional<boost::filesystem::path> getDataFilePathForIdent(StringData ident) const;
 
+    /**
+     * Returns the minimum possible Timestamp value in the oplog that replication may need for
+     * recovery in the event of a rollback. This value gets updated on every `setStableTimestamp`
+     * call.
+     */
+    Timestamp getOplogNeededForRollback() const;
+
+    /**
+     * Returns the minimum possible Timestamp value in the oplog that replication may need for
+     * recovery in the event of a crash. This value gets updated every time a checkpoint is
+     * completed. This value is typically a lagged version of what's needed for rollback.
+     *
+     * Returns boost::none when called on an ephemeral database.
+     */
+    boost::optional<Timestamp> getOplogNeededForCrashRecovery() const;
+
+    /**
+     * Returns oplog that may not be truncated. This method is a function of oplog needed for
+     * rollback and oplog needed for crash recovery. This method considers different states the
+     * storage engine can be running in, such as running in in-memory mode.
+     *
+     * This method returning Timestamp::min() implies no oplog should be truncated and
+     * Timestamp::max() means oplog can be truncated freely based on user oplog size
+     * configuration.
+     */
+    Timestamp getPinnedOplog() const;
+
 private:
     class WiredTigerJournalFlusher;
     class WiredTigerCheckpointThread;
+
+    /**
+     * Opens a connection on the WiredTiger database 'path' with the configuration 'wtOpenConfig'.
+     * Only returns when successful. Intializes both '_conn' and '_fileVersion'.
+     *
+     * If corruption is detected and _inRepairMode is 'true', attempts to salvage the WiredTiger
+     * metadata.
+     */
+    void _openWiredTiger(const std::string& path, const std::string& wtOpenConfig);
 
     Status _salvageIfNeeded(const char* uri);
     void _ensureIdentPath(StringData ident);
@@ -355,6 +392,7 @@ private:
     void _setOldestTimestamp(Timestamp newOldestTimestamp, bool force);
 
     WT_CONNECTION* _conn;
+    WiredTigerFileVersion _fileVersion;
     WiredTigerEventHandler _eventHandler;
     std::unique_ptr<WiredTigerSessionCache> _sessionCache;
     ClockSource* const _clockSource;
@@ -390,11 +428,11 @@ private:
 
     std::unique_ptr<WiredTigerSession> _backupSession;
     Timestamp _recoveryTimestamp;
-    WiredTigerFileVersion _fileVersion;
 
     // Tracks the stable and oldest timestamps we've set on the storage engine.
     AtomicWord<std::uint64_t> _oldestTimestamp;
     AtomicWord<std::uint64_t> _stableTimestamp;
+    AtomicWord<std::uint64_t> _oplogNeededForRollback{Timestamp::min().asULL()};
 
     // Timestamp of data at startup. Used internally to advise checkpointing and recovery to a
     // timestamp. Provided by replication layer because WT does not persist timestamps.

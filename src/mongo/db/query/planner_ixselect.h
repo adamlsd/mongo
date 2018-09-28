@@ -60,12 +60,18 @@ public:
                           stdx::unordered_set<std::string>* out);
 
     /**
-     * Find all indices prefixed by fields we have predicates over.  Only these indices are
+     * Finds all indices that correspond to the hinted index. Matches the index both by name and by
+     * key pattern.
+     */
+    static std::vector<IndexEntry> findIndexesByHint(const BSONObj& hintedIndex,
+                                                     const std::vector<IndexEntry>& allIndices);
+
+    /**
+     * Finds all indices prefixed by fields we have predicates over.  Only these indices are
      * useful in answering the query.
      */
-    static void findRelevantIndices(const stdx::unordered_set<std::string>& fields,
-                                    const std::vector<IndexEntry>& indices,
-                                    std::vector<IndexEntry>* out);
+    static std::vector<IndexEntry> findRelevantIndices(
+        const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndices);
 
     /**
      * Return true if the index key pattern field 'keyPatternElt' (which belongs to 'index' and is
@@ -143,7 +149,18 @@ public:
      * "expanded" indexes (where the $** indexes in the given list have been expanded).
      */
     static std::vector<IndexEntry> expandIndexes(const stdx::unordered_set<std::string>& fields,
-                                                 const std::vector<IndexEntry>& allIndexes);
+                                                 const std::vector<IndexEntry>& relevantIndices);
+
+    /**
+     * Check if this match expression is a leaf and is supported by an allPaths index.
+     */
+    static bool nodeIsSupportedByAllPathsIndex(const MatchExpression* queryExpr);
+
+    /*
+     * Return true if the given match expression can use a sparse index, false otherwise. This will
+     * not traverse the children of the given match expression.
+     */
+    static bool nodeIsSupportedBySparseIndex(const MatchExpression* queryExpr, bool isInElemMatch);
 
 private:
     /**
@@ -225,6 +242,17 @@ private:
      * predicate on every geo field in the index.
      */
     static void stripInvalidAssignmentsTo2dsphereIndices(MatchExpression* node,
+                                                         const std::vector<IndexEntry>& indices);
+
+    /**
+     * This function strips RelevantTag assignments to expanded 'allPaths' indexes, in cases where
+     * the assignment is incompatible with the query.
+     *
+     * Specifically, if the query has a TEXT node with both 'text' and 'allPaths' indexes present,
+     * then the 'allPaths' index will mark itself as relevant to the '_fts' path reported by the
+     * TEXT node. We therefore remove any such misassigned 'allPaths' tags here.
+     */
+    static void stripInvalidAssignmentsToAllPathsIndexes(MatchExpression* root,
                                                          const std::vector<IndexEntry>& indices);
 
     /**

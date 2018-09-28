@@ -39,9 +39,10 @@
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/executor/task_executor_pool.h"
-#include "mongo/s/async_requests_sender.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/multi_statement_transaction_requests_sender.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/write_error_detail.h"
 #include "mongo/util/log.h"
@@ -206,13 +207,14 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 pendingBatches.emplace(targetShardId, nextBatch);
             }
 
-            AsyncRequestsSender ars(opCtx,
-                                    Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
-                                    clientRequest.getNS().db().toString(),
-                                    requests,
-                                    kPrimaryOnlyReadPreference,
-                                    opCtx->getTxnNumber() ? Shard::RetryPolicy::kIdempotent
-                                                          : Shard::RetryPolicy::kNoRetry);
+            MultiStatementTransactionRequestsSender ars(
+                opCtx,
+                Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
+                clientRequest.getNS().db().toString(),
+                requests,
+                kPrimaryOnlyReadPreference,
+                opCtx->getTxnNumber() ? Shard::RetryPolicy::kIdempotent
+                                      : Shard::RetryPolicy::kNoRetry);
             numSent += pendingBatches.size();
 
             //
@@ -269,6 +271,18 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                     LOG(4) << "Write results received from " << shardHost.toString() << ": "
                            << redact(batchedCommandResponse.toString());
+
+                    // If we are in a transaction, we must fail the whole batch.
+                    if (TransactionRouter::get(opCtx)) {
+                        // Note: this returns a bad status if any part of the batch failed.
+                        auto batchStatus = batchedCommandResponse.toStatus();
+                        if (!batchStatus.isOK()) {
+                            batchOp.forgetTargetedBatchesOnTransactionAbortingError();
+                            uassertStatusOK(batchStatus.withContext(
+                                str::stream() << "Encountered error from " << shardHost.toString()
+                                              << " during a transaction"));
+                        }
+                    }
 
                     // Dispatch was ok, note response
                     batchOp.noteBatchResponse(*batch, batchedCommandResponse, &trackedErrors);

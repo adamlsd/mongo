@@ -58,7 +58,7 @@ public:
 
     void onCreateIndex(OperationContext* const opCtx,
                        const NamespaceString& nss,
-                       OptionalCollectionUUID uuid,
+                       CollectionUUID uuid,
                        BSONObj indexDoc,
                        bool fromMigrate) override {
         ReservedTimes times{opCtx};
@@ -216,10 +216,12 @@ public:
             o->onEmptyCapped(opCtx, collectionName, uuid);
     }
 
-    void onTransactionCommit(OperationContext* opCtx, bool wasPrepared) override {
+    void onTransactionCommit(OperationContext* opCtx,
+                             boost::optional<OplogSlot> commitOplogEntryOpTime,
+                             boost::optional<Timestamp> commitTimestamp) override {
         ReservedTimes times{opCtx};
         for (auto& o : _observers)
-            o->onTransactionCommit(opCtx, wasPrepared);
+            o->onTransactionCommit(opCtx, commitOplogEntryOpTime, commitTimestamp);
     }
 
     void onTransactionPrepare(OperationContext* opCtx, const OplogSlot& prepareOpTime) override {

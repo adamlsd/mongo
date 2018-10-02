@@ -71,7 +71,7 @@ GetMoreRequest::GetMoreRequest(NamespaceString namespaceString,
       awaitDataTimeout(awaitDataTimeout),
       term(term),
       lastKnownCommittedOpTime(lastKnownCommittedOpTime),
-      tempOptInToDocumentSequences(tempOptInToDocumentSequences) {}
+      tempOptInToDocumentSequencesMember(tempOptInToDocumentSequences) {}
 
 Status GetMoreRequest::isValid() const {
     if (!nss.isValid()) {
@@ -106,7 +106,7 @@ StatusWith<GetMoreRequest> GetMoreRequest::parseFromBSON(const std::string& dbna
     boost::optional<long long> term;
     boost::optional<repl::OpTime> lastKnownCommittedOpTime;
     GetMoreRequest::UseDocumentSequencesChoice tempOptInToDocumentSequences =
-        GetMoreRequest::kDoNotUseDocumentSequences;
+        GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse;
 
     for (BSONElement el : cmdObj) {
         const auto fieldName = el.fieldNameStringData();

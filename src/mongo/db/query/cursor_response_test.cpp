@@ -335,7 +335,7 @@ TEST(CursorResponseTest, serializeLatestOplogEntry) {
 TEST(CursorResponseTest, cursorReturnDocumentSequences) {
     CursorResponseBuilder::Options options;
     options.isInitialResponse = true;
-    options.useDocumentSequences = true;
+    options.useDocumentSequences = rpc::UseDocumentSequencesChoice::kUse;
     rpc::OpMsgReplyBuilder builder;
     BSONObj expectedDoc = BSON("_id" << 1 << "test"
                                      << "123");

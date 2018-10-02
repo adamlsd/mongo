@@ -695,7 +695,7 @@ DbResponse Strategy::getMore(OperationContext* opCtx, const NamespaceString& nss
                                   boost::none,
                                   boost::none,
                                   boost::none,
-                                  GetMoreRequest::kDoNotUseDocumentSequences);
+                                  GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
 
     // Set the upconverted getMore as the CurOp command object.
     CurOp::get(opCtx)->setGenericOpRequestDetails(

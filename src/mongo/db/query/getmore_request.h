@@ -35,22 +35,19 @@
 #include "mongo/base/status_with.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/rpc/reply_builder_interface.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
 
 struct GetMoreRequest {
+	using UseDocumentSequencesChoice = rpc::UseDocumentSequencesChoice;
     static const char kGetMoreCommandName[];
 
     /**
      * Construct an empty request.
      */
     GetMoreRequest();
-
-    enum UseDocumentSequencesChoice : bool {
-        kDoNotUseDocumentSequences = false,
-        kUseDocumentSequences = true,
-    };
 
     /**
      * Construct from values for each field.
@@ -92,7 +89,7 @@ struct GetMoreRequest {
     const boost::optional<repl::OpTime> lastKnownCommittedOpTime;
 
     // Temporary opt in flag for DocumentSequences.
-    const bool tempOptInToDocumentSequences = false;
+    const UseDocumentSequencesChoice tempOptInToDocumentSequencesMember = UseDocumentSequencesChoice::kDoNotUse;
 
 private:
     /**

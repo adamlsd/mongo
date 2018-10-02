@@ -111,11 +111,11 @@ Document wrapAggAsExplain(Document aggregateCommand, ExplainOptions::Verbosity v
 Status appendCursorResponseToCommandResult(const ShardId& shardId,
                                            const BSONObj& response,
                                            const boost::optional<CursorResponse>& possibleCursor,
-                                           const bool useDocSequences,
+                                           const rpc::UseDocumentSequencesChoice useDocSequencesChoice,
                                            rpc::ReplyBuilderInterface* result) {
     if (possibleCursor) {
         possibleCursor->addToReplyWithoutWriteConcern(
-            CursorResponse::ResponseType::InitialResponse, useDocSequences, result);
+            CursorResponse::ResponseType::InitialResponse, useDocSequencesChoice, result);
     }
     auto bodyBuilder = result->getBodyBuilder();
     // If a write error was encountered, append it to the output buffer first.
@@ -1037,7 +1037,7 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
 void appendEmptyResultSetWithStatus(OperationContext* opCtx,
                                     const NamespaceString& nss,
                                     Status status,
-                                    bool useDocumentSequences,
+                                    const rpc::UseDocumentSequencesChoice useDocumentSequences,
                                     rpc::ReplyBuilderInterface* reply) {
     // Rewrite ShardNotFound as NamespaceNotFound so that appendEmptyResultSet swallows it.
     if (status == ErrorCodes::ShardNotFound) {
@@ -1205,7 +1205,6 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
                                         const AggregationRequest& aggRequest,
                                         const LiteParsedPipeline& liteParsedPipeline,
                                         rpc::ReplyBuilderInterface* out) {
-    const auto useDocSequences = aggRequest.getTempOptInToDocumentSequences();
     // Temporary hack. See comment on declaration for details.
     auto swShard = Grid::get(opCtx)->shardRegistry()->getShard(opCtx, shardId);
     if (!swShard.isOK()) {
@@ -1252,9 +1251,9 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
                 opCtx, namespaces.requestedNss, shard->getId(), cmdResponse, tailMode));
 
             // First append the properly constructed writeConcernError and Cursor. It will then be
-            // skipped
-            // in appendElementsUnique.
+            // skipped in appendElementsUnique.
             if (cursorResp) {
+                const auto useDocSequences = aggRequest.getTempOptInToDocumentSequences();
                 cursorResp->addToReplyWithoutWriteConcern(
                     CursorResponse::ResponseType::InitialResponse, useDocSequences, out);
             }
@@ -1269,12 +1268,7 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
 
     bodyBuilder.appendElementsUnique(CommandHelpers::filterCommandReplyForPassthrough(result));
 
-    const auto status = getStatusFromCommandResult(bodyBuilder.asTempObj());
-    if (status.extraInfo<ResolvedView>()) {
-        bodyBuilder.doneFast();
-    }
-
-    return status;
+    return getStatusFromCommandResult(bodyBuilder.asTempObj());
 }
 
 Status ClusterAggregate::retryOnViewError(OperationContext* opCtx,

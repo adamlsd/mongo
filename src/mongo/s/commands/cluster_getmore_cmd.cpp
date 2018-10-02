@@ -81,7 +81,7 @@ public:
             globalOpCounters.gotGetMore();
             auto response = uassertStatusOK(ClusterFind::runGetMore(opCtx, _request));
             response.addToReply(CursorResponse::ResponseType::SubsequentResponse,
-                                _request.tempOptInToDocumentSequences,
+                                _request.tempOptInToDocumentSequencesMember,
                                 reply);
         }
 

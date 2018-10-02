@@ -340,7 +340,9 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::parseFromFindCommand(unique_p
                 return status;
             }
 
-            qr->_tempOptInToDocumentSequences = el.boolean();
+            qr->_tempOptInToDocumentSequences = el.boolean()
+                ? rpc::UseDocumentSequencesChoice::kUse
+                : rpc::UseDocumentSequencesChoice::kDoNotUse;
         } else if (fieldName == kOptionsField) {
             // 3.0.x versions of the shell may generate an explain of a find command with an
             // 'options' field. We accept this only if the 'options' field is empty so that
@@ -529,7 +531,7 @@ void QueryRequest::asFindCommandInternal(BSONObjBuilder* cmdBuilder) const {
         cmdBuilder->append(kPartialResultsField, true);
     }
 
-    if (_tempOptInToDocumentSequences) {
+    if (_tempOptInToDocumentSequences == rpc::UseDocumentSequencesChoice::kUse) {
         cmdBuilder->append(kTempOptInToDocumentSequencesField, true);
     }
 

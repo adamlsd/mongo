@@ -36,6 +36,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/tailable_mode.h"
+#include "mongo/rpc/reply_builder_interface.h"
 
 namespace mongo {
 
@@ -376,12 +377,14 @@ public:
         _replicationTerm = replicationTerm;
     }
 
-    bool getTempOptInToDocumentSequences() const {
+    rpc::UseDocumentSequencesChoice getTempOptInToDocumentSequences() const {
         return _tempOptInToDocumentSequences;
     }
 
-    void setTempOptInToDocumentSequences(bool tempOptInToDocumentSequences) {
-        _tempOptInToDocumentSequences = tempOptInToDocumentSequences;
+    void setTempOptInToDocumentSequences(const bool tempOptInToDocumentSequences) {
+        _tempOptInToDocumentSequences = tempOptInToDocumentSequences
+            ? rpc::UseDocumentSequencesChoice::kUse
+            : rpc::UseDocumentSequencesChoice::kDoNotUse;
     }
 
     /**
@@ -508,7 +511,8 @@ private:
     bool _noCursorTimeout = false;
     bool _exhaust = false;
     bool _allowPartialResults = false;
-    bool _tempOptInToDocumentSequences = false;
+    rpc::UseDocumentSequencesChoice _tempOptInToDocumentSequences =
+        rpc::UseDocumentSequencesChoice::kDoNotUse;
 
     boost::optional<long long> _replicationTerm;
 };

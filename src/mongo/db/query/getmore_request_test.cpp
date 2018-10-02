@@ -216,7 +216,7 @@ TEST(GetMoreRequestTest, toBSONHasBatchSize) {
                            boost::none,
                            boost::none,
                            boost::none,
-                           GetMoreRequest::kDoNotUseDocumentSequences);
+                           GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
     BSONObj requestObj = request.toBSON();
     BSONObj expectedRequest = BSON("getMore" << CursorId(123) << "collection"
                                              << "testcoll"
@@ -232,7 +232,7 @@ TEST(GetMoreRequestTest, toBSONMissingMatchSize) {
                            boost::none,
                            boost::none,
                            boost::none,
-                           GetMoreRequest::kDoNotUseDocumentSequences);
+                           GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
     BSONObj requestObj = request.toBSON();
     BSONObj expectedRequest = BSON("getMore" << CursorId(123) << "collection"
                                              << "testcoll");
@@ -246,7 +246,7 @@ TEST(GetMoreRequestTest, toBSONHasTerm) {
                            boost::none,
                            1,
                            boost::none,
-                           GetMoreRequest::kDoNotUseDocumentSequences);
+                           GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
     BSONObj requestObj = request.toBSON();
     BSONObj expectedRequest = BSON("getMore" << CursorId(123) << "collection"
                                              << "testcoll"
@@ -264,7 +264,7 @@ TEST(GetMoreRequestTest, toBSONHasCommitLevel) {
                            boost::none,
                            1,
                            repl::OpTime(Timestamp(0, 10), 2),
-                           GetMoreRequest::kDoNotUseDocumentSequences);
+                           GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
     BSONObj requestObj = request.toBSON();
     BSONObj expectedRequest = BSON("getMore" << CursorId(123) << "collection"
                                              << "testcoll"
@@ -284,7 +284,7 @@ TEST(GetMoreRequestTest, toBSONHasMaxTimeMS) {
                            Milliseconds(789),
                            boost::none,
                            boost::none,
-                           GetMoreRequest::kDoNotUseDocumentSequences);
+                           GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
     BSONObj requestObj = request.toBSON();
     BSONObj expectedRequest = BSON("getMore" << CursorId(123) << "collection"
                                              << "testcoll"

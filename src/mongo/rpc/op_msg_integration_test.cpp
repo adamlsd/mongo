@@ -310,7 +310,7 @@ TEST(OpMsg, ServerHandlesExhaustCorrectly) {
                        boost::none,
                        boost::none,
                        boost::none,
-                       GetMoreRequest::kDoNotUseDocumentSequences);
+                       GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
     opMsgRequest = OpMsgRequest::fromDBAndBody(nss.db(), gmr.toBSON());
     request = opMsgRequest.serialize();
     OpMsg::setFlag(&request, OpMsg::kExhaustSupported);

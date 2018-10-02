@@ -36,6 +36,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/exchange_spec_gen.h"
 #include "mongo/db/query/explain_options.h"
+#include "mongo/rpc/reply_builder_interface.h"
 
 namespace mongo {
 
@@ -125,7 +126,7 @@ public:
         return _batchSize;
     }
 
-    bool getTempOptInToDocumentSequences() const {
+    rpc::UseDocumentSequencesChoice getTempOptInToDocumentSequences() const {
         return _tempOptInToDocumentSequences;
     }
 
@@ -258,8 +259,10 @@ public:
         _exchangeSpec = std::move(spec);
     }
 
-    void setTempOptInToDocumentSequences(bool tempOptInToDocumentSequences) {
-        _tempOptInToDocumentSequences = tempOptInToDocumentSequences;
+    void setTempOptInToDocumentSequences(const bool tempOptInToDocumentSequences) {
+        _tempOptInToDocumentSequences = tempOptInToDocumentSequences
+            ? rpc::UseDocumentSequencesChoice::kUse
+            : rpc::UseDocumentSequencesChoice::kDoNotUse;
     }
 
 private:
@@ -299,7 +302,8 @@ private:
     bool _fromMongos = false;
     bool _needsMerge = false;
     bool _bypassDocumentValidation = false;
-    bool _tempOptInToDocumentSequences = false;
+    rpc::UseDocumentSequencesChoice _tempOptInToDocumentSequences =
+        rpc::UseDocumentSequencesChoice::kDoNotUse;
 
     // A user-specified maxTimeMS limit, or a value of '0' if not specified.
     unsigned int _maxTimeMS = 0;

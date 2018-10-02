@@ -43,6 +43,11 @@ class Message;
 
 namespace rpc {
 
+enum class UseDocumentSequencesChoice : bool {
+	kDoNotUse = false,
+	kUse = true,
+};
+
 /**
  * Constructs an RPC Reply.
  */

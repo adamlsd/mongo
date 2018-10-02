@@ -260,7 +260,7 @@ int runQueryWithReadCommands(DBClientBase* conn,
             boost::none,  // maxTimeMS
             boost::none,  // term
             boost::none,  // lastKnownCommittedOpTime
-            GetMoreRequest::kDoNotUseDocumentSequences);
+            GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
         BSONObj getMoreCommandResult;
         uassert(ErrorCodes::CommandFailed,
                 str::stream() << "getMore command failed; reply was: " << getMoreCommandResult,
@@ -1038,7 +1038,7 @@ void BenchRunOp::executeOnce(DBClientBase* conn,
                                                   boost::none,  // maxTimeMS
                                                   boost::none,  // term
                                                   boost::none,  // lastKnownCommittedOpTime
-                                                  GetMoreRequest::kDoNotUseDocumentSequences);
+                                                  GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
                     BSONObj getMoreCommandResult;
                     uassert(ErrorCodes::CommandFailed,
                             str::stream() << "getMore command failed; reply was: "

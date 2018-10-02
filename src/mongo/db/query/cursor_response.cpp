@@ -54,7 +54,7 @@ const char kInternalLatestOplogTimestampField[] = "$_internalLatestOplogTimestam
 CursorResponseBuilder::CursorResponseBuilder(rpc::ReplyBuilderInterface* replyBuilder,
                                              Options options)
     : _options(options), _replyBuilder(replyBuilder) {
-    if (_options.useDocumentSequences) {
+    if (_options.useDocumentSequences == rpc::UseDocumentSequencesChoice::kUse) {
         _docSeqBuilder.emplace(_replyBuilder->getDocSequenceBuilder(
             _options.isInitialResponse ? kBatchDocSequenceFieldInitial : kBatchDocSequenceField));
     } else {
@@ -67,7 +67,7 @@ CursorResponseBuilder::CursorResponseBuilder(rpc::ReplyBuilderInterface* replyBu
 
 void CursorResponseBuilder::done(CursorId cursorId, StringData cursorNamespace) {
     invariant(_active);
-    if (_options.useDocumentSequences) {
+    if (_options.useDocumentSequences == rpc::UseDocumentSequencesChoice::kUse) {
         _docSeqBuilder.reset();
         _bodyBuilder.emplace(_replyBuilder->getBodyBuilder());
         _cursorObject.emplace(_bodyBuilder->subobjStart(kCursorField));
@@ -247,14 +247,14 @@ StatusWith<CursorResponse> CursorResponse::parseFromBSON(const BSONObj& cmdRespo
 
 // The document sequences should be appended to the replyBuilder.
 void CursorResponse::_appendCursor(CursorResponse::ResponseType responseType,
-                                   bool useDocumentSequences,
+                                   const rpc::UseDocumentSequencesChoice useDocumentSequencesChoice,
                                    bool appendWriteConcern,
                                    BSONObjBuilder* builder) const {
     BSONObjBuilder cursorBuilder(builder->subobjStart(kCursorField));
     cursorBuilder.append(kIdField, _cursorId);
     cursorBuilder.append(kNsField, _nss.ns());
 
-    if (!useDocumentSequences) {
+    if (useDocumentSequencesChoice == rpc::UseDocumentSequencesChoice::kDoNotUse) {
         const char* batchFieldName =
             (responseType == ResponseType::InitialResponse) ? kBatchFieldInitial : kBatchField;
         BSONArrayBuilder batchBuilder(cursorBuilder.subarrayStart(batchFieldName));
@@ -277,10 +277,10 @@ void CursorResponse::_appendCursor(CursorResponse::ResponseType responseType,
 }
 
 void CursorResponse::_addToReply(ResponseType responseType,
-                                 bool useDocumentSequences,
+                                 const rpc::UseDocumentSequencesChoice useDocumentSequencesChoice,
                                  bool appendWriteConcern,
                                  rpc::ReplyBuilderInterface* reply) const {
-    if (useDocumentSequences) {
+    if (useDocumentSequencesChoice == rpc::UseDocumentSequencesChoice::kUse) {
 
         const char* batchFieldName = (responseType == ResponseType::InitialResponse)
             ? kBatchDocSequenceFieldInitial
@@ -293,22 +293,22 @@ void CursorResponse::_addToReply(ResponseType responseType,
         }
     }
     auto bob = reply->getBodyBuilder();
-    _appendCursor(responseType, useDocumentSequences, appendWriteConcern, &bob);
+    _appendCursor(responseType, useDocumentSequencesChoice, appendWriteConcern, &bob);
 }
 
 void CursorResponse::addToBSON(CursorResponse::ResponseType responseType,
                                BSONObjBuilder* builder) const {
-    _appendCursor(responseType, false, true, builder);
+    _appendCursor(responseType, rpc::UseDocumentSequencesChoice::kDoNotUse, true, builder);
 }
 
 void CursorResponse::addToReply(CursorResponse::ResponseType responseType,
-                                bool useDocumentSequences,
+                                const rpc::UseDocumentSequencesChoice useDocumentSequences,
                                 rpc::ReplyBuilderInterface* reply) const {
     _addToReply(responseType, useDocumentSequences, true, reply);
 }
 
 void CursorResponse::addToReplyWithoutWriteConcern(CursorResponse::ResponseType responseType,
-                                                   bool useDocumentSequences,
+                                                   const rpc::UseDocumentSequencesChoice useDocumentSequences,
                                                    rpc::ReplyBuilderInterface* reply) const {
     _addToReply(responseType, useDocumentSequences, false, reply);
 }

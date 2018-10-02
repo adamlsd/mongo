@@ -422,7 +422,7 @@ public:
 
             CursorId respondWithId = 0;
             CursorResponseBuilder::Options options;
-            options.useDocumentSequences = _request.tempOptInToDocumentSequences;
+            options.useDocumentSequences = _request.tempOptInToDocumentSequencesMember;
             CursorResponseBuilder nextBatch(reply, options);
             BSONObj obj;
             PlanExecutor::ExecState state = PlanExecutor::ADVANCED;

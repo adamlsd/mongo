@@ -53,7 +53,8 @@ public:
      */
     struct Options {
         bool isInitialResponse = false;
-        bool useDocumentSequences = false;
+        rpc::UseDocumentSequencesChoice useDocumentSequences =
+            rpc::UseDocumentSequencesChoice::kDoNotUse;
     };
 
     /**
@@ -73,12 +74,14 @@ public:
 
     size_t bytesUsed() const {
         invariant(_active);
-        return _options.useDocumentSequences ? _docSeqBuilder->len() : _batch->len();
+        return _options.useDocumentSequences == rpc::UseDocumentSequencesChoice::kUse
+            ? _docSeqBuilder->len()
+            : _batch->len();
     }
 
     void append(const BSONObj& obj) {
         invariant(_active);
-        if (_options.useDocumentSequences) {
+        if (_options.useDocumentSequences == rpc::UseDocumentSequencesChoice::kUse) {
             _docSeqBuilder->append(obj);
         } else {
             _batch->append(obj);
@@ -246,11 +249,11 @@ public:
      * begins a body and adding any DocumentSequences to the reply after this call is illegal.
      */
     void addToReply(ResponseType responseType,
-                    bool useDocumentSequences,
+                    rpc::UseDocumentSequencesChoice useDocumentSequences,
                     rpc::ReplyBuilderInterface* reply) const;
 
     void addToReplyWithoutWriteConcern(ResponseType responseType,
-                                       bool useDocumentSequences,
+                                       rpc::UseDocumentSequencesChoice useDocumentSequences,
                                        rpc::ReplyBuilderInterface* reply) const;
 
     /**
@@ -264,12 +267,12 @@ public:
 
 private:
     void _appendCursor(CursorResponse::ResponseType responseType,
-                       bool useDocumentSequences,
+                       rpc::UseDocumentSequencesChoice useDocumentSequencesChoice,
                        bool appendWriteConcern,
                        BSONObjBuilder* builder) const;
 
     void _addToReply(ResponseType responseType,
-                     bool useDocumentSequences,
+                     rpc::UseDocumentSequencesChoice useDocumentSequencesChoice,
                      bool appendWriteConcern,
                      rpc::ReplyBuilderInterface* reply) const;
 

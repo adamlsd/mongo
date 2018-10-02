@@ -159,8 +159,6 @@ public:
                     &bodyBuilder));
 
             } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
-                result->reset();
-
                 auto aggCmdOnView = uassertStatusOK(qr->asAggregationCommand());
 
                 auto aggRequestOnView = uassertStatusOK(
@@ -205,8 +203,6 @@ public:
                 }
                 firstBatch.done(cursorId, cq->ns());
             } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
-                result->reset();
-
                 auto aggCmdOnView = uassertStatusOK(cq->getQueryRequest().asAggregationCommand());
 
                 auto aggRequestOnView =

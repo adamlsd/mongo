@@ -306,7 +306,9 @@ Document AggregationRequest::serializeToCommandObj() const {
     MutableDocument serialized;
     return Document{
         {kCommandName, (_nss.isCollectionlessAggregateNS() ? Value(1) : Value(_nss.coll()))},
-        {kTempOptInToDocumentSequencesName, _tempOptInToDocumentSequences ? Value(true) : Value()},
+        {kTempOptInToDocumentSequencesName,
+         _tempOptInToDocumentSequences == rpc::UseDocumentSequencesChoice::kUse ? Value(true)
+                                                                                : Value()},
         {kPipelineName, _pipeline},
         // Only serialize booleans if different than their default.
         {kAllowDiskUseName, _allowDiskUse ? Value(true) : Value()},

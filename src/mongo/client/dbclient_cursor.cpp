@@ -156,7 +156,7 @@ Message DBClientCursor::_assembleGetMore() {
                                   boost::none,  // awaitDataTimeout
                                   boost::none,  // term
                                   boost::none,  // lastKnownCommittedOptime
-                                  GetMoreRequest::kDoNotUseDocumentSequences);
+                                  GetMoreRequest::UseDocumentSequencesChoice::kDoNotUse);
         auto msg = assembleCommandRequest(_client, ns.db(), opts, gmr.toBSON());
         // Set the exhaust flag if needed.
         if (opts & QueryOption_Exhaust && msg.operation() == dbMsg) {

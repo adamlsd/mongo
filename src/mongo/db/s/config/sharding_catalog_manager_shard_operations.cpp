@@ -809,6 +809,17 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
     if (countStatus.getValue() == 0) {
         log() << "going to start draining shard: " << name;
 
+        // Record start in changelog
+        const Status logStatus = Grid::get(opCtx)->catalogClient()->logChangeChecked(
+            opCtx,
+            "removeShard.start",
+            "",
+            BSON("shard" << name),
+            ShardingCatalogClient::kLocalWriteConcern);
+        if (logStatus != Status::OK()) {
+            return logStatus;
+        }
+
         auto updateStatus = Grid::get(opCtx)->catalogClient()->updateConfigDocument(
             opCtx,
             ShardType::ConfigNS,
@@ -823,13 +834,6 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
         }
 
         shardRegistry->reload(opCtx);
-
-        // Record start in changelog
-        Grid::get(opCtx)->catalogClient()->logChange(opCtx,
-                                                     "removeShard.start",
-                                                     "",
-                                                     BSON("shard" << name),
-                                                     ShardingCatalogClient::kLocalWriteConcern);
 
         return ShardDrainingStatus::STARTED;
     }
@@ -878,13 +882,8 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
     shardRegistry->reload(opCtx);
 
     // Record finish in changelog
-    Grid::get(opCtx)
-        ->catalogClient()
-        ->logChange(opCtx,
-                    "removeShard",
-                    "",
-                    BSON("shard" << name),
-                    ShardingCatalogClient::kLocalWriteConcern);
+    Grid::get(opCtx)->catalogClient()->logChange(
+        opCtx, "removeShard", "", BSON("shard" << name), ShardingCatalogClient::kLocalWriteConcern);
 
     return ShardDrainingStatus::COMPLETED;
 }

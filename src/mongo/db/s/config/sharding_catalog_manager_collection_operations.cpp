@@ -167,13 +167,17 @@ void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss)
 
 Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
-    catalogClient->logChange(opCtx,
-                             "dropCollection.start",
-                             nss.ns(),
-                             BSONObj(),
-                             ShardingCatalogClient::kMajorityWriteConcern);
+    const Status logStatus =
+        catalogClient->logChangeChecked(opCtx,
+                                        "dropCollection.start",
+                                        nss.ns(),
+                                        BSONObj(),
+                                        ShardingCatalogClient::kMajorityWriteConcern);
+    if (!logStatus.isOK()) {
+        return logStatus;
+    }
 
-    auto shardsStatus =
+    const auto shardsStatus =
         catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
     if (!shardsStatus.isOK()) {
         return shardsStatus.getStatus();
@@ -441,12 +445,11 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                   << dbPrimaryShardId << causedBy(redact(status));
     }
 
-    catalogClient
-        ->logChange(opCtx,
-                    "shardCollection.end",
-                    nss.ns(),
-                    BSON("version" << initialChunks.collVersion().toString()),
-                    ShardingCatalogClient::kMajorityWriteConcern);
+    catalogClient->logChange(opCtx,
+                             "shardCollection.end",
+                             nss.ns(),
+                             BSON("version" << initialChunks.collVersion().toString()),
+                             ShardingCatalogClient::kMajorityWriteConcern);
 }
 
 void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(OperationContext* opCtx) {

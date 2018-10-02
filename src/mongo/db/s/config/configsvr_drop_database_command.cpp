@@ -135,13 +135,12 @@ public:
         // error.
         auto dbType = uassertStatusOK(dbInfo).value;
 
-        catalogClient
-            ->logChangeChecked(opCtx,
-                               "dropDatabase.start",
-                               dbname,
-                               BSONObj(),
-                               ShardingCatalogClient::kMajorityWriteConcern)
-            .transitional_ignore();
+        uassertStatusOK(
+            catalogClient->logChangeChecked(opCtx,
+                                            "dropDatabase.start",
+                                            dbname,
+                                            BSONObj(),
+                                            ShardingCatalogClient::kMajorityWriteConcern));
 
         // Drop the database's collections.
         for (const auto& nss : catalogClient->getAllShardedCollectionsForDb(
@@ -165,7 +164,7 @@ public:
         }
 
         // Remove the database entry from the metadata.
-        Status status =
+        const Status status =
             catalogClient->removeConfigDocuments(opCtx,
                                                  DatabaseType::ConfigNS,
                                                  BSON(DatabaseType::name(dbname)),

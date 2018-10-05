@@ -535,12 +535,11 @@ void shardCollection(OperationContext* opCtx,
         shardsRefreshed.emplace_back(chunk.getShard());
     }
 
-    catalogClient
-        ->logChange(opCtx,
-                    "shardCollection.end",
-                    nss.ns(),
-                    BSON("version" << initialChunks.collVersion().toString()),
-                    ShardingCatalogClient::kMajorityWriteConcern);
+    catalogClient->logChange(opCtx,
+                             "shardCollection.end",
+                             nss.ns(),
+                             BSON("version" << initialChunks.collVersion().toString()),
+                             ShardingCatalogClient::kMajorityWriteConcern);
 }
 
 std::vector<TagsType> getExistingTags(OperationContext* opCtx, const NamespaceString& nss) {

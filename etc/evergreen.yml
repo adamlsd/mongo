@@ -476,7 +476,6 @@ variables:
     - windows-64-vs2015-large
   - name: burn_in_tests
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: audit
   - name: auth_audit
   - name: benchmarks_orphaned
@@ -502,6 +501,10 @@ variables:
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -1113,7 +1116,10 @@ functions:
 
         for dir in $dirs; do
           echo "Pruning /efs/$dir/scons-cache"
-          distro=$(cat /efs/$dir/info/distro_name)
+
+          if [ -e /efs/$dir/info/distro_name ]; then
+            distro=$(cat /efs/$dir/info/distro_name)
+          fi
 
           # Set cache sizes by distro
           case $distro in
@@ -4555,20 +4561,6 @@ tasks:
       task_path_suffix: /data/multiversion
       resmoke_args: --suites=generational_fuzzer
 
-## Standalone fuzzer for checking wildcard index correctness ##
-- <<: *jstestfuzz_template
-  name: aggregation_wildcard_fuzzer
-  commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 50 --diffTestingMode wildcard
-      npm_command: agg-fuzzer
-  - <<: *run_jstestfuzz_tests
-    vars:
-      <<: *jstestfuzz_config_vars
-      resmoke_args: --suites=generational_fuzzer
-
 ## jstestfuzz standalone update generational fuzzer ##
 - <<: *jstestfuzz_template
   name: update_fuzzer
@@ -7171,6 +7163,50 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: logical_session_cache_sharding_default_refresh_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=logical_session_cache_sharding_default_refresh_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=logical_session_cache_sharding_100ms_refresh_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=logical_session_cache_sharding_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=logical_session_cache_sharding_10sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: logical_session_cache_standalone_default_refresh_jscore_passthrough
   depends_on:
   - name: jsCore
@@ -8132,7 +8168,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -8158,6 +8193,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: read_concern_linearizable_passthrough
   - name: read_concern_majority_passthrough
@@ -8211,6 +8247,10 @@ buildvariants:
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -8311,6 +8351,10 @@ buildvariants:
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -8448,7 +8492,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_sharded
@@ -8536,7 +8579,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -8560,6 +8602,7 @@ buildvariants:
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -8635,7 +8678,6 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -8660,6 +8702,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -8717,7 +8760,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -8725,6 +8767,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -8896,7 +8939,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -8921,6 +8963,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -8987,7 +9030,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -9009,6 +9051,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -9110,7 +9153,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -9132,6 +9174,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -9223,6 +9266,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
@@ -9305,7 +9349,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -9313,6 +9356,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9391,7 +9435,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -9416,6 +9459,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -9487,7 +9531,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -9495,6 +9538,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9576,7 +9620,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -9601,6 +9644,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -9664,7 +9708,6 @@ buildvariants:
   - name: aggregation_sharded_collections_passthrough
   - name: aggregation_multiversion_fuzzer
   - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: auth
   - name: causally_consistent_jscore_passthrough
   - name: causally_consistent_jscore_passthrough_auth
@@ -9692,6 +9735,7 @@ buildvariants:
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
@@ -9856,7 +9900,6 @@ buildvariants:
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
   - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -10199,7 +10242,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -10207,6 +10249,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: read_concern_linearizable_passthrough
   - name: replica_sets_auth
@@ -10287,7 +10330,6 @@ buildvariants:
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -10305,6 +10347,7 @@ buildvariants:
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: multiversion
@@ -10465,6 +10508,7 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_session
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
@@ -10564,6 +10608,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -11146,7 +11191,6 @@ buildvariants:
   - name: jsonSchema
   - name: aggregation_multiversion_fuzzer
   - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -11168,6 +11212,10 @@ buildvariants:
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -12205,7 +12253,6 @@ buildvariants:
   - name: aggregation_auth
   - name: aggregation_mongos_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
@@ -12259,6 +12306,7 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
@@ -12353,7 +12401,6 @@ buildvariants:
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
   - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -12361,6 +12408,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: external_auth
   - name: replica_sets_auth
@@ -12467,7 +12515,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -12478,6 +12525,10 @@ buildvariants:
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -12500,6 +12551,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -12575,6 +12627,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: multiversion
@@ -12694,7 +12747,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -12702,6 +12754,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
@@ -12814,6 +12867,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
@@ -12919,6 +12973,7 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
@@ -13033,7 +13088,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13041,6 +13095,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -13108,7 +13163,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13116,6 +13170,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -13214,7 +13269,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13222,6 +13276,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -13310,6 +13365,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
@@ -13398,7 +13454,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13423,6 +13478,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -13483,7 +13539,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13491,6 +13546,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -13553,7 +13609,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13578,6 +13633,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -13639,7 +13695,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13647,6 +13702,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -13712,7 +13768,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -13737,6 +13792,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: replica_sets
   - name: replica_sets_auth
@@ -13843,7 +13899,6 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz
@@ -13864,6 +13919,10 @@ buildvariants:
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -14195,7 +14254,6 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsCore_compatibility
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -14203,6 +14261,7 @@ buildvariants:
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
@@ -14285,6 +14344,7 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
@@ -14386,6 +14446,7 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
@@ -14518,6 +14579,10 @@ buildvariants:
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -14596,7 +14661,6 @@ buildvariants:
   - name: compile_all_run_unittests_TG
   - name: free_monitoring
   - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -14707,6 +14771,7 @@ buildvariants:
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
@@ -14785,6 +14850,7 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: watchdog_wiredtiger
 
@@ -14856,6 +14922,7 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth

@@ -47,7 +47,8 @@ const auto transactionCoordinatorServiceDecoration =
     ServiceContext::declareDecoration<TransactionCoordinatorService>();
 }
 
-TransactionCoordinatorService::TransactionCoordinatorService() = default;
+TransactionCoordinatorService::TransactionCoordinatorService()
+    : _coordinatorCatalog(std::make_shared<TransactionCoordinatorCatalog>()) {}
 
 TransactionCoordinatorService::~TransactionCoordinatorService() = default;
 
@@ -59,39 +60,53 @@ TransactionCoordinatorService* TransactionCoordinatorService::get(ServiceContext
     return &transactionCoordinatorServiceDecoration(serviceContext);
 }
 
-void TransactionCoordinatorService::createCoordinator(LogicalSessionId lsid,
+void TransactionCoordinatorService::createCoordinator(OperationContext* opCtx,
+                                                      LogicalSessionId lsid,
                                                       TxnNumber txnNumber,
                                                       Date_t commitDeadline) {
     // TODO (SERVER-37021): Validate lsid and txnNumber against latest txnNumber on session in the
     // catalog.
 
-    auto latestTxnNumAndCoordinator = _coordinatorCatalog.getLatestOnSession(lsid);
+    auto latestTxnNumAndCoordinator = _coordinatorCatalog->getLatestOnSession(lsid);
     // TODO (SERVER-37039): The below removal logic for a coordinator will change/be removed once we
     // allow multiple coordinators for a session.
     if (latestTxnNumAndCoordinator) {
-        _coordinatorCatalog.remove(lsid, latestTxnNumAndCoordinator->first);
+        auto latestCoordinator = latestTxnNumAndCoordinator.get().second;
+        // Call tryAbort on previous coordinator.
+        txn::recvTryAbort(opCtx, latestCoordinator);
+        // Wait for coordinator to finish committing or aborting.
+        latestCoordinator->waitForCompletion().get(opCtx);
     }
-    _coordinatorCatalog.create(lsid, txnNumber);
+
+    _coordinatorCatalog->create(lsid, txnNumber);
 
     // TODO (SERVER-37024): Schedule abort task on executor to execute at commitDeadline.
     // TODO (SERVER-37025): Schedule poke task on executor.
 }
 
-TransactionCoordinatorService::CommitDecision TransactionCoordinatorService::coordinateCommit(
-    OperationContext* opCtx,
-    LogicalSessionId lsid,
-    TxnNumber txnNumber,
-    const std::set<ShardId>& participantList) {
+Future<TransactionCoordinatorService::CommitDecision>
+TransactionCoordinatorService::coordinateCommit(OperationContext* opCtx,
+                                                LogicalSessionId lsid,
+                                                TxnNumber txnNumber,
+                                                const std::set<ShardId>& participantList) {
 
-    auto coordinator = _coordinatorCatalog.get(lsid, txnNumber);
+    auto coordinator = _coordinatorCatalog->get(lsid, txnNumber);
     if (!coordinator) {
         return TransactionCoordinatorService::CommitDecision::kAbort;
     }
 
     txn::recvCoordinateCommit(opCtx, coordinator.get(), participantList);
 
-    // TODO (SERVER-36640): Return a notification wrapping the decision that the caller can wait on.
-    return TransactionCoordinatorService::CommitDecision::kAbort;
+    return coordinator.get()->waitForCompletion().then([](auto finalState) {
+        switch (finalState) {
+            case TransactionCoordinator::StateMachine::State::kAborted:
+                return TransactionCoordinatorService::CommitDecision::kAbort;
+            case TransactionCoordinator::StateMachine::State::kCommitted:
+                return TransactionCoordinatorService::CommitDecision::kCommit;
+            default:
+                MONGO_UNREACHABLE;
+        }
+    });
 }
 
 void TransactionCoordinatorService::voteCommit(OperationContext* opCtx,
@@ -99,7 +114,7 @@ void TransactionCoordinatorService::voteCommit(OperationContext* opCtx,
                                                TxnNumber txnNumber,
                                                const ShardId& shardId,
                                                Timestamp prepareTimestamp) {
-    auto coordinator = _coordinatorCatalog.get(lsid, txnNumber);
+    auto coordinator = _coordinatorCatalog->get(lsid, txnNumber);
     if (!coordinator) {
         // TODO (SERVER-37018): Send abort to the participant who sent this vote (shardId)
         return;
@@ -112,7 +127,7 @@ void TransactionCoordinatorService::voteAbort(OperationContext* opCtx,
                                               LogicalSessionId lsid,
                                               TxnNumber txnNumber,
                                               const ShardId& shardId) {
-    auto coordinator = _coordinatorCatalog.get(lsid, txnNumber);
+    auto coordinator = _coordinatorCatalog->get(lsid, txnNumber);
 
     if (coordinator) {
         txn::recvVoteAbort(opCtx, coordinator.get(), shardId);
@@ -122,7 +137,7 @@ void TransactionCoordinatorService::voteAbort(OperationContext* opCtx,
 void TransactionCoordinatorService::tryAbort(OperationContext* opCtx,
                                              LogicalSessionId lsid,
                                              TxnNumber txnNumber) {
-    auto coordinator = _coordinatorCatalog.get(lsid, txnNumber);
+    auto coordinator = _coordinatorCatalog->get(lsid, txnNumber);
 
     if (coordinator) {
         // TODO (SERVER-37020): Do recvTryAbort, remove this once implemented.

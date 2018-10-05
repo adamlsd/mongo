@@ -56,19 +56,14 @@ public:
     TestCommandQueryKnobGuard() {
         _prevEnabled = getTestCommandsEnabled();
         setTestCommandsEnabled(true);
-
-        _prevKnobEnabled = internalQueryAllowAllPathsIndexes.load();
-        internalQueryAllowAllPathsIndexes.store(true);
     }
 
     ~TestCommandQueryKnobGuard() {
         setTestCommandsEnabled(_prevEnabled);
-        internalQueryAllowAllPathsIndexes.store(_prevKnobEnabled);
     }
 
 private:
     bool _prevEnabled;
-    bool _prevKnobEnabled;
 };
 
 TEST(IndexKeyValidateTest, KeyElementValueOfSmallPositiveIntSucceeds) {
@@ -256,6 +251,20 @@ TEST(IndexKeyValidateTest, KeyElementNameWildcardSucceedsOnSubPath) {
 TEST(IndexKeyValidateTest, KeyElementNameWildcardSucceeds) {
     TestCommandQueryKnobGuard guard;
     ASSERT_OK(validateKeyPattern(BSON("$**" << 1), IndexVersion::kV2));
+}
+
+TEST(IndexKeyValidateTest, WildcardIndexNumericKeyElementValueFailsIfNotPositive) {
+    TestCommandQueryKnobGuard guard;
+    ASSERT_EQ(ErrorCodes::CannotCreateIndex,
+              validateKeyPattern(BSON("$**" << 0.0), IndexVersion::kV2));
+    ASSERT_EQ(ErrorCodes::CannotCreateIndex,
+              validateKeyPattern(BSON("$**" << -0.0), IndexVersion::kV2));
+    ASSERT_EQ(ErrorCodes::CannotCreateIndex,
+              validateKeyPattern(BSON("$**" << -0.1), IndexVersion::kV2));
+    ASSERT_EQ(ErrorCodes::CannotCreateIndex,
+              validateKeyPattern(BSON("$**" << -1), IndexVersion::kV2));
+    ASSERT_EQ(ErrorCodes::CannotCreateIndex,
+              validateKeyPattern(BSON("$**" << INT_MIN), IndexVersion::kV2));
 }
 
 TEST(IndexKeyValidateTest, KeyElementNameWildcardFailsOnRepeat) {

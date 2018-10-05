@@ -42,7 +42,6 @@
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_geo_near.h"
 #include "mongo/db/pipeline/document_source_match.h"
-#include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/db/pipeline/document_source_out.h"
 #include "mongo/db/pipeline/document_source_project.h"
 #include "mongo/db/pipeline/document_source_sort.h"
@@ -656,6 +655,10 @@ boost::intrusive_ptr<DocumentSource> Pipeline::popFront() {
     _sources.pop_front();
     stitch();
     return targetStage;
+}
+
+DocumentSource* Pipeline::peekFront() const {
+    return _sources.empty() ? nullptr : _sources.front().get();
 }
 
 boost::intrusive_ptr<DocumentSource> Pipeline::popFrontWithName(StringData targetStageName) {

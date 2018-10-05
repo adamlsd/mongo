@@ -33,7 +33,7 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/transaction_coordinator_catalog.h"
-
+#include "mongo/util/future.h"
 
 namespace mongo {
 
@@ -64,18 +64,24 @@ public:
      * deadline for the commit decision. If the coordinator has not decided to commit by that
      * deadline, it will abort.
      */
-    void createCoordinator(LogicalSessionId lsid, TxnNumber txnNumber, Date_t commitDeadline);
+    void createCoordinator(OperationContext* opCtx,
+                           LogicalSessionId lsid,
+                           TxnNumber txnNumber,
+                           Date_t commitDeadline);
 
     /**
-     * Delivers coordinateCommit to the TransactionCoordinator and asynchronously sends commit or
-     * abort to participants if necessary.
+     * Delivers coordinateCommit to the TransactionCoordinator, asynchronously sends commit or
+     * abort to participants if necessary, and returns a Future that will contain the commit
+     * decision when the transaction finishes committing or aborting.
      *
-     * TODO (SERVER-36640): Return Notification<CommitDecision>.
+     * TODO (SERVER-37364): On the commit path, this Future should instead be signaled as soon as
+     * the coordinator is finished persisting the commit decision, rather than waiting until the
+     * commit process has been completed entirely.
      */
-    CommitDecision coordinateCommit(OperationContext* opCtx,
-                                    LogicalSessionId lsid,
-                                    TxnNumber txnNumber,
-                                    const std::set<ShardId>& participantList);
+    Future<CommitDecision> coordinateCommit(OperationContext* opCtx,
+                                            LogicalSessionId lsid,
+                                            TxnNumber txnNumber,
+                                            const std::set<ShardId>& participantList);
 
     /**
      * Delivers voteCommit to the TransactionCoordinator and asynchronously sends commit or abort to
@@ -104,7 +110,7 @@ public:
     void tryAbort(OperationContext* opCtx, LogicalSessionId lsid, TxnNumber txnNumber);
 
 private:
-    TransactionCoordinatorCatalog _coordinatorCatalog;
+    std::shared_ptr<TransactionCoordinatorCatalog> _coordinatorCatalog;
 };
 
 }  // namespace mongo

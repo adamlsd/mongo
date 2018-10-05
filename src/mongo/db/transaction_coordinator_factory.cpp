@@ -1,5 +1,5 @@
-/**
- *    Copyright (C) 2015 MongoDB Inc.
+/*
+ *    Copyright (C) 2018 MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,30 +26,8 @@
  *    it in the license file.
  */
 
-#include "mongo/util/tick_source_mock.h"
-
-#include <utility>
+#include "mongo/db/transaction_coordinator_factory.h"
 
 namespace mongo {
-
-namespace {
-const TickSource::Tick kTicksPerSecond = 1000;
-}  // unnamed namespace
-
-TickSource::Tick TickSourceMock::getTicks() {
-    return _currentTicks;
+MONGO_DEFINE_SHIM(createTransactionCoordinator);
 }
-
-TickSource::Tick TickSourceMock::getTicksPerSecond() {
-    return kTicksPerSecond;
-}
-
-void TickSourceMock::advance(const Milliseconds& ms) {
-    _currentTicks += ms.count();
-}
-
-void TickSourceMock::reset(TickSource::Tick tick) {
-    _currentTicks = std::move(tick);
-}
-
-}  // namespace mongo

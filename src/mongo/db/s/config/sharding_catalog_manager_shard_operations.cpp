@@ -816,7 +816,7 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
             "",
             BSON("shard" << name),
             ShardingCatalogClient::kLocalWriteConcern);
-        if (logStatus != Status::OK()) {
+        if (!logStatus.isOK()) {
             return logStatus;
         }
 

@@ -26,8 +26,8 @@
 *    it in the license file.
 */
 
-#include "mongo/db/s/config_server_op_observer.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
+#include "mongo/db/s/config_server_op_observer.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/config_server_test_fixture.h"
 #include "mongo/unittest/death_test.h"
@@ -40,8 +40,8 @@ protected:
     void setUp() override {
         ConfigServerTestFixture::setUp();
 
-        ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                      ->initializeConfigDatabaseIfNeeded(operationContext()));
+        ShardingCatalogManager::get(operationContext())
+            ->initializeConfigDatabaseIfNeeded(operationContext());
 
         auto clusterIdLoader = ClusterIdentityLoader::get(operationContext());
         ASSERT_OK(clusterIdLoader->loadClusterId(operationContext(),
@@ -59,8 +59,8 @@ TEST_F(ConfigServerOpObserverTest, NodeClearsCatalogManagerOnConfigVersionRollBa
 
     opObserver.onReplicationRollback(operationContext(), rbInfo);
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 }
 
 TEST_F(ConfigServerOpObserverTest, NodeDoesNotClearCatalogManagerWhenConfigVersionNotRolledBack) {
@@ -70,9 +70,8 @@ TEST_F(ConfigServerOpObserverTest, NodeDoesNotClearCatalogManagerWhenConfigVersi
 
     opObserver.onReplicationRollback(operationContext(), rbInfo);
 
-    ASSERT_EQ(ErrorCodes::AlreadyInitialized,
-              ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ErrorCodes::AlreadyInitialized, ShardingCatalogManager::get(operationContext())
+                                        ->initializeConfigDatabaseIfNeeded(operationContext());
 }
 
 DEATH_TEST_F(ConfigServerOpObserverTest,

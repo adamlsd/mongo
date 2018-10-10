@@ -323,6 +323,13 @@ Status makeStatus(int code, StringLike&& message) {
     return Status(ErrorCodes::Error(code), std::forward<StringLike>(message));
 }
 
+// This function exists so that uassert/massert can take `Status`es rather than requiring
+// ErrorCodes::Error wrapping.
+template <typename StringLike>
+Status makeStatus(Status status, StringLike&& message) {
+    return status.withContext(std::forward<StringLike>(message));
+}
+
 template <typename ErrorDetail,
           typename StringLike,
           typename = stdx::enable_if_t<

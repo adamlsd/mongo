@@ -87,8 +87,8 @@ TEST_F(ConfigInitializationTest, UpgradeNotNeeded) {
     ASSERT_OK(
         insertToConfigCollection(operationContext(), VersionType::ConfigNS, version.toBSON()));
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto versionDoc =
         assertGet(findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
@@ -108,9 +108,9 @@ TEST_F(ConfigInitializationTest, InitIncompatibleVersion) {
     ASSERT_OK(
         insertToConfigCollection(operationContext(), VersionType::ConfigNS, version.toBSON()));
 
-    ASSERT_EQ(ErrorCodes::IncompatibleShardingConfigVersion,
-              ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::IncompatibleShardingConfigVersion>);
 
     auto versionDoc =
         assertGet(findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
@@ -135,9 +135,9 @@ TEST_F(ConfigInitializationTest, InitClusterMultipleVersionDocs) {
                                        BSON("_id"
                                             << "a second document")));
 
-    ASSERT_EQ(ErrorCodes::TooManyMatchingDocuments,
-              ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::TooManyMatchingDocuments>);
 }
 
 TEST_F(ConfigInitializationTest, InitInvalidConfigVersionDoc) {
@@ -149,9 +149,9 @@ TEST_F(ConfigInitializationTest, InitInvalidConfigVersionDoc) {
                 })"));
     ASSERT_OK(insertToConfigCollection(operationContext(), VersionType::ConfigNS, versionDoc));
 
-    ASSERT_EQ(ErrorCodes::TypeMismatch,
-              ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::TypeMismatch>);
 }
 
 
@@ -160,8 +160,8 @@ TEST_F(ConfigInitializationTest, InitNoVersionDocEmptyConfig) {
     ASSERT_EQUALS(ErrorCodes::NoMatchingDocument,
                   findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto versionDoc =
         assertGet(findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
@@ -181,14 +181,14 @@ TEST_F(ConfigInitializationTest, InitVersionTooHigh) {
     ASSERT_OK(
         insertToConfigCollection(operationContext(), VersionType::ConfigNS, version.toBSON()));
 
-    ASSERT_EQ(ErrorCodes::IncompatibleShardingConfigVersion,
-              ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::IncompatibleShardingConfigVersion>);
 }
 
 TEST_F(ConfigInitializationTest, OnlyRunsOnce) {
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto versionDoc =
         assertGet(findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
@@ -199,14 +199,14 @@ TEST_F(ConfigInitializationTest, OnlyRunsOnce) {
     ASSERT_EQUALS(CURRENT_CONFIG_VERSION, foundVersion.getCurrentVersion());
     ASSERT_EQUALS(MIN_COMPATIBLE_CONFIG_VERSION, foundVersion.getMinCompatibleVersion());
 
-    ASSERT_EQUALS(ErrorCodes::AlreadyInitialized,
-                  ShardingCatalogManager::get(operationContext())
-                      ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::AlreadyInitialized>);
 }
 
 TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto versionDoc =
         assertGet(findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
@@ -250,8 +250,8 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
                   findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
 
     // Re-create the config.version document.
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto newVersionDoc =
         assertGet(findOneOnConfigCollection(operationContext(), VersionType::ConfigNS, BSONObj()));
@@ -265,8 +265,8 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
 }
 
 TEST_F(ConfigInitializationTest, BuildsNecessaryIndexes) {
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto expectedChunksIndexes = std::vector<BSONObj>{
         BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
@@ -352,8 +352,8 @@ TEST_F(ConfigInitializationTest, CompatibleIndexAlreadyExists) {
         ->createIndexOnConfig(operationContext(), ShardType::ConfigNS, BSON("host" << 1), true)
         .transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ShardingCatalogManager::get(operationContext())
+        ->initializeConfigDatabaseIfNeeded(operationContext());
 
     auto expectedShardsIndexes = std::vector<BSONObj>{
         BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
@@ -377,9 +377,9 @@ TEST_F(ConfigInitializationTest, IncompatibleIndexAlreadyExists) {
         ->createIndexOnConfig(operationContext(), ShardType::ConfigNS, BSON("host" << 1), false)
         .transitional_ignore();
 
-    ASSERT_EQUALS(ErrorCodes::IndexOptionsConflict,
-                  ShardingCatalogManager::get(operationContext())
-                      ->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::IndexOptionsConflict>);
 }
 
 }  // unnamed namespace

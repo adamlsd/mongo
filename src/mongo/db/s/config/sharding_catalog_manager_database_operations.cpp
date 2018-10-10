@@ -162,36 +162,33 @@ void ShardingCatalogManager::enableSharding(OperationContext* opCtx, const std::
 }
 
 StatusWith<std::vector<std::string>> ShardingCatalogManager::getDatabasesForShard(
-    OperationContext* opCtx, const ShardId& shardId) {
-    auto findStatus = Grid::get(opCtx)->catalogClient()->_exhaustiveFindOnConfig(
+    OperationContext* opCtx, const ShardId& shardId) try {
+    auto findResult = uassertStatusOK(Grid::get(opCtx)->catalogClient()->_exhaustiveFindOnConfig(
         opCtx,
         kConfigReadSelector,
         repl::ReadConcernLevel::kLocalReadConcern,
         DatabaseType::ConfigNS,
         BSON(DatabaseType::primary(shardId.toString())),
         BSONObj(),
-        boost::none);  // no limit
-
-    if (!findStatus.isOK())
-        return findStatus.getStatus();
+        boost::none));  // no limit
 
     std::vector<std::string> dbs;
-    for (const BSONObj& obj : findStatus.getValue().value) {
+    for (const BSONObj& obj : findResult.value) {
         std::string dbName;
-        Status status = bsonExtractStringField(obj, DatabaseType::name(), &dbName);
-        if (!status.isOK()) {
-            return status;
-        }
-
-        dbs.push_back(dbName);
+        uassertStatusOK( bsonExtractStringField(obj, DatabaseType::name(), &dbName));
+        dbs.push_back(std::move(dbName));
     }
 
     return dbs;
 }
+catch( const DBException &ex )
+{
+    return ex.toStatus();
+}
 
 Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
                                                  const StringData dbname,
-                                                 const ShardId& toShard) {
+                                                 const ShardId& toShard) try {
 
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
@@ -230,19 +227,26 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
     auto updateQueryBuilder = BSONObjBuilder(BSON(DatabaseType::name << dbname));
     updateQueryBuilder.append(DatabaseType::version.name(), currentDatabaseVersion.toBSON());
 
-    auto updateStatus = Grid::get(opCtx)->catalogClient()->updateConfigDocument(
-        opCtx,
-        DatabaseType::ConfigNS,
-        updateQueryBuilder.obj(),
-        newDbType.toBSON(),
-        false,
-        ShardingCatalogClient::kLocalWriteConcern);
+    auto updateResult =[&]
+    {
+        try
+        {
+            return uassertStatusOK(Grid::get(opCtx)->catalogClient()->updateConfigDocument(
+                opCtx,
+                DatabaseType::ConfigNS,
+                updateQueryBuilder.obj(),
+                newDbType.toBSON(),
+                false,
+                ShardingCatalogClient::kLocalWriteConcern));
+        }
+        catch( const DBException &ex )
+        {
+            log() << "error committing movePrimary: " << dbname
+                  << causedBy(redact(ex.toStatus()));
+            throw;
+        }
+    }();
 
-    if (!updateStatus.isOK()) {
-        log() << "error committing movePrimary: " << dbname
-              << causedBy(redact(updateStatus.getStatus()));
-        return updateStatus.getStatus();
-    }
 
     // If this assertion is tripped, it means that the request sent fine, but no documents were
     // updated. This is likely because the database version was changed in between the query and
@@ -252,13 +256,17 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
             str::stream() << "Tried to update primary shard for database '" << dbname
                           << " with version "
                           << currentDatabaseVersion.getLastMod(),
-            updateStatus.getValue());
+            updateResult);
 
     // Ensure the next attempt to retrieve the database or any of its collections will do a full
     // reload
     Grid::get(opCtx)->catalogCache()->purgeDatabase(dbname);
 
     return Status::OK();
+}
+catch( const DBException &ex )
+{
+    return ex.toStatus();
 }
 
 }  // namespace mongo

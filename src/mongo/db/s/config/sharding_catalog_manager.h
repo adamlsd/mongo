@@ -107,7 +107,7 @@ public:
      * the catalog collections and their indexes. Also generates and persists the cluster's
      * identity.
      */
-    Status initializeConfigDatabaseIfNeeded(OperationContext* opCtx);
+    void initializeConfigDatabaseIfNeeded(OperationContext* opCtx);
 
     /**
      * Invoked on cluster identity metadata rollback after replication step down. Throws out any
@@ -346,7 +346,7 @@ public:
     /**
      * Runs the setFeatureCompatibilityVersion command on all shards.
      */
-    Status setFeatureCompatibilityVersionOnShards(OperationContext* opCtx, const BSONObj& cmdObj);
+    void setFeatureCompatibilityVersionOnShards(OperationContext* opCtx, const BSONObj& cmdObj);
 
     //
     // For Diagnostics
@@ -370,12 +370,12 @@ private:
      * Performs the necessary checks for version compatibility and creates a new config.version
      * document if the current cluster config is empty.
      */
-    Status _initConfigVersion(OperationContext* opCtx);
+    void _initConfigVersion(OperationContext* opCtx);
 
     /**
      * Builds all the expected indexes on the config server.
      */
-    Status _initConfigIndexes(OperationContext* opCtx);
+    void _initConfigIndexes(OperationContext* opCtx);
 
     /**
      * Used during addShard to determine if there is already an existing shard that matches the
@@ -417,7 +417,7 @@ private:
     /**
      * Drops the sessions collection on the specified host.
      */
-    Status _dropSessionsCollection(OperationContext* opCtx,
+    void _dropSessionsCollection(OperationContext* opCtx,
                                    std::shared_ptr<RemoteCommandTargeter> targeter);
 
     /**

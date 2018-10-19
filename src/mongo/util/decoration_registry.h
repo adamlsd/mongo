@@ -116,7 +116,7 @@ public:
      */
     void destroy(DecorationContainer<DecoratedType>* const container) const noexcept try {
         std::for_each(
-            _decorationInfo.rbegin(), _decorationInfo.rend(), [&container](const auto& decoration) {
+            _decorationInfo.rbegin(), _decorationInfo.rend(), [&container](auto& decoration) {
                 decoration.destructor(container->getDecoration(decoration.descriptor));
             });
     } catch (...) {

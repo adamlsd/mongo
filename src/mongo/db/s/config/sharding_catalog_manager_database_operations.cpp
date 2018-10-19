@@ -108,8 +108,7 @@ DatabaseType ShardingCatalogManager::createDatabase(OperationContext* opCtx,
     // The database does not exist. Insert an entry for the new database into the sharding catalog.
 
     // Pick a primary shard for the new database.
-    const auto primaryShardId =
-        uassertStatusOK(_selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry()));
+    const auto primaryShardId = _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
 
     // Insert an entry for the new database into the sharding catalog.
     DatabaseType db(dbName, std::move(primaryShardId), false, databaseVersion::makeNew());

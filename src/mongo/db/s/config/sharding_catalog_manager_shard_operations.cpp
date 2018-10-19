@@ -123,7 +123,6 @@ std::string generateNewShardName(OperationContext* opCtx) {
     std::stringstream ss;
     ss << "shard" << std::setfill('0') << std::setw(4) << count;
     return ss.str();
-
 }
 
 }  // namespace
@@ -192,18 +191,16 @@ StatusWith<Shard::CommandResponse> ShardingCatalogManager::_runCommandForAddShar
                                   std::move(writeConcernStatus));
 }
 
-StatusWith<boost::optional<ShardType>> ShardingCatalogManager::_checkIfShardExists(
+boost::optional<ShardType> ShardingCatalogManager::_checkIfShardExists(
     OperationContext* opCtx,
     const ConnectionString& proposedShardConnectionString,
     const std::string* proposedShardName,
-    long long proposedShardMaxSize) try {
+    long long proposedShardMaxSize) {
     // Check whether any host in the connection is already part of the cluster.
-    const auto existingShards = Grid::get(opCtx)->catalogClient()->getAllShards(
-        opCtx, repl::ReadConcernLevel::kLocalReadConcern);
-    if (!existingShards.isOK()) {
-        return existingShards.getStatus().withContext(
-            "Failed to load existing shards during addShard");
-    }
+    const auto existingShards =
+        uassertStatusOKWithContext(Grid::get(opCtx)->catalogClient()->getAllShards(
+                                       opCtx, repl::ReadConcernLevel::kLocalReadConcern),
+                                   "Failed to load existing shards during addShard");
 
     // Now check if this shard already exists - if it already exists *with the same options* then
     // the addShard request can return success early without doing anything more.
@@ -280,15 +277,13 @@ StatusWith<boost::optional<ShardType>> ShardingCatalogManager::_checkIfShardExis
     }
 
     return boost::none;
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
-StatusWith<ShardType> ShardingCatalogManager::_validateHostAsShard(
+ShardType ShardingCatalogManager::_validateHostAsShard(
     OperationContext* opCtx,
     std::shared_ptr<RemoteCommandTargeter> targeter,
     const std::string* shardProposedName,
-    const ConnectionString& connectionString) try {
+    const ConnectionString& connectionString) {
     auto swCommandResponse = [&] {
         try {
             return uassertStatusOK(_runCommandForAddShard(
@@ -454,8 +449,6 @@ StatusWith<ShardType> ShardingCatalogManager::_validateHostAsShard(
     shard.setState(ShardType::ShardState::kShardAware);
 
     return shard;
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
 void ShardingCatalogManager::_dropSessionsCollection(
@@ -471,14 +464,15 @@ void ShardingCatalogManager::_dropSessionsCollection(
     auto swCommandResponse = uassertStatusOK(_runCommandForAddShard(
         opCtx, targeter.get(), NamespaceString::kLogicalSessionsNamespace.db(), builder.done()));
 
-    auto &cmdStatus = swCommandResponse.commandStatus;
-    
-    if(cmdStatus.code() == ErrorCodes::NamespaceNotFound) return;
+    auto& cmdStatus = swCommandResponse.commandStatus;
+
+    if (cmdStatus.code() == ErrorCodes::NamespaceNotFound)
+        return;
     uassertStatusOK(cmdStatus);
 }
 
-StatusWith<std::vector<std::string>> ShardingCatalogManager::_getDBNamesListFromShard(
-    OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter) try {
+std::vector<std::string> ShardingCatalogManager::_getDBNamesListFromShard(
+    OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter) {
 
     auto swCommandResponse =
         uassertStatusOK(_runCommandForAddShard(opCtx,
@@ -505,8 +499,6 @@ StatusWith<std::vector<std::string>> ShardingCatalogManager::_getDBNamesListFrom
     }
 
     return dbNames;
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
 StatusWith<std::string> ShardingCatalogManager::addShard(
@@ -568,11 +560,11 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     });
 
     // Validate the specified connection string may serve as shard at all
-    ShardType shardType = uassertStatusOK(
-        _validateHostAsShard(opCtx, targeter, shardProposedName, shardConnectionString));
+    ShardType shardType =
+        _validateHostAsShard(opCtx, targeter, shardProposedName, shardConnectionString);
 
     // Check that none of the existing shard candidate's dbs exist already
-    auto dbNamesStatus = uassertStatusOK(_getDBNamesListFromShard(opCtx, targeter));
+    auto dbNamesStatus = _getDBNamesListFromShard(opCtx, targeter);
 
     for (const auto& dbName : dbNamesStatus) {
         try {
@@ -594,21 +586,18 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     }
 
     // Check that the shard candidate does not have a local config.system.sessions collection
-    try
-    {
+    try {
         _dropSessionsCollection(opCtx, targeter);
-    }
-    catch( const DBException &ex )
-    {
-        uasserted( ex.toStatus(),
-                               "can't add shard with a local copy of config.system.sessions, "
-                               "please drop this collection from the shard manually and try "
-                               "again.");
+    } catch (const DBException& ex) {
+        uasserted(ex.toStatus(),
+                  "can't add shard with a local copy of config.system.sessions, "
+                  "please drop this collection from the shard manually and try "
+                  "again.");
     }
 
     // If a name for a shard wasn't provided, generate one
     if (shardType.getName().empty()) {
-        shardType.setName( generateNewShardName(opCtx));
+        shardType.setName(generateNewShardName(opCtx));
     }
 
     if (maxSize > 0) {
@@ -617,15 +606,11 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
 
     // Helper function that runs a command on the to-be shard and returns the status
     auto runCmdOnNewShard = [this, &opCtx, &targeter](const BSONObj& cmd) -> Status {
-        auto swCommandResponse =
-            _runCommandForAddShard(opCtx, targeter.get(), NamespaceString::kAdminDb, cmd);
-        if (!swCommandResponse.isOK()) {
-            return swCommandResponse.getStatus();
-        }
+        auto commandResponse = uassertStatusOK(
+            _runCommandForAddShard(opCtx, targeter.get(), NamespaceString::kAdminDb, cmd));
         // Grabs the underlying status from a StatusWith object by taking the first
         // non-OK status, if there is one. This is needed due to the semantics of
         // _runCommandForAddShard.
-        auto commandResponse = std::move(swCommandResponse.getValue());
         BatchedCommandResponse batchResponse;
         return Shard::CommandResponse::processBatchWriteResponse(commandResponse, &batchResponse);
     };
@@ -651,7 +636,7 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
         }
     }();
 
-    uassertStatusOK( runCmdOnNewShard(addShardCmdBSON));
+    uassertStatusOK(runCmdOnNewShard(addShardCmdBSON));
 
     {
         // Hold the fcvLock across checking the FCV, sending setFCV to the new shard, and
@@ -746,26 +731,22 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
                                                                     const ShardId& shardId) try {
     // Check preconditions for removing the shard
     std::string name = shardId.toString();
-    auto count=
-    uassertStatusOK(
- _runCountCommandOnConfig(
-        opCtx,
-        ShardType::ConfigNS,
-        BSON(ShardType::name() << NE << name << ShardType::draining(true))));
-    if (count > 0) {
+    if (_runCountCommandOnConfig(
+            opCtx,
+            ShardType::ConfigNS,
+            BSON(ShardType::name() << NE << name << ShardType::draining(true))) > 0) {
         uasserted(ErrorCodes::ConflictingOperationInProgress,
-                      "Can't have more than one draining shard at a time");
+                  "Can't have more than one draining shard at a time");
     }
 
-    count= uassertStatusOK(
-        _runCountCommandOnConfig(opCtx, ShardType::ConfigNS, BSON(ShardType::name() << NE << name)));
-    if (count == 0) {
+    if (_runCountCommandOnConfig(
+            opCtx, ShardType::ConfigNS, BSON(ShardType::name() << NE << name)) == 0) {
         uasserted(ErrorCodes::IllegalOperation, "Can't remove last shard");
     }
 
     // Figure out if shard is already draining
-    count= uassertStatusOK(_runCountCommandOnConfig(
-        opCtx, ShardType::ConfigNS, BSON(ShardType::name() << name << ShardType::draining(true))));
+    const auto count = _runCountCommandOnConfig(
+        opCtx, ShardType::ConfigNS, BSON(ShardType::name() << name << ShardType::draining(true)));
 
     auto* const shardRegistry = Grid::get(opCtx)->shardRegistry();
 
@@ -773,25 +754,22 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
         log() << "going to start draining shard: " << name;
 
         // Record start in changelog
-        uassertStatusOK( Grid::get(opCtx)->catalogClient()->logChangeChecked(
+        uassertStatusOK(Grid::get(opCtx)->catalogClient()->logChangeChecked(
             opCtx,
             "removeShard.start",
             "",
             BSON("shard" << name),
             ShardingCatalogClient::kLocalWriteConcern));
 
-        try
-        {
-            uassertStatusOK( Grid::get(opCtx)->catalogClient()->updateConfigDocument(
-            opCtx,
-            ShardType::ConfigNS,
-            BSON(ShardType::name() << name),
-            BSON("$set" << BSON(ShardType::draining(true))),
-            false,
-            ShardingCatalogClient::kLocalWriteConcern));
-        }
-        catch( const DBException &ex )
-        {
+        try {
+            uassertStatusOK(Grid::get(opCtx)->catalogClient()->updateConfigDocument(
+                opCtx,
+                ShardType::ConfigNS,
+                BSON(ShardType::name() << name),
+                BSON("$set" << BSON(ShardType::draining(true))),
+                false,
+                ShardingCatalogClient::kLocalWriteConcern));
+        } catch (const DBException& ex) {
             log() << "error starting removeShard: " << name << causedBy(redact(ex.toStatus()));
             throw;
         }
@@ -803,11 +781,11 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
 
     // Draining has already started, now figure out how many chunks and databases are still on the
     // shard.
-    const long long chunkCount= uassertStatusOK(_runCountCommandOnConfig(opCtx, ChunkType::ConfigNS,
-            BSON(ChunkType::shard(name))));
+    const long long chunkCount =
+        _runCountCommandOnConfig(opCtx, ChunkType::ConfigNS, BSON(ChunkType::shard(name)));
 
-    const long long databaseCount= uassertStatusOK( _runCountCommandOnConfig(opCtx,
-            DatabaseType::ConfigNS, BSON(DatabaseType::primary(name))));
+    const long long databaseCount =
+        _runCountCommandOnConfig(opCtx, DatabaseType::ConfigNS, BSON(DatabaseType::primary(name)));
 
     if (chunkCount > 0 || databaseCount > 0) {
         // Still more draining to do
@@ -820,14 +798,13 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
     log() << "going to remove shard: " << name;
     audit::logRemoveShard(opCtx->getClient(), name);
 
-    try
-    {
-        uassertStatusOK( Grid::get(opCtx)->catalogClient()->removeConfigDocuments(
-                opCtx, ShardType::ConfigNS, BSON(ShardType::name() << name),
-                ShardingCatalogClient::kLocalWriteConcern));
-    }
-    catch( const DBException &ex )
-    {
+    try {
+        uassertStatusOK(Grid::get(opCtx)->catalogClient()->removeConfigDocuments(
+            opCtx,
+            ShardType::ConfigNS,
+            BSON(ShardType::name() << name),
+            ShardingCatalogClient::kLocalWriteConcern));
+    } catch (const DBException& ex) {
         log() << "Error concluding removeShard operation on: " << name
               << "; err: " << ex.toStatus().reason();
         throw;
@@ -843,9 +820,7 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
         opCtx, "removeShard", "", BSON("shard" << name), ShardingCatalogClient::kLocalWriteConcern);
 
     return ShardDrainingStatus::COMPLETED;
-}
-catch( const DBException &ex )
-{
+} catch (const DBException& ex) {
     return ex.toStatus();
 }
 
@@ -854,8 +829,8 @@ void ShardingCatalogManager::appendConnectionStats(executor::ConnectionPoolStats
 }
 
 // static
-StatusWith<ShardId> ShardingCatalogManager::_selectShardForNewDatabase(
-    OperationContext* opCtx, ShardRegistry* shardRegistry) try {
+ShardId ShardingCatalogManager::_selectShardForNewDatabase(OperationContext* opCtx,
+                                                           ShardRegistry* shardRegistry) {
     std::vector<ShardId> allShardIds;
 
     shardRegistry->getAllShardIds(opCtx, &allShardIds);
@@ -865,12 +840,13 @@ StatusWith<ShardId> ShardingCatalogManager::_selectShardForNewDatabase(
 
     ShardId candidateShardId = allShardIds[0];
 
-    auto candidateSize= uassertStatusOK( shardutil::retrieveTotalShardSize(opCtx, candidateShardId));
+    auto candidateSize =
+        uassertStatusOK(shardutil::retrieveTotalShardSize(opCtx, candidateShardId));
 
     for (size_t i = 1; i < allShardIds.size(); i++) {
         const ShardId shardId = allShardIds[i];
 
-        const auto size= uassertStatusOK( shardutil::retrieveTotalShardSize(opCtx, shardId) );
+        const auto size = uassertStatusOK(shardutil::retrieveTotalShardSize(opCtx, shardId));
 
         if (size < candidateSize) {
             candidateSize = size;
@@ -880,38 +856,30 @@ StatusWith<ShardId> ShardingCatalogManager::_selectShardForNewDatabase(
 
     return candidateShardId;
 }
-catch( const DBException &ex )
-{
-    return ex.toStatus();
-}
 
-StatusWith<long long> ShardingCatalogManager::_runCountCommandOnConfig(OperationContext* opCtx,
-                                                                       const NamespaceString& nss,
-                                                                       BSONObj query) try {
+long long ShardingCatalogManager::_runCountCommandOnConfig(OperationContext* opCtx,
+                                                           const NamespaceString& nss,
+                                                           BSONObj query) {
     BSONObjBuilder countBuilder;
     countBuilder.append("count", nss.coll());
     countBuilder.append("query", query);
 
     auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
-    auto result= uassertStatusOK(
+    auto result = uassertStatusOK(
         configShard->runCommandWithFixedRetryAttempts(opCtx,
                                                       kConfigReadSelector,
                                                       nss.db().toString(),
                                                       countBuilder.done(),
                                                       Shard::kDefaultConfigCommandTimeout,
                                                       Shard::RetryPolicy::kIdempotent));
-    uassertStatusOK( result.commandStatus );
+    uassertStatusOK(result.commandStatus);
 
-    auto &responseObj = result.response;
+    auto& responseObj = result.response;
 
     long long value;
-    uassertStatusOK( bsonExtractIntegerField(responseObj, "n", &value) );
+    uassertStatusOK(bsonExtractIntegerField(responseObj, "n", &value));
 
     return value;
-}
-catch( const DBException &ex )
-{
-    return ex.toStatus();
 }
 
 }  // namespace mongo

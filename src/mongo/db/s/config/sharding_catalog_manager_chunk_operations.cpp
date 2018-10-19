@@ -306,7 +306,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
     }
 
     // Find the chunk history.
-    const auto origChunk = uassertStatusOK(_findChunkOnConfig(opCtx, nss, range.getMin()));
+    const auto origChunk = _findChunkOnConfig(opCtx, nss, range.getMin());
 
     std::vector<ChunkType> newChunks;
 
@@ -645,7 +645,7 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     auto controlChunk = getControlChunkForMigrate(opCtx, nss, migratedChunk, fromShard);
 
     // Find the chunk history.
-    const auto origChunk = uassertStatusOK(_findChunkOnConfig(opCtx, nss, migratedChunk.getMin()));
+    const auto origChunk = _findChunkOnConfig(opCtx, nss, migratedChunk.getMin());
 
     // Generate the new versions of migratedChunk and controlChunk. Migrating chunk's minor version
     // will be 0.
@@ -685,8 +685,7 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     boost::optional<ChunkType> newControlChunk = boost::none;
     if (controlChunk) {
         // Find the chunk history.
-        const auto origControlChunk =
-                uassertStatusOK(_findChunkOnConfig(opCtx, nss, controlChunk->getMin()));
+        const auto origControlChunk = _findChunkOnConfig(opCtx, nss, controlChunk->getMin());
 
         newControlChunk = origControlChunk;
         newControlChunk->setVersion(ChunkVersion(
@@ -719,9 +718,9 @@ catch( const DBException &ex )
     return ex.toStatus();
 }
 
-StatusWith<ChunkType> ShardingCatalogManager::_findChunkOnConfig(OperationContext* opCtx,
+ChunkType ShardingCatalogManager::_findChunkOnConfig(OperationContext* opCtx,
                                                                  const NamespaceString& nss,
-                                                                 const BSONObj& key) try {
+                                                                 const BSONObj& key) {
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
     auto findResponse = uassertStatusOK(
@@ -740,58 +739,7 @@ StatusWith<ChunkType> ShardingCatalogManager::_findChunkOnConfig(OperationContex
                               << ", but found no chunks");
     }
 
-    return ChunkType::fromConfigBSON(origChunks.front());
-}
-catch( const DBException &ex )
-{
-    return ex.toStatus();
-}
-
-StatusWith<ChunkVersion> ShardingCatalogManager::_findCollectionVersion(
-    OperationContext* opCtx, const NamespaceString& nss, const OID& collectionEpoch) try {
-    auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
-
-    // Must use local read concern because we will perform subsequent writes.
-    auto findResponse = uassertStatusOK(
-        configShard->exhaustiveFindOnConfig(opCtx,
-                                            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                                            repl::ReadConcernLevel::kLocalReadConcern,
-                                            ChunkType::ConfigNS,
-                                            BSON("ns" << nss.ns()),
-                                            BSON(ChunkType::lastmod << -1),
-                                            1));
-
-    const auto chunksVector = std::move(findResponse.docs);
-    if (chunksVector.empty()) {
-        uasserted (ErrorCodes::IncompatibleShardingMetadata,
-                str::stream() << "Tried to find max chunk version for collection '" << nss.ns()
-                              << ", but found no chunks");
-    }
-
-    const auto chunk = uassertStatusOK(ChunkType::fromConfigBSON(chunksVector.front()));
-
-    const auto currentCollectionVersion = chunk.getVersion();
-
-    // It is possible for a migration to end up running partly without the protection of the
-    // distributed lock if the config primary stepped down since the start of the migration and
-    // failed to recover the migration. Check that the collection has not been dropped and recreated
-    // since the migration began, unbeknown to the shard when the command was sent.
-    if (currentCollectionVersion.epoch() != collectionEpoch) {
-        uasserted (ErrorCodes::StaleEpoch,
-                str::stream() << "The collection '" << nss.ns()
-                              << "' has been dropped and recreated since the migration began."
-                                 " The config server's collection version epoch is now '"
-                              << currentCollectionVersion.epoch().toString()
-                              << "', but the shard's is "
-                              << collectionEpoch.toString()
-                              << "'.");
-    }
-
-    return currentCollectionVersion;
-}
-catch( const DBException &ex )
-{
-    return ex.toStatus();
+    return uassertStatusOK(ChunkType::fromConfigBSON(origChunks.front()));
 }
 
 }  // namespace mongo

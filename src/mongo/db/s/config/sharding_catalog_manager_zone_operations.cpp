@@ -58,12 +58,12 @@ const WriteConcernOptions kNoWaitWriteConcern(1, WriteConcernOptions::SyncMode::
  * Note: range should have the full shard key.
  * Returns ErrorCodes::RangeOverlapConflict is an overlap is detected.
  */
-Status checkForOveralappedZonedKeyRange(OperationContext* opCtx,
+void checkForOveralappedZonedKeyRange(OperationContext* opCtx,
                                         Shard* configServer,
                                         const NamespaceString& nss,
                                         const ChunkRange& range,
                                         const std::string& zoneName,
-                                        const KeyPattern& shardKeyPattern) try {
+                                        const KeyPattern& shardKeyPattern) {
     DistributionStatus chunkDist(nss, ShardToChunksMap{});
 
     auto tag = uassertStatusOK(configServer->exhaustiveFindOnConfig(opCtx,
@@ -87,12 +87,6 @@ Status checkForOveralappedZonedKeyRange(OperationContext* opCtx,
     }
 
     uassertStatusOK(chunkDist.addRangeToZone(ZoneRange(range.getMin(), range.getMax(), zoneName)));
-
-    return Status::OK();
-}
-catch( const DBException &ex )
-{
-    return ex.toStatus();
 }
 
 /**
@@ -102,11 +96,11 @@ catch( const DBException &ex )
  * - ErrorCodes::ShardKeyNotFound if range is not compatible (for example, not a prefix of shard
  * key) with the shard key of nss.
  */
-StatusWith<ChunkRange> includeFullShardKey(OperationContext* opCtx,
+ChunkRange includeFullShardKey(OperationContext* opCtx,
                                            Shard* configServer,
                                            const NamespaceString& nss,
                                            const ChunkRange& range,
-                                           KeyPattern* shardKeyPatternOut) try {
+                                           KeyPattern* shardKeyPatternOut) {
     auto findColl= uassertStatusOK(
         configServer->exhaustiveFindOnConfig(opCtx,
                                              kConfigPrimarySelector,
@@ -149,10 +143,6 @@ StatusWith<ChunkRange> includeFullShardKey(OperationContext* opCtx,
 
     return ChunkRange(shardKeyPattern.extendRangeBound(range.getMin(), false),
                       shardKeyPattern.extendRangeBound(range.getMax(), false));
-}
-catch( const DBException &ex )
-{
-    return ex.toStatus();
 }
 
 }  // namespace
@@ -296,8 +286,7 @@ Status ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
     {
         try
         {
-            return uassertStatusOK(
-                    includeFullShardKey(opCtx, configServer.get(), nss, givenRange, &shardKeyPattern));
+            return includeFullShardKey(opCtx, configServer.get(), nss, givenRange, &shardKeyPattern);
         }
         catch( const ExceptionFor< ErrorCodes::NamespaceNotSharded > & )
         {
@@ -322,8 +311,8 @@ Status ShardingCatalogManager::assignKeyRangeToZone(OperationContext* opCtx,
                 (str::stream() << "zone " << zoneName << " does not exist"));
     }
 
-    uassertStatusOK( checkForOveralappedZonedKeyRange(
-        opCtx, configServer.get(), nss, fullShardKeyRange, zoneName, shardKeyPattern));
+    checkForOveralappedZonedKeyRange(
+        opCtx, configServer.get(), nss, fullShardKeyRange, zoneName, shardKeyPattern);
 
     BSONObj updateQuery(
         BSON("_id" << BSON(TagsType::ns(nss.ns()) << TagsType::min(fullShardKeyRange.getMin()))));
@@ -356,9 +345,9 @@ Status ShardingCatalogManager::removeKeyRangeFromZone(OperationContext* opCtx,
     KeyPattern shardKeyPattern{BSONObj()};
     try
     {
-        uassertStatusOK( includeFullShardKey(opCtx, configServer.get(), nss, range, &shardKeyPattern) );
+        includeFullShardKey(opCtx, configServer.get(), nss, range, &shardKeyPattern);
     }
-    catch( const ExceptionFor< ErrorCodes::NamespaceNotSharded > & ) { }
+    catch( const ExceptionFor< ErrorCodes::NamespaceNotSharded > & ) { /* Okay to ignore this */ }
 
     BSONObjBuilder removeBuilder;
     removeBuilder.append("_id", BSON(TagsType::ns(nss.ns()) << TagsType::min(range.getMin())));

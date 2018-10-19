@@ -387,7 +387,7 @@ private:
      * indicates that an existing shard conflicts with the shard being added and they have different
      * options, so the addShard attempt must be aborted.
      */
-    StatusWith<boost::optional<ShardType>> _checkIfShardExists(
+    boost::optional<ShardType> _checkIfShardExists(
         OperationContext* opCtx,
         const ConnectionString& propsedShardConnectionString,
         const std::string* shardProposedName,
@@ -409,7 +409,7 @@ private:
      * shard's name should be checked and if empty, one should be generated using some uniform
      * algorithm.
      */
-    StatusWith<ShardType> _validateHostAsShard(OperationContext* opCtx,
+    ShardType _validateHostAsShard(OperationContext* opCtx,
                                                std::shared_ptr<RemoteCommandTargeter> targeter,
                                                const std::string* shardProposedName,
                                                const ConnectionString& connectionString);
@@ -425,7 +425,7 @@ private:
      * it returns excluding those named local, config and admin, since they serve administrative
      * purposes.
      */
-    StatusWith<std::vector<std::string>> _getDBNamesListFromShard(
+    std::vector<std::string> _getDBNamesListFromShard(
         OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter);
 
     /**
@@ -441,14 +441,14 @@ private:
      * Selects an optimal shard on which to place a newly created database from the set of
      * available shards. Will return ShardNotFound if shard could not be found.
      */
-    static StatusWith<ShardId> _selectShardForNewDatabase(OperationContext* opCtx,
+    static ShardId _selectShardForNewDatabase(OperationContext* opCtx,
                                                           ShardRegistry* shardRegistry);
 
     /**
      * Helper method for running a count command against the config server with appropriate error
      * handling.
      */
-    StatusWith<long long> _runCountCommandOnConfig(OperationContext* opCtx,
+    long long _runCountCommandOnConfig(OperationContext* opCtx,
                                                    const NamespaceString& nss,
                                                    BSONObj query);
 
@@ -460,16 +460,9 @@ private:
     /**
      * Retrieve the full chunk description from the config.
      */
-    StatusWith<ChunkType> _findChunkOnConfig(OperationContext* opCtx,
+    ChunkType _findChunkOnConfig(OperationContext* opCtx,
                                              const NamespaceString& nss,
                                              const BSONObj& key);
-
-    /**
-     * Retrieve the the latest collection version from the config.
-     */
-    StatusWith<ChunkVersion> _findCollectionVersion(OperationContext* opCtx,
-                                                    const NamespaceString& nss,
-                                                    const OID& collectionEpoch);
 
     // The owning service context
     ServiceContext* const _serviceContext;

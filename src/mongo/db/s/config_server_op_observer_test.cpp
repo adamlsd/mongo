@@ -70,8 +70,9 @@ TEST_F(ConfigServerOpObserverTest, NodeDoesNotClearCatalogManagerWhenConfigVersi
 
     opObserver.onReplicationRollback(operationContext(), rbInfo);
 
-    ErrorCodes::AlreadyInitialized, ShardingCatalogManager::get(operationContext())
-                                        ->initializeConfigDatabaseIfNeeded(operationContext());
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()),
+                  ExceptionFor<ErrorCodes::AlreadyInitialized>);
 }
 
 DEATH_TEST_F(ConfigServerOpObserverTest,

@@ -115,11 +115,10 @@ public:
      * Called by the DecorationContainer destructor.  Do not call directly.
      */
     void destroy(DecorationContainer<DecoratedType>* const container) const noexcept try {
-		std::for_each(_decorationInfo.rbegin(), _decorationInfo.rend(),
-			[&container]( const auto &decoration )
-			{
-				decoration.destructor(container->getDecoration(decoration.descriptor));
-			});
+        std::for_each(
+            _decorationInfo.rbegin(), _decorationInfo.rend(), [&container](const auto& decoration) {
+                decoration.destructor(container->getDecoration(decoration.descriptor));
+            });
     } catch (...) {
         std::terminate();
     }

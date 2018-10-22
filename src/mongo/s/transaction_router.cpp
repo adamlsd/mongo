@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -36,6 +38,7 @@
 #include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
 #include "mongo/db/logical_clock.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/rpc/get_status_from_command_result.h"
@@ -244,6 +247,25 @@ StmtId TransactionRouter::Participant::getStmtIdCreatedAt() const {
     return _stmtIdCreatedAt;
 }
 
+LogicalTime TransactionRouter::AtClusterTime::getTime() const {
+    invariant(_atClusterTime != LogicalTime::kUninitialized);
+    invariant(_stmtIdSelectedAt != kUninitializedStmtId);
+    return _atClusterTime;
+}
+
+void TransactionRouter::AtClusterTime::setTime(LogicalTime atClusterTime, StmtId currentStmtId) {
+    _atClusterTime = atClusterTime;
+    _stmtIdSelectedAt = currentStmtId;
+}
+
+bool TransactionRouter::AtClusterTime::isSet() const {
+    return _atClusterTime != LogicalTime::kUninitialized;
+}
+
+bool TransactionRouter::AtClusterTime::canChange(StmtId currentStmtId) const {
+    return _stmtIdSelectedAt == kUninitializedStmtId || _stmtIdSelectedAt == currentStmtId;
+}
+
 TransactionRouter* TransactionRouter::get(OperationContext* opCtx) {
     auto& opCtxSession = getRouterSessionRuntimeState(opCtx);
     if (!opCtxSession) {
@@ -268,6 +290,11 @@ bool TransactionRouter::isCheckedOut() {
     return _isCheckedOut;
 }
 
+const boost::optional<TransactionRouter::AtClusterTime>& TransactionRouter::getAtClusterTime()
+    const {
+    return _atClusterTime;
+}
+
 boost::optional<ShardId> TransactionRouter::getCoordinatorId() const {
     return _coordinatorId;
 }
@@ -286,7 +313,7 @@ void TransactionRouter::_verifyReadConcern() {
 
     if (_readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
         invariant(_atClusterTime);
-        invariant(_atClusterTime != LogicalTime::kUninitialized);
+        invariant(_atClusterTime->isSet());
     }
 }
 
@@ -297,7 +324,8 @@ void TransactionRouter::_verifyParticipantAtClusterTime(const Participant& parti
 
     auto participantAtClusterTime = participant.getSharedOptions().atClusterTime;
     invariant(participantAtClusterTime);
-    invariant(participantAtClusterTime == _atClusterTime);
+    invariant(_atClusterTime);
+    invariant(*participantAtClusterTime == _atClusterTime->getTime());
 }
 
 boost::optional<TransactionRouter::Participant&> TransactionRouter::getParticipant(
@@ -323,12 +351,14 @@ TransactionRouter::Participant& TransactionRouter::_createParticipant(const Shar
 
     _verifyReadConcern();
 
-    auto resultPair = _participants.try_emplace(
-        shard.toString(),
-        TransactionRouter::Participant(
-            isFirstParticipant,
-            _latestStmtId,
-            SharedTransactionOptions{_txnNumber, _readConcernArgs, _atClusterTime}));
+    auto sharedOptions = _atClusterTime
+        ? SharedTransactionOptions{_txnNumber, _readConcernArgs, _atClusterTime->getTime()}
+        : SharedTransactionOptions{_txnNumber, _readConcernArgs, boost::none};
+
+    auto resultPair =
+        _participants.try_emplace(shard.toString(),
+                                  TransactionRouter::Participant(
+                                      isFirstParticipant, _latestStmtId, std::move(sharedOptions)));
 
     return resultPair.first->second;
 }
@@ -390,7 +420,8 @@ void TransactionRouter::onViewResolutionError() {
 }
 
 bool TransactionRouter::_canContinueOnSnapshotError() const {
-    return _latestStmtId == _firstStmtId;
+    invariant(_atClusterTime);
+    return _atClusterTime->canChange(_latestStmtId);
 }
 
 void TransactionRouter::onSnapshotError() {
@@ -406,7 +437,9 @@ void TransactionRouter::onSnapshotError() {
     invariant(!_coordinatorId);
 
     // Reset the global snapshot timestamp so the retry will select a new one.
+    invariant(_atClusterTime);
     _atClusterTime.reset();
+    _atClusterTime.emplace();
 }
 
 void TransactionRouter::computeAtClusterTime(OperationContext* opCtx,
@@ -415,42 +448,31 @@ void TransactionRouter::computeAtClusterTime(OperationContext* opCtx,
                                              const NamespaceString& nss,
                                              const BSONObj query,
                                              const BSONObj collation) {
-    // TODO SERVER-36688: We should also return immediately if the read concern
-    // is not snapshot.
-    if (_atClusterTime) {
+    if (!_atClusterTime || !_atClusterTime->canChange(_latestStmtId)) {
         return;
     }
 
-    // atClusterTime could be none if the the read concern is not snapshot.
+    // TODO SERVER-36688: Remove at_cluster_time_util.
     auto atClusterTime = at_cluster_time_util::computeAtClusterTime(
         opCtx, mustRunOnAll, shardIds, nss, query, collation);
-    // TODO SERVER-36688: atClusterTime should never be none once we add the check above.
-    invariant(!atClusterTime || *atClusterTime != LogicalTime::kUninitialized);
-    if (atClusterTime) {
-        _atClusterTime = *atClusterTime;
-    }
+    invariant(atClusterTime && *atClusterTime != LogicalTime::kUninitialized);
+    _atClusterTime->setTime(*atClusterTime, _latestStmtId);
 }
 
 void TransactionRouter::computeAtClusterTimeForOneShard(OperationContext* opCtx,
                                                         const ShardId& shardId) {
-    // TODO SERVER-36688: We should also return immediately if the read concern
-    // is not snapshot.
-    if (_atClusterTime) {
+    if (!_atClusterTime || !_atClusterTime->canChange(_latestStmtId)) {
         return;
     }
 
-    // atClusterTime could be none if the the read concern is not snapshot.
+    // TODO SERVER-36688: Remove at_cluster_time_util.
     auto atClusterTime = at_cluster_time_util::computeAtClusterTimeForOneShard(opCtx, shardId);
-    // TODO SERVER-36688: atClusterTime should never be none once we add the check above.
-    invariant(!atClusterTime || *atClusterTime != LogicalTime::kUninitialized);
-    if (atClusterTime) {
-        _atClusterTime = *atClusterTime;
-    }
+    invariant(atClusterTime && *atClusterTime != LogicalTime::kUninitialized);
+    _atClusterTime->setTime(*atClusterTime, _latestStmtId);
 }
 
-void TransactionRouter::setAtClusterTimeToLatestTime(OperationContext* opCtx) {
-    if (_atClusterTime ||
-        _readConcernArgs.getLevel() != repl::ReadConcernLevel::kSnapshotReadConcern) {
+void TransactionRouter::setDefaultAtClusterTime(OperationContext* opCtx) {
+    if (!_atClusterTime || !_atClusterTime->canChange(_latestStmtId)) {
         return;
     }
 
@@ -463,7 +485,7 @@ void TransactionRouter::setAtClusterTimeToLatestTime(OperationContext* opCtx) {
         atClusterTime = *afterClusterTime;
     }
 
-    _atClusterTime = atClusterTime;
+    _atClusterTime->setTime(atClusterTime, _latestStmtId);
 }
 
 void TransactionRouter::beginOrContinueTxn(OperationContext* opCtx,
@@ -527,6 +549,10 @@ void TransactionRouter::beginOrContinueTxn(OperationContext* opCtx,
     // command that started the transaction, if one was included.
     _latestStmtId = kDefaultFirstStmtId;
     _firstStmtId = kDefaultFirstStmtId;
+
+    if (_readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
+        _atClusterTime.emplace();
+    }
 }
 
 

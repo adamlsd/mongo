@@ -85,7 +85,7 @@ public:
     }
 
     OwnedRemoteCursor(OperationContext* opCtx, RemoteCursor&& cursor, NamespaceString nss)
-        : _opCtx(opCtx), _remoteCursor(std::move(cursor)), _nss(std::move(nss)) {}
+        : _opCtx(opCtx), _active(true), _remoteCursor(std::move(cursor)), _nss(std::move(nss)) {}
 
     RemoteCursor* operator->() {
         invariant(_active);

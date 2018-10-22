@@ -115,11 +115,12 @@ Document wrapAggAsExplain(Document aggregateCommand, ExplainOptions::Verbosity v
     return explainCommandBuilder.freeze();
 }
 
-Status appendCursorResponseToCommandResult(const ShardId& shardId,
-                                           const BSONObj& response,
-                                           const boost::optional<CursorResponse>& possibleCursor,
-                                           const rpc::UseDocumentSequencesChoice useDocSequencesChoice,
-                                           rpc::ReplyBuilderInterface* result) {
+Status appendCursorResponseToCommandResult(
+    const ShardId& shardId,
+    const BSONObj& response,
+    const boost::optional<CursorResponse>& possibleCursor,
+    const rpc::UseDocumentSequencesChoice useDocSequencesChoice,
+    rpc::ReplyBuilderInterface* result) {
     if (possibleCursor) {
         possibleCursor->addToReplyWithoutWriteConcern(
             CursorResponse::ResponseType::InitialResponse, useDocSequencesChoice, result);
@@ -1077,7 +1078,8 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
     auto mergeCursors = checked_cast<DocumentSourceMergeCursors*>(mergePipeline->peekFront());
     mergeCursors->dismissCursorOwnership();
 
-    return appendCursorResponseToCommandResult(mergingShardId, mergeResponse.response, mergeCursorResponse, useDocumentSequences, result);
+    return appendCursorResponseToCommandResult(
+        mergingShardId, mergeResponse.response, mergeCursorResponse, useDocumentSequences, result);
 }
 
 void appendEmptyResultSetWithStatus(OperationContext* opCtx,
@@ -1194,15 +1196,12 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
         invariant(shardDispatchResults.remoteCursors.size() == 1);
         auto remoteCursor = std::move(shardDispatchResults.remoteCursors.front());
         const auto shardId = remoteCursor->getShardId().toString();
-        auto cursorResponse= remoteCursor->getCursorResponse().toBSON(CursorResponse::ResponseType::InitialResponse);
+        auto cursorResponse =
+            remoteCursor->getCursorResponse().toBSON(CursorResponse::ResponseType::InitialResponse);
         const auto reply = uassertStatusOK(storePossibleCursor(
-            opCtx, namespaces.requestedNss, std::move( remoteCursor ), expCtx->tailableMode));
+            opCtx, namespaces.requestedNss, std::move(remoteCursor), expCtx->tailableMode));
         return appendCursorResponseToCommandResult(
-            shardId,
-            cursorResponse,
-            reply,
-            useDocumentSequences,
-            result);
+            shardId, cursorResponse, reply, useDocumentSequences, result);
     }
 
     // If we have the exchange spec then dispatch all consumers.

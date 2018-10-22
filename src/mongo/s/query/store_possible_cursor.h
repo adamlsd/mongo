@@ -83,11 +83,11 @@ StatusWith<BSONObj> storePossibleCursor(OperationContext* opCtx,
 /**
  * Convenience function which extracts all necessary information from the passed RemoteCursor, and
  * stores a ClusterClientCursor based on it. The ownership of the remote cursor is transferred to
- * this function, and will handle killing it upon failure.
+ * this function.
  */
 StatusWith<BSONObj> storePossibleCursor(OperationContext* opCtx,
                                         const NamespaceString& requestedNss,
-                                        OwnedRemoteCursor&& remoteCursor,
+                                        OwnedRemoteCursor remoteCursor,
                                         TailableModeEnum tailableMode);
 
 /**

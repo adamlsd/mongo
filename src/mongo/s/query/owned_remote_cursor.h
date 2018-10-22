@@ -43,38 +43,68 @@ namespace mongo {
  */
 class OwnedRemoteCursor {
 public:
-    MONGO_DISALLOW_COPYING(OwnedRemoteCursor);
+    ~OwnedRemoteCursor() {
+        if (!_active)
+            return;
+
+        killRemoteCursor(_opCtx,
+                         Grid::get(_opCtx)->getExecutorPool()->getArbitraryExecutor(),
+                         releaseCursor(),
+                         _nss);
+    }
+
+    OwnedRemoteCursor(const OwnedRemoteCursor&) = delete;
+    OwnedRemoteCursor& operator=(const OwnedRemoteCursor&) = delete;
+
+    OwnedRemoteCursor(OwnedRemoteCursor&& other) noexcept
+        : _opCtx(other._opCtx),
+          _active(other._active),
+          _remoteCursor(std::move(other._remoteCursor)),
+          _nss(std::move(other._nss)) {
+        other.retire();
+    }
+
+    OwnedRemoteCursor& operator=(OwnedRemoteCursor&& other) noexcept {
+        OwnedRemoteCursor tmp = std::move(other);
+
+        this->swap(tmp);
+
+        return *this;
+    }
+
+    void swap(OwnedRemoteCursor& other) {
+        using std::swap;
+        swap(this->_opCtx, other._opCtx);
+        swap(this->_active, other._active);
+        swap(this->_remoteCursor, other._remoteCursor);
+        swap(this->_nss, other._nss);
+    }
+
+    friend void swap(OwnedRemoteCursor& a, OwnedRemoteCursor& b) {
+        a.swap(b);
+    }
 
     OwnedRemoteCursor(OperationContext* opCtx, RemoteCursor&& cursor, NamespaceString nss)
         : _opCtx(opCtx), _remoteCursor(std::move(cursor)), _nss(std::move(nss)) {}
 
-    ~OwnedRemoteCursor() {
-        if (_remoteCursor) {
-            killRemoteCursor(_opCtx,
-                             Grid::get(_opCtx)->getExecutorPool()->getArbitraryExecutor(),
-                             releaseCursor(),
-                             _nss);
-        }
-    }
-
-    OwnedRemoteCursor(OwnedRemoteCursor&& other)
-        : _opCtx(other._opCtx), _remoteCursor(other.releaseCursor()), _nss(std::move(other._nss)) {}
-
-    OwnedRemoteCursor& operator=(OwnedRemoteCursor&& other) {
-        _remoteCursor = other.releaseCursor();
-        _opCtx = other._opCtx;
-        _nss = std::move(other._nss);
-        return *this;
-    }
-
     RemoteCursor* operator->() {
-        invariant(_remoteCursor);
-        return &(*_remoteCursor);
+        invariant(_active);
+        return &_remoteCursor;
     }
 
-    RemoteCursor* operator*() {
-        invariant(_remoteCursor);
-        return &(*_remoteCursor);
+    const RemoteCursor* operator->() const {
+        invariant(_active);
+        return &_remoteCursor;
+    }
+
+    RemoteCursor& operator*() {
+        invariant(_active);
+        return _remoteCursor;
+    }
+
+    const RemoteCursor& operator*() const {
+        invariant(_active);
+        return _remoteCursor;
     }
 
     /**
@@ -82,14 +112,18 @@ public:
      * when this object is destroyed.
      */
     RemoteCursor releaseCursor() {
-        auto cursor = std::move(*_remoteCursor);
-        _remoteCursor.reset();
-        return cursor;
+        this->retire();
+        return std::move(_remoteCursor);
+    }
+
+    void retire() {
+        _active = false;
     }
 
 private:
-    OperationContext* _opCtx;
-    boost::optional<RemoteCursor> _remoteCursor;
+    OperationContext* _opCtx = nullptr;
+    bool _active = false;
+    RemoteCursor _remoteCursor;
     NamespaceString _nss;
 };
 

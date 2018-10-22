@@ -49,7 +49,7 @@ namespace mongo {
 
 StatusWith<BSONObj> storePossibleCursor(OperationContext* opCtx,
                                         const NamespaceString& requestedNss,
-                                        OwnedRemoteCursor&& remoteCursor,
+                                        OwnedRemoteCursor remoteCursor,
                                         TailableModeEnum tailableMode) {
     auto executorPool = Grid::get(opCtx)->getExecutorPool();
     auto result = storePossibleCursor(

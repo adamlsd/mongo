@@ -510,7 +510,7 @@ DispatchShardPipelineResults dispatchShardPipeline(
     // Convert remote cursors into a vector of "owned" cursors.
     std::vector<OwnedRemoteCursor> ownedCursors;
     for (auto&& cursor : cursors) {
-        ownedCursors.emplace_back(OwnedRemoteCursor(opCtx, std::move(cursor), executionNss));
+        ownedCursors.push_back(OwnedRemoteCursor(opCtx, std::move(cursor), executionNss));
     }
 
     // Record the number of shards involved in the aggregation. If we are required to merge on
@@ -590,7 +590,7 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
     // Convert remote cursors into a vector of "owned" cursors.
     std::vector<OwnedRemoteCursor> ownedCursors;
     for (auto&& cursor : cursors) {
-        ownedCursors.emplace_back(OwnedRemoteCursor(opCtx, std::move(cursor), executionNss));
+        ownedCursors.push_back(OwnedRemoteCursor(opCtx, std::move(cursor), executionNss));
     }
 
     // The merging pipeline is just a union of the results from each of the shards involved on the
@@ -604,7 +604,7 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
     // responsible for its own producer cursors.
     for (const auto& pipeline : consumerPipelines) {
         const auto& mergeCursors =
-            static_cast<DocumentSourceMergeCursors*>(pipeline.shardsPipeline->peekFront());
+            checked_cast<DocumentSourceMergeCursors*>(pipeline.shardsPipeline->peekFront());
         mergeCursors->dismissCursorOwnership();
     }
     return DispatchShardPipelineResults{false,
@@ -1172,7 +1172,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     // If we sent the entire pipeline to a single shard, store the remote cursor and return.
     if (!shardDispatchResults.splitPipeline) {
         invariant(shardDispatchResults.remoteCursors.size() == 1);
-        auto&& remoteCursor = std::move(shardDispatchResults.remoteCursors.front());
+        auto remoteCursor = std::move(shardDispatchResults.remoteCursors.front());
         const auto shardId = remoteCursor->getShardId().toString();
         const auto reply = uassertStatusOK(storePossibleCursor(
             opCtx, namespaces.requestedNss, std::move(remoteCursor), expCtx->tailableMode));

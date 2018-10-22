@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -43,7 +45,6 @@
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/document_source_change_stream.h"
-#include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/db/pipeline/document_source_out.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/lite_parsed_pipeline.h"
@@ -65,7 +66,9 @@
 #include "mongo/s/query/cluster_client_cursor_params.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/cluster_query_knobs.h"
+#include "mongo/s/query/document_source_merge_cursors.h"
 #include "mongo/s/query/establish_cursors.h"
+#include "mongo/s/query/owned_remote_cursor.h"
 #include "mongo/s/query/router_stage_pipeline.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/stale_exception.h"
@@ -79,6 +82,10 @@ namespace mongo {
 using SplitPipeline = cluster_aggregation_planner::SplitPipeline;
 
 MONGO_FAIL_POINT_DEFINE(clusterAggregateHangBeforeEstablishingShardCursors);
+MONGO_FAIL_POINT_DEFINE(clusterAggregateFailToEstablishMergingShardCursor);
+MONGO_FAIL_POINT_DEFINE(clusterAggregateFailToDispatchExchangeConsumerPipeline);
+
+constexpr unsigned ClusterAggregate::kMaxViewRetries;
 
 namespace {
 
@@ -152,8 +159,9 @@ StatusWith<CachedCollectionRoutingInfo> getExecutionNsRoutingInfo(OperationConte
         return {ErrorCodes::ShardNotFound, "No shards are present in the cluster"};
     }
 
-    // This call to getCollectionRoutingInfo will return !OK if the database does not exist.
-    return Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, execNss);
+    // This call to getCollectionRoutingInfoForTxnCmd will return !OK if the database does not
+    // exist.
+    return getCollectionRoutingInfoForTxnCmd(opCtx, execNss);
 }
 
 std::set<ShardId> getTargetedShards(OperationContext* opCtx,
@@ -363,7 +371,7 @@ struct DispatchShardPipelineResults {
 
     // Populated if this *is not* an explain, this vector represents the cursors on the remote
     // shards.
-    std::vector<RemoteCursor> remoteCursors;
+    std::vector<OwnedRemoteCursor> remoteCursors;
 
     // Populated if this *is* an explain, this vector represents the results from each shard.
     std::vector<AsyncRequestsSender::Response> remoteExplainOutput;
@@ -515,6 +523,12 @@ DispatchShardPipelineResults dispatchShardPipeline(
                                 << ")");
     }
 
+    // Convert remote cursors into a vector of "owned" cursors.
+    std::vector<OwnedRemoteCursor> ownedCursors;
+    for (auto&& cursor : cursors) {
+        ownedCursors.push_back(OwnedRemoteCursor(opCtx, std::move(cursor), executionNss));
+    }
+
     // Record the number of shards involved in the aggregation. If we are required to merge on
     // the primary shard, but the primary shard was not in the set of targeted shards, then we
     // must increment the number of involved shards.
@@ -523,7 +537,7 @@ DispatchShardPipelineResults dispatchShardPipeline(
                            !shardIds.count(executionNsRoutingInfo->db().primaryId()));
 
     return DispatchShardPipelineResults{needsPrimaryShardMerge,
-                                        std::move(cursors),
+                                        std::move(ownedCursors),
                                         std::move(shardResults),
                                         std::move(splitPipeline),
                                         std::move(pipeline),
@@ -543,13 +557,19 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
     invariant(!liteParsedPipeline.hasChangeStream());
     auto opCtx = expCtx->opCtx;
 
+    if (MONGO_FAIL_POINT(clusterAggregateFailToDispatchExchangeConsumerPipeline)) {
+        log() << "clusterAggregateFailToDispatchExchangeConsumerPipeline fail point enabled.";
+        uasserted(ErrorCodes::FailPointEnabled,
+                  "Asserting on exhange consumer pipeline dispatch due to failpoint.");
+    }
+
     // For all consumers construct a request with appropriate cursor ids and send to shards.
     std::vector<std::pair<ShardId, BSONObj>> requests;
     auto numConsumers = shardDispatchResults->exchangeSpec->consumerShards.size();
+    std::vector<SplitPipeline> consumerPipelines;
     for (size_t idx = 0; idx < numConsumers; ++idx) {
-
         // Pick this consumer's cursors from producers.
-        std::vector<RemoteCursor> producers;
+        std::vector<OwnedRemoteCursor> producers;
         for (size_t p = 0; p < shardDispatchResults->numProducers; ++p) {
             producers.emplace_back(
                 std::move(shardDispatchResults->remoteCursors[p * numConsumers + idx]));
@@ -568,10 +588,10 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
             shardDispatchResults->splitPipeline->shardCursorsSortSpec,
             Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor());
 
-        SplitPipeline pipeline(std::move(consumerPipeline), nullptr, boost::none);
+        consumerPipelines.emplace_back(std::move(consumerPipeline), nullptr, boost::none);
 
         auto consumerCmdObj = createCommandForTargetedShards(
-            opCtx, aggRequest, pipeline, collationObj, boost::none, false);
+            opCtx, aggRequest, consumerPipelines.back(), collationObj, boost::none, false);
 
         requests.emplace_back(shardDispatchResults->exchangeSpec->consumerShards[idx],
                               consumerCmdObj);
@@ -583,14 +603,28 @@ DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
                                     requests,
                                     false /* do not allow partial results */);
 
+    // Convert remote cursors into a vector of "owned" cursors.
+    std::vector<OwnedRemoteCursor> ownedCursors;
+    for (auto&& cursor : cursors) {
+        ownedCursors.push_back(OwnedRemoteCursor(opCtx, std::move(cursor), executionNss));
+    }
+
     // The merging pipeline is just a union of the results from each of the shards involved on the
     // consumer side of the exchange.
     auto mergePipeline = uassertStatusOK(Pipeline::create({}, expCtx));
     mergePipeline->setSplitState(Pipeline::SplitState::kSplitForMerge);
 
     SplitPipeline splitPipeline{nullptr, std::move(mergePipeline), boost::none};
+
+    // Relinquish ownership of the local consumer pipelines' cursors as each shard is now
+    // responsible for its own producer cursors.
+    for (const auto& pipeline : consumerPipelines) {
+        const auto& mergeCursors =
+            checked_cast<DocumentSourceMergeCursors*>(pipeline.shardsPipeline->peekFront());
+        mergeCursors->dismissCursorOwnership();
+    }
     return DispatchShardPipelineResults{false,
-                                        std::move(cursors),
+                                        std::move(ownedCursors),
                                         {} /*TODO SERVER-36279*/,
                                         std::move(splitPipeline),
                                         nullptr,
@@ -650,6 +684,12 @@ Shard::CommandResponse establishMergingShardCursor(OperationContext* opCtx,
                                                    const NamespaceString& nss,
                                                    const BSONObj mergeCmdObj,
                                                    const ShardId& mergingShardId) {
+    if (MONGO_FAIL_POINT(clusterAggregateFailToEstablishMergingShardCursor)) {
+        log() << "clusterAggregateFailToEstablishMergingShardCursor fail point enabled.";
+        uasserted(ErrorCodes::FailPointEnabled,
+                  "Asserting on establishing merging shard cursor due to failpoint.");
+    }
+
     const auto mergingShard =
         uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, mergingShardId));
 
@@ -886,7 +926,7 @@ StringMap<ExpressionContext::ResolvedNamespace> resolveInvolvedNamespaces(
     StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces;
     for (auto&& nss : litePipe.getInvolvedNamespaces()) {
         const auto resolvedNsRoutingInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
+            uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
         uassert(28769,
                 str::stream() << nss.ns() << " cannot be sharded",
                 !resolvedNsRoutingInfo.cm() || litePipe.allowShardedForeignCollection(nss));
@@ -973,12 +1013,13 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
     // We should never be in a situation where we call this function on a non-merge pipeline.
     invariant(shardDispatchResults.splitPipeline);
     auto* mergePipeline = shardDispatchResults.splitPipeline->mergePipeline.get();
+    invariant(mergePipeline);
     auto* opCtx = expCtx->opCtx;
 
     std::vector<ShardId> targetedShards;
     targetedShards.reserve(shardDispatchResults.remoteCursors.size());
     for (auto&& remoteCursor : shardDispatchResults.remoteCursors) {
-        targetedShards.emplace_back(remoteCursor.getShardId().toString());
+        targetedShards.emplace_back(remoteCursor->getShardId().toString());
     }
 
     cluster_aggregation_planner::addMergeCursorsSource(
@@ -1030,8 +1071,13 @@ Status dispatchMergingPipeline(const boost::intrusive_ptr<ExpressionContext>& ex
     auto mergeCursorResponse = uassertStatusOK(storePossibleCursor(
         opCtx, namespaces.requestedNss, mergingShardId, mergeResponse, expCtx->tailableMode));
 
-    return appendCursorResponseToCommandResult(
-        mergingShardId, mergeResponse.response, mergeCursorResponse, useDocumentSequences, result);
+    // Ownership for the shard cursors has been transferred to the merging shard. Dismiss the
+    // ownership in the current merging pipeline such that when it goes out of scope it does not
+    // attempt to kill the cursors.
+    auto mergeCursors = checked_cast<DocumentSourceMergeCursors*>(mergePipeline->peekFront());
+    mergeCursors->dismissCursorOwnership();
+
+    return appendCursorResponseToCommandResult(mergingShardId, mergeResponse.response, mergeCursorResponse, useDocumentSequences, result);
 }
 
 void appendEmptyResultSetWithStatus(OperationContext* opCtx,
@@ -1146,12 +1192,14 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     // If we sent the entire pipeline to a single shard, store the remote cursor and return.
     if (!shardDispatchResults.splitPipeline) {
         invariant(shardDispatchResults.remoteCursors.size() == 1);
-        auto& remoteCursor = shardDispatchResults.remoteCursors.front();
+        auto remoteCursor = std::move(shardDispatchResults.remoteCursors.front());
+        const auto shardId = remoteCursor->getShardId().toString();
+        auto cursorResponse= remoteCursor->getCursorResponse().toBSON(CursorResponse::ResponseType::InitialResponse);
         const auto reply = uassertStatusOK(storePossibleCursor(
-            opCtx, namespaces.requestedNss, remoteCursor, expCtx->tailableMode));
+            opCtx, namespaces.requestedNss, std::move( remoteCursor ), expCtx->tailableMode));
         return appendCursorResponseToCommandResult(
-            remoteCursor.getShardId().toString(),
-            remoteCursor.getCursorResponse().toBSON(CursorResponse::ResponseType::InitialResponse),
+            shardId,
+            cursorResponse,
             reply,
             useDocumentSequences,
             result);
@@ -1275,11 +1323,21 @@ Status ClusterAggregate::retryOnViewError(OperationContext* opCtx,
                                           const AggregationRequest& request,
                                           const ResolvedView& resolvedView,
                                           const NamespaceString& requestedNss,
-                                          rpc::ReplyBuilderInterface* result) {
+                                          rpc::ReplyBuilderInterface* result,
+                                          unsigned numberRetries) {
+    if (numberRetries >= kMaxViewRetries) {
+        return Status(ErrorCodes::InternalError,
+                      "Failed to resolve view after max number of retries.");
+    }
+
     auto resolvedAggRequest = resolvedView.asExpandedViewAggregation(request);
     auto resolvedAggCmd = resolvedAggRequest.serializeToCommandObj().toBson();
 
     result->reset();
+
+    if (auto txnRouter = TransactionRouter::get(opCtx)) {
+        txnRouter->onViewResolutionError();
+    }
 
     // We pass both the underlying collection namespace and the view namespace here. The
     // underlying collection namespace is used to execute the aggregation on mongoD. Any cursor
@@ -1289,8 +1347,21 @@ Status ClusterAggregate::retryOnViewError(OperationContext* opCtx,
     nsStruct.requestedNss = requestedNss;
     nsStruct.executionNss = resolvedView.getNamespace();
 
-    return ClusterAggregate::runAggregate(
-        opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, result);
+    auto status =
+        ClusterAggregate::runAggregate(opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, result);
+
+    // If the underlying namespace was changed to a view during retry, then re-run the aggregation
+    // on the new resolved namespace.
+    if (status.extraInfo<ResolvedView>()) {
+        return ClusterAggregate::retryOnViewError(opCtx,
+                                                  resolvedAggRequest,
+                                                  *status.extraInfo<ResolvedView>(),
+                                                  requestedNss,
+                                                  result,
+                                                  numberRetries + 1);
+    }
+
+    return status;
 }
 
 }  // namespace mongo

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -92,6 +94,13 @@ public:
          */
         StmtId getStmtIdCreatedAt() const;
 
+        /**
+         * Returns the shared transaction options this participant was created with.
+         */
+        const auto& getSharedOptions() const {
+            return _sharedOptions;
+        }
+
     private:
         const bool _isCoordinator{false};
 
@@ -99,6 +108,44 @@ public:
         const StmtId _stmtIdCreatedAt{kUninitializedStmtId};
 
         const SharedTransactionOptions _sharedOptions;
+    };
+
+    /**
+     * Encapsulates the logic around selecting a global read timestamp for a sharded transaction at
+     * snapshot level read concern.
+     *
+     * The first command in a transaction to target at least one shard must select a cluster time
+     * timestamp before targeting, but may change the timestamp before contacting any shards to
+     * allow optimizing the timestamp based on the targeted shards. If the first command encounters
+     * a retryable error, e.g. StaleShardVersion or SnapshotTooOld, the retry may also select a new
+     * timestamp. Once the first command has successfully completed, the timestamp cannot be
+     * changed.
+     */
+    class AtClusterTime {
+    public:
+        /**
+         * Cannot be called until a timestamp has been set.
+         */
+        LogicalTime getTime() const;
+
+        /**
+         * Sets the timestamp and remembers the statement id of the command that set it.
+         */
+        void setTime(LogicalTime atClusterTime, StmtId currentStmtId);
+
+        /**
+         * True if the timestamp has been set to a non-null value.
+         */
+        bool isSet() const;
+
+        /**
+         * True if the timestamp can be changed by a command running at the given statement id.
+         */
+        bool canChange(StmtId currentStmtId) const;
+
+    private:
+        StmtId _stmtIdSelectedAt = kUninitializedStmtId;
+        LogicalTime _atClusterTime;
     };
 
     TransactionRouter(LogicalSessionId sessionId);
@@ -138,6 +185,12 @@ public:
     void onSnapshotError();
 
     /**
+     * Updates the transaction tracking state to allow for a retry attempt on a view resolution
+     * error.
+     */
+    void onViewResolutionError();
+
+    /**
      * Computes and sets the atClusterTime for the current transaction. Does nothing if the given
      * query is not the first statement that this transaction runs (i.e. if the atClusterTime
      * has already been set).
@@ -160,7 +213,13 @@ public:
      * Sets the atClusterTime for the current transaction to the latest time in the router's logical
      * clock.
      */
-    void setAtClusterTimeToLatestTime(OperationContext* opCtx);
+    void setDefaultAtClusterTime(OperationContext* opCtx);
+
+    /**
+     * Returns the global read timestamp for this transaction. Returns boost::none for transactions
+     * that don't run at snapshot level read concern or if a timestamp has not yet been selected.
+     */
+    const boost::optional<AtClusterTime>& getAtClusterTime() const;
 
     bool isCheckedOut();
 
@@ -178,6 +237,12 @@ public:
      * Sends abort to all participants and returns the responses from all shards.
      */
     std::vector<AsyncRequestsSender::Response> abortTransaction(OperationContext* opCtx);
+
+    /**
+     * Sends abort to all shards in the current participant list. Will retry on retryable errors,
+     * but ignores the responses from each shard.
+     */
+    void implicitlyAbortTransaction(OperationContext* opCtx);
 
     /**
      * Extract the runtimne state attached to the operation context. Returns nullptr if none is
@@ -233,6 +298,18 @@ private:
      */
     Participant& _createParticipant(const ShardId& shard);
 
+    /**
+     * Asserts the transaction has a valid read concern and, if the read concern level is snapshot,
+     * has selected a non-null atClusterTime.
+     */
+    void _verifyReadConcern();
+
+    /**
+     * If the transaction's read concern level is snapshot, asserts the participant's atClusterTime
+     * matches the transaction's.
+     */
+    void _verifyParticipantAtClusterTime(const Participant& participant);
+
     const LogicalSessionId _sessionId;
     TxnNumber _txnNumber{kUninitializedTxnNumber};
 
@@ -249,9 +326,9 @@ private:
     repl::ReadConcernArgs _readConcernArgs;
 
     // The cluster time of the timestamp all participant shards in the current transaction with
-    // snapshot level read concern must read from. Selected during the first statement of the
-    // transaction. Should not be changed after the first statement has completed successfully.
-    boost::optional<LogicalTime> _atClusterTime;
+    // snapshot level read concern must read from. Only set for transactions running with snapshot
+    // level read concern.
+    boost::optional<AtClusterTime> _atClusterTime;
 
     // The statement id of the latest received command for this transaction. For batch writes, this
     // will be the highest stmtId contained in the batch. Incremented by one if new commands do not

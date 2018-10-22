@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -96,10 +98,10 @@ public:
     const IndexToDiscriminatorMap& getDiscriminators(StringData path) const;
 
     /**
-     * Construct an IndexToDiscriminator map for the given path, only for the allPaths indexes
+     * Construct an IndexToDiscriminator map for the given path, only for the wildcard indexes
      * which have been included in the indexability state.
      */
-    IndexToDiscriminatorMap buildAllPathsDiscriminators(StringData path) const;
+    IndexToDiscriminatorMap buildWildcardDiscriminators(StringData path) const;
 
     /**
      * Clears discriminators for all paths, and regenerate them from 'indexEntries'.
@@ -114,8 +116,8 @@ private:
      * every possible field that it indexes, so we have to maintain some special context about the
      * index.
      */
-    struct AllPathsIndexDiscriminatorContext {
-        AllPathsIndexDiscriminatorContext(std::unique_ptr<ProjectionExecAgg> proj,
+    struct WildcardIndexDiscriminatorContext {
+        WildcardIndexDiscriminatorContext(std::unique_ptr<ProjectionExecAgg> proj,
                                           std::string name,
                                           const MatchExpression* filter,
                                           const CollatorInterface* coll)
@@ -169,15 +171,15 @@ private:
 
     /**
      * Adds special state for a $** index. When the discriminators are retrieved for a certain
-     * path, appropriate discriminators for the allPaths index will be included if it includes the
+     * path, appropriate discriminators for the wildcard index will be included if it includes the
      * given path.
      */
-    void processAllPathsIndex(const IndexEntry& ie);
+    void processWildcardIndex(const IndexEntry& ie);
 
     // PathDiscriminatorsMap is a map from field path to index name to IndexabilityDiscriminator.
     PathDiscriminatorsMap _pathDiscriminatorsMap;
 
-    std::vector<AllPathsIndexDiscriminatorContext> _allPathsIndexDiscriminators;
+    std::vector<WildcardIndexDiscriminatorContext> _wildcardIndexDiscriminators;
 };
 
 }  // namespace mongo

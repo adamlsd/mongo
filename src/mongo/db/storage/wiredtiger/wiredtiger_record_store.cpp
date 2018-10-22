@@ -1,26 +1,27 @@
 // wiredtiger_record_store.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -1746,12 +1747,7 @@ void WiredTigerRecordStore::_increaseDataSize(OperationContext* opCtx, int64_t a
 void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
                                                 RecordId end,
                                                 bool inclusive) {
-    // Only log messages at a lower level here for testing.
-    int logLevel = getTestCommandsEnabled() ? 0 : 2;
-
     std::unique_ptr<SeekableRecordCursor> cursor = getCursor(opCtx, true);
-    LOG(logLevel) << "Truncating capped collection '" << _ns
-                  << "' in WiredTiger record store, (inclusive=" << inclusive << ")";
 
     auto record = cursor->seekExact(end);
     massert(28807, str::stream() << "Failed to seek to the record located at " << end, record);
@@ -1772,7 +1768,6 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         // that is being deleted.
         record = cursor->next();
         if (!record) {
-            LOG(logLevel) << "No records to delete for truncation";
             return;  // No records to delete.
         }
         lastKeptId = end;
@@ -1789,8 +1784,6 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
             }
             recordsRemoved++;
             bytesRemoved += record->data.size();
-            LOG(logLevel) << "Record id to delete for truncation of '" << _ns << "': " << record->id
-                          << " (" << Timestamp(record->id.repr()) << ")";
         } while ((record = cursor->next()));
     }
 
@@ -1801,10 +1794,6 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
     WiredTigerCursor startwrap(_uri, _tableId, true, opCtx);
     WT_CURSOR* start = startwrap.get();
     setKey(start, firstRemovedId);
-
-    LOG(logLevel) << "Truncating collection '" << _ns << "' from " << firstRemovedId << " ("
-                  << Timestamp(firstRemovedId.repr()) << ")"
-                  << " to the end. Number of records to delete: " << recordsRemoved;
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
     invariantWTOK(session->truncate(session, nullptr, start, nullptr, nullptr));
@@ -1818,24 +1807,31 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         // Immediately rewind visibility to our truncation point, to prevent new
         // transactions from appearing.
         Timestamp truncTs(lastKeptId.repr());
-        LOG(logLevel) << "Rewinding oplog visibility point to " << truncTs << " after truncation.";
 
+        if (!serverGlobalParams.enableMajorityReadConcern) {
+            // If majority read concern is disabled, we must set the oldest timestamp along with the
+            // commit timestamp. Otherwise, the commit timestamp might be set behind the oldest
+            // timestamp.
+            const bool force = true;
+            _kvEngine->setOldestTimestamp(truncTs, force);
+        } else {
+            char commitTSConfigString["commit_timestamp="_sd.size() +
+                                      (8 * 2) /* 8 hexadecimal characters */ +
+                                      1 /* trailing null */];
+            auto size = std::snprintf(commitTSConfigString,
+                                      sizeof(commitTSConfigString),
+                                      "commit_timestamp=%llx",
+                                      truncTs.asULL());
+            if (size < 0) {
+                int e = errno;
+                error() << "error snprintf " << errnoWithDescription(e);
+                fassertFailedNoTrace(40662);
+            }
 
-        char commitTSConfigString["commit_timestamp="_sd.size() +
-                                  (8 * 2) /* 8 hexadecimal characters */ + 1 /* trailing null */];
-        auto size = std::snprintf(commitTSConfigString,
-                                  sizeof(commitTSConfigString),
-                                  "commit_timestamp=%llx",
-                                  truncTs.asULL());
-        if (size < 0) {
-            int e = errno;
-            error() << "error snprintf " << errnoWithDescription(e);
-            fassertFailedNoTrace(40662);
+            invariant(static_cast<std::size_t>(size) < sizeof(commitTSConfigString));
+            auto conn = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache()->conn();
+            invariantWTOK(conn->set_timestamp(conn, commitTSConfigString));
         }
-
-        invariant(static_cast<std::size_t>(size) < sizeof(commitTSConfigString));
-        auto conn = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache()->conn();
-        invariantWTOK(conn->set_timestamp(conn, commitTSConfigString));
 
         _kvEngine->getOplogManager()->setOplogReadTimestamp(truncTs);
         LOG(1) << "truncation new read timestamp: " << truncTs;

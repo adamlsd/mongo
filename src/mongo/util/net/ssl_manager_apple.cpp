@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -46,6 +48,7 @@
 #include "mongo/util/base64.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/cidr.h"
 #include "mongo/util/net/private/ssl_expiration.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl/apple.hpp"
@@ -486,11 +489,20 @@ StatusWith<std::vector<std::string>> extractSubjectAlternateNames(::CFDictionary
         if (!swLabel.isOK()) {
             return swLabel.getStatus();
         }
-        if (::CFStringCompare(swLabel.getValue(), CFSTR("DNS Name"), ::kCFCompareCaseInsensitive) !=
+
+        enum SANType { kDNS, kIP };
+        SANType san;
+        if (::CFStringCompare(swLabel.getValue(), CFSTR("DNS Name"), ::kCFCompareCaseInsensitive) ==
             ::kCFCompareEqualTo) {
-            // Skip other elements, e.g. 'Critical'
+            san = kDNS;
+        } else if (::CFStringCompare(swLabel.getValue(),
+                                     CFSTR("IP Address"),
+                                     ::kCFCompareCaseInsensitive) == ::kCFCompareEqualTo) {
+            san = kIP;
+        } else {
             continue;
         }
+
         auto swName = extractDictionaryValue<::CFStringRef>(elem, ::kSecPropertyKeyValue);
         if (!swName.isOK()) {
             return swName.getStatus();
@@ -498,6 +510,16 @@ StatusWith<std::vector<std::string>> extractSubjectAlternateNames(::CFDictionary
         auto swNameStr = toString(swName.getValue());
         if (!swNameStr.isOK()) {
             return swNameStr.getStatus();
+        }
+        // Incase there is an IP Address in the DNS field of a certificate's SAN, we want
+        // to round trip the value through CIDR.
+        auto swCIDRValue = CIDR::parse(swNameStr.getValue());
+        if (swCIDRValue.isOK()) {
+            swNameStr = swCIDRValue.getValue().toString();
+            if (san == kDNS) {
+                warning() << "You have an IP Address in the DNS Name field on your "
+                             "certificate. This formulation is depreceated.";
+            }
         }
         ret.push_back(swNameStr.getValue());
     }
@@ -1178,6 +1200,9 @@ StatusWith<std::pair<::SSLProtocol, ::SSLProtocol>> parseProtocolRange(const SSL
             tls11 = false;
         } else if (protocol == SSLParams::Protocols::TLS1_2) {
             tls12 = false;
+        } else if (protocol == SSLParams::Protocols::TLS1_3) {
+            // By ignoring this value, we are disabling support until we have access to the
+            // modern library.
         } else {
             return {ErrorCodes::InvalidSSLConfiguration, "Unknown disabled TLS protocol version"};
         }
@@ -1367,9 +1392,24 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         }
     }
 
+    bool ipv6 = false;
+
+    // We want run the hostname through CIDR to standardize the
+    // IP Address notation, making direct comparison possible.
+    auto swCIDRRemoteHost = CIDR::parse(remoteHost);
+    if (swCIDRRemoteHost.isOK() && remoteHost.find(':') != std::string::npos) {
+        ipv6 = true;
+    }
+
     auto result = ::kSecTrustResultInvalid;
     uassertOSStatusOK(::SecTrustEvaluate(cftrust.get(), &result), ErrorCodes::SSLHandshakeFailed);
-    if ((result != ::kSecTrustResultProceed) && (result != ::kSecTrustResultUnspecified)) {
+
+    // ipv6 addresses ignore the results of this check because we
+    // cant guarantee the format of the address apple will return from
+    // comparison between the remote host and the certificate, but
+    // we anyways check the addresses again after they are canonicalized.
+    if ((result != ::kSecTrustResultProceed) && (result != ::kSecTrustResultUnspecified) &&
+        (!ipv6)) {
         return badCert(explainTrustFailure(cftrust.get(), result), _allowInvalidCertificates);
     }
 
@@ -1430,6 +1470,13 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
     if (!sans.empty()) {
         certErr << "SAN(s): ";
         for (auto& san : sans) {
+            if (swCIDRRemoteHost.isOK()) {
+                auto swCIDRSan = CIDR::parse(san);
+                if (swCIDRSan.isOK() && swCIDRSan.getValue() == swCIDRRemoteHost.getValue()) {
+                    sanMatch = true;
+                    break;
+                }
+            }
             if (hostNameMatchForX509Certificates(remoteHost, san)) {
                 sanMatch = true;
                 break;
@@ -1441,7 +1488,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         auto swCN = peerSubjectName.getOID(kOID_CommonName);
         if (swCN.isOK()) {
             auto commonName = std::move(swCN.getValue());
-            if (hostNameMatchForX509Certificates(remoteHost, commonName)) {
+            auto swCommonName = CIDR::parse(commonName);
+            if (swCommonName.isOK() && swCIDRRemoteHost.isOK()) {
+                if (swCommonName.getValue() == swCIDRRemoteHost.getValue()) {
+                    cnMatch = true;
+                }
+            } else if (hostNameMatchForX509Certificates(remoteHost, commonName)) {
                 cnMatch = true;
             }
             certErr << "CN: " << commonName;

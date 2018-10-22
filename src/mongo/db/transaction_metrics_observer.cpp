@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -37,12 +39,13 @@ namespace mongo {
 
 void TransactionMetricsObserver::onStart(ServerTransactionsMetrics* serverTransactionsMetrics,
                                          bool isAutoCommit,
-                                         unsigned long long curTime,
+                                         TickSource* tickSource,
+                                         Date_t curWallClockTime,
                                          Date_t expireDate) {
     //
     // Per transaction metrics.
     //
-    _singleTransactionStats.setStartTime(curTime);
+    _singleTransactionStats.setStartTime(tickSource->getTicks(), curWallClockTime);
     _singleTransactionStats.setAutoCommit(isAutoCommit);
     _singleTransactionStats.setExpireDate(expireDate);
 
@@ -59,7 +62,7 @@ void TransactionMetricsObserver::onChooseReadTimestamp(Timestamp readTimestamp) 
 }
 
 void TransactionMetricsObserver::onStash(ServerTransactionsMetrics* serverTransactionsMetrics,
-                                         unsigned long long curTime) {
+                                         TickSource* tickSource) {
     //
     // Per transaction metrics.
     //
@@ -67,7 +70,7 @@ void TransactionMetricsObserver::onStash(ServerTransactionsMetrics* serverTransa
     // aborted by another thread, so we check that the transaction is active before setting it as
     // inactive.
     if (_singleTransactionStats.isActive()) {
-        _singleTransactionStats.setInactive(curTime);
+        _singleTransactionStats.setInactive(tickSource, tickSource->getTicks());
     }
 
     //
@@ -79,11 +82,11 @@ void TransactionMetricsObserver::onStash(ServerTransactionsMetrics* serverTransa
 }
 
 void TransactionMetricsObserver::onUnstash(ServerTransactionsMetrics* serverTransactionsMetrics,
-                                           unsigned long long curTime) {
+                                           TickSource* tickSource) {
     //
     // Per transaction metrics.
     //
-    _singleTransactionStats.setActive(curTime);
+    _singleTransactionStats.setActive(tickSource->getTicks());
 
     //
     // Server wide transactions metrics.
@@ -94,7 +97,7 @@ void TransactionMetricsObserver::onUnstash(ServerTransactionsMetrics* serverTran
 }
 
 void TransactionMetricsObserver::onCommit(ServerTransactionsMetrics* serverTransactionsMetrics,
-                                          unsigned long long curTime,
+                                          TickSource* tickSource,
                                           boost::optional<Timestamp> oldestOplogEntryTS,
                                           Top* top) {
     //
@@ -102,11 +105,12 @@ void TransactionMetricsObserver::onCommit(ServerTransactionsMetrics* serverTrans
     //
     // After the transaction has been committed, we must update the end time and mark it as
     // inactive. We use the same "now" time to prevent skew in the time-related metrics.
-    _singleTransactionStats.setEndTime(curTime);
+    auto curTick = tickSource->getTicks();
+    _singleTransactionStats.setEndTime(curTick);
     // The transaction operation may have already been aborted by another thread, so we check that
     // the transaction is active before setting it as inactive.
     if (_singleTransactionStats.isActive()) {
-        _singleTransactionStats.setInactive(curTime);
+        _singleTransactionStats.setInactive(tickSource, curTick);
     }
 
     //
@@ -116,7 +120,9 @@ void TransactionMetricsObserver::onCommit(ServerTransactionsMetrics* serverTrans
     serverTransactionsMetrics->decrementCurrentOpen();
     serverTransactionsMetrics->decrementCurrentActive();
 
-    top->incrementGlobalTransactionLatencyStats(_singleTransactionStats.getDuration(curTime));
+    auto duration =
+        durationCount<Microseconds>(_singleTransactionStats.getDuration(tickSource, curTick));
+    top->incrementGlobalTransactionLatencyStats(static_cast<uint64_t>(duration));
 
     // Remove this transaction's oldest oplog entry Timestamp if one was written.
     if (oldestOplogEntryTS) {
@@ -125,17 +131,18 @@ void TransactionMetricsObserver::onCommit(ServerTransactionsMetrics* serverTrans
 }
 
 void TransactionMetricsObserver::onAbortActive(ServerTransactionsMetrics* serverTransactionsMetrics,
-                                               unsigned long long curTime,
+                                               TickSource* tickSource,
                                                boost::optional<Timestamp> oldestOplogEntryTS,
                                                Top* top) {
-    _onAbort(serverTransactionsMetrics, curTime, top);
+    auto curTick = tickSource->getTicks();
+    _onAbort(serverTransactionsMetrics, curTick, tickSource, top);
     //
     // Per transaction metrics.
     //
     // The transaction operation may have already been aborted by another thread, so we check that
     // the transaction is active before setting it as inactive.
     if (_singleTransactionStats.isActive()) {
-        _singleTransactionStats.setInactive(curTime);
+        _singleTransactionStats.setInactive(tickSource, curTick);
     }
 
     //
@@ -151,10 +158,11 @@ void TransactionMetricsObserver::onAbortActive(ServerTransactionsMetrics* server
 
 void TransactionMetricsObserver::onAbortInactive(
     ServerTransactionsMetrics* serverTransactionsMetrics,
-    unsigned long long curTime,
+    TickSource* tickSource,
     boost::optional<Timestamp> oldestOplogEntryTS,
     Top* top) {
-    _onAbort(serverTransactionsMetrics, curTime, top);
+    auto curTick = tickSource->getTicks();
+    _onAbort(serverTransactionsMetrics, curTick, tickSource, top);
 
     //
     // Server wide transactions metrics.
@@ -180,12 +188,13 @@ void TransactionMetricsObserver::onTransactionOperation(Client* client,
 }
 
 void TransactionMetricsObserver::_onAbort(ServerTransactionsMetrics* serverTransactionsMetrics,
-                                          unsigned long long curTime,
+                                          TickSource::Tick curTick,
+                                          TickSource* tickSource,
                                           Top* top) {
     //
     // Per transaction metrics.
     //
-    _singleTransactionStats.setEndTime(curTime);
+    _singleTransactionStats.setEndTime(curTick);
 
     //
     // Server wide transactions metrics.
@@ -193,7 +202,9 @@ void TransactionMetricsObserver::_onAbort(ServerTransactionsMetrics* serverTrans
     serverTransactionsMetrics->incrementTotalAborted();
     serverTransactionsMetrics->decrementCurrentOpen();
 
-    top->incrementGlobalTransactionLatencyStats(_singleTransactionStats.getDuration(curTime));
+    auto latency =
+        durationCount<Microseconds>(_singleTransactionStats.getDuration(tickSource, curTick));
+    top->incrementGlobalTransactionLatencyStats(static_cast<uint64_t>(latency));
 }
 
 void TransactionMetricsObserver::onPrepare(ServerTransactionsMetrics* serverTransactionsMetrics,

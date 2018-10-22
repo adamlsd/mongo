@@ -22,13 +22,13 @@ from .. import utils
 
 # The default verbosity setting for any tests that are not started with an Evergreen task id. This
 # will apply to any tests run locally.
-DEFAULT_MONGOD_LOG_COMPONENT_VERBOSITY = {"replication": {"rollback": 2}}
+DEFAULT_MONGOD_LOG_COMPONENT_VERBOSITY = {"replication": {"rollback": 2}, "transaction": 4}
 
 # The default verbosity setting for any tests running in Evergreen i.e. started with an Evergreen
 # task id.
 DEFAULT_EVERGREEN_MONGOD_LOG_COMPONENT_VERBOSITY = {
-    "replication": {"election": 4, "heartbeats": 2, "rollback": 2}, "storage": {"recovery": 2},
-    "transaction": 4
+    "replication": {"election": 4, "heartbeats": 2, "initialSync": 2, "rollback": 2},
+    "storage": {"recovery": 2}, "transaction": 4
 }
 
 
@@ -88,6 +88,7 @@ def mongod_program(  # pylint: disable=too-many-branches
     _apply_set_parameters(args, suite_set_parameters)
 
     shortcut_opts = {
+        "enableMajorityReadConcern": config.MAJORITY_READ_CONCERN,
         "nojournal": config.NO_JOURNAL,
         "serviceExecutor": config.SERVICE_EXECUTOR,
         "storageEngine": config.STORAGE_ENGINE,
@@ -173,20 +174,25 @@ def mongo_shell_program(  # pylint: disable=too-many-branches,too-many-locals,to
 
     The shell is started with the given connection string and arguments constructed from 'kwargs'.
     """
-    connection_string = utils.default_if_none(config.SHELL_CONN_STRING, connection_string)
 
-    executable = utils.default_if_none(executable, config.DEFAULT_MONGO_EXECUTABLE)
+    executable = utils.default_if_none(
+        utils.default_if_none(executable, config.MONGO_EXECUTABLE), config.DEFAULT_MONGO_EXECUTABLE)
     args = [executable]
 
     eval_sb = []  # String builder.
     global_vars = kwargs.pop("global_vars", {}).copy()
 
+    if filename is not None:
+        test_name = os.path.splitext(os.path.basename(filename))[0]
+    else:
+        test_name = None
     shortcut_opts = {
+        "enableMajorityReadConcern": (config.MAJORITY_READ_CONCERN, True),
         "noJournal": (config.NO_JOURNAL, False),
         "serviceExecutor": (config.SERVICE_EXECUTOR, ""),
         "storageEngine": (config.STORAGE_ENGINE, ""),
         "storageEngineCacheSizeGB": (config.STORAGE_ENGINE_CACHE_SIZE, ""),
-        "testName": (os.path.splitext(os.path.basename(filename))[0], ""),
+        "testName": (test_name, ""),
         "transportLayer": (config.TRANSPORT_LAYER, ""),
         "wiredTigerCollectionConfigString": (config.WT_COLL_CONFIG, ""),
         "wiredTigerEngineConfigString": (config.WT_ENGINE_CONFIG, ""),
@@ -284,8 +290,9 @@ def mongo_shell_program(  # pylint: disable=too-many-branches,too-many-locals,to
     if connection_string is not None:
         args.append(connection_string)
 
-    # Have the mongos shell run the specified file.
-    args.append(filename)
+    # Have the mongo shell run the specified file.
+    if filename is not None:
+        args.append(filename)
 
     _set_keyfile_permissions(test_data)
 
@@ -322,6 +329,7 @@ def dbtest_program(logger, executable=None, suites=None, process_kwargs=None, **
     if suites is not None:
         args.extend(suites)
 
+    kwargs["enableMajorityReadConcern"] = config.MAJORITY_READ_CONCERN
     if config.STORAGE_ENGINE is not None:
         kwargs["storageEngine"] = config.STORAGE_ENGINE
 

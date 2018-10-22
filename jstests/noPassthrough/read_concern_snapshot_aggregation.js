@@ -38,8 +38,11 @@
     }
 
     // Test that $changeStream is disallowed with transactions.
-    testSnapshotAggFailsWithCode(
-        kCollName, [{$changeStream: {}}], ErrorCodes.OperationNotSupportedInTransaction);
+    // TODO SERVER-37221: Remove the check for 'supportsCommittedReads'.
+    if (sessionDB.serverStatus().storageEngine.supportsCommittedReads) {
+        testSnapshotAggFailsWithCode(
+            kCollName, [{$changeStream: {}}], ErrorCodes.OperationNotSupportedInTransaction);
+    }
 
     // Test that $collStats is disallowed with transactions.
     testSnapshotAggFailsWithCode(
@@ -48,10 +51,6 @@
     // Test that $indexStats is disallowed with transactions.
     testSnapshotAggFailsWithCode(
         kCollName, [{$indexStats: {}}], ErrorCodes.OperationNotSupportedInTransaction);
-
-    // Test that $listLocalCursors is disallowed with transactions.
-    testSnapshotAggFailsWithCode(
-        1, [{$listLocalCursors: {}}], ErrorCodes.OperationNotSupportedInTransaction);
 
     // Test that $listLocalSessions is disallowed with transactions.
     testSnapshotAggFailsWithCode(

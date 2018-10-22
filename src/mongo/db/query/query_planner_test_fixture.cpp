@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -55,6 +57,12 @@ void QueryPlannerTest::setUp() {
     internalQueryPlannerEnableHashIntersection.store(true);
     params.options = QueryPlannerParams::INCLUDE_COLLSCAN;
     addIndex(BSON("_id" << 1));
+}
+
+void QueryPlannerTest::clearState() {
+    solns.clear();
+    cq.reset();
+    relaxBoundsCheck = false;
 }
 
 void QueryPlannerTest::addIndex(BSONObj keyPattern, bool multikey) {
@@ -168,6 +176,10 @@ void QueryPlannerTest::addIndex(BSONObj keyPattern,
     params.indices.push_back(entry);
 }
 
+void QueryPlannerTest::addIndex(const IndexEntry& ie) {
+    params.indices.push_back(ie);
+}
+
 void QueryPlannerTest::runQuery(BSONObj query) {
     runQuerySortProjSkipNToReturn(query, BSONObj(), BSONObj(), 0, 0);
 }
@@ -226,9 +238,7 @@ void QueryPlannerTest::runQueryFull(const BSONObj& query,
                                     const BSONObj& hint,
                                     const BSONObj& minObj,
                                     const BSONObj& maxObj) {
-    // Clean up any previous state from a call to runQueryFull
-    solns.clear();
-    cq.reset();
+    clearState();
 
     auto qr = stdx::make_unique<QueryRequest>(nss);
     qr->setFilter(query);
@@ -309,8 +319,7 @@ void QueryPlannerTest::runInvalidQueryFull(const BSONObj& query,
                                            const BSONObj& hint,
                                            const BSONObj& minObj,
                                            const BSONObj& maxObj) {
-    solns.clear();
-    cq.reset();
+    clearState();
 
     auto qr = stdx::make_unique<QueryRequest>(nss);
     qr->setFilter(query);
@@ -345,8 +354,7 @@ void QueryPlannerTest::runInvalidQueryFull(const BSONObj& query,
 }
 
 void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
-    solns.clear();
-    cq.reset();
+    clearState();
 
     invariant(nss.isValid());
 
@@ -370,8 +378,7 @@ void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
 }
 
 void QueryPlannerTest::runInvalidQueryAsCommand(const BSONObj& cmdObj) {
-    solns.clear();
-    cq.reset();
+    clearState();
 
     invariant(nss.isValid());
 
@@ -425,7 +432,7 @@ size_t QueryPlannerTest::numSolutionMatches(const std::string& solnJson) const {
     size_t matches = 0;
     for (auto&& soln : solns) {
         QuerySolutionNode* root = soln->root.get();
-        if (QueryPlannerTestLib::solutionMatches(testSoln, root)) {
+        if (QueryPlannerTestLib::solutionMatches(testSoln, root, relaxBoundsCheck)) {
             ++matches;
         }
     }

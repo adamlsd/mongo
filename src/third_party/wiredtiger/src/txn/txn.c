@@ -828,11 +828,7 @@ __wt_txn_commit(WT_SESSION_IMPL *session, const char *cfg[])
 			 * Need to resolve indirect references of transaction
 			 * operation, in case of prepared transaction.
 			 */
-#ifdef HAVE_LONG_RUNNING_PREPARE
 			if (!prepare) {
-#else
-			if (1) {
-#endif
 				/*
 				 * Switch reserved operations to abort to
 				 * simplify obsolete update list truncation.
@@ -1003,7 +999,8 @@ __wt_txn_prepare(WT_SESSION_IMPL *session, const char *cfg[])
 		WT_ASSERT(session, S2C(session)->cache->las_fileid == 0 ||
 		    !F_ISSET(op->btree, WT_BTREE_LOOKASIDE));
 
-		/* Metadata updates are never prepared. */
+		/* Metadata updates should never be prepared. */
+		WT_ASSERT(session, !WT_IS_METADATA(op->btree->dhandle));
 		if (WT_IS_METADATA(op->btree->dhandle))
 			continue;
 
@@ -1032,9 +1029,8 @@ __wt_txn_prepare(WT_SESSION_IMPL *session, const char *cfg[])
 			__wt_timestamp_set(&upd->timestamp, &ts);
 
 			WT_PUBLISH(upd->prepare_state, WT_PREPARE_INPROGRESS);
-#ifdef HAVE_LONG_RUNNING_PREPARE
 			op->u.op_upd = NULL;
-#endif
+			WT_STAT_CONN_INCR(session, txn_prepared_updates_count);
 			break;
 		case WT_TXN_OP_REF_DELETE:
 			__wt_timestamp_set(
@@ -1101,7 +1097,8 @@ __wt_txn_rollback(WT_SESSION_IMPL *session, const char *cfg[])
 		WT_ASSERT(session, S2C(session)->cache->las_fileid == 0 ||
 		    !F_ISSET(op->btree, WT_BTREE_LOOKASIDE));
 
-		/* Metadata updates are never rolled back. */
+		/* Metadata updates should never be rolled back. */
+		WT_ASSERT(session, !WT_IS_METADATA(op->btree->dhandle));
 		if (WT_IS_METADATA(op->btree->dhandle))
 			continue;
 
@@ -1118,14 +1115,10 @@ __wt_txn_rollback(WT_SESSION_IMPL *session, const char *cfg[])
 			 * Need to resolve indirect references of transaction
 			 * operation, in case of prepared transaction.
 			 */
-#ifdef HAVE_LONG_RUNNING_PREPARE
 			if (F_ISSET(txn, WT_TXN_PREPARE))
 				WT_RET(__wt_txn_resolve_prepared_op(
 				    session, op, false));
 			else {
-#else
-			{
-#endif
 				WT_ASSERT(session, upd->txnid == txn->id ||
 				    upd->txnid == WT_TXN_ABORTED);
 				upd->txnid = WT_TXN_ABORTED;

@@ -314,7 +314,9 @@ env.Library(
         'db/mongodandmongos',
         'db/periodic_runner_job_abort_expired_transactions',
         'db/periodic_runner_job_decrease_snapshot_cache_pressure',
+        'db/pipeline/process_interface_factory_mongod',
         'db/query_exec',
+        'db/read_concern_d_impl',
         'db/repair_database',
         'db/repair_database_and_check_version',
         'db/repl/repl_coordinator_impl',
@@ -474,6 +476,7 @@ if not has_option('noshell') and usemozjs:
                     "shell/shell_utils_launcher.cpp",
                 ],
                 LIBDEPS=[
+                    'client/clientdriver_network',
                     'db/catalog/index_key_validate',
                     'db/logical_session_id_helpers',
                     'db/mongohasher',
@@ -657,8 +660,7 @@ env.Append(MODULE_BANNERS = [distsrc.File('README'),
 # If no module has introduced a file named LICENSE-Enterprise.txt then this
 # is a Community build, so inject the AGPL and the Community license
 if sum(itertools.imap(lambda x: x.name == "LICENSE-Enterprise.txt", env['MODULE_BANNERS'])) == 0:
-    env.Append(MODULE_BANNERS = [distsrc.File('GNU-AGPL-3.0'),
-                                 distsrc.File('LICENSE-Community.txt')])
+    env.Append(MODULE_BANNERS = [distsrc.File('LICENSE-Community.txt')])
 
 # All module banners get staged to the top level of the tarfile, so we
 # need to fail if we are going to have a name collision.

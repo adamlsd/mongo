@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -45,7 +47,7 @@
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/index_tag.h"
 #include "mongo/db/query/indexability.h"
-#include "mongo/db/query/planner_allpaths_helpers.h"
+#include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
@@ -57,7 +59,7 @@ namespace {
 
 using namespace mongo;
 
-namespace app = ::mongo::all_paths_planning;
+namespace wcp = ::mongo::wildcard_planning;
 namespace dps = ::mongo::dotted_path_support;
 
 /**
@@ -530,81 +532,6 @@ void QueryPlannerAccess::finishTextNode(QuerySolutionNode* node, const IndexEntr
     tn->indexPrefix = prefixBob.obj();
 }
 
-void QueryPlannerAccess::finishAllPathsIndexScanNode(QuerySolutionNode* node,
-                                                     const IndexEntry& plannerIndex) {
-    // We should only ever reach this point if we are an IndexScanNode for a $** index.
-    invariant(plannerIndex.type == IndexType::INDEX_ALLPATHS);
-    invariant(node && node->getType() == STAGE_IXSCAN);
-
-    // Sanity check the QuerySolutionNode's copy of the IndexEntry.
-    IndexScanNode* scan = static_cast<IndexScanNode*>(node);
-    invariant(scan->index.multikeyPaths.size() == 1);
-    invariant(scan->index == plannerIndex);
-
-    // Obtain some references to make the remainder of this function more legible.
-    auto& bounds = scan->bounds;
-    auto& index = scan->index;
-
-    // For $** indexes, the IndexEntry key pattern is {'path.to.field': ±1} but the actual keys in
-    // the index are of the form {'$_path': ±1, 'path.to.field': ±1}, where the value of the first
-    // field in each key is 'path.to.field'. We push a new entry into the bounds vector for the
-    // leading '$_path' bound here. We also push corresponding fields into the IndexScanNode's
-    // keyPattern and its multikeyPaths vector.
-    invariant(plannerIndex.keyPattern.nFields() == 1);
-    invariant(bounds.fields.size() == 1);
-    invariant(!bounds.fields.front().name.empty());
-    index.multikeyPaths.insert(index.multikeyPaths.begin(), std::set<std::size_t>{});
-    bounds.fields.insert(bounds.fields.begin(), {"$_path"});
-    index.keyPattern =
-        BSON("$_path" << index.keyPattern.firstElement() << index.keyPattern.firstElement());
-
-    // Create a FieldRef to perform any necessary manipulations on the query path string.
-    FieldRef queryPath{plannerIndex.keyPattern.firstElementFieldName()};
-    auto& multikeyPaths = index.multikeyPaths.back();
-
-    // If the bounds are [MinKey,MaxKey] then we must retrieve all documents which include the given
-    // path. We must therefore add bounds that encompass all its subpaths, specifically the interval
-    // ["path.","path/") on "$_path".
-    const bool isMinMaxInclusive = !bounds.fields.back().intervals.empty() &&
-        bounds.fields.back().intervals.front().isMinToMaxInclusive();
-
-    // Helper function to check whether the final path component in 'queryPath' is an array index.
-    const auto lastFieldIsArrayIndex = [&multikeyPaths](const auto& queryPath) {
-        return (queryPath.numParts() > 1u && multikeyPaths.count(queryPath.numParts() - 2u) &&
-                queryPath.isNumericPathComponent(queryPath.numParts() - 1u));
-    };
-
-    // For [MinKey,MaxKey] bounds, we build a range interval on all subpaths of the query path(s).
-    // We must therefore trim any trailing array indices from the query path before generating the
-    // fieldname-or-array power set, in order to avoid overlapping the final set of bounds. For
-    // instance, the untrimmed query path 'a.0' will produce paths 'a' and 'a.0' if 'a' is multikey,
-    // and so we would end up with bounds [['a','a'], ['a.','a/'], ['a.0','a.0'], ['a.0.','a.0/']].
-    // The latter two are subsets of the ['a.', 'a/'] interval.
-    while (isMinMaxInclusive && lastFieldIsArrayIndex(queryPath)) {
-        queryPath.removeLastPart();
-    }
-
-    // Account for fieldname-or-array-index semantics. $** indexes do not explicitly encode array
-    // indices in their keys, so if this query traverses one or more multikey fields via an array
-    // index (e.g. query 'a.0.b' where 'a' is an array), then we must generate bounds on all array-
-    // and non-array permutations of the path in order to produce INEXACT_FETCH bounds.
-    auto paths = app::generateFieldNameOrArrayIndexPathSet(multikeyPaths, queryPath);
-
-    // Add a $_path point-interval for each path that needs to be traversed in the index. If the
-    // bounds on these paths are MinKey-MaxKey, then for each applicable path we must add a range
-    // interval on all its subpaths, i.e. ["path.","path/").
-    static const char subPathStart = '.', subPathEnd = static_cast<char>('.' + 1);
-    auto& pathIntervals = bounds.fields.front().intervals;
-    for (const auto& fieldPath : paths) {
-        auto path = fieldPath.dottedField().toString();
-        pathIntervals.push_back(IndexBoundsBuilder::makePointInterval(path));
-        if (isMinMaxInclusive) {
-            pathIntervals.push_back(IndexBoundsBuilder::makeRangeInterval(
-                path + subPathStart, path + subPathEnd, BoundInclusion::kIncludeStartKeyOnly));
-        }
-    }
-}
-
 bool QueryPlannerAccess::orNeedsFetch(const ScanBuildingState* scanState) {
     if (scanState->loosestBounds == IndexBoundsBuilder::EXACT) {
         return false;
@@ -673,11 +600,11 @@ void QueryPlannerAccess::finishLeafNode(QuerySolutionNode* node, const IndexEntr
         IndexScanNode* scan = static_cast<IndexScanNode*>(node);
         nodeIndex = &scan->index;
         bounds = &scan->bounds;
-    }
 
-    // If this is a $** index, update and populate the keyPattern, bounds, and multikeyPaths.
-    if (index.type == IndexType::INDEX_ALLPATHS) {
-        finishAllPathsIndexScanNode(node, index);
+        // If this is a $** index, update and populate the keyPattern, bounds, and multikeyPaths.
+        if (index.type == IndexType::INDEX_WILDCARD) {
+            wcp::finalizeWildcardIndexScanConfiguration(scan);
+        }
     }
 
     // Find the first field in the scan's bounds that was not filled out.
@@ -1068,12 +995,12 @@ std::unique_ptr<QuerySolutionNode> QueryPlannerAccess::buildIndexedAnd(
         andResult = std::move(ixscanNodes[0]);
     } else {
         // $** indexes are prohibited from participating in either AND_SORTED or AND_HASH.
-        const bool allPathsIndexInvolvedInIntersection =
+        const bool wildcardIndexInvolvedInIntersection =
             std::any_of(ixscanNodes.begin(), ixscanNodes.end(), [](const auto& ixScan) {
                 return ixScan->getType() == StageType::STAGE_IXSCAN &&
-                    static_cast<IndexScanNode*>(ixScan.get())->index.type == INDEX_ALLPATHS;
+                    static_cast<IndexScanNode*>(ixScan.get())->index.type == INDEX_WILDCARD;
             });
-        if (allPathsIndexInvolvedInIntersection) {
+        if (wildcardIndexInvolvedInIntersection) {
             return nullptr;
         }
 

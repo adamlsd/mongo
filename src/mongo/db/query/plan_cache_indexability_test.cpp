@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -409,7 +411,7 @@ TEST(PlanCacheIndexabilityTest, CompoundIndexCollationDiscriminator) {
     ASSERT(discriminatorsB.find("a_1_b_1") != discriminatorsB.end());
 }
 
-TEST(PlanCacheIndexabilityTest, AllPathsDiscriminator) {
+TEST(PlanCacheIndexabilityTest, WildcardDiscriminator) {
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a.$**" << 1),
                                            false,  // multikey
@@ -419,10 +421,10 @@ TEST(PlanCacheIndexabilityTest, AllPathsDiscriminator) {
                                            nullptr,
                                            BSONObj())});
 
-    const auto unindexedPathDiscriminators = state.buildAllPathsDiscriminators("notIndexed");
+    const auto unindexedPathDiscriminators = state.buildWildcardDiscriminators("notIndexed");
     ASSERT_EQ(0U, unindexedPathDiscriminators.size());
 
-    auto discriminatorsA = state.buildAllPathsDiscriminators("a");
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
     ASSERT_EQ(1U, discriminatorsA.size());
     ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
 
@@ -431,16 +433,10 @@ TEST(PlanCacheIndexabilityTest, AllPathsDiscriminator) {
     ASSERT_TRUE(
         disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: 'abc'}")).get()));
 
-    // Querying for object values isn't support by allPaths indexes.
-    ASSERT_FALSE(
-        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {b: 1}}")).get()));
-    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {}}")).get()));
-    ASSERT_FALSE(
-        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$lt: {}}}")).get()));
-    // Querying for array values isn't supported by allPaths indexes.
+    // Querying for array values isn't supported by wildcard indexes.
     ASSERT_FALSE(
         disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: [1, 2, 3]}")).get()));
-    // Querying for null isn't supported by allPaths indexes.
+    // Querying for null isn't supported by wildcard indexes.
     ASSERT_FALSE(
         disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: null}")).get()));
 
@@ -461,8 +457,6 @@ TEST(PlanCacheIndexabilityTest, AllPathsDiscriminator) {
 
     // Objects, non-empty arrays and null inside a $in.
     ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
-        parseMatchExpression(fromjson("{a: {$in: [1, {}, 's']}}")).get()));
-    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
         parseMatchExpression(fromjson("{a: {$in: [1, {a: 1}, 's']}}")).get()));
     ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
         parseMatchExpression(fromjson("{a: {$in: [1, [1,2,3], 's']}}")).get()));
@@ -470,7 +464,7 @@ TEST(PlanCacheIndexabilityTest, AllPathsDiscriminator) {
         parseMatchExpression(fromjson("{a: {$in: [1, 2, null]}}")).get()));
 }
 
-TEST(PlanCacheIndexabilityTest, AllPathsWithCollationDiscriminator) {
+TEST(PlanCacheIndexabilityTest, WildcardWithCollationDiscriminator) {
     PlanCacheIndexabilityState state;
     IndexEntry entry(BSON("a.$**" << 1),
                      false,  // multikey
@@ -483,10 +477,10 @@ TEST(PlanCacheIndexabilityTest, AllPathsWithCollationDiscriminator) {
     entry.collator = &collator;
     state.updateDiscriminators({entry});
 
-    const auto unindexedPathDiscriminators = state.buildAllPathsDiscriminators("notIndexed");
+    const auto unindexedPathDiscriminators = state.buildWildcardDiscriminators("notIndexed");
     ASSERT_EQ(0U, unindexedPathDiscriminators.size());
 
-    auto discriminatorsA = state.buildAllPathsDiscriminators("a");
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
     ASSERT_EQ(1U, discriminatorsA.size());
     ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
 
@@ -500,7 +494,7 @@ TEST(PlanCacheIndexabilityTest, AllPathsWithCollationDiscriminator) {
         parseMatchExpression(fromjson("{a: \"hello world\"}"), &collator).get()));
 }
 
-TEST(PlanCacheIndexabilityTest, AllPathsPartialIndexDiscriminator) {
+TEST(PlanCacheIndexabilityTest, WildcardPartialIndexDiscriminator) {
     PlanCacheIndexabilityState state;
 
     // Need to keep the filter BSON object around for the duration of the test since the match
@@ -516,7 +510,7 @@ TEST(PlanCacheIndexabilityTest, AllPathsPartialIndexDiscriminator) {
                      BSONObj());
     state.updateDiscriminators({entry});
 
-    auto discriminatorsA = state.buildAllPathsDiscriminators("a");
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
     ASSERT_EQ(1U, discriminatorsA.size());
     ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
 
@@ -530,5 +524,55 @@ TEST(PlanCacheIndexabilityTest, AllPathsPartialIndexDiscriminator) {
     // discriminated out.
     ASSERT_TRUE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: 6}")).get()));
 }
+
+TEST(PlanCacheIndexabilityTest,
+     WildcardIndexDiscriminatesBetweenEqualityToEmptyObjAndOtherObjComparisons) {
+    PlanCacheIndexabilityState state;
+    state.updateDiscriminators({IndexEntry(BSON("a.$**" << 1),
+                                           false,  // multikey
+                                           false,  // sparse
+                                           false,  // unique
+                                           IndexEntry::Identifier{"indexName"},
+                                           nullptr,
+                                           BSONObj())});
+
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
+    ASSERT_EQ(1U, discriminatorsA.size());
+    ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
+
+    const auto disc = discriminatorsA["indexName"];
+
+    // Verify that the discriminator considers equality to empty object compatible.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {}}")).get()));
+
+    // $lte:{} is a synonym for $eq:{}, and therefore is also compatible.
+    ASSERT_TRUE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$lte: {}}}")).get()));
+
+    // An $in with an empty object is compatible.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, {}, 's']}}")).get()));
+
+    // Equality to a non-empty object is not compatible.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {b: 1}}")).get()));
+
+    // Inequality with an empty object is not compatible.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$lt: {}}}")).get()));
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$gt: {}}}")).get()));
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$gte: {}}}")).get()));
+
+    // Inequality with a non-empty object is not compatible.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$gte: {b: 1}}}")).get()));
+
+    // An $in with a non-empty object is not compatible.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, {a: 1}, 's']}}")).get()));
+}
+
 }  // namespace
 }  // namespace mongo

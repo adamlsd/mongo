@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -34,6 +36,7 @@
 #include "mongo/bson/ordering.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/exchange_spec_gen.h"
+#include "mongo/db/pipeline/field_path.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
 
@@ -61,7 +64,12 @@ class Exchange : public RefCountable {
     /**
      * Extract the order description from the key.
      */
-    static Ordering extractOrdering(const BSONObj& obj);
+    static Ordering extractOrdering(const BSONObj& keyPattern);
+
+    /**
+     * Extract dotted paths from the key.
+     */
+    static std::vector<FieldPath> extractKeyPaths(const BSONObj& keyPattern);
 
 public:
     Exchange(ExchangeSpec spec, std::unique_ptr<Pipeline, PipelineDeleter> pipeline);
@@ -75,7 +83,7 @@ public:
         return _spec;
     }
 
-    void dispose(OperationContext* opCtx);
+    void dispose(OperationContext* opCtx, size_t consumerId);
 
 private:
     size_t loadNextBatch();
@@ -102,6 +110,8 @@ private:
     const BSONObj _keyPattern;
 
     const Ordering _ordering;
+
+    const std::vector<FieldPath> _keyPaths;
 
     // Range boundaries. The boundaries are ordered and must cover the whole domain, e.g.
     // [Min, -200, 0, 200, Max] partitions the domain into 4 ranges (i.e. 1 less than number of
@@ -134,6 +144,10 @@ private:
 
     // A thread that is currently loading the exchange buffers.
     size_t _loadingThreadId{kInvalidThreadId};
+
+    // A status indicating that the exception was thrown during loadNextBatch(). Once in the failed
+    // state all other producing threads will fail too.
+    Status _errorInLoadNextBatch{Status::OK()};
 
     size_t _roundRobinCounter{0};
 
@@ -184,7 +198,7 @@ public:
     }
 
     void doDispose() final {
-        _exchange->dispose(pExpCtx->opCtx);
+        _exchange->dispose(pExpCtx->opCtx, _consumerId);
     }
 
     auto getConsumerId() const {

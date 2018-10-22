@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -44,16 +46,36 @@ const Timestamp dummyTimestamp = Timestamp::min();
 class TransactionCoordinatorCatalogTest : public unittest::Test {
 public:
     void setUp() override {
-        _coordinatorCatalog = std::make_unique<TransactionCoordinatorCatalog>();
+        _coordinatorCatalog = std::make_shared<TransactionCoordinatorCatalog>();
     }
-    void tearDown() override {}
+    void tearDown() override {
+        _coordinatorCatalog.reset();
+        // Make sure all of the coordinators are in a committed/aborted state before they are
+        // destroyed. Otherwise, the coordinator's destructor will invariant because it will still
+        // have outstanding futures that have not been completed (the one to remove itself from the
+        // catalog). This has the added benefit of testing whether it's okay to destroy
+        // the catalog while there are outstanding coordinators.
+        for (auto& coordinator : _coordinatorsForTest) {
+            coordinator->recvTryAbort();
+        }
+        _coordinatorsForTest.clear();
+    }
 
     TransactionCoordinatorCatalog& coordinatorCatalog() {
         return *_coordinatorCatalog;
     }
 
+    std::shared_ptr<TransactionCoordinator> createCoordinatorInCatalog(LogicalSessionId lsid,
+                                                                       TxnNumber txnNumber) {
+        auto coordinator = coordinatorCatalog().create(lsid, txnNumber);
+        _coordinatorsForTest.push_back(coordinator);
+        return coordinator;
+    }
+
 private:
-    std::unique_ptr<TransactionCoordinatorCatalog> _coordinatorCatalog;
+    // Note: MUST be shared_ptr due to use of std::enable_shared_from_this
+    std::shared_ptr<TransactionCoordinatorCatalog> _coordinatorCatalog;
+    std::vector<std::shared_ptr<TransactionCoordinator>> _coordinatorsForTest;
 };
 
 TEST_F(TransactionCoordinatorCatalogTest, GetOnSessionThatDoesNotExistReturnsNone) {
@@ -68,7 +90,7 @@ TEST_F(TransactionCoordinatorCatalogTest,
        GetOnSessionThatExistsButTxnNumberThatDoesntExistReturnsNone) {
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber = 1;
-    coordinatorCatalog().create(lsid, txnNumber);
+    createCoordinatorInCatalog(lsid, txnNumber);
     auto coordinatorInCatalog = coordinatorCatalog().get(lsid, txnNumber + 1);
     ASSERT_EQ(coordinatorInCatalog, boost::none);
 }
@@ -77,7 +99,7 @@ TEST_F(TransactionCoordinatorCatalogTest,
 TEST_F(TransactionCoordinatorCatalogTest, CreateFollowedByGetReturnsCoordinator) {
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber = 1;
-    coordinatorCatalog().create(lsid, txnNumber);
+    createCoordinatorInCatalog(lsid, txnNumber);
     auto coordinatorInCatalog = coordinatorCatalog().get(lsid, txnNumber);
     ASSERT_NOT_EQUALS(coordinatorInCatalog, boost::none);
 }
@@ -86,8 +108,8 @@ TEST_F(TransactionCoordinatorCatalogTest, SecondCreateForSessionDoesNotOverwrite
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber1 = 1;
     TxnNumber txnNumber2 = 2;
-    auto coordinator1 = coordinatorCatalog().create(lsid, txnNumber1);
-    auto coordinator2 = coordinatorCatalog().create(lsid, txnNumber2);
+    auto coordinator1 = createCoordinatorInCatalog(lsid, txnNumber1);
+    auto coordinator2 = createCoordinatorInCatalog(lsid, txnNumber2);
 
     auto coordinator1InCatalog = coordinatorCatalog().get(lsid, txnNumber1);
     ASSERT_NOT_EQUALS(coordinator1InCatalog, boost::none);
@@ -98,9 +120,9 @@ DEATH_TEST_F(TransactionCoordinatorCatalogTest,
              "Invariant failure") {
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber = 1;
-    coordinatorCatalog().create(lsid, txnNumber);
+    createCoordinatorInCatalog(lsid, txnNumber);
     // Re-creating w/ same session id and txn number should cause invariant failure
-    coordinatorCatalog().create(lsid, txnNumber);
+    createCoordinatorInCatalog(lsid, txnNumber);
 }
 
 TEST_F(TransactionCoordinatorCatalogTest, GetLatestOnSessionWithNoCoordinatorsReturnsNone) {
@@ -113,7 +135,7 @@ TEST_F(TransactionCoordinatorCatalogTest,
        CreateFollowedByGetLatestOnSessionReturnsOnlyCoordinator) {
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber = 1;
-    coordinatorCatalog().create(lsid, txnNumber);
+    createCoordinatorInCatalog(lsid, txnNumber);
     auto latestTxnNumAndCoordinator = coordinatorCatalog().getLatestOnSession(lsid);
 
     ASSERT_TRUE(latestTxnNumAndCoordinator);
@@ -121,69 +143,47 @@ TEST_F(TransactionCoordinatorCatalogTest,
 }
 
 TEST_F(TransactionCoordinatorCatalogTest,
-       TwoCreatesFollowedByGetLatestOnSessionReturnsCoordinatorWithHighestTxnNumber) {
-    LogicalSessionId lsid = makeLogicalSessionIdForTest();
-    TxnNumber txnNumber1 = 1;
-    TxnNumber txnNumber2 = 2;
-    coordinatorCatalog().create(lsid, txnNumber1);
-    coordinatorCatalog().create(lsid, txnNumber2);
-    auto latestTxnNumAndCoordinator = coordinatorCatalog().getLatestOnSession(lsid);
-
-    ASSERT_EQ(latestTxnNumAndCoordinator->first, txnNumber2);
-}
-
-// Basically checks to make sure we clear out entries in the catalog for
-// sessions with no remaining coordinators.
-TEST_F(TransactionCoordinatorCatalogTest,
-       CreatingAndThenRemovingACoordinatorFollowedByGetLatestOnSessionReturnsNone) {
+       CoordinatorsRemoveThemselvesFromCatalogWhenTheyReachCommittedState) {
     using CoordinatorState = TransactionCoordinator::StateMachine::State;
 
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber = 1;
-    auto coordinator = coordinatorCatalog().create(lsid, txnNumber);
+    auto coordinator = createCoordinatorInCatalog(lsid, txnNumber);
 
     coordinator->recvCoordinateCommit({ShardId("shard0000")});
     coordinator->recvVoteCommit(ShardId("shard0000"), dummyTimestamp);
     coordinator->recvCommitAck(ShardId("shard0000"));
     ASSERT_EQ(coordinator->state(), CoordinatorState::kCommitted);
-
-    coordinatorCatalog().remove(lsid, txnNumber);
 
     auto latestTxnNumAndCoordinator = coordinatorCatalog().getLatestOnSession(lsid);
     ASSERT_FALSE(latestTxnNumAndCoordinator);
 }
 
-TEST_F(TransactionCoordinatorCatalogTest, RemovingACommittedCoordinatorSucceeds) {
+TEST_F(TransactionCoordinatorCatalogTest,
+       CoordinatorsRemoveThemselvesFromCatalogWhenTheyReachAbortedState) {
     using CoordinatorState = TransactionCoordinator::StateMachine::State;
 
     LogicalSessionId lsid = makeLogicalSessionIdForTest();
     TxnNumber txnNumber = 1;
-    auto coordinator = coordinatorCatalog().create(lsid, txnNumber);
+    auto coordinator = createCoordinatorInCatalog(lsid, txnNumber);
 
-    coordinator->recvCoordinateCommit({ShardId("shard0000")});
-    coordinator->recvVoteCommit(ShardId("shard0000"), dummyTimestamp);
-    coordinator->recvCommitAck(ShardId("shard0000"));
-    ASSERT_EQ(coordinator->state(), CoordinatorState::kCommitted);
-
-    coordinatorCatalog().remove(lsid, txnNumber);
-    auto coordinatorInCatalog = coordinatorCatalog().get(lsid, txnNumber);
-    ASSERT_EQ(coordinatorInCatalog, boost::none);
-}
-
-TEST_F(TransactionCoordinatorCatalogTest, RemovingAnAbortedCoordinatorSucceeds) {
-    using CoordinatorState = TransactionCoordinator::StateMachine::State;
-
-    LogicalSessionId lsid = makeLogicalSessionIdForTest();
-    TxnNumber txnNumber = 1;
-    auto coordinator = coordinatorCatalog().create(lsid, txnNumber);
-
-    coordinator->recvCoordinateCommit({ShardId("shard0000")});
     coordinator->recvVoteAbort(ShardId("shard0000"));
     ASSERT_EQ(coordinator->state(), CoordinatorState::kAborted);
 
-    coordinatorCatalog().remove(lsid, txnNumber);
-    auto coordinatorInCatalog = coordinatorCatalog().get(lsid, txnNumber);
-    ASSERT_EQ(coordinatorInCatalog, boost::none);
+    auto latestTxnNumAndCoordinator = coordinatorCatalog().getLatestOnSession(lsid);
+    ASSERT_FALSE(latestTxnNumAndCoordinator);
+}
+
+TEST_F(TransactionCoordinatorCatalogTest,
+       TwoCreatesFollowedByGetLatestOnSessionReturnsCoordinatorWithHighestTxnNumber) {
+    LogicalSessionId lsid = makeLogicalSessionIdForTest();
+    TxnNumber txnNumber1 = 1;
+    TxnNumber txnNumber2 = 2;
+    createCoordinatorInCatalog(lsid, txnNumber1);
+    createCoordinatorInCatalog(lsid, txnNumber2);
+    auto latestTxnNumAndCoordinator = coordinatorCatalog().getLatestOnSession(lsid);
+
+    ASSERT_EQ(latestTxnNumAndCoordinator->first, txnNumber2);
 }
 
 // TODO (SERVER-36304/37021): Reenable once transaction participants are able to send

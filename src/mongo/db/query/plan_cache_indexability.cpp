@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -32,7 +34,7 @@
 
 #include "mongo/base/init.h"
 #include "mongo/base/owned_pointer_vector.h"
-#include "mongo/db/index/all_paths_key_generator.h"
+#include "mongo/db/index/wildcard_key_generator.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_algo.h"
 #include "mongo/db/matcher/expression_internal_expr_eq.h"
@@ -112,11 +114,11 @@ void PlanCacheIndexabilityState::processPartialIndex(const std::string& indexNam
     }
 }
 
-void PlanCacheIndexabilityState::processAllPathsIndex(const IndexEntry& ie) {
-    invariant(ie.type == IndexType::INDEX_ALLPATHS);
+void PlanCacheIndexabilityState::processWildcardIndex(const IndexEntry& ie) {
+    invariant(ie.type == IndexType::INDEX_WILDCARD);
 
-    _allPathsIndexDiscriminators.emplace_back(
-        AllPathsKeyGenerator::createProjectionExec(ie.keyPattern,
+    _wildcardIndexDiscriminators.emplace_back(
+        WildcardKeyGenerator::createProjectionExec(ie.keyPattern,
                                                    ie.infoObj.getObjectField("wildcardProjection")),
         ie.identifier.catalogName,
         ie.filterExpr,
@@ -145,23 +147,23 @@ const IndexToDiscriminatorMap& PlanCacheIndexabilityState::getDiscriminators(
     return it->second;
 }
 
-IndexToDiscriminatorMap PlanCacheIndexabilityState::buildAllPathsDiscriminators(
+IndexToDiscriminatorMap PlanCacheIndexabilityState::buildWildcardDiscriminators(
     StringData path) const {
 
     IndexToDiscriminatorMap ret;
-    for (auto&& allPathsDiscriminator : _allPathsIndexDiscriminators) {
-        if (allPathsDiscriminator.projectionExec->applyProjectionToOneField(path)) {
-            CompositeIndexabilityDiscriminator& cid = ret[allPathsDiscriminator.catalogName];
+    for (auto&& wildcardDiscriminator : _wildcardIndexDiscriminators) {
+        if (wildcardDiscriminator.projectionExec->applyProjectionToOneField(path)) {
+            CompositeIndexabilityDiscriminator& cid = ret[wildcardDiscriminator.catalogName];
 
             // We can use these 'shallow' functions because the code building the plan cache key
             // will descend the match expression for us, and check the discriminator's return value
             // at each node.
-            cid.addDiscriminator(QueryPlannerIXSelect::nodeIsSupportedByAllPathsIndex);
+            cid.addDiscriminator(QueryPlannerIXSelect::nodeIsSupportedByWildcardIndex);
             cid.addDiscriminator(nodeIsConservativelySupportedBySparseIndex);
-            cid.addDiscriminator(getCollatedIndexDiscriminator(allPathsDiscriminator.collator));
-            if (allPathsDiscriminator.filterExpr) {
+            cid.addDiscriminator(getCollatedIndexDiscriminator(wildcardDiscriminator.collator));
+            if (wildcardDiscriminator.filterExpr) {
                 cid.addDiscriminator(
-                    getPartialIndexDiscriminator(allPathsDiscriminator.filterExpr));
+                    getPartialIndexDiscriminator(wildcardDiscriminator.filterExpr));
             }
         }
     }
@@ -170,10 +172,11 @@ IndexToDiscriminatorMap PlanCacheIndexabilityState::buildAllPathsDiscriminators(
 
 void PlanCacheIndexabilityState::updateDiscriminators(const std::vector<IndexEntry>& indexEntries) {
     _pathDiscriminatorsMap = PathDiscriminatorsMap();
+    _wildcardIndexDiscriminators.clear();
 
     for (const IndexEntry& idx : indexEntries) {
-        if (idx.type == IndexType::INDEX_ALLPATHS) {
-            processAllPathsIndex(idx);
+        if (idx.type == IndexType::INDEX_WILDCARD) {
+            processWildcardIndex(idx);
             continue;
         }
 

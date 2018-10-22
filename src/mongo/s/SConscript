@@ -46,6 +46,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/lasterror',
         'cluster_last_error_info',
         'grid',
+        'sharding_router_api',
         'sharding_routing_table',
     ],
 )
@@ -319,6 +320,18 @@ env.Library(
         '$BUILD_DIR/mongo/s/client/sharding_client',
         'cluster_last_error_info',
         'sharding_router_api',
+    ],
+)
+
+env.CppUnitTest(
+    target='sharding_task_executor_test',
+    source=[
+        'sharding_task_executor_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        'sharding_task_executor',
+        'shard_server_test_fixture',
     ],
 )
 

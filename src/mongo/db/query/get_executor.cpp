@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -51,8 +53,8 @@
 #include "mongo/db/exec/sort_key_generator.h"
 #include "mongo/db/exec/subplan.h"
 #include "mongo/db/exec/update.h"
-#include "mongo/db/index/all_paths_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/index/wildcard_access_method.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
@@ -66,6 +68,7 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/planner_access.h"
 #include "mongo/db/query/planner_analysis.h"
+#include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
@@ -117,6 +120,7 @@ void filterAllowedIndexEntries(const AllowedIndicesFilter& allowedIndicesFilter,
 }
 
 namespace {
+namespace wcp = ::mongo::wildcard_planning;
 // The body is below in the "count hack" section but getExecutor calls it.
 bool turnIxscanIntoCount(QuerySolution* soln);
 }  // namespace
@@ -1335,6 +1339,22 @@ bool turnIxscanIntoDistinctIxscan(QuerySolution* soln,
         indexScanNode = static_cast<IndexScanNode*>(fetchNode->children[0]);
     }
 
+    if (indexScanNode->index.type == IndexType::INDEX_WILDCARD) {
+        // If the query is on a field other than the distinct key, we may have generated a $** plan
+        // which does not actually contain the distinct key field.
+        if (field != std::next(indexScanNode->index.keyPattern.begin())->fieldName()) {
+            return false;
+        }
+        // If the query includes object bounds, we cannot turn this IXSCAN into a DISTINCT_SCAN.
+        // Wildcard indexes contain multiple keys per object, one for each subpath in ascending
+        // (Path, Value, RecordId) order. If the distinct fields in two successive documents are
+        // objects with the same leaf path values but in different field order, e.g. {a: 1, b: 2}
+        // and {b: 2, a: 1}, we would therefore only return the first document and skip the other.
+        if (wcp::isWildcardObjectSubpathScan(indexScanNode)) {
+            return false;
+        }
+    }
+
     // An additional filter must be applied to the data in the key, so we can't just skip
     // all the keys with a given value; we must examine every one to find the one that (may)
     // pass the filter.
@@ -1440,16 +1460,24 @@ namespace {
 QueryPlannerParams fillOutPlannerParamsForDistinct(OperationContext* opCtx,
                                                    Collection* collection,
                                                    size_t plannerOptions,
-                                                   const std::string& distinctKey) {
+                                                   const ParsedDistinct& parsedDistinct) {
     QueryPlannerParams plannerParams;
     plannerParams.options = QueryPlannerParams::NO_TABLE_SCAN | plannerOptions;
 
     IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(opCtx, false);
+    auto query = parsedDistinct.getQuery()->getQueryRequest().getFilter();
     while (ii.more()) {
         const IndexDescriptor* desc = ii.next();
         IndexCatalogEntry* ice = ii.catalogEntry(desc);
-        if (desc->keyPattern().hasField(distinctKey)) {
+        if (desc->keyPattern().hasField(parsedDistinct.getKey())) {
             plannerParams.indices.push_back(indexEntryFromIndexCatalogEntry(opCtx, *ice));
+        } else if (desc->getIndexType() == IndexType::INDEX_WILDCARD && !query.isEmpty()) {
+            // Check whether the $** projection captures the field over which we are distinct-ing.
+            const auto proj = WildcardKeyGenerator::createProjectionExec(desc->keyPattern(),
+                                                                         desc->pathProjection());
+            if (proj->applyProjectionToOneField(parsedDistinct.getKey())) {
+                plannerParams.indices.push_back(indexEntryFromIndexCatalogEntry(opCtx, *ice));
+            }
         }
     }
 
@@ -1485,9 +1513,8 @@ Status getExecutorForSimpleDistinct(OperationContext* opCtx,
     invariant(queryOrExecutor->cq);
     invariant(!queryOrExecutor->executor);
 
-    // If there's no query, we can just distinct-scan one of the indices.
-    // Not every index in plannerParams.indices may be suitable. Refer to
-    // getDistinctNodeIndex().
+    // If there's no query, we can just distinct-scan one of the indices. Not every index in
+    // plannerParams.indices may be suitable. Refer to getDistinctNodeIndex().
     size_t distinctNodeIndex = 0;
     if (!parsedDistinct->getQuery()->getQueryRequest().getFilter().isEmpty() ||
         !parsedDistinct->getQuery()->getQueryRequest().getSort().isEmpty() ||
@@ -1632,8 +1659,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
     // We go through normal planning (with limited parameters) to see if we can produce
     // a soln with the above properties.
 
-    auto plannerParams = fillOutPlannerParamsForDistinct(
-        opCtx, collection, plannerOptions, parsedDistinct->getKey());
+    auto plannerParams =
+        fillOutPlannerParamsForDistinct(opCtx, collection, plannerOptions, *parsedDistinct);
 
     const ExtensionsCallbackReal extensionsCallback(opCtx, &collection->ns());
 
@@ -1657,8 +1684,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
     auto qr = stdx::make_unique<QueryRequest>(parsedDistinct->getQuery()->getQueryRequest());
 
     // Applying a projection allows the planner to try to give us covered plans that we can turn
-    // into the projection hack.  getDistinctProjection deals with .find() projection semantics
-    // (ie _id:1 being implied by default).
+    // into the projection hack. The getDistinctProjection() function deals with .find() projection
+    // semantics (ie _id:1 being implied by default).
     if (qr->getProj().isEmpty()) {
         BSONObj projection = getDistinctProjection(parsedDistinct->getKey());
         qr->setProj(projection);

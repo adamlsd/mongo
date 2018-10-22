@@ -1,29 +1,31 @@
-/*
- *    Copyright 2010 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
@@ -107,6 +109,15 @@ const auto kAuthParam = "authSource"s;
 }  // namespace
 
 namespace mongo {
+
+enum ShellExitCode : int {
+    kDBException = 1,
+    kInputFileError = -3,
+    kEvalError = -4,
+    kMongorcError = -5,
+    kUnterminatedProcess = -6,
+    kProcessTerminationError = -7,
+};
 
 Scope* shellMainScope;
 }
@@ -925,8 +936,10 @@ int _main(int argc, char* argv[], char** envp) {
 
     if (!shellGlobalParams.script.empty()) {
         mongo::shell_utils::MongoProgramScope s;
-        if (!scope->exec(shellGlobalParams.script, "(shell eval)", false, true, false))
-            return -4;
+        if (!scope->exec(shellGlobalParams.script, "(shell eval)", false, true, false)) {
+            error() << "exiting with code " << static_cast<int>(kEvalError);
+            return kEvalError;
+        }
         scope->exec("shellPrintHelper( __lastres__ );", "(shell2 eval)", true, true, false);
     }
 
@@ -937,8 +950,9 @@ int _main(int argc, char* argv[], char** envp) {
             cout << "loading file: " << shellGlobalParams.files[i] << endl;
 
         if (!scope->execFile(shellGlobalParams.files[i], false, true)) {
-            cout << "failed to load: " << shellGlobalParams.files[i] << endl;
-            return -3;
+            severe() << "failed to load: " << shellGlobalParams.files[i];
+            error() << "exiting with code " << static_cast<int>(kInputFileError);
+            return kInputFileError;
         }
 
         // Check if the process left any running child processes.
@@ -951,9 +965,10 @@ int _main(int argc, char* argv[], char** envp) {
             cout << endl;
 
             if (mongo::shell_utils::KillMongoProgramInstances() != EXIT_SUCCESS) {
-                cout << "one more more child processes exited with an error during "
-                     << shellGlobalParams.files[i] << endl;
-                return -3;
+                severe() << "one more more child processes exited with an error during "
+                         << shellGlobalParams.files[i];
+                error() << "exiting with code " << static_cast<int>(kProcessTerminationError);
+                return kProcessTerminationError;
             }
 
             bool failIfUnterminatedProcesses = false;
@@ -965,11 +980,11 @@ int _main(int argc, char* argv[], char** envp) {
             failIfUnterminatedProcesses = shellMainScope->getBoolean("__returnValue");
 
             if (failIfUnterminatedProcesses) {
-                cout << "exiting with a failure due to unterminated processes" << endl
-                     << "a call to MongoRunner.stopMongod(), ReplSetTest#stopSet(), or "
-                        "ShardingTest#stop() may be missing from the test"
-                     << endl;
-                return -6;
+                severe() << "exiting with a failure due to unterminated processes, "
+                            "a call to MongoRunner.stopMongod(), ReplSetTest#stopSet(), or "
+                            "ShardingTest#stop() may be missing from the test";
+                error() << "exiting with code " << static_cast<int>(kUnterminatedProcess);
+                return kUnterminatedProcess;
             }
         }
     }
@@ -996,10 +1011,10 @@ int _main(int argc, char* argv[], char** envp) {
             if (!rcLocation.empty() && ::mongo::shell_utils::fileExists(rcLocation)) {
                 hasMongoRC = true;
                 if (!scope->execFile(rcLocation, false, true)) {
-                    cout << "The \".mongorc.js\" file located in your home folder could not be "
-                            "executed"
-                         << endl;
-                    return -5;
+                    severe() << "The \".mongorc.js\" file located in your home folder could not be "
+                                "executed";
+                    error() << "exiting with code " << static_cast<int>(kMongorcError);
+                    return kMongorcError;
                 }
             }
         }
@@ -1171,8 +1186,9 @@ int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {
         WindowsCommandLine wcl(argc, argvW, envpW);
         returnCode = _main(argc, wcl.argv(), wcl.envp());
     } catch (mongo::DBException& e) {
-        cerr << "exception: " << e.what() << endl;
-        returnCode = 1;
+        severe() << "exception: " << e.what();
+        error() << "exiting with code " << static_cast<int>(kDBException);
+        returnCode = kDBException;
     }
     quickExit(returnCode);
 }
@@ -1182,8 +1198,9 @@ int main(int argc, char* argv[], char** envp) {
     try {
         returnCode = _main(argc, argv, envp);
     } catch (mongo::DBException& e) {
-        cerr << "exception: " << e.what() << endl;
-        returnCode = 1;
+        severe() << "exception: " << e.what();
+        error() << "exiting with code " << static_cast<int>(kDBException);
+        returnCode = kDBException;
     }
     quickExit(returnCode);
 }

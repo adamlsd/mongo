@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2009 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 // CHECK_LOG_REDACTION
 
@@ -229,6 +231,8 @@ void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
                                      BSONObjBuilder* infoBuilder) {
     invariant(client);
     OperationContext* clientOpCtx = client->getOperationContext();
+
+    infoBuilder->append("type", "op");
 
     const std::string hostName = getHostNameCachedAndPort();
     infoBuilder->append("host", hostName);
@@ -487,16 +491,28 @@ void CurOp::reportState(BSONObjBuilder* builder, bool truncateOps) {
 
     appendAsObjOrString("command", _opDescription, maxQuerySize, builder);
 
-    if (!_originatingCommand.isEmpty()) {
-        appendAsObjOrString("originatingCommand", _originatingCommand, maxQuerySize, builder);
-    }
-
     if (!_planSummary.empty()) {
         builder->append("planSummary", _planSummary);
     }
 
     if (_genericCursor) {
+        // This creates a new builder to truncate the object that will go into the curOp output. In
+        // order to make sure the object is not too large but not truncate the comment, we only
+        // truncate the originatingCommand and not the entire cursor.
+        BSONObjBuilder tempObj;
+        appendAsObjOrString(
+            "truncatedObj", _genericCursor->getOriginatingCommand().get(), maxQuerySize, &tempObj);
+        auto originatingCommand = tempObj.done().getObjectField("truncatedObj");
+        _genericCursor->setOriginatingCommand(originatingCommand.getOwned());
+        // lsid and ns exist in the top level curop object, so they need to be temporarily
+        // removed from the cursor object to avoid duplicating information.
+        auto lsid = _genericCursor->getLsid();
+        auto ns = _genericCursor->getNs();
+        _genericCursor->setLsid(boost::none);
+        _genericCursor->setNs(boost::none);
         builder->append("cursor", _genericCursor->toBSON());
+        _genericCursor->setLsid(lsid);
+        _genericCursor->setNs(ns);
     }
 
     if (!_message.empty()) {

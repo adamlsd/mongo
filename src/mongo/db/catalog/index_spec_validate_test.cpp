@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -43,6 +45,7 @@
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/db/server_options.h"
+#include "mongo/unittest/ensure_fcv.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -51,41 +54,10 @@ namespace {
 using index_key_validate::validateIndexSpec;
 using index_key_validate::validateIdIndexSpec;
 using index_key_validate::validateIndexSpecCollation;
+using unittest::EnsureFCV;
 
 const NamespaceString kTestNamespace("test", "index_spec_validate");
 constexpr OperationContext* kDefaultOpCtx = nullptr;
-
-/**
- * Helper class to ensure proper FCV & test commands enabled.
- */
-class TestCommandFcvGuard {
-
-public:
-    TestCommandFcvGuard() {
-        _prevVersion = serverGlobalParams.featureCompatibility.getVersion();
-        serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
-        // TODO: Remove test command enabling/disabling in SERVER-36198
-        _prevEnabled = getTestCommandsEnabled();
-        setTestCommandsEnabled(true);
-
-        // TODO: Remove knob enabling/disabling in SERVER-36198.
-        _prevKnobEnabled = internalQueryAllowAllPathsIndexes.load();
-        internalQueryAllowAllPathsIndexes.store(true);
-    }
-
-    ~TestCommandFcvGuard() {
-        serverGlobalParams.featureCompatibility.setVersion(_prevVersion);
-        setTestCommandsEnabled(_prevEnabled);
-        internalQueryAllowAllPathsIndexes.store(_prevKnobEnabled);
-    }
-
-private:
-    bool _prevEnabled;
-    bool _prevKnobEnabled;
-    ServerGlobalParams::FeatureCompatibility::Version _prevVersion;
-};
-
 
 /**
  * Helper function used to return the fields of a BSONObj in a consistent order.
@@ -838,8 +810,8 @@ TEST(IndexSpecPartialFilterTest, AcceptsValidPartialFilterExpression) {
     ASSERT_OK(result.getStatus());
 }
 
-TEST(IndexSpecAllPaths, SucceedsWithInclusion) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, SucceedsWithInclusion) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -850,8 +822,8 @@ TEST(IndexSpecAllPaths, SucceedsWithInclusion) {
     ASSERT_OK(result.getStatus());
 }
 
-TEST(IndexSpecAllPaths, SucceedsWithExclusion) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, SucceedsWithExclusion) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -862,8 +834,8 @@ TEST(IndexSpecAllPaths, SucceedsWithExclusion) {
     ASSERT_OK(result.getStatus());
 }
 
-TEST(IndexSpecAllPaths, SucceedsWithExclusionIncludingId) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, SucceedsWithExclusionIncludingId) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -874,8 +846,8 @@ TEST(IndexSpecAllPaths, SucceedsWithExclusionIncludingId) {
     ASSERT_OK(result.getStatus());
 }
 
-TEST(IndexSpecAllPaths, SucceedsWithInclusionExcludingId) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, SucceedsWithInclusionExcludingId) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -886,8 +858,8 @@ TEST(IndexSpecAllPaths, SucceedsWithInclusionExcludingId) {
     ASSERT_OK(result.getStatus());
 }
 
-TEST(IndexSpecAllPaths, FailsWithInclusionExcludingIdSubfield) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWithInclusionExcludingIdSubfield) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -898,8 +870,8 @@ TEST(IndexSpecAllPaths, FailsWithInclusionExcludingIdSubfield) {
     ASSERT_EQ(result.getStatus().code(), 40179);
 }
 
-TEST(IndexSpecAllPaths, FailsWithExclusionIncludingIdSubfield) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWithExclusionIncludingIdSubfield) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -910,8 +882,8 @@ TEST(IndexSpecAllPaths, FailsWithExclusionIncludingIdSubfield) {
     ASSERT_EQ(result.getStatus().code(), 40178);
 }
 
-TEST(IndexSpecAllPaths, FailsWithImproperFeatureCompatabilityVersion) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWithImproperFeatureCompatabilityVersion) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     serverGlobalParams.featureCompatibility.setVersion(
         ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
@@ -922,8 +894,8 @@ TEST(IndexSpecAllPaths, FailsWithImproperFeatureCompatabilityVersion) {
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::CannotCreateIndex);
 }
 
-TEST(IndexSpecAllPaths, FailsWithMixedProjection) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWithMixedProjection) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -934,8 +906,8 @@ TEST(IndexSpecAllPaths, FailsWithMixedProjection) {
     ASSERT_EQ(result.getStatus().code(), 40178);
 }
 
-TEST(IndexSpecAllPaths, FailsWithComputedFieldsInProjection) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWithComputedFieldsInProjection) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -947,8 +919,8 @@ TEST(IndexSpecAllPaths, FailsWithComputedFieldsInProjection) {
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::FailedToParse);
 }
 
-TEST(IndexSpecAllPaths, FailsWhenProjectionPluginNotAllPaths) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWhenProjectionPluginNotWildcard) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("a" << 1) << "name"
                                                << "indexName"
@@ -959,8 +931,8 @@ TEST(IndexSpecAllPaths, FailsWhenProjectionPluginNotAllPaths) {
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::BadValue);
 }
 
-TEST(IndexSpecAllPaths, FailsWhenProjectionIsNotAnObject) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWhenProjectionIsNotAnObject) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -971,8 +943,8 @@ TEST(IndexSpecAllPaths, FailsWhenProjectionIsNotAnObject) {
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::TypeMismatch);
 }
 
-TEST(IndexSpecAllPaths, FailsWithEmptyProjection) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWithEmptyProjection) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("$**" << 1) << "name"
                                                << "indexName"
@@ -983,8 +955,8 @@ TEST(IndexSpecAllPaths, FailsWithEmptyProjection) {
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::FailedToParse);
 }
 
-TEST(IndexSpecAllPaths, FailsWhenInclusionWithSubpath) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWhenInclusionWithSubpath) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("a.$**" << 1) << "name"
                                                << "indexName"
@@ -995,8 +967,8 @@ TEST(IndexSpecAllPaths, FailsWhenInclusionWithSubpath) {
     ASSERT_EQ(result.getStatus().code(), ErrorCodes::FailedToParse);
 }
 
-TEST(IndexSpecAllPaths, FailsWhenExclusionWithSubpath) {
-    TestCommandFcvGuard guard;
+TEST(IndexSpecWildcard, FailsWhenExclusionWithSubpath) {
+    EnsureFCV guard(ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     auto result = validateIndexSpec(kDefaultOpCtx,
                                     BSON("key" << BSON("a.$**" << 1) << "name"
                                                << "indexName"

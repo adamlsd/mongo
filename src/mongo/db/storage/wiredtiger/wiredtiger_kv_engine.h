@@ -1,26 +1,27 @@
 // wiredtiger_kv_engine.h
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -195,9 +196,16 @@ public:
 
     virtual void setOldestTimestampFromStable() override;
 
-    virtual void setOldestTimestamp(Timestamp newOldestTimestamp) override;
+    /**
+     * Sets the oldest timestamp for which the storage engine must maintain snapshot history
+     * through. If force is true, oldest will be set to the given input value, unmodified, even if
+     * it is backwards in time from the last oldest timestamp (accomodating initial sync).
+     */
+    virtual void setOldestTimestamp(Timestamp newOldestTimestamp, bool force) override;
 
     virtual bool supportsRecoverToStableTimestamp() const override;
+
+    virtual bool supportsRecoveryTimestamp() const override;
 
     virtual StatusWith<Timestamp> recoverToStableTimestamp(OperationContext* opCtx) override;
 
@@ -228,6 +236,8 @@ public:
     void replicationBatchIsComplete() const override;
 
     bool isCacheUnderPressure(OperationContext* opCtx) const override;
+
+    bool supportsReadConcernMajority() const final;
 
     // wiredtiger specific
     // Calls WT_CONNECTION::reconfigure on the underlying WT_CONNECTION
@@ -384,12 +394,7 @@ private:
      */
     bool _canRecoverToStableTimestamp() const;
 
-    /**
-     * Sets the oldest timestamp for which the storage engine must maintain snapshot history
-     * through. If force is true, oldest will be set to the given input value, unmodified, even if
-     * it is backwards in time from the last oldest timestamp (accomodating initial sync).
-     */
-    void _setOldestTimestamp(Timestamp newOldestTimestamp, bool force);
+    std::uint64_t _getCheckpointTimestamp() const;
 
     WT_CONNECTION* _conn;
     WiredTigerFileVersion _fileVersion;
@@ -414,6 +419,14 @@ private:
     bool _ephemeral;  // whether we are using the in-memory mode of the WT engine
     const bool _inRepairMode;
     bool _readOnly;
+
+    // If _keepDataHistory is true, then the storage engine keeps all history after the stable
+    // timestamp, and WiredTigerKVEngine is responsible for advancing the oldest timestamp. If
+    // _keepDataHistory is false (i.e. majority reads are disabled), then we only keep history after
+    // the "no holes point", and WiredTigerOplogManager is responsible for advancing the oldest
+    // timestamp.
+    const bool _keepDataHistory = true;
+
     std::unique_ptr<WiredTigerJournalFlusher> _journalFlusher;  // Depends on _sizeStorer
     std::unique_ptr<WiredTigerCheckpointThread> _checkpointThread;
 

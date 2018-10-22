@@ -1,6 +1,6 @@
 // Makes sure all commands which are supposed to take statement ids do.  This should test the
 // commands in the sessionCheckOutWhiteList in service_entry_point_common.cpp.
-// @tags: [uses_transactions]
+// @tags: [uses_transactions, uses_prepare_transaction]
 (function() {
     "use strict";
 
@@ -167,24 +167,19 @@
         insert: collName,
         documents: [{_id: "doc1"}],
         readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber++),
+        txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
         startTransaction: true,
         autocommit: false
     }));
 
-    jsTestLog("Check that mapreduce accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
-        mapreduce: collName,
-        map: function() {
-            emit(this, this);
-        },
-        reduce: function(key, values) {
-            return key;
-        },
-        out: {inline: 1},
+    // Abort the transaction to release locks.
+    // abortTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        abortTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0)
+        stmtId: NumberInt(1),
+        autocommit: false
     }));
 
     const isMongos = assert.commandWorked(db.runCommand("ismaster")).msg === "isdbgrid";

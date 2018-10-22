@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -32,11 +34,7 @@
 
 #include "mongo/db/session_catalog.h"
 
-#include <boost/optional.hpp>
-
-#include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/kill_sessions_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
@@ -75,49 +73,6 @@ SessionCatalog* SessionCatalog::get(OperationContext* opCtx) {
 SessionCatalog* SessionCatalog::get(ServiceContext* service) {
     auto& sessionTransactionTable = sessionTransactionTableDecoration(service);
     return &sessionTransactionTable;
-}
-
-boost::optional<UUID> SessionCatalog::getTransactionTableUUID(OperationContext* opCtx) {
-    AutoGetCollection autoColl(opCtx, NamespaceString::kSessionTransactionsTableNamespace, MODE_IS);
-
-    const auto coll = autoColl.getCollection();
-    if (coll == nullptr) {
-        return boost::none;
-    }
-
-    return coll->uuid();
-}
-
-void SessionCatalog::onStepUp(OperationContext* opCtx) {
-    invalidateSessions(opCtx, boost::none);
-
-    DBDirectClient client(opCtx);
-
-    const size_t initialExtentSize = 0;
-    const bool capped = false;
-    const bool maxSize = 0;
-
-    BSONObj result;
-
-    if (client.createCollection(NamespaceString::kSessionTransactionsTableNamespace.ns(),
-                                initialExtentSize,
-                                capped,
-                                maxSize,
-                                &result)) {
-        return;
-    }
-
-    const auto status = getStatusFromCommandResult(result);
-
-    if (status == ErrorCodes::NamespaceExists) {
-        return;
-    }
-
-    uassertStatusOKWithContext(status,
-                               str::stream()
-                                   << "Failed to create the "
-                                   << NamespaceString::kSessionTransactionsTableNamespace.ns()
-                                   << " collection");
 }
 
 ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext* opCtx) {
@@ -173,7 +128,9 @@ void SessionCatalog::invalidateSessions(OperationContext* opCtx,
 
     const auto invalidateSessionFn = [&](WithLock, SessionRuntimeInfoMap::iterator it) {
         auto& sri = it->second;
-        sri->txnState.invalidate();
+        auto const txnParticipant =
+            TransactionParticipant::getFromNonCheckedOutSession(&sri->txnState);
+        txnParticipant->invalidate();
 
         // We cannot remove checked-out sessions from the cache, because operations expect to find
         // them there to check back in
@@ -202,17 +159,14 @@ void SessionCatalog::invalidateSessions(OperationContext* opCtx,
 
 void SessionCatalog::scanSessions(OperationContext* opCtx,
                                   const SessionKiller::Matcher& matcher,
-                                  stdx::function<void(OperationContext*, Session*)> workerFn) {
+                                  const ScanSessionsCallbackFn& workerFn) {
     stdx::lock_guard<stdx::mutex> lg(_mutex);
 
     LOG(2) << "Beginning scanSessions. Scanning " << _sessions.size() << " sessions.";
 
-    for (auto it = _sessions.begin(); it != _sessions.end(); ++it) {
-        // TODO SERVER-33850: Rename KillAllSessionsByPattern and
-        // ScopedKillAllSessionsByPatternImpersonator to not refer to session kill.
-        if (const KillAllSessionsByPattern* pattern = matcher.match(it->first)) {
-            ScopedKillAllSessionsByPatternImpersonator impersonator(opCtx, *pattern);
-            workerFn(opCtx, &(it->second->txnState));
+    for (auto& sessionEntry : _sessions) {
+        if (matcher.match(sessionEntry.first)) {
+            workerFn(opCtx, &sessionEntry.second->txnState);
         }
     }
 }

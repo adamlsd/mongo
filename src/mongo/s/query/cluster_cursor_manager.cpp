@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -161,6 +163,29 @@ long long ClusterCursorManager::PinnedCursor::getNumReturnedSoFar() const {
     return _cursor->getNumReturnedSoFar();
 }
 
+Date_t ClusterCursorManager::PinnedCursor::getLastUseDate() const {
+    invariant(_cursor);
+    return _cursor->getLastUseDate();
+}
+
+void ClusterCursorManager::PinnedCursor::setLastUseDate(Date_t now) {
+    invariant(_cursor);
+    _cursor->setLastUseDate(now);
+}
+Date_t ClusterCursorManager::PinnedCursor::getCreatedDate() const {
+    invariant(_cursor);
+    return _cursor->getCreatedDate();
+}
+void ClusterCursorManager::PinnedCursor::incNBatches() {
+    invariant(_cursor);
+    return _cursor->incNBatches();
+}
+
+long long ClusterCursorManager::PinnedCursor::getNBatches() const {
+    invariant(_cursor);
+    return _cursor->getNBatches();
+}
+
 void ClusterCursorManager::PinnedCursor::queueResult(const ClusterQueryResult& result) {
     invariant(_cursor);
     _cursor->queueResult(result);
@@ -180,6 +205,9 @@ GenericCursor ClusterCursorManager::PinnedCursor::toGenericCursor() const {
     gc.setTailable(isTailable());
     gc.setAwaitData(isTailableAndAwaitData());
     gc.setOriginatingCommand(getOriginatingCommand());
+    gc.setLastAccessDate(getLastUseDate());
+    gc.setCreatedDate(getCreatedDate());
+    gc.setNBatchesReturned(getNBatches());
     return gc;
 }
 
@@ -342,7 +370,6 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
             return vivifyCursorStatus;
         }
     }
-
     cursor->reattachToOperationContext(opCtx);
     return PinnedCursor(this, std::move(cursor), nss, cursorId);
 }
@@ -359,6 +386,7 @@ void ClusterCursorManager::checkInCursor(std::unique_ptr<ClusterClientCursor> cu
     OperationContext* opCtx = cursor->getCurrentOperationContext();
     invariant(opCtx);
     cursor->detachFromOperationContext();
+    cursor->setLastUseDate(now);
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
@@ -459,7 +487,7 @@ std::size_t ClusterCursorManager::killMortalCursorsInactiveSince(OperationContex
             !entry.getOperationUsingCursor() && entry.getLastActive() <= cutoff;
 
         if (res) {
-            log() << "Marking cursor id " << cursorId << " for deletion, idle since "
+            log() << "Cursor id " << cursorId << " timed out, idle since "
                   << entry.getLastActive().toString();
         }
 
@@ -590,24 +618,37 @@ GenericCursor ClusterCursorManager::CursorEntry::cursorToGenericCursor(
     GenericCursor gc;
     gc.setCursorId(cursorId);
     gc.setNs(ns);
+    gc.setCreatedDate(_cursor->getCreatedDate());
+    gc.setLastAccessDate(_cursor->getLastUseDate());
     gc.setLsid(_cursor->getLsid());
     gc.setNDocsReturned(_cursor->getNumReturnedSoFar());
     gc.setTailable(_cursor->isTailable());
     gc.setAwaitData(_cursor->isTailableAndAwaitData());
     gc.setOriginatingCommand(_cursor->getOriginatingCommand());
     gc.setNoCursorTimeout(getLifetimeType() == CursorLifetime::Immortal);
+    gc.setNBatchesReturned(_cursor->getNBatches());
     return gc;
 }
 
-std::vector<GenericCursor> ClusterCursorManager::getIdleCursors() const {
+std::vector<GenericCursor> ClusterCursorManager::getIdleCursors(
+    const OperationContext* opCtx, MongoProcessInterface::CurrentOpUserMode userMode) const {
     std::vector<GenericCursor> cursors;
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
+    AuthorizationSession* ctxAuth = AuthorizationSession::get(opCtx->getClient());
+
     for (const auto& nsContainerPair : _namespaceToContainerMap) {
         for (const auto& cursorIdEntryPair : nsContainerPair.second.entryMap) {
-            const CursorEntry& entry = cursorIdEntryPair.second;
 
+            const CursorEntry& entry = cursorIdEntryPair.second;
+            // If auth is enabled, and userMode is allUsers, check if the current user has
+            // permission to see this cursor.
+            if (ctxAuth->getAuthorizationManager().isAuthEnabled() &&
+                userMode == MongoProcessInterface::CurrentOpUserMode::kExcludeOthers &&
+                !ctxAuth->isCoauthorizedWith(entry.getAuthenticatedUsers())) {
+                continue;
+            }
             if (entry.isKillPending() || entry.getOperationUsingCursor()) {
                 // Don't include sessions for killed or pinned cursors.
                 continue;

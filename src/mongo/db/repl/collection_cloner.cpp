@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -26,7 +28,7 @@
  *    it in the license file.
  */
 
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplicationInitialSync
 
 #include "mongo/platform/basic.h"
 
@@ -258,14 +260,15 @@ void CollectionCloner::shutdown() {
 void CollectionCloner::_cancelRemainingWork_inlock() {
     _countScheduler.shutdown();
     _listIndexesFetcher.shutdown();
-    if (_establishCollectionCursorsScheduler) {
-        _establishCollectionCursorsScheduler->shutdown();
-    }
     if (_verifyCollectionDroppedScheduler) {
         _verifyCollectionDroppedScheduler->shutdown();
     }
-    _queryState =
-        _queryState == QueryState::kRunning ? QueryState::kCanceling : QueryState::kFinished;
+    if (_queryState == QueryState::kRunning) {
+        _queryState = QueryState::kCanceling;
+        _clientConnection->shutdownAndDisallowReconnect();
+    } else {
+        _queryState = QueryState::kFinished;
+    }
     _dbWorkTaskRunner.cancel();
 }
 
@@ -488,6 +491,7 @@ void CollectionCloner::_beginCollectionCallback(const executor::TaskExecutor::Ca
                 {
                     stdx::lock_guard<stdx::mutex> lock(_mutex);
                     _queryState = QueryState::kFinished;
+                    _clientConnection.reset();
                 }
                 _condition.notify_all();
             });
@@ -530,13 +534,13 @@ void CollectionCloner::_runQuery(const executor::TaskExecutor::CallbackArgs& cal
         }
     }
 
-    auto conn = _createClientFn();
-    Status clientConnectionStatus = conn->connect(_source, StringData());
+    _clientConnection = _createClientFn();
+    Status clientConnectionStatus = _clientConnection->connect(_source, StringData());
     if (!clientConnectionStatus.isOK()) {
         _finishCallback(clientConnectionStatus);
         return;
     }
-    if (!replAuthenticate(conn.get())) {
+    if (!replAuthenticate(_clientConnection.get())) {
         _finishCallback({ErrorCodes::AuthenticationFailed,
                          str::stream() << "Failed to authenticate to " << _source});
         return;
@@ -549,7 +553,7 @@ void CollectionCloner::_runQuery(const executor::TaskExecutor::CallbackArgs& cal
         std::make_shared<OnCompletionGuard>(cancelRemainingWorkInLock, finishCallbackFn);
 
     try {
-        conn->query(
+        _clientConnection->query(
             [this, onCompletionGuard](DBClientCursorBatchIterator& iter) {
                 _handleNextBatch(onCompletionGuard, iter);
             },

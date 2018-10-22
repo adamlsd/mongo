@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -72,23 +74,6 @@ public:
      */
     static std::vector<IndexEntry> findRelevantIndices(
         const stdx::unordered_set<std::string>& fields, const std::vector<IndexEntry>& allIndices);
-
-    /**
-     * Return true if the index key pattern field 'keyPatternElt' (which belongs to 'index' and is
-     * at position 'keyPatternIndex' in the index's keyPattern) can be used to answer the predicate
-     * 'node'. When 'node' is a sub-tree of a larger MatchExpression, 'fullPathToNode' is the path
-     * traversed to get to this node, otherwise it is empty.
-     *
-     * For example, {field: "hashed"} can only be used with sets of equalities.
-     *              {field: "2d"} can only be used with some geo predicates.
-     *              {field: "2dsphere"} can only be used with some other geo predicates.
-     */
-    static bool compatible(const BSONElement& keyPatternElt,
-                           const IndexEntry& index,
-                           std::size_t keyPatternIndex,
-                           MatchExpression* node,
-                           StringData fullPathToNode,
-                           const CollatorInterface* collator);
 
     /**
      * Determine how useful all of our relevant 'indices' are to all predicates in the subtree
@@ -152,9 +137,9 @@ public:
                                                  const std::vector<IndexEntry>& relevantIndices);
 
     /**
-     * Check if this match expression is a leaf and is supported by an allPaths index.
+     * Check if this match expression is a leaf and is supported by a wildcard index.
      */
-    static bool nodeIsSupportedByAllPathsIndex(const MatchExpression* queryExpr);
+    static bool nodeIsSupportedByWildcardIndex(const MatchExpression* queryExpr);
 
     /*
      * Return true if the given match expression can use a sparse index, false otherwise. This will
@@ -176,6 +161,16 @@ private:
         StringData fullPathToParentElemMatch{""_sd};
     };
 
+    /**
+     * Return true if the index key pattern field 'keyPatternElt' (which belongs to 'index' and is
+     * at position 'keyPatternIndex' in the index's keyPattern) can be used to answer the predicate
+     * 'node'. When 'node' is a sub-tree of a larger MatchExpression, 'fullPathToNode' is the path
+     * traversed to get to this node, otherwise it is empty.
+     *
+     * For example, {field: "hashed"} can only be used with sets of equalities.
+     *              {field: "2d"} can only be used with some geo predicates.
+     *              {field: "2dsphere"} can only be used with some other geo predicates.
+     */
     static bool _compatible(const BSONElement& keyPatternElt,
                             const IndexEntry& index,
                             std::size_t keyPatternIndex,
@@ -245,14 +240,14 @@ private:
                                                          const std::vector<IndexEntry>& indices);
 
     /**
-     * This function strips RelevantTag assignments to expanded 'allPaths' indexes, in cases where
+     * This function strips RelevantTag assignments to expanded 'wildcard' indexes, in cases where
      * the assignment is incompatible with the query.
      *
-     * Specifically, if the query has a TEXT node with both 'text' and 'allPaths' indexes present,
-     * then the 'allPaths' index will mark itself as relevant to the '_fts' path reported by the
-     * TEXT node. We therefore remove any such misassigned 'allPaths' tags here.
+     * Specifically, if the query has a TEXT node with both 'text' and 'wildcard' indexes present,
+     * then the 'wildcard' index will mark itself as relevant to the '_fts' path reported by the
+     * TEXT node. We therefore remove any such misassigned 'wildcard' tags here.
      */
-    static void stripInvalidAssignmentsToAllPathsIndexes(MatchExpression* root,
+    static void stripInvalidAssignmentsToWildcardIndexes(MatchExpression* root,
                                                          const std::vector<IndexEntry>& indices);
 
     /**

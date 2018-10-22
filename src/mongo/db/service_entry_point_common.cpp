@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -73,19 +75,17 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/transaction_participant.h"
+#include "mongo/db/transaction_validation.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/message.h"
 #include "mongo/rpc/metadata.h"
-#include "mongo/rpc/metadata/config_server_metadata.h"
 #include "mongo/rpc/metadata/logical_time_metadata.h"
 #include "mongo/rpc/metadata/oplog_query_metadata.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
-#include "mongo/rpc/metadata/sharding_metadata.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
 #include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/reply_builder_interface.h"
-#include "mongo/s/grid.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -126,7 +126,6 @@ const StringMap<int> sessionCommandAutomaticCheckOutWhiteList = {
     {"group", 1},
     {"insert", 1},
     {"killCursors", 1},
-    {"mapReduce", 1},
     {"prepareTransaction", 1},
     {"refreshLogicalSessionCacheNow", 1},
     {"update", 1}};
@@ -248,53 +247,6 @@ private:
     OperationContext* const _opCtx;
     const bool _maintenanceModeSet;
 };
-
-constexpr auto kLastCommittedOpTimeFieldName = "lastCommittedOpTime"_sd;
-
-// Called from the error contexts where request may not be available.
-void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadataBob) {
-    const bool isConfig = serverGlobalParams.clusterRole == ClusterRole::ConfigServer;
-    if (ShardingState::get(opCtx)->enabled() || isConfig) {
-        auto lastCommittedOpTime =
-            repl::ReplicationCoordinator::get(opCtx)->getLastCommittedOpTime();
-        metadataBob->append(kLastCommittedOpTimeFieldName, lastCommittedOpTime.getTimestamp());
-    }
-}
-
-void appendReplyMetadata(OperationContext* opCtx,
-                         const OpMsgRequest& request,
-                         BSONObjBuilder* metadataBob) {
-    const bool isShardingAware = ShardingState::get(opCtx)->enabled();
-    const bool isConfig = serverGlobalParams.clusterRole == ClusterRole::ConfigServer;
-    auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
-    const bool isReplSet =
-        replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
-
-    if (isReplSet) {
-        // Attach our own last opTime.
-        repl::OpTime lastOpTimeFromClient =
-            repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
-        replCoord->prepareReplMetadata(request.body, lastOpTimeFromClient, metadataBob);
-        // For commands from mongos, append some info to help getLastError(w) work.
-        // TODO: refactor out of here as part of SERVER-18236
-        if (isShardingAware || isConfig) {
-            rpc::ShardingMetadata(lastOpTimeFromClient, replCoord->getElectionId())
-                .writeToMetadata(metadataBob)
-                .transitional_ignore();
-        }
-
-        if (isShardingAware || isConfig) {
-            auto lastCommittedOpTime = replCoord->getLastCommittedOpTime();
-            metadataBob->append(kLastCommittedOpTimeFieldName, lastCommittedOpTime.getTimestamp());
-        }
-    }
-
-    // If we're a shard other than the config shard, attach the last configOpTime we know about.
-    if (isShardingAware && !isConfig) {
-        auto opTime = Grid::get(opCtx)->configOpTime();
-        rpc::ConfigServerMetadata(opTime).writeToMetadata(metadataBob);
-    }
-}
 
 /**
  * Given the specified command, returns an effective read concern which should be used or an error
@@ -439,13 +391,37 @@ void appendClusterAndOperationTime(OperationContext* opCtx,
 void invokeInTransaction(OperationContext* opCtx,
                          CommandInvocation* invocation,
                          TransactionParticipant* txnParticipant,
+                         const boost::optional<OperationSessionInfoFromClient>& sessionOptions,
                          rpc::ReplyBuilderInterface* replyBuilder) {
     txnParticipant->unstashTransactionResources(opCtx, invocation->definition()->getName());
     ScopeGuard guard = MakeGuard([&txnParticipant, opCtx]() {
         txnParticipant->abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
     });
 
-    invocation->run(opCtx, replyBuilder);
+    try {
+        invocation->run(opCtx, replyBuilder);
+    } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>&) {
+        // Exceptions are used to resolve views in a sharded cluster, so they should be handled
+        // specially to avoid unnecessary aborts.
+
+        auto startTransaction = sessionOptions->getStartTransaction();
+        if (startTransaction && *startTransaction) {
+            // If the first command a shard receives in a transactions fails with this code, the
+            // shard may not be included in the final participant list if the router's retry after
+            // resolving the view does not re-target it, which is possible if the underlying
+            // collection is sharded. The shard's transaction should be preemptively aborted to
+            // avoid leaving it orphaned in this case, which is fine even if it is re-targeted
+            // because the retry will include "startTransaction" again and "restart" a transaction
+            // at the active txnNumber.
+            throw;
+        }
+
+        // If this shard has completed an earlier statement for this transaction, it must already be
+        // in the transaction's participant list, so it is guaranteed to learn its outcome.
+        txnParticipant->stashTransactionResources(opCtx);
+        guard.Dismiss();
+        throw;
+    }
 
     if (auto okField = replyBuilder->getBodyBuilder().asTempObj()["ok"]) {
         // If ok is present, use its truthiness.
@@ -482,20 +458,15 @@ bool runCommandImpl(OperationContext* opCtx,
     if (!invocation->supportsWriteConcern()) {
         behaviors.uassertCommandDoesNotSpecifyWriteConcern(request.body);
         if (txnParticipant) {
-            invokeInTransaction(opCtx, invocation, txnParticipant, replyBuilder);
+            invokeInTransaction(opCtx, invocation, txnParticipant, sessionOptions, replyBuilder);
         } else {
             invocation->run(opCtx, replyBuilder);
         }
     } else {
         auto wcResult = uassertStatusOK(extractWriteConcern(opCtx, request.body));
-        uassert(ErrorCodes::InvalidOptions,
-                "writeConcern is not allowed within a multi-statement transaction",
-                wcResult.usedDefault || !txnParticipant ||
-                    !txnParticipant->inMultiDocumentTransaction() ||
-                    invocation->definition()->getName() == "commitTransaction" ||
-                    invocation->definition()->getName() == "abortTransaction" ||
-                    invocation->definition()->getName() == "prepareTransaction" ||
-                    invocation->definition()->getName() == "doTxn");
+        if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
+            validateWriteConcernForTransaction(wcResult, invocation->definition()->getName());
+        }
 
         auto lastOpBeforeRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
 
@@ -518,7 +489,8 @@ bool runCommandImpl(OperationContext* opCtx,
 
         try {
             if (txnParticipant) {
-                invokeInTransaction(opCtx, invocation, txnParticipant, replyBuilder);
+                invokeInTransaction(
+                    opCtx, invocation, txnParticipant, sessionOptions, replyBuilder);
             } else {
                 invocation->run(opCtx, replyBuilder);
             }
@@ -555,7 +527,7 @@ bool runCommandImpl(OperationContext* opCtx,
     }
 
     auto commandBodyBob = replyBuilder->getBodyBuilder();
-    appendReplyMetadata(opCtx, request, &commandBodyBob);
+    behaviors.appendReplyMetadata(opCtx, request, &commandBodyBob);
     appendClusterAndOperationTime(opCtx, &commandBodyBob, &commandBodyBob, startOperationTime);
 
     return ok;
@@ -624,8 +596,7 @@ void execCommandDatabase(OperationContext* opCtx,
             request.body,
             command->requiresAuth(),
             replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet,
-            opCtx->getServiceContext()->getStorageEngine()->supportsDocLocking(),
-            opCtx->getServiceContext()->getStorageEngine()->supportsRecoverToStableTimestamp());
+            opCtx->getServiceContext()->getStorageEngine()->supportsDocLocking());
 
         evaluateFailCommandFailPoint(opCtx, command->getName());
 
@@ -903,7 +874,7 @@ void execCommandDatabase(OperationContext* opCtx,
         extraFieldsBuilder.appendElements(errorLabels);
 
         BSONObjBuilder metadataBob;
-        appendReplyMetadata(opCtx, request, &metadataBob);
+        behaviors.appendReplyMetadata(opCtx, request, &metadataBob);
 
         // The read concern may not have yet been placed on the operation context, so attempt to
         // parse it here, so if it is valid it can be used to compute the proper operationTime.
@@ -957,7 +928,7 @@ DbResponse receivedCommands(OperationContext* opCtx,
                 throw;
 
             BSONObjBuilder metadataBob;
-            appendReplyMetadataOnError(opCtx, &metadataBob);
+            behaviors.appendReplyMetadataOnError(opCtx, &metadataBob);
 
             BSONObjBuilder extraFieldsBuilder;
             appendClusterAndOperationTime(
@@ -1002,7 +973,7 @@ DbResponse receivedCommands(OperationContext* opCtx,
             execCommandDatabase(opCtx, c, request, replyBuilder.get(), behaviors);
         } catch (const DBException& ex) {
             BSONObjBuilder metadataBob;
-            appendReplyMetadataOnError(opCtx, &metadataBob);
+            behaviors.appendReplyMetadataOnError(opCtx, &metadataBob);
 
             BSONObjBuilder extraFieldsBuilder;
             appendClusterAndOperationTime(

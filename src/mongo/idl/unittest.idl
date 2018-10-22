@@ -1,16 +1,33 @@
 # Copyright (C) 2017 MongoDB Inc.
 #
 # This program is free software: you can redistribute it and/or  modify
-# it under the terms of the GNU Affero General Public License, version 3,
-# as published by the Free Software Foundation.
+
+#    Copyright (C) 2018-present MongoDB, Inc.
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the Server Side Public License, version 1,
+#    as published by MongoDB, Inc.
 #
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    Server Side Public License for more details.
+#
+#    You should have received a copy of the Server Side Public License
+#    along with this program. If not, see
+#    <http://www.mongodb.com/licensing/server-side-public-license>.
+#
+#    As a special exception, the copyright holders give permission to link the
+#    code of portions of this program with the OpenSSL library under certain
+#    conditions as described in each individual source file and distribute
+#    linked combinations including the program with the OpenSSL library. You
+#    must comply with the Server Side Public License in all respects for
+#    all of the code used other than as permitted herein. If you modify file(s)
+#    with this exception, you may extend this exception to your version of the
+#    file(s), but you are not obligated to do so. If you do not wish to do so,
+#    delete this exception statement from your version. If you delete this
+#    exception statement from all source files in the program, then also delete
+#    it in the license file.
 #
 
 # IDL Unit Tests IDL file
@@ -19,6 +36,7 @@ global:
     cpp_namespace: "mongo::idl::test"
     cpp_includes:
         - "mongo/idl/idl_test_types.h"
+        - "mongo/idl/idl_test.h"
 
 imports:
     - "mongo/idl/basic_types.idl"
@@ -498,6 +516,67 @@ structs:
 
 ##################################################################################################
 #
+# Using Validators
+#
+##################################################################################################
+
+    int_basic_ranges:
+        description: Struct using basic range validators on ints
+        fields:
+            positive_int:
+                type: int
+                validator: { gt: 0 }
+            negative_int:
+                type: int
+                validator: { lt: 0 }
+            non_negative_int:
+                type: int
+                validator: { gte: 0 }
+            non_positive_int:
+                type: int
+                validator: { lte: 0 }
+            byte_range_int:
+                type: int
+                validator: { gte: 0, lt: 256 }
+            range_int:
+                type: int
+                validator: { gte: -2147483658, lte: 2147483647 }
+
+    double_basic_ranges:
+        description: Struct using basic range validators on doubles
+        fields:
+            positive_double:
+                type: double
+                validator: { gt: 0.0 }
+            negative_double:
+                type: double
+                validator: { lt: 0.0 }
+            non_negative_double:
+                type: double
+                validator: { gte: 0.0 }
+            non_positive_double:
+                type: double
+                validator: { lte: 0.0 }
+            range_double:
+                type: double
+                validator: { gte: -12345678901234500000, lte: 12345678901234500000 }
+
+    callback_validators:
+        description: Struct using fields with callback validators
+        fields:
+            int_even:
+                type: int
+                validator: { callback: 'validateEvenNumber' }
+            double_nearly_int:
+                type: double
+                validator: { callback: 'validateNearlyInt' }
+            string_starts_with_x:
+                type: string
+                validator: { callback: "validateStartsWith<'x'>" }
+
+
+##################################################################################################
+#
 # Test commands
 #
 ##################################################################################################
@@ -617,5 +696,4 @@ commands:
         type: array<int>
         fields:
             field1: int
-
 

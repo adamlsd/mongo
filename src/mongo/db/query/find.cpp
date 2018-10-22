@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -174,7 +176,7 @@ namespace {
 void generateBatch(int ntoreturn,
                    ClientCursor* cursor,
                    BufBuilder* bb,
-                   int* numResults,
+                   std::uint64_t* numResults,
                    PlanExecutor::ExecState* state) {
     PlanExecutor* exec = cursor->getExecutor();
 
@@ -312,7 +314,7 @@ Message getMore(OperationContext* opCtx,
     // These are set in the QueryResult msg we return.
     int resultFlags = ResultFlag_AwaitCapable;
 
-    int numResults = 0;
+    std::uint64_t numResults = 0;
     int startingResult = 0;
 
     const int InitialBufSize =
@@ -377,7 +379,7 @@ Message getMore(OperationContext* opCtx,
         opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
 
         // What number result are we starting at?  Used to fill out the reply.
-        startingResult = cc->pos();
+        startingResult = cc->nReturnedSoFar();
 
         uint64_t notifierVersion = 0;
         std::shared_ptr<CappedInsertNotifier> notifier;
@@ -486,7 +488,8 @@ Message getMore(OperationContext* opCtx,
                    << PlanExecutor::statestr(state);
         } else {
             // Continue caching the ClientCursor.
-            cc->incPos(numResults);
+            cc->incNReturnedSoFar(numResults);
+            cc->incNBatches();
             exec->saveState();
             exec->detachFromOperationContext();
             LOG(5) << "getMore saving client cursor ended with state "
@@ -685,7 +688,8 @@ std::string runQuery(OperationContext* opCtx,
             curOp.debug().exhaust = true;
         }
 
-        pinnedCursor.getCursor()->setPos(numResults);
+        pinnedCursor.getCursor()->setNReturnedSoFar(numResults);
+        pinnedCursor.getCursor()->incNBatches();
 
         // We assume that cursors created through a DBDirectClient are always used from their
         // original OperationContext, so we do not need to move time to and from the cursor.

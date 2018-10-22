@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -54,6 +56,7 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/cidr.h"
 #include "mongo/util/net/private/ssl_expiration.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl_options.h"
@@ -61,6 +64,9 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/text.h"
 
+#ifndef _WIN32
+#include <netinet/in.h>
+#endif
 #include <openssl/asn1.h>
 #include <openssl/asn1t.h>
 #include <openssl/evp.h>
@@ -146,6 +152,9 @@ UniqueBIO makeUniqueMemBio(std::vector<std::uint8_t>& v) {
 #endif
 #ifndef SSL_OP_NO_TLSv1_2
 #define SSL_OP_NO_TLSv1_2 0
+#endif
+#ifndef SSL_OP_NO_TLSv1_3
+#define SSL_OP_NO_TLSv1_3 0
 #endif
 
 // clang-format off
@@ -718,6 +727,8 @@ Status SSLManagerOpenSSL::initSSLContext(SSL_CTX* context,
             supportedProtocols |= SSL_OP_NO_TLSv1_1;
         } else if (protocol == SSLParams::Protocols::TLS1_2) {
             supportedProtocols |= SSL_OP_NO_TLSv1_2;
+        } else if (protocol == SSLParams::Protocols::TLS1_3) {
+            supportedProtocols |= SSL_OP_NO_TLSv1_3;
         }
     }
     ::SSL_CTX_set_options(context, supportedProtocols);
@@ -1354,6 +1365,9 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
             SSLPeerInfo(peerSubject, std::move(swPeerCertificateRoles.getValue())));
     }
 
+    // This is to standardize the IPAddress format for comparison.
+    auto swCIDRRemoteHost = CIDR::parse(remoteHost);
+
     // Try to match using the Subject Alternate Name, if it exists.
     // RFC-2818 requires the Subject Alternate Name to be used if present.
     // Otherwise, the most specific Common Name field in the subject field
@@ -1372,12 +1386,44 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
         for (int i = 0; i < sanNamesList; i++) {
             const GENERAL_NAME* currentName = sk_GENERAL_NAME_value(sanNames, i);
             if (currentName && currentName->type == GEN_DNS) {
-                char* dnsName = reinterpret_cast<char*>(ASN1_STRING_data(currentName->d.dNSName));
+                std::string dnsName(
+                    reinterpret_cast<char*>(ASN1_STRING_data(currentName->d.dNSName)));
+                auto swCIDRDNSName = CIDR::parse(dnsName);
+                if (swCIDRDNSName.isOK()) {
+                    warning() << "You have an IP Address in the DNS Name field on your "
+                                 "certificate. This formulation is deprecated.";
+                    if (swCIDRRemoteHost.isOK() &&
+                        swCIDRRemoteHost.getValue() == swCIDRDNSName.getValue()) {
+                        sanMatch = true;
+                        break;
+                    }
+                }
                 if (hostNameMatchForX509Certificates(remoteHost, dnsName)) {
                     sanMatch = true;
                     break;
                 }
-                certificateNames << std::string(dnsName) << " ";
+                certificateNames << std::string(dnsName) << ", ";
+            } else if (currentName && currentName->type == GEN_IPADD) {
+                auto ipAddrStruct = currentName->d.iPAddress;
+                struct sockaddr_storage ss;
+                memset(&ss, 0, sizeof(ss));
+                if (ipAddrStruct->length == 4) {
+                    struct sockaddr_in* sa = reinterpret_cast<struct sockaddr_in*>(&ss);
+                    sa->sin_family = AF_INET;
+                    memcpy(&(sa->sin_addr), ipAddrStruct->data, ipAddrStruct->length);
+                } else if (ipAddrStruct->length == 16) {
+                    struct sockaddr_in6* sa = reinterpret_cast<struct sockaddr_in6*>(&ss);
+                    sa->sin6_family = AF_INET6;
+                    memcpy(&(sa->sin6_addr), ipAddrStruct->data, ipAddrStruct->length);
+                }
+                auto ipAddress = SockAddr(ss, sizeof(ss)).getAddr();
+                auto swIpAddress = CIDR::parse(ipAddress);
+                if (swCIDRRemoteHost.isOK() && swIpAddress.isOK() &&
+                    swCIDRRemoteHost.getValue() == swIpAddress.getValue()) {
+                    sanMatch = true;
+                    break;
+                }
+                certificateNames << ipAddress << ", ";
             }
         }
         sk_GENERAL_NAME_pop_free(sanNames, GENERAL_NAME_free);

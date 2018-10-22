@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -637,8 +639,8 @@ TEST_F(DatabaseClonerTest, DatabaseClonerResendsListCollectionsRequestOnRetriabl
     executor::NetworkInterfaceMock::InNetworkGuard guard(net);
 
     // Respond to first listCollections request with a retriable error.
-    assertRemoteCommandNameEquals("listCollections",
-                                  net->scheduleErrorResponse(Status(ErrorCodes::HostNotFound, "")));
+    assertRemoteCommandNameEquals(
+        "listCollections", net->scheduleErrorResponse(Status(ErrorCodes::HostUnreachable, "")));
     net->runReadyNetworkOperations();
 
     // DatabaseCloner stays active because it resends the listCollections request.
@@ -763,11 +765,7 @@ TEST_F(DatabaseClonerTest, ShutdownCancelsCollectionCloning) {
                                           BSON_ARRAY(BSON("name"
                                                           << "a"
                                                           << "options"
-                                                          << _options1.toBSON())
-                                                     << BSON("name"
-                                                             << "b"
-                                                             << "options"
-                                                             << _options2.toBSON())))));
+                                                          << _options1.toBSON())))));
         net->runReadyNetworkOperations();
 
         // CollectionCloner sends collection count request on startup.
@@ -788,9 +786,8 @@ TEST_F(DatabaseClonerTest, ShutdownCancelsCollectionCloning) {
     ASSERT_FALSE(_databaseCloner->isActive());
     ASSERT_EQUALS(DatabaseCloner::State::kComplete, _databaseCloner->getState_forTest());
 
-    // This is the error code from attempting to start up the last (of 2) collection cloner which
-    // was shut down before it was ever started.
-    ASSERT_EQUALS(ErrorCodes::ShutdownInProgress, getStatus());
+    // We do not need to attempt a subsequent collection clone to be notified of an error.
+    ASSERT_EQUALS(ErrorCodes::InitialSyncFailure, getStatus());
 }
 
 TEST_F(DatabaseClonerTest, FirstCollectionListIndexesFailed) {
@@ -833,16 +830,18 @@ TEST_F(DatabaseClonerTest, FirstCollectionListIndexesFailed) {
     ASSERT_FALSE(_databaseCloner->isActive());
     ASSERT_EQUALS(DatabaseCloner::State::kComplete, _databaseCloner->getState_forTest());
 
-    ASSERT_EQUALS(2U, _collections.size());
+    ASSERT_EQUALS(1U, _collections.size());
 
+    // We have attempted, and failed, to clone the first collection.
     auto collInfo = _collections[NamespaceString{"db.a"}];
     ASSERT_EQUALS(ErrorCodes::CursorNotFound, collInfo.status.code());
     auto stats = collInfo.stats;
     stats.insertCount = 0;
     stats.commitCalled = false;
 
+    // We have not attempted to clone the second collection.
     collInfo = _collections[NamespaceString{"db.b"}];
-    ASSERT_OK(collInfo.status);
+    ASSERT_EQUALS(ErrorCodes::NotYetInitialized, collInfo.status.code());
     stats = collInfo.stats;
     stats.insertCount = 0;
     stats.commitCalled = true;

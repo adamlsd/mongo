@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -40,6 +42,8 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+MONGO_FAIL_POINT_DEFINE(exchangeFailLoadNextBatch);
 
 constexpr size_t Exchange::kMaxBufferSize;
 constexpr size_t Exchange::kMaxNumberConsumers;
@@ -66,6 +70,7 @@ Exchange::Exchange(ExchangeSpec spec, std::unique_ptr<Pipeline, PipelineDeleter>
     : _spec(std::move(spec)),
       _keyPattern(_spec.getKey().getOwned()),
       _ordering(extractOrdering(_keyPattern)),
+      _keyPaths(extractKeyPaths(_keyPattern)),
       _boundaries(extractBoundaries(_spec.getBoundaries(), _ordering)),
       _consumerIds(extractConsumerIds(_spec.getConsumerIds(), _spec.getConsumers())),
       _policy(_spec.getPolicy()),
@@ -89,6 +94,9 @@ Exchange::Exchange(ExchangeSpec spec, std::unique_ptr<Pipeline, PipelineDeleter>
         uassert(50900,
                 "Exchange boundaries do not match number of consumers.",
                 _boundaries.size() == _consumerIds.size() + 1);
+        uassert(50967,
+                str::stream() << "The key pattern " << _keyPattern << " must have at least one key",
+                !_keyPaths.empty());
     } else {
         uassert(50899, "Exchange boundaries must not be specified.", _boundaries.empty());
     }
@@ -183,11 +191,11 @@ std::vector<size_t> Exchange::extractConsumerIds(
     return ret;
 }
 
-Ordering Exchange::extractOrdering(const BSONObj& obj) {
+Ordering Exchange::extractOrdering(const BSONObj& keyPattern) {
     bool hasHashKey = false;
     bool hasOrderKey = false;
 
-    for (const auto& element : obj) {
+    for (const auto& element : keyPattern) {
         if (element.type() == BSONType::String) {
             uassert(50895,
                     str::stream() << "Exchange key description is invalid: " << element,
@@ -206,10 +214,19 @@ Ordering Exchange::extractOrdering(const BSONObj& obj) {
     }
 
     uassert(50898,
-            str::stream() << "Exchange hash and order keys cannot be mixed together: " << obj,
+            str::stream() << "Exchange hash and order keys cannot be mixed together: "
+                          << keyPattern,
             !(hasHashKey && hasOrderKey));
 
-    return hasHashKey ? Ordering::make(BSONObj()) : Ordering::make(obj);
+    return hasHashKey ? Ordering::make(BSONObj()) : Ordering::make(keyPattern);
+}
+
+std::vector<FieldPath> Exchange::extractKeyPaths(const BSONObj& keyPattern) {
+    std::vector<FieldPath> paths;
+    for (auto& elem : keyPattern) {
+        paths.emplace_back(FieldPath{elem.fieldNameStringData()});
+    }
+    return paths;
 }
 
 DocumentSource::GetNextResult Exchange::getNext(OperationContext* opCtx, size_t consumerId) {
@@ -217,6 +234,10 @@ DocumentSource::GetNextResult Exchange::getNext(OperationContext* opCtx, size_t 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
     for (;;) {
+        // Execute only in case we have not encountered an error.
+        uassertStatusOKWithContext(_errorInLoadNextBatch,
+                                   "Exchange failed due to an error on different thread.");
+
         // Check if we have a document.
         if (!_consumers[consumerId]->isEmpty()) {
             auto doc = _consumers[consumerId]->getNext();
@@ -234,24 +255,40 @@ DocumentSource::GetNextResult Exchange::getNext(OperationContext* opCtx, size_t 
         if (_loadingThreadId == kInvalidThreadId) {
             LOG(3) << "A consumer " << consumerId << " begins loading";
 
-            // This consumer won the race and will fill the buffers.
-            _loadingThreadId = consumerId;
+            try {
+                // This consumer won the race and will fill the buffers.
+                _loadingThreadId = consumerId;
 
-            _pipeline->reattachToOperationContext(opCtx);
+                _pipeline->reattachToOperationContext(opCtx);
 
-            // This will return when some exchange buffer is full and we cannot make any forward
-            // progress anymore.
-            // The return value is an index of a full consumer buffer.
-            size_t fullConsumerId = loadNextBatch();
+                // This will return when some exchange buffer is full and we cannot make any forward
+                // progress anymore.
+                // The return value is an index of a full consumer buffer.
+                size_t fullConsumerId = loadNextBatch();
 
-            _pipeline->detachFromOperationContext();
+                if (MONGO_FAIL_POINT(exchangeFailLoadNextBatch)) {
+                    log() << "exchangeFailLoadNextBatch fail point enabled.";
+                    uasserted(ErrorCodes::FailPointEnabled,
+                              "Asserting on loading the next batch due to failpoint.");
+                }
 
-            // The loading cannot continue until the consumer with the full buffer consumes some
-            // documents.
-            _loadingThreadId = fullConsumerId;
+                _pipeline->detachFromOperationContext();
 
-            // Wake up everybody and try to make some progress.
-            _haveBufferSpace.notify_all();
+                // The loading cannot continue until the consumer with the full buffer consumes some
+                // documents.
+                _loadingThreadId = fullConsumerId;
+
+                // Wake up everybody and try to make some progress.
+                _haveBufferSpace.notify_all();
+            } catch (const DBException& ex) {
+                _errorInLoadNextBatch = ex.toStatus();
+
+                // We have to wake up all other blocked threads so they can detect the error and
+                // fail too. They can be woken up only after _errorInLoadNextBatch has been set.
+                _haveBufferSpace.notify_all();
+
+                throw;
+            }
         } else {
             // Some other consumer is already loading the buffers. There is nothing else we can do
             // but wait.
@@ -310,14 +347,22 @@ size_t Exchange::loadNextBatch() {
 size_t Exchange::getTargetConsumer(const Document& input) {
     // Build the key.
     BSONObjBuilder kb;
+    size_t counter = 0;
     for (auto elem : _keyPattern) {
-        auto value = input[elem.fieldName()];
+        auto value = input.getNestedField(_keyPaths[counter]);
+
+        // By definition we send documents with missing fields to the consumer 0.
+        if (value.missing()) {
+            return 0;
+        }
+
         if (elem.type() == BSONType::String && elem.str() == "hashed") {
             kb << "" << BSONElementHasher::hash64(BSON("" << value).firstElement(),
                                                   BSONElementHasher::DEFAULT_HASH_SEED);
         } else {
             kb << "" << value;
         }
+        ++counter;
     }
 
     KeyString key{KeyString::Version::V1, kb.obj(), _ordering};
@@ -336,14 +381,20 @@ size_t Exchange::getTargetConsumer(const Document& input) {
     return cid;
 }
 
-void Exchange::dispose(OperationContext* opCtx) {
+void Exchange::dispose(OperationContext* opCtx, size_t consumerId) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     invariant(_disposeRunDown < getConsumers());
 
     ++_disposeRunDown;
 
-    if (_disposeRunDown == getConsumers()) {
+    // If _errorInLoadNextBatch status is not OK then an exception was thrown. In that case the
+    // throwing thread will do the dispose.
+    if (!_errorInLoadNextBatch.isOK()) {
+        if (_loadingThreadId == consumerId) {
+            _pipeline->dispose(opCtx);
+        }
+    } else if (_disposeRunDown == getConsumers()) {
         _pipeline->dispose(opCtx);
     }
 }

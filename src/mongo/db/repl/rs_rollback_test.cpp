@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -37,7 +39,7 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_indexes.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -174,7 +176,8 @@ int createIndexForColl(OperationContext* opCtx,
                        NamespaceString nss,
                        BSONObj indexSpec) {
     Lock::DBLock dbLock(opCtx, nss.db(), MODE_X);
-    MultiIndexBlock indexer(opCtx, coll);
+    auto indexerPtr = coll->createMultiIndexBlock(opCtx);
+    MultiIndexBlock& indexer(*indexerPtr);
     ASSERT_OK(indexer.init(indexSpec).getStatus());
     WriteUnitOfWork wunit(opCtx);
     indexer.commit();
@@ -246,8 +249,7 @@ TEST_F(RSRollbackTest, RemoteGetRollbackIdThrows) {
                                     RollbackSourceLocal(stdx::make_unique<OplogInterfaceMock>()),
                                     {},
                                     _coordinator,
-                                    _replicationProcess.get())
-                           .transitional_ignore(),
+                                    _replicationProcess.get()),
                        AssertionException,
                        ErrorCodes::UnknownError);
 }
@@ -270,8 +272,7 @@ TEST_F(RSRollbackTest, RemoteGetRollbackIdDiffersFromRequiredRBID) {
                                     RollbackSourceLocal(stdx::make_unique<OplogInterfaceMock>()),
                                     1,
                                     _coordinator,
-                                    _replicationProcess.get())
-                           .transitional_ignore(),
+                                    _replicationProcess.get()),
                        AssertionException,
                        ErrorCodes::duplicateCodeForTest(40506));
 }
@@ -1521,8 +1522,7 @@ TEST_F(RSRollbackTest, RollbackCollModCommandFailsIfRBIDChangesWhileSyncingColle
                                     rollbackSource,
                                     0,
                                     _coordinator,
-                                    _replicationProcess.get())
-                           .transitional_ignore(),
+                                    _replicationProcess.get()),
                        DBException,
                        40508);
     ASSERT(rollbackSource.getCollectionInfoCalled);
@@ -2029,9 +2029,8 @@ TEST(RSRollbackTest, LocalEntryWithoutNsIsFatal) {
                                         << ""
                                         << "o"
                                         << BSON("_id" << 1 << "a" << 1));
-    ASSERT_THROWS(
-        updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false).transitional_ignore(),
-        RSFatalException);
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false),
+                  RSFatalException);
 }
 
 TEST(RSRollbackTest, LocalEntryWithoutOIsFatal) {
@@ -2065,9 +2064,8 @@ TEST(RSRollbackTest, LocalEntryWithoutOIsFatal) {
                                         << "test.t"
                                         << "o"
                                         << BSONObj());
-    ASSERT_THROWS(
-        updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false).transitional_ignore(),
-        RSFatalException);
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false),
+                  RSFatalException);
 }
 
 TEST(RSRollbackTest, LocalUpdateEntryWithoutO2IsFatal) {
@@ -2103,9 +2101,8 @@ TEST(RSRollbackTest, LocalUpdateEntryWithoutO2IsFatal) {
                                         << "test.t"
                                         << "o"
                                         << BSON("_id" << 1 << "a" << 1));
-    ASSERT_THROWS(
-        updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false).transitional_ignore(),
-        RSFatalException);
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false),
+                  RSFatalException);
 }
 
 TEST(RSRollbackTest, LocalUpdateEntryWithEmptyO2IsFatal) {
@@ -2143,9 +2140,8 @@ TEST(RSRollbackTest, LocalUpdateEntryWithEmptyO2IsFatal) {
                                         << BSON("_id" << 1 << "a" << 1)
                                         << "o2"
                                         << BSONObj());
-    ASSERT_THROWS(
-        updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false).transitional_ignore(),
-        RSFatalException);
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, invalidOplogEntry, false),
+                  RSFatalException);
 }
 
 DEATH_TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutSessionIdIsFatal, "invariant") {
@@ -2165,8 +2161,7 @@ DEATH_TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutSessionIdIsFatal, "in
 
     const auto stmtId = BSON("stmtId" << 1);
     const auto noSessionId = noSessionIdOrStmtId.addField(stmtId.firstElement());
-    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, noSessionId, false).transitional_ignore(),
-                  RSFatalException);
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, noSessionId, false), RSFatalException);
 }
 
 DEATH_TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutStmtIdIsFatal, "invariant") {
@@ -2187,8 +2182,7 @@ DEATH_TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutStmtIdIsFatal, "invar
     const auto lsid = makeLogicalSessionIdForTest();
     const auto sessionId = BSON("lsid" << lsid.toBSON());
     const auto noStmtId = noSessionIdOrStmtId.addField(sessionId.firstElement());
-    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, noStmtId, false).transitional_ignore(),
-                  RSFatalException);
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, noStmtId, false), RSFatalException);
 }
 
 TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutTxnTableUUIDIsFatal) {
@@ -2212,7 +2206,7 @@ TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutTxnTableUUIDIsFatal) {
                   << lsid.toBSON());
 
     FixUpInfo fui;
-    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber, false).ignore(),
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber, false),
                   RSFatalException);
 }
 

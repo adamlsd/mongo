@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -35,15 +37,18 @@
 #include <string>
 #include <vector>
 
+#include "mongo/base/shim.h"
 #include "mongo/client/dbclient_base.h"
 #include "mongo/db/collection_index_usage_tracker.h"
 #include "mongo/db/generic_cursor.h"
+#include "mongo/db/matcher/expression.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/query/explain_options.h"
+#include "mongo/db/storage/backup_cursor_state.h"
 
 namespace mongo {
 
@@ -64,6 +69,14 @@ public:
     enum class CurrentOpTruncateMode { kNoTruncation, kTruncateOps };
     enum class CurrentOpLocalOpsMode { kLocalMongosOps, kRemoteShardOps };
     enum class CurrentOpSessionsMode { kIncludeIdle, kExcludeIdle };
+    enum class CurrentOpCursorMode { kIncludeCursors, kExcludeCursors };
+
+    /**
+     * Factory function to create MongoProcessInterface of the right type. The implementation will
+     * be installed by a lib higher up in the link graph depending on the application type.
+     */
+    static MONGO_DECLARE_SHIM(
+        (OperationContext * opCtx)->std::shared_ptr<MongoProcessInterface>) create;
 
     struct MakePipelineOptions {
         MakePipelineOptions(){};
@@ -99,7 +112,7 @@ public:
      */
     virtual void insert(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                         const NamespaceString& ns,
-                        const std::vector<BSONObj>& objs) = 0;
+                        std::vector<BSONObj>&& objs) = 0;
 
     /**
      * Updates the documents matching 'queries' with the objects 'updates'. Throws a UserException
@@ -107,8 +120,8 @@ public:
      */
     virtual void update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                         const NamespaceString& ns,
-                        const std::vector<BSONObj>& queries,
-                        const std::vector<BSONObj>& updates,
+                        std::vector<BSONObj>&& queries,
+                        std::vector<BSONObj>&& updates,
                         bool upsert,
                         bool multi) = 0;
 
@@ -184,11 +197,13 @@ public:
      * operation or, optionally, an idle connection. If userMode is kIncludeAllUsers, report
      * operations for all authenticated users; otherwise, report only the current user's operations.
      */
-    virtual std::vector<BSONObj> getCurrentOps(OperationContext* opCtx,
-                                               CurrentOpConnectionsMode connMode,
-                                               CurrentOpSessionsMode sessionMode,
-                                               CurrentOpUserMode userMode,
-                                               CurrentOpTruncateMode) const = 0;
+    virtual std::vector<BSONObj> getCurrentOps(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        CurrentOpConnectionsMode connMode,
+        CurrentOpSessionsMode sessionMode,
+        CurrentOpUserMode userMode,
+        CurrentOpTruncateMode,
+        CurrentOpCursorMode) const = 0;
 
     /**
      * Returns the name of the local shard if sharding is enabled, or an empty string.
@@ -203,7 +218,7 @@ public:
      * the given collection, either because the collection was dropped or has become sharded.
      */
     virtual std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(
-        OperationContext* opCtx, UUID uuid) const = 0;
+        OperationContext* opCtx, NamespaceStringOrUUID nssOrUUID) const = 0;
 
     /**
      * Returns zero or one documents with the document key 'documentKey'. 'documentKey' is treated
@@ -219,10 +234,39 @@ public:
         boost::optional<BSONObj> readConcern) = 0;
 
     /**
-     * Returns a vector of all local cursors.
+     * Returns a vector of all idle (non-pinned) local cursors.
      */
-    virtual std::vector<GenericCursor> getCursors(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx) const = 0;
+    virtual std::vector<GenericCursor> getIdleCursors(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        CurrentOpUserMode userMode) const = 0;
+
+    /**
+     * The following methods forward to the BackupCursorHooks decorating the ServiceContext.
+     */
+    virtual BackupCursorState openBackupCursor(OperationContext* opCtx) = 0;
+
+    virtual void closeBackupCursor(OperationContext* opCtx, std::uint64_t cursorId) = 0;
+
+    /**
+     * Returns a vector of BSON objects, where each entry in the vector describes a plan cache entry
+     * inside the cache for the given namespace. Only those entries which match the supplied
+     * MatchExpression are returned.
+     */
+    virtual std::vector<BSONObj> getMatchingPlanCacheEntryStats(OperationContext*,
+                                                                const NamespaceString&,
+                                                                const MatchExpression*) const = 0;
+
+    /**
+     * Returns true if there is an index on 'nss' with properties that will guarantee that a
+     * document with non-array values for each of 'uniqueKeyPaths' will have at most one matching
+     * document in 'nss'.
+     *
+     * Specifically, such an index must include all the fields, be unique, not be a partial index,
+     * and match the operation's collation as given by 'expCtx'.
+     */
+    virtual bool uniqueKeyIsSupportedByIndex(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                             const NamespaceString& nss,
+                                             const std::set<FieldPath>& uniqueKeyPaths) const = 0;
 };
 
 }  // namespace mongo

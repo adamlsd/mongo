@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -39,10 +41,10 @@
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/catalog_cache.h"
-#include "mongo/s/commands/cluster_aggregate.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/query/cluster_aggregate.h"
 #include "mongo/s/query/cluster_find.h"
 
 namespace mongo {
@@ -167,15 +169,8 @@ public:
                 auto aggRequestOnView = uassertStatusOK(
                     AggregationRequest::parseFromBSON(ns(), aggCmdOnView, verbosity));
 
-                auto resolvedAggRequest = ex->asExpandedViewAggregation(aggRequestOnView);
-                auto resolvedAggCmd = resolvedAggRequest.serializeToCommandObj().toBson();
-
-                ClusterAggregate::Namespaces nsStruct;
-                nsStruct.requestedNss = ns();
-                nsStruct.executionNss = std::move(ex->getNamespace());
-
-                uassertStatusOK(ClusterAggregate::runAggregate(
-                    opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, &bodyBuilder));
+                uassertStatusOK(ClusterAggregate::retryOnViewError(
+                    opCtx, aggRequestOnView, *ex.extraInfo<ResolvedView>(), ns(), &bodyBuilder));
             }
         }
 
@@ -218,20 +213,9 @@ public:
                 auto aggRequestOnView =
                     uassertStatusOK(AggregationRequest::parseFromBSON(ns(), aggCmdOnView));
 
-                auto resolvedAggRequest = ex->asExpandedViewAggregation(aggRequestOnView);
-                auto resolvedAggCmd = resolvedAggRequest.serializeToCommandObj().toBson();
-
-                // We pass both the underlying collection namespace and the view namespace here. The
-                // underlying collection namespace is used to execute the aggregation on mongoD. Any
-                // cursor returned will be registered under the view namespace so that subsequent
-                // getMore and killCursors calls against the view have access.
-                ClusterAggregate::Namespaces nsStruct;
-                nsStruct.requestedNss = ns();
-                nsStruct.executionNss = std::move(ex->getNamespace());
-
                 auto bodyBuilder = result->getBodyBuilder();
-                uassertStatusOK(ClusterAggregate::runAggregate(
-                    opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, &bodyBuilder));
+                uassertStatusOK(ClusterAggregate::retryOnViewError(
+                    opCtx, aggRequestOnView, *ex.extraInfo<ResolvedView>(), ns(), &bodyBuilder));
             }
         }
 

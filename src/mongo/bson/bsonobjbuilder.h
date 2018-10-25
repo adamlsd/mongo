@@ -5,31 +5,34 @@
    BSONArrayBuilder
 */
 
-/*    Copyright 2009 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -666,9 +669,10 @@ public:
      * The returned BSONObj will free the buffer when it is finished.
      * @return owned BSONObj
     */
+    template <typename BSONTraits = BSONObj::DefaultSizeTrait>
     BSONObj obj() {
         massert(10335, "builder does not own memory", owned());
-        auto out = done();
+        auto out = done<BSONTraits>();
         out.shareOwnershipWith(_b.release());
         return out;
     }
@@ -678,8 +682,9 @@ public:
         scope -- very important to keep in mind.  Use obj() if you
         would like the BSONObj to last longer than the builder.
     */
+    template <typename BSONTraits = BSONObj::DefaultSizeTrait>
     BSONObj done() {
-        return BSONObj(_done());
+        return BSONObj(_done(), BSONTraits{});
     }
 
     // Like 'done' above, but does not construct a BSONObj to return to the caller.
@@ -692,7 +697,7 @@ public:
         Intended use case: append a field if not already there.
     */
     BSONObj asTempObj() {
-        BSONObj temp(_done());
+        BSONObj temp(_done(), BSONObj::LargeSizeTrait{});
         _b.setlen(_b.len() - 1);  // next append should overwrite the EOO
         _b.reserveBytes(1);       // Rereserve room for the real EOO
         _doneCalled = false;
@@ -709,8 +714,6 @@ public:
     void abandon() {
         _doneCalled = true;
     }
-
-    void appendKeys(const BSONObj& keyPattern, const BSONObj& values);
 
     static std::string numStr(int i) {
         if (i >= 0 && i < 100 && numStrsReady)

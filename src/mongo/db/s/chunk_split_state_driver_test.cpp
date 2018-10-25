@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -44,23 +46,22 @@ public:
         _writesTracker = std::make_shared<ChunkWritesTracker>();
         uint64_t bytesToAdd{4};
         _writesTracker->addBytesWritten(bytesToAdd);
-        _splitDriver = std::make_unique<boost::optional<ChunkSplitStateDriver>>(
-            ChunkSplitStateDriver::tryInitiateSplit(_writesTracker));
+        _splitDriver = ChunkSplitStateDriver::tryInitiateSplit(_writesTracker);
     }
 
     void tearDown() override {}
 
-    virtual ChunkWritesTracker& writesTracker() {
+    ChunkWritesTracker& writesTracker() {
         return *_writesTracker;
     }
 
-    virtual boost::optional<ChunkSplitStateDriver>& splitDriver() {
-        return *_splitDriver;
+    std::shared_ptr<ChunkSplitStateDriver>& splitDriver() {
+        return _splitDriver;
     }
 
 protected:
     std::shared_ptr<ChunkWritesTracker> _writesTracker;
-    std::unique_ptr<boost::optional<ChunkSplitStateDriver>> _splitDriver;
+    std::shared_ptr<ChunkSplitStateDriver> _splitDriver;
 };
 
 class ChunkSplitStateDriverTest : public ChunkSplitStateDriverTestNoTeardown {
@@ -76,8 +77,7 @@ TEST(ChunkSplitStateDriverTest, InitiateSplitLeavesBytesWrittenUnchanged) {
     uint64_t bytesInTrackerBeforeSplit{4};
     writesTracker->addBytesWritten(bytesInTrackerBeforeSplit);
 
-    auto splitDriver = std::make_unique<boost::optional<ChunkSplitStateDriver>>(
-        ChunkSplitStateDriver::tryInitiateSplit(writesTracker));
+    auto splitDriver = ChunkSplitStateDriver::tryInitiateSplit(writesTracker);
 
     ASSERT_EQ(writesTracker->getBytesWritten(), bytesInTrackerBeforeSplit);
 }
@@ -104,6 +104,25 @@ TEST_F(ChunkSplitStateDriverTestNoTeardown,
     splitDriver().reset();
 
     ASSERT_EQ(writesTracker().getBytesWritten(), bytesInTracker + extraBytesToAdd);
+}
+
+TEST_F(ChunkSplitStateDriverTestNoTeardown,
+       PrepareSplitThenAbandonPrepareFollowedByDestructorWithoutCommitKeepsOnlyNewBytesWritten) {
+    auto bytesInTracker = writesTracker().getBytesWritten();
+    ASSERT_GT(bytesInTracker, 0ull);
+
+    splitDriver()->prepareSplit();
+
+    uint64_t extraBytesToAdd{4};
+    writesTracker().addBytesWritten(extraBytesToAdd);
+
+    // Should clear previous bytes-written estimate that was stashed by prepare, but not new
+    // bytes written
+    splitDriver()->abandonPrepare();
+
+    splitDriver().reset();
+
+    ASSERT_EQ(writesTracker().getBytesWritten(), extraBytesToAdd);
 }
 
 TEST_F(ChunkSplitStateDriverTest,
@@ -147,15 +166,14 @@ DEATH_TEST_F(ChunkSplitStateDriverTest,
 }
 
 TEST(ChunkSplitStateDriverTest, PrepareErrorsWhenChunkWritesTrackerNoLongerExists) {
-    std::unique_ptr<boost::optional<ChunkSplitStateDriver>> splitDriver;
+    std::shared_ptr<ChunkSplitStateDriver> splitDriver;
     {
         auto writesTracker = std::make_shared<ChunkWritesTracker>();
         uint64_t bytesToAdd{4};
         writesTracker->addBytesWritten(bytesToAdd);
-        splitDriver = std::make_unique<boost::optional<ChunkSplitStateDriver>>(
-            ChunkSplitStateDriver::tryInitiateSplit(writesTracker));
+        splitDriver = ChunkSplitStateDriver::tryInitiateSplit(writesTracker);
     }
-    ASSERT_THROWS(splitDriver->get().prepareSplit(), AssertionException);
+    ASSERT_THROWS(splitDriver->prepareSplit(), AssertionException);
 }
 
 }  // namespace mongo

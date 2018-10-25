@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
@@ -48,7 +50,6 @@
 #include "mongo/config.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_manager.h"
-#include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/sasl_options.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/create_collection.h"
@@ -91,7 +92,6 @@
 #include "mongo/db/logical_time_metadata_hook.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/mongod_options.h"
-#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/periodic_runner_job_abort_expired_transactions.h"
@@ -112,10 +112,9 @@
 #include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/config_server_op_observer.h"
+#include "mongo/db/s/op_observer_sharding_impl.h"
 #include "mongo/db/s/shard_server_op_observer.h"
-#include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
-#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_state_recovery.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -125,7 +124,7 @@
 #include "mongo/db/session_killer.h"
 #include "mongo/db/startup_warnings_mongod.h"
 #include "mongo/db/stats/counters.h"
-#include "mongo/db/storage/backup_cursor_service.h"
+#include "mongo/db/storage/backup_cursor_hooks.h"
 #include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
@@ -283,7 +282,7 @@ ExitCode _initAndListen(int listenPort) {
 
     serviceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
     auto opObserverRegistry = stdx::make_unique<OpObserverRegistry>();
-    opObserverRegistry->addObserver(stdx::make_unique<OpObserverImpl>());
+    opObserverRegistry->addObserver(stdx::make_unique<OpObserverShardingImpl>());
     opObserverRegistry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
 
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
@@ -324,7 +323,7 @@ ExitCode _initAndListen(int listenPort) {
     serviceContext->setServiceEntryPoint(
         stdx::make_unique<ServiceEntryPointMongod>(serviceContext));
 
-    {
+    if (!storageGlobalParams.repair) {
         auto tl =
             transport::TransportLayerManager::createWithConfig(&serverGlobalParams, serviceContext);
         auto res = tl->setup();
@@ -334,7 +333,6 @@ ExitCode _initAndListen(int listenPort) {
         }
         serviceContext->setTransportLayer(std::move(tl));
     }
-
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kNone);
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
@@ -417,9 +415,8 @@ ExitCode _initAndListen(int listenPort) {
 
     auto startupOpCtx = serviceContext->makeOperationContext(&cc());
 
-    // TODO: Remove biggie from this list after implemented
-    bool canCallFCVSetIfCleanStartup = !storageGlobalParams.readOnly &&
-        (storageGlobalParams.engine != "devnull") && (storageGlobalParams.engine != "biggie");
+    bool canCallFCVSetIfCleanStartup =
+        !storageGlobalParams.readOnly && (storageGlobalParams.engine != "devnull");
     if (canCallFCVSetIfCleanStartup && !replSettings.usingReplSets()) {
         Lock::GlobalWrite lk(startupOpCtx.get());
         FeatureCompatibilityVersion::setIfCleanStartup(startupOpCtx.get(),
@@ -492,6 +489,9 @@ ExitCode _initAndListen(int listenPort) {
                   << "User and role management commands require auth data to have "
                   << "at least schema version " << AuthorizationManager::schemaVersion26Final
                   << " but startup could not verify schema version: " << status;
+            log() << "To manually repair the 'authSchema' document in the admin.system.version "
+                     "collection, start up with --setParameter "
+                     "startupAuthSchemaValidation=false to disable validation.";
             exitCleanly(EXIT_NEED_UPGRADE);
         }
 
@@ -524,16 +524,15 @@ ExitCode _initAndListen(int listenPort) {
     serviceContext->setPeriodicRunner(std::move(runner));
 
     // This function may take the global lock.
-    auto shardingInitialized =
-        uassertStatusOK(ShardingState::get(startupOpCtx.get())
-                            ->initializeShardingAwarenessIfNeeded(startupOpCtx.get()));
+    auto shardingInitialized = ShardingInitializationMongoD::get(startupOpCtx.get())
+                                   ->initializeShardingAwarenessIfNeeded(startupOpCtx.get());
     if (shardingInitialized) {
         waitForShardRegistryReload(startupOpCtx.get()).transitional_ignore();
     }
 
     auto storageEngine = serviceContext->getStorageEngine();
     invariant(storageEngine);
-    BackupCursorService::set(serviceContext, stdx::make_unique<BackupCursorService>(storageEngine));
+    BackupCursorHooks::initialize(serviceContext, storageEngine);
 
     if (!storageGlobalParams.readOnly) {
 
@@ -550,13 +549,14 @@ ExitCode _initAndListen(int listenPort) {
         if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
             // Note: For replica sets, ShardingStateRecovery happens on transition to primary.
             if (!repl::ReplicationCoordinator::get(startupOpCtx.get())->isReplEnabled()) {
-                uassertStatusOK(ShardingStateRecovery::recover(startupOpCtx.get()));
+                if (ShardingState::get(startupOpCtx.get())->enabled()) {
+                    uassertStatusOK(ShardingStateRecovery::recover(startupOpCtx.get()));
+                }
             }
         } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-            uassertStatusOK(
-                initializeGlobalShardingStateForMongod(startupOpCtx.get(),
-                                                       ConnectionString::forLocal(),
-                                                       kDistLockProcessIdForConfigServer));
+            initializeGlobalShardingStateForMongoD(startupOpCtx.get(),
+                                                   ConnectionString::forLocal(),
+                                                   kDistLockProcessIdForConfigServer);
 
             Balancer::create(startupOpCtx->getServiceContext());
 
@@ -633,7 +633,7 @@ ExitCode _initAndListen(int listenPort) {
         kind = LogicalSessionCacheServer::kReplicaSet;
     }
 
-    auto sessionCache = makeLogicalSessionCacheD(serviceContext, kind);
+    auto sessionCache = makeLogicalSessionCacheD(kind);
     LogicalSessionCache::set(serviceContext, std::move(sessionCache));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the
@@ -646,10 +646,18 @@ ExitCode _initAndListen(int listenPort) {
         return EXIT_NET_ERROR;
     }
 
-    start = serviceContext->getTransportLayer()->start();
+    start = serviceContext->getServiceEntryPoint()->start();
     if (!start.isOK()) {
-        error() << "Failed to start the listener: " << start.toString();
+        error() << "Failed to start the service entry point: " << start;
         return EXIT_NET_ERROR;
+    }
+
+    if (!storageGlobalParams.repair) {
+        start = serviceContext->getTransportLayer()->start();
+        if (!start.isOK()) {
+            error() << "Failed to start the listener: " << start.toString();
+            return EXIT_NET_ERROR;
+        }
     }
 
     serviceContext->notifyStartupComplete();
@@ -862,6 +870,12 @@ void shutdownTask() {
     auto const client = Client::getCurrent();
     auto const serviceContext = client->getServiceContext();
 
+    // Terminate the balancer thread so it doesn't leak memory.
+    if (auto balancer = Balancer::get(serviceContext)) {
+        balancer->interruptBalancer();
+        balancer->waitForBalancerToStop();
+    }
+
     // Shutdown the TransportLayer so that new connections aren't accepted
     if (auto tl = serviceContext->getTransportLayer()) {
         log(LogComponent::kNetwork) << "shutdown: going to close listening sockets...";
@@ -870,6 +884,11 @@ void shutdownTask() {
 
     // Shut down the global dbclient pool so callers stop waiting for connections.
     globalConnPool.shutdown();
+
+    // Shut down the background periodic task runner
+    if (auto runner = serviceContext->getPeriodicRunner()) {
+        runner->shutdown();
+    }
 
     if (serviceContext->getStorageEngine()) {
         ServiceContext::UniqueOperationContext uniqueOpCtx;
@@ -883,20 +902,13 @@ void shutdownTask() {
         // is building an index.
         repl::ReplicationCoordinator::get(serviceContext)->shutdown(opCtx);
 
-        ShardingState::get(serviceContext)->shutDown(opCtx);
+        ShardingInitializationMongoD::get(serviceContext)->shutDown(opCtx);
 
         // Destroy all stashed transaction resources, in order to release locks.
-        SessionKiller::Matcher matcherAllSessions(
-            KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx)});
-        killSessionsLocalKillTransactions(opCtx, matcherAllSessions);
+        killSessionsLocalShutdownAllTransactions(opCtx);
     }
 
     serviceContext->setKillAllOperations();
-
-    // Shut down the background periodic task runner
-    if (auto runner = serviceContext->getPeriodicRunner()) {
-        runner->shutdown();
-    }
 
     ReplicaSetMonitor::shutdown();
 
@@ -1004,11 +1016,11 @@ int mongoDbMain(int argc, char* argv[], char** envp) {
     startupConfigActions(std::vector<std::string>(argv, argv + argc));
     cmdline_utils::censorArgvArray(argc, argv);
 
-    if (!initializeServerGlobalState())
+    if (!initializeServerGlobalState(service))
         quickExit(EXIT_FAILURE);
 
-    // Per SERVER-7434, startSignalProcessingThread() must run after any forks
-    // (initializeServerGlobalState()) and before creation of any other threads.
+    // Per SERVER-7434, startSignalProcessingThread must run after any forks (i.e.
+    // initializeServerGlobalState) and before the creation of any other threads
     startSignalProcessingThread();
 
 #if defined(_WIN32)

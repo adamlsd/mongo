@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -36,6 +38,7 @@
 #include <memory>
 #include <ostream>
 
+#include "mongo/db/index/wildcard_key_generator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
@@ -89,18 +92,18 @@ unique_ptr<CanonicalQuery> canonicalize(const char* queryStr) {
     return canonicalize(queryObj);
 }
 
-unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
-                                        const char* sortStr,
-                                        const char* projStr,
-                                        const char* collationStr) {
+unique_ptr<CanonicalQuery> canonicalize(BSONObj query,
+                                        BSONObj sort,
+                                        BSONObj proj,
+                                        BSONObj collation) {
     QueryTestServiceContext serviceContext;
     auto opCtx = serviceContext.makeOperationContext();
 
     auto qr = stdx::make_unique<QueryRequest>(nss);
-    qr->setFilter(fromjson(queryStr));
-    qr->setSort(fromjson(sortStr));
-    qr->setProj(fromjson(projStr));
-    qr->setCollation(fromjson(collationStr));
+    qr->setFilter(query);
+    qr->setSort(sort);
+    qr->setProj(proj);
+    qr->setCollation(collation);
     const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx.get(),
@@ -110,6 +113,14 @@ unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
                                      MatchExpressionParser::kAllowAllSpecialFeatures);
     ASSERT_OK(statusWithCQ.getStatus());
     return std::move(statusWithCQ.getValue());
+}
+
+unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
+                                        const char* sortStr,
+                                        const char* projStr,
+                                        const char* collationStr) {
+    return canonicalize(
+        fromjson(queryStr), fromjson(sortStr), fromjson(projStr), fromjson(collationStr));
 }
 
 unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
@@ -215,6 +226,23 @@ void assertEquivalent(const char* queryStr,
        << "\nOriginal query: " << queryStr << "\nExpected: " << expected->toString()
        << "\nActual: " << actual->toString();
     FAIL(ss);
+}
+
+// Helper which constructs a $** IndexEntry and returns it along with an owned ProjectionExecAgg.
+// The latter simulates the ProjectionExecAgg which, during normal operation, is owned and
+// maintained by the $** index's IndexAccessMethod, and is required because the plan cache will
+// obtain unowned pointers to it.
+std::pair<IndexEntry, std::unique_ptr<ProjectionExecAgg>> makeWildcardEntry(BSONObj keyPattern) {
+    auto projExec = WildcardKeyGenerator::createProjectionExec(keyPattern, {});
+    return {IndexEntry(keyPattern,
+                       false,  // multikey
+                       false,  // sparse
+                       false,  // unique
+                       IndexEntry::Identifier{"indexName"},
+                       nullptr,
+                       BSONObj(),
+                       projExec.get()),
+            std::move(projExec)};
 }
 
 //
@@ -762,6 +790,44 @@ TEST(PlanCacheTest, DeactivateCacheEntry) {
     ASSERT_EQ(entry->works, 20U);
 }
 
+TEST(PlanCacheTest, GetMatchingStatsMatchesAndSerializesCorrectly) {
+    PlanCache planCache;
+
+    // Create a cache entry with 5 works.
+    {
+        unique_ptr<CanonicalQuery> cq(canonicalize("{a: 1}"));
+        auto qs = getQuerySolutionForCaching();
+        std::vector<QuerySolution*> solns = {qs.get()};
+        ASSERT_OK(planCache.set(*cq, solns, createDecision(1U, 5), Date_t{}));
+    }
+
+    // Create a second cache entry with 3 works.
+    {
+        unique_ptr<CanonicalQuery> cq(canonicalize("{b: 1}"));
+        auto qs = getQuerySolutionForCaching();
+        std::vector<QuerySolution*> solns = {qs.get()};
+        ASSERT_OK(planCache.set(*cq, solns, createDecision(1U, 3), Date_t{}));
+    }
+
+    // Verify that the cache entries have been created.
+    ASSERT_EQ(2U, planCache.size());
+
+    // Define a serialization function which just serializes the number of works.
+    const auto serializer = [](const PlanCacheEntry& entry) {
+        return BSON("works" << static_cast<int>(entry.works));
+    };
+
+    // Define a matcher which matches if the number of works exceeds 4.
+    const auto matcher = [](const BSONObj& serializedEntry) {
+        BSONElement worksElt = serializedEntry["works"];
+        return worksElt && worksElt.number() > 4;
+    };
+
+    // Verify the output of getMatchingStats().
+    auto getStatsResult = planCache.getMatchingStats(serializer, matcher);
+    ASSERT_EQ(1U, getStatsResult.size());
+    ASSERT_BSONOBJ_EQ(BSON("works" << 5), getStatsResult[0]);
+}
 
 /**
  * Each test in the CachePlanSelectionTest suite goes through
@@ -797,17 +863,28 @@ protected:
         // The first false means not multikey.
         // The second false means not sparse.
         // The NULL means no filter expression.
-        params.indices.push_back(
-            IndexEntry(keyPattern, multikey, false, false, indexName, NULL, BSONObj()));
+        params.indices.push_back(IndexEntry(keyPattern,
+                                            multikey,
+                                            false,
+                                            false,
+                                            IndexEntry::Identifier{indexName},
+                                            NULL,
+                                            BSONObj()));
     }
 
     void addIndex(BSONObj keyPattern, const std::string& indexName, bool multikey, bool sparse) {
-        params.indices.push_back(
-            IndexEntry(keyPattern, multikey, sparse, false, indexName, NULL, BSONObj()));
+        params.indices.push_back(IndexEntry(keyPattern,
+                                            multikey,
+                                            sparse,
+                                            false,
+                                            IndexEntry::Identifier{indexName},
+                                            NULL,
+                                            BSONObj()));
     }
 
     void addIndex(BSONObj keyPattern, const std::string& indexName, CollatorInterface* collator) {
-        IndexEntry entry(keyPattern, false, false, false, indexName, NULL, BSONObj());
+        IndexEntry entry(
+            keyPattern, false, false, false, IndexEntry::Identifier{indexName}, NULL, BSONObj());
         entry.collator = collator;
         params.indices.push_back(entry);
     }
@@ -1219,6 +1296,34 @@ TEST_F(CachePlanSelectionTest, AndWithinPolygonWithinCenterSphere) {
     runQuery(query);
     assertPlanCacheRecoversSolution(query,
                                     "{fetch: {node: {ixscan: {pattern: {a: '2dsphere', b: 1}}}}}");
+}
+
+// $** index
+TEST_F(CachePlanSelectionTest, WildcardIxScan) {
+    auto entryProjExecPair = makeWildcardEntry(BSON("$**" << 1));
+    params.indices.push_back(entryProjExecPair.first);
+
+    BSONObj query = fromjson("{a: 1, b: 1}");
+    runQuery(query);
+
+    const auto kPlanA =
+        "{fetch: {node: {ixscan: "
+        "{bounds: {$_path: [['a', 'a', true, true]], a: [[1, 1, true, true]]},"
+        "pattern: {$_path: 1, a:1}}}}}";
+
+    const auto kPlanB =
+        "{fetch: {node: {ixscan: "
+        "{bounds: {$_path: [['b', 'b', true, true]], b: [[1, 1, true, true]]},"
+        "pattern: {$_path: 1, b:1}}}}}";
+
+    assertPlanCacheRecoversSolution(query, kPlanA);
+    assertPlanCacheRecoversSolution(query, kPlanB);
+
+    // Query with fields in a different order, so that index entry expansion results in the list of
+    // indexes being in a different order. Should still yield the same plans.
+    BSONObj queryOtherDir = fromjson("{b: 1, a: 1}");
+    assertPlanCacheRecoversSolution(query, kPlanA);
+    assertPlanCacheRecoversSolution(query, kPlanB);
 }
 
 //
@@ -1645,13 +1750,10 @@ TEST_F(CachePlanSelectionTest, ContainedOrAndIntersection) {
  * meaningful only within the current lifetime of the server process. Users should treat plan
  * cache keys as opaque.
  */
-void testComputeKey(const char* queryStr,
-                    const char* sortStr,
-                    const char* projStr,
-                    const char* expectedStr) {
+void testComputeKey(BSONObj query, BSONObj sort, BSONObj proj, const char* expectedStr) {
     PlanCache planCache;
-    const char* collationStr = "{}";
-    unique_ptr<CanonicalQuery> cq(canonicalize(queryStr, sortStr, projStr, collationStr));
+    BSONObj collation;
+    unique_ptr<CanonicalQuery> cq(canonicalize(query, sort, proj, collation));
     PlanCacheKey key = planCache.computeKey(*cq);
     PlanCacheKey expectedKey(expectedStr);
     if (key == expectedKey) {
@@ -1661,6 +1763,13 @@ void testComputeKey(const char* queryStr,
     ss << "Unexpected plan cache key. Expected: " << expectedKey << ". Actual: " << key
        << ". Query: " << cq->toString();
     FAIL(ss);
+}
+
+void testComputeKey(const char* queryStr,
+                    const char* sortStr,
+                    const char* projStr,
+                    const char* expectedStr) {
+    testComputeKey(fromjson(queryStr), fromjson(sortStr), fromjson(projStr), expectedStr);
 }
 
 TEST(PlanCacheTest, ComputeKey) {
@@ -1759,20 +1868,75 @@ TEST(PlanCacheTest, ComputeKeyRegexDependsOnFlags) {
     testComputeKey("{a: {$regex: \"sometext\"}}", "{}", "{}", "rea");
     testComputeKey("{a: {$regex: \"sometext\", $options: \"\"}}", "{}", "{}", "rea");
 
-    testComputeKey("{a: {$regex: \"sometext\", $options: \"s\"}}", "{}", "{}", "reas");
-    testComputeKey("{a: {$regex: \"sometext\", $options: \"ms\"}}", "{}", "{}", "reams");
+    testComputeKey("{a: {$regex: \"sometext\", $options: \"s\"}}", "{}", "{}", "rea/s/");
+    testComputeKey("{a: {$regex: \"sometext\", $options: \"ms\"}}", "{}", "{}", "rea/ms/");
 
     // Test that the ordering of $options doesn't matter.
-    testComputeKey("{a: {$regex: \"sometext\", $options: \"im\"}}", "{}", "{}", "reaim");
-    testComputeKey("{a: {$regex: \"sometext\", $options: \"mi\"}}", "{}", "{}", "reaim");
+    testComputeKey("{a: {$regex: \"sometext\", $options: \"im\"}}", "{}", "{}", "rea/im/");
+    testComputeKey("{a: {$regex: \"sometext\", $options: \"mi\"}}", "{}", "{}", "rea/im/");
 
     // Test that only the options affect the key. Two regex match expressions with the same options
     // but different $regex values should have the same shape.
-    testComputeKey("{a: {$regex: \"abc\", $options: \"mi\"}}", "{}", "{}", "reaim");
-    testComputeKey("{a: {$regex: \"efg\", $options: \"mi\"}}", "{}", "{}", "reaim");
+    testComputeKey("{a: {$regex: \"abc\", $options: \"mi\"}}", "{}", "{}", "rea/im/");
+    testComputeKey("{a: {$regex: \"efg\", $options: \"mi\"}}", "{}", "{}", "rea/im/");
 
-    testComputeKey("{a: {$regex: \"\", $options: \"ms\"}}", "{}", "{}", "reams");
-    testComputeKey("{a: {$regex: \"___\", $options: \"ms\"}}", "{}", "{}", "reams");
+    testComputeKey("{a: {$regex: \"\", $options: \"ms\"}}", "{}", "{}", "rea/ms/");
+    testComputeKey("{a: {$regex: \"___\", $options: \"ms\"}}", "{}", "{}", "rea/ms/");
+
+    // Test that only valid regex flags contribute to the plan cache key encoding.
+    testComputeKey(BSON("a" << BSON("$regex"
+                                    << "abc"
+                                    << "$options"
+                                    << "abcdefghijklmnopqrstuvwxyz")),
+                   {},
+                   {},
+                   "rea/imsx/");
+    testComputeKey("{a: /abc/gim}", "{}", "{}", "rea/im/");
+}
+
+TEST(PlanCacheTest, ComputeKeyMatchInDependsOnPresenceOfRegexAndFlags) {
+    // Test that an $in containing a single regex is unwrapped to $regex.
+    testComputeKey("{a: {$in: [/foo/]}}", "{}", "{}", "rea");
+    testComputeKey("{a: {$in: [/foo/i]}}", "{}", "{}", "rea/i/");
+
+    // Test that an $in with no regexes does not include any regex information.
+    testComputeKey("{a: {$in: [1, 'foo']}}", "{}", "{}", "ina");
+
+    // Test that an $in with a regex encodes the presence of the regex.
+    testComputeKey("{a: {$in: [1, /foo/]}}", "{}", "{}", "ina_re");
+
+    // Test that an $in with a regex encodes the presence of the regex and its flags.
+    testComputeKey("{a: {$in: [1, /foo/is]}}", "{}", "{}", "ina_re/is/");
+
+    // Test that the computed key is invariant to the order of the flags within each regex.
+    testComputeKey("{a: {$in: [1, /foo/si]}}", "{}", "{}", "ina_re/is/");
+
+    // Test that an $in with multiple regexes encodes all unique flags.
+    testComputeKey("{a: {$in: [1, /foo/i, /bar/m, /baz/s]}}", "{}", "{}", "ina_re/ims/");
+
+    // Test that an $in with multiple regexes deduplicates identical flags.
+    testComputeKey(
+        "{a: {$in: [1, /foo/i, /bar/m, /baz/s, /qux/i, /quux/s]}}", "{}", "{}", "ina_re/ims/");
+
+    // Test that the computed key is invariant to the ordering of the flags across regexes.
+    testComputeKey("{a: {$in: [1, /foo/ism, /bar/msi, /baz/im, /qux/si, /quux/im]}}",
+                   "{}",
+                   "{}",
+                   "ina_re/ims/");
+    testComputeKey("{a: {$in: [1, /foo/msi, /bar/ism, /baz/is, /qux/mi, /quux/im]}}",
+                   "{}",
+                   "{}",
+                   "ina_re/ims/");
+
+    // Test that $not-$in-$regex similarly records the presence and flags of any regexes.
+    testComputeKey("{a: {$not: {$in: [1, 'foo']}}}", "{}", "{}", "nt[ina]");
+    testComputeKey("{a: {$not: {$in: [1, /foo/]}}}", "{}", "{}", "nt[ina_re]");
+    testComputeKey(
+        "{a: {$not: {$in: [1, /foo/i, /bar/i, /baz/msi]}}}", "{}", "{}", "nt[ina_re/ims/]");
+
+    // Test that a $not-$in containing a single regex is unwrapped to $not-$regex.
+    testComputeKey("{a: {$not: {$in: [/foo/]}}}", "{}", "{}", "nt[rea]");
+    testComputeKey("{a: {$not: {$in: [/foo/i]}}}", "{}", "{}", "nt[rea/i/]");
 }
 
 // When a sparse index is present, computeKey() should generate different keys depending on
@@ -1780,11 +1944,11 @@ TEST(PlanCacheTest, ComputeKeyRegexDependsOnFlags) {
 TEST(PlanCacheTest, ComputeKeySparseIndex) {
     PlanCache planCache;
     planCache.notifyOfIndexEntries({IndexEntry(BSON("a" << 1),
-                                               false,    // multikey
-                                               true,     // sparse
-                                               false,    // unique
-                                               "",       // name
-                                               nullptr,  // filterExpr
+                                               false,                       // multikey
+                                               true,                        // sparse
+                                               false,                       // unique
+                                               IndexEntry::Identifier{""},  // name
+                                               nullptr,                     // filterExpr
                                                BSONObj())});
 
     unique_ptr<CanonicalQuery> cqEqNumber(canonicalize("{a: 0}}"));
@@ -1808,10 +1972,10 @@ TEST(PlanCacheTest, ComputeKeyPartialIndex) {
 
     PlanCache planCache;
     planCache.notifyOfIndexEntries({IndexEntry(BSON("a" << 1),
-                                               false,  // multikey
-                                               false,  // sparse
-                                               false,  // unique
-                                               "",     // name
+                                               false,                       // multikey
+                                               false,                       // sparse
+                                               false,                       // unique
+                                               IndexEntry::Identifier{""},  // name
                                                filterExpr.get(),
                                                BSONObj())});
 
@@ -1832,11 +1996,11 @@ TEST(PlanCacheTest, ComputeKeyCollationIndex) {
 
     PlanCache planCache;
     IndexEntry entry(BSON("a" << 1),
-                     false,    // multikey
-                     false,    // sparse
-                     false,    // unique
-                     "",       // name
-                     nullptr,  // filterExpr
+                     false,                       // multikey
+                     false,                       // sparse
+                     false,                       // unique
+                     IndexEntry::Identifier{""},  // name
+                     nullptr,                     // filterExpr
                      BSONObj());
     entry.collator = &collator;
     planCache.notifyOfIndexEntries({entry});
@@ -1879,6 +2043,78 @@ TEST(PlanCacheTest, ComputeKeyCollationIndex) {
     // the index.
     ASSERT_EQ(planCache.computeKey(*inNoStrings),
               planCache.computeKey(*inContainsStringHasCollation));
+}
+
+TEST(PlanCacheTest, ComputeKeyWildcardIndex) {
+    auto entryProjExecPair = makeWildcardEntry(BSON("a.$**" << 1));
+
+    PlanCache planCache;
+    planCache.notifyOfIndexEntries({entryProjExecPair.first});
+
+    // Used to check that two queries have the same shape when no indexes are present.
+    PlanCache planCacheWithNoIndexes;
+
+    // Compatible with index.
+    unique_ptr<CanonicalQuery> usesPathWithScalar(canonicalize("{a: 'abcdef'}"));
+    unique_ptr<CanonicalQuery> usesPathWithEmptyArray(canonicalize("{a: []}"));
+
+    // Not compatible with index.
+    unique_ptr<CanonicalQuery> usesPathWithObject(canonicalize("{a: {b: 'abc'}}"));
+    unique_ptr<CanonicalQuery> usesPathWithArray(canonicalize("{a: [1, 2]}"));
+    unique_ptr<CanonicalQuery> usesPathWithArrayContainingObject(canonicalize("{a: [1, {b: 1}]}"));
+    unique_ptr<CanonicalQuery> usesPathWithEmptyObject(canonicalize("{a: {}}"));
+    unique_ptr<CanonicalQuery> doesNotUsePath(canonicalize("{b: 1234}"));
+
+    // Check that the queries which are compatible with the index have the same key.
+    ASSERT_EQ(planCache.computeKey(*usesPathWithScalar),
+              planCache.computeKey(*usesPathWithEmptyArray));
+
+    // Check that the queries which have the same path as the index, but aren't supported, have
+    // different keys.
+    ASSERT_EQ(planCacheWithNoIndexes.computeKey(*usesPathWithScalar),
+              planCacheWithNoIndexes.computeKey(*usesPathWithObject));
+    ASSERT_NE(planCache.computeKey(*usesPathWithScalar), planCache.computeKey(*usesPathWithObject));
+
+    ASSERT_EQ(planCache.computeKey(*usesPathWithObject), planCache.computeKey(*usesPathWithArray));
+    ASSERT_EQ(planCache.computeKey(*usesPathWithObject),
+              planCache.computeKey(*usesPathWithArrayContainingObject));
+
+    // The query on 'b' should have a completely different plan cache key (both with and without a
+    // wildcard index).
+    ASSERT_NE(planCacheWithNoIndexes.computeKey(*usesPathWithScalar),
+              planCacheWithNoIndexes.computeKey(*doesNotUsePath));
+    ASSERT_NE(planCache.computeKey(*usesPathWithScalar), planCache.computeKey(*doesNotUsePath));
+    ASSERT_NE(planCacheWithNoIndexes.computeKey(*usesPathWithObject),
+              planCacheWithNoIndexes.computeKey(*doesNotUsePath));
+    ASSERT_NE(planCache.computeKey(*usesPathWithObject), planCache.computeKey(*doesNotUsePath));
+
+    // More complex queries with similar shapes. This is to ensure that plan cache key encoding
+    // correctly traverses the expression tree.
+    auto orQueryAllowed = canonicalize("{$or: [{a: 3}, {a: {$gt: [1,2]}}]}");
+    // Same shape except 'a' is compared to an object.
+    auto orQueryNotAllowed = canonicalize("{$or: [{a: {someobject: 1}}, {a: {$gt: [1,2]}}]}");
+    // The two queries should have the same shape when no indexes are present, but different shapes
+    // when a $** index is present.
+    ASSERT_EQ(planCacheWithNoIndexes.computeKey(*orQueryAllowed),
+              planCacheWithNoIndexes.computeKey(*orQueryNotAllowed));
+    ASSERT_NE(planCache.computeKey(*orQueryAllowed), planCache.computeKey(*orQueryNotAllowed));
+}
+
+TEST(PlanCacheTest, ComputeKeyWildcardIndexDiscriminatesEqualityToEmptyObj) {
+    auto entryProjExecPair = makeWildcardEntry(BSON("a.$**" << 1));
+
+    PlanCache planCache;
+    planCache.notifyOfIndexEntries({entryProjExecPair.first});
+
+    // Equality to empty obj and equality to non-empty obj have different plan cache keys.
+    std::unique_ptr<CanonicalQuery> equalsEmptyObj(canonicalize("{a: {}}"));
+    std::unique_ptr<CanonicalQuery> equalsNonEmptyObj(canonicalize("{a: {b: 1}}"));
+    ASSERT_NE(planCache.computeKey(*equalsEmptyObj), planCache.computeKey(*equalsNonEmptyObj));
+
+    // $in with empty obj and $in with non-empty obj have different plan cache keys.
+    std::unique_ptr<CanonicalQuery> inWithEmptyObj(canonicalize("{a: {$in: [{}]}}"));
+    std::unique_ptr<CanonicalQuery> inWithNonEmptyObj(canonicalize("{a: {$in: [{b: 1}]}}"));
+    ASSERT_NE(planCache.computeKey(*inWithEmptyObj), planCache.computeKey(*inWithNonEmptyObj));
 }
 
 }  // namespace

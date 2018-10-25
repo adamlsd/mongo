@@ -1,28 +1,31 @@
-/*    Copyright 2009 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -400,7 +403,7 @@ DBClientConnection& DBClientReplicaSet::slaveConn() {
 bool DBClientReplicaSet::connect() {
     // Returns true if there are any up hosts.
     const ReadPreferenceSetting anyUpHost(ReadPreference::Nearest, TagSet());
-    return _getMonitor()->getHostOrRefresh(anyUpHost).isOK();
+    return _getMonitor()->getHostOrRefresh(anyUpHost).getNoThrow().isOK();
 }
 
 static bool isAuthenticationException(const DBException& ex) {
@@ -459,7 +462,7 @@ void DBClientReplicaSet::_auth(const BSONObj& params) {
     if (lastNodeStatus.isOK()) {
         StringBuilder assertMsgB;
         assertMsgB << "Failed to authenticate, no good nodes in " << _getMonitor()->getName();
-        uasserted(ErrorCodes::NodeNotFound, assertMsgB.str());
+        uasserted(ErrorCodes::HostNotFound, assertMsgB.str());
     } else {
         uassertStatusOK(lastNodeStatus);
     }
@@ -504,7 +507,7 @@ void DBClientReplicaSet::update(const string& ns, Query query, BSONObj obj, int 
     return checkMaster()->update(ns, query, obj, flags);
 }
 
-unique_ptr<DBClientCursor> DBClientReplicaSet::query(const string& ns,
+unique_ptr<DBClientCursor> DBClientReplicaSet::query(const NamespaceStringOrUUID& nsOrUuid,
                                                      Query query,
                                                      int nToReturn,
                                                      int nToSkip,
@@ -512,6 +515,8 @@ unique_ptr<DBClientCursor> DBClientReplicaSet::query(const string& ns,
                                                      int queryOptions,
                                                      int batchSize) {
     shared_ptr<ReadPreferenceSetting> readPref(_extractReadPref(query.obj, queryOptions));
+    invariant(nsOrUuid.nss());
+    const string ns = nsOrUuid.nss()->ns();
     if (_isSecondaryQuery(ns, query.obj, *readPref)) {
         LOG(3) << "dbclient_rs query using secondary or tagged node selection in "
                << _getMonitor()->getName() << ", read pref is " << readPref->toString()
@@ -533,7 +538,7 @@ unique_ptr<DBClientCursor> DBClientReplicaSet::query(const string& ns,
                 }
 
                 unique_ptr<DBClientCursor> cursor = conn->query(
-                    ns, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
+                    nsOrUuid, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
 
                 return checkSlaveQueryResult(std::move(cursor));
             } catch (const DBException& ex) {
@@ -556,7 +561,7 @@ unique_ptr<DBClientCursor> DBClientReplicaSet::query(const string& ns,
     LOG(3) << "dbclient_rs query to primary node in " << _getMonitor()->getName() << endl;
 
     return checkMaster()->query(
-        ns, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
+        nsOrUuid, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
 }
 
 BSONObj DBClientReplicaSet::findOne(const string& ns,
@@ -669,7 +674,7 @@ DBClientConnection* DBClientReplicaSet::selectNodeUsingTags(
 
     ReplicaSetMonitorPtr monitor = _getMonitor();
 
-    auto selectedNodeStatus = monitor->getHostOrRefresh(*readPref);
+    auto selectedNodeStatus = monitor->getHostOrRefresh(*readPref).getNoThrow();
     if (!selectedNodeStatus.isOK()) {
         LOG(3) << "dbclient_rs no compatible node found"
                << causedBy(redact(selectedNodeStatus.getStatus()));
@@ -935,7 +940,7 @@ std::pair<rpc::UniqueReply, DBClientBase*> DBClientReplicaSet::runCommandWithTar
         }
     }
 
-    uasserted(ErrorCodes::NodeNotFound,
+    uasserted(ErrorCodes::HostNotFound,
               str::stream() << "Could not satisfy $readPreference of '" << readPref.toString()
                             << "' while attempting to run command "
                             << request.getCommandName());

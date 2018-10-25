@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -54,6 +56,7 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/cidr.h"
 #include "mongo/util/net/private/ssl_expiration.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl_options.h"
@@ -61,6 +64,9 @@
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/text.h"
 
+#ifndef _WIN32
+#include <netinet/in.h>
+#endif
 #include <openssl/asn1.h>
 #include <openssl/asn1t.h>
 #include <openssl/evp.h>
@@ -146,6 +152,9 @@ UniqueBIO makeUniqueMemBio(std::vector<std::uint8_t>& v) {
 #endif
 #ifndef SSL_OP_NO_TLSv1_2
 #define SSL_OP_NO_TLSv1_2 0
+#endif
+#ifndef SSL_OP_NO_TLSv1_3
+#define SSL_OP_NO_TLSv1_3 0
 #endif
 
 // clang-format off
@@ -318,6 +327,14 @@ using UniqueSSLContext = std::unique_ptr<SSL_CTX, decltype(&free_ssl_context)>;
 static const int BUFFER_SIZE = 8 * 1024;
 static const int DATE_LEN = 128;
 
+struct UniqueX509Free {
+    void operator()(X509* ptr) const {
+        X509_free(ptr);
+    }
+};
+
+using UniqueX509 = std::unique_ptr<X509, UniqueX509Free>;
+
 class SSLManagerOpenSSL : public SSLManagerInterface {
 public:
     explicit SSLManagerOpenSSL(const SSLParams& params, bool isServer);
@@ -335,10 +352,11 @@ public:
     SSLConnectionInterface* accept(Socket* socket, const char* initialBytes, int len) final;
 
     SSLPeerInfo parseAndValidatePeerCertificateDeprecated(const SSLConnectionInterface* conn,
-                                                          const std::string& remoteHost) final;
+                                                          const std::string& remoteHost,
+                                                          const HostAndPort& hostForLogging) final;
 
     StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
-        SSL* conn, const std::string& remoteHost) final;
+        SSL* conn, const std::string& remoteHost, const HostAndPort& hostForLogging) final;
 
     const SSLConfiguration& getSSLConfiguration() const final {
         return _sslConfiguration;
@@ -356,6 +374,16 @@ private:
                                      mongodbRolesOID.longDescription.c_str());
     UniqueSSLContext _serverContext;  // SSL context for incoming connections
     UniqueSSLContext _clientContext;  // SSL context for outgoing connections
+
+// On OSX, it's not safe to copy the system CA certificates after a fork(), which we need to
+// do the deathtest unittests. So on __APPLE__ platforms, we copy the certificates into a vector
+// of OpenSSL X509 objects once at startup in _getSystemCerts() and then append them into
+// X509_STORE's when initializing SSL_CTX's.
+//
+// On other platforms it's safe to load the certificate each time we initialize an SSL_CTX.
+#if defined(__APPLE__)
+    std::vector<UniqueX509> _systemCACertificates;
+#endif
     bool _weakValidation;
     bool _allowInvalidCertificates;
     bool _allowInvalidHostnames;
@@ -418,6 +446,13 @@ private:
      * Set up an SSL context for certificate validation by loading the system's CA store
      */
     Status _setupSystemCA(SSL_CTX* context);
+
+#if defined(__APPLE__)
+    /*
+     * Loads the system-trusted CA certificates from a native source into a vector of X509 objects
+     */
+    std::vector<UniqueX509> _getSystemCerts();
+#endif
 
     /*
      * Import a certificate revocation list into an SSL context
@@ -576,6 +611,9 @@ SSLConnectionOpenSSL::~SSLConnectionOpenSSL() {
 SSLManagerOpenSSL::SSLManagerOpenSSL(const SSLParams& params, bool isServer)
     : _serverContext(nullptr, free_ssl_context),
       _clientContext(nullptr, free_ssl_context),
+#if defined(__APPLE__)
+      _systemCACertificates(_getSystemCerts()),
+#endif
       _weakValidation(params.sslWeakCertificateValidation),
       _allowInvalidCertificates(params.sslAllowInvalidCertificates),
       _allowInvalidHostnames(params.sslAllowInvalidHostnames),
@@ -689,6 +727,8 @@ Status SSLManagerOpenSSL::initSSLContext(SSL_CTX* context,
             supportedProtocols |= SSL_OP_NO_TLSv1_1;
         } else if (protocol == SSLParams::Protocols::TLS1_2) {
             supportedProtocols |= SSL_OP_NO_TLSv1_2;
+        } else if (protocol == SSLParams::Protocols::TLS1_3) {
+            supportedProtocols |= SSL_OP_NO_TLSv1_3;
         }
     }
     ::SSL_CTX_set_options(context, supportedProtocols);
@@ -718,23 +758,33 @@ Status SSLManagerOpenSSL::initSSLContext(SSL_CTX* context,
                                     << getSSLErrorMessage(ERR_get_error()));
     }
 
-    if (direction == ConnectionDirection::kOutgoing && !params.sslClusterFile.empty()) {
+    if (direction == ConnectionDirection::kOutgoing && params.tlsWithholdClientCertificate) {
+        // Do not send a client certificate if they have been suppressed.
+
+    } else if (direction == ConnectionDirection::kOutgoing && !params.sslClusterFile.empty()) {
+        // Use the configured clusterFile as our client certificate.
         ::EVP_set_pw_prompt("Enter cluster certificate passphrase");
         if (!_setupPEM(context, params.sslClusterFile, params.sslClusterPassword)) {
             return Status(ErrorCodes::InvalidSSLConfiguration, "Can not set up ssl clusterFile.");
         }
+
     } else if (!params.sslPEMKeyFile.empty()) {
-        // Use the pemfile for everything else
+        // Use the base pemKeyFile for any other outgoing connections,
+        // as well as all incoming connections.
         ::EVP_set_pw_prompt("Enter PEM passphrase");
         if (!_setupPEM(context, params.sslPEMKeyFile, params.sslPEMKeyPassword)) {
             return Status(ErrorCodes::InvalidSSLConfiguration, "Can not set up PEM key file.");
         }
     }
 
-    const auto status =
-        params.sslCAFile.empty() ? _setupSystemCA(context) : _setupCA(context, params.sslCAFile);
-    if (!status.isOK())
+    std::string cafile = params.sslCAFile;
+    if (direction == ConnectionDirection::kIncoming && !params.sslClusterCAFile.empty()) {
+        cafile = params.sslClusterCAFile;
+    }
+    const auto status = cafile.empty() ? _setupSystemCA(context) : _setupCA(context, cafile);
+    if (!status.isOK()) {
         return status;
+    }
 
     if (!params.sslCRLFile.empty()) {
         if (!_setupCRL(context, params.sslCRLFile)) {
@@ -1013,6 +1063,7 @@ Status importCertStoreToX509_STORE(const wchar_t* storeName,
 
     return Status::OK();
 }
+
 #elif defined(__APPLE__)
 
 template <typename T>
@@ -1039,48 +1090,41 @@ std::string OSStatusToString(OSStatus status) {
     return std::string{CFStringGetCStringPtr(errMsg, kCFStringEncodingUTF8)};
 }
 
-Status importKeychainToX509_STORE(X509_STORE* verifyStore) {
-    CFArrayRef result;
-    OSStatus status;
+std::vector<UniqueX509> SSLManagerOpenSSL::_getSystemCerts() {
+    // Copy the system CA certs into a CFArray for us to iterate and convert into X509*
+    auto anchorCerts = makeCFTypeRefHolder([] {
+        CFArrayRef ret;
+        auto status = SecTrustCopyAnchorCertificates(&ret);
+        uassert(50928,
+                str::stream() << "Error enumerating certificates: " << OSStatusToString(status),
+                status == ::errSecSuccess);
+        return ret;
+    }());
 
-    // This copies all the certificates trusted by the system (regardless of what keychain they're
-    // attached to) into a CFArray.
-    if ((status = SecTrustCopyAnchorCertificates(&result)) != 0) {
-        return {ErrorCodes::InvalidSSLConfiguration,
-                str::stream() << "Error enumerating certificates: " << OSStatusToString(status)};
-    }
-    const auto resultGuard = makeCFTypeRefHolder(result);
+    std::vector<UniqueX509> ret;
+    for (CFIndex i = 0; i < CFArrayGetCount(anchorCerts); i++) {
+        SecCertificateRef cert = static_cast<SecCertificateRef>(
+            const_cast<void*>(CFArrayGetValueAtIndex(anchorCerts, i)));
 
-    for (CFIndex i = 0; i < CFArrayGetCount(result); i++) {
-        SecCertificateRef cert =
-            static_cast<SecCertificateRef>(const_cast<void*>(CFArrayGetValueAtIndex(result, i)));
+        uassert(50929,
+                "Certificate array had something other than a certificate in it",
+                ::CFGetTypeID(cert) == ::SecCertificateGetTypeID());
 
+        // Get the raw X509 bytes out of the certificate
         auto rawData = makeCFTypeRefHolder(SecCertificateCopyData(cert));
-        if (!rawData) {
-            return {ErrorCodes::InvalidSSLConfiguration,
-                    str::stream() << "Error enumerating certificates: "
-                                  << OSStatusToString(status)};
-        }
+        uassert(50930, str::stream() << "Error converting certificate to raw bytes", rawData);
         const uint8_t* rawDataPtr = CFDataGetBytePtr(rawData);
 
         // Parse an openssl X509 object from each returned certificate
-        X509* x509Cert = d2i_X509(nullptr, &rawDataPtr, CFDataGetLength(rawData));
-        if (!x509Cert) {
-            return {ErrorCodes::InvalidSSLConfiguration,
-                    str::stream() << "Error parsing X509 certificate from system keychain: "
-                                  << ERR_reason_error_string(ERR_peek_last_error())};
-        }
-        const auto x509CertGuard = MakeGuard([&x509Cert]() { X509_free(x509Cert); });
-
-        // Add the parsed X509 object to the X509_STORE verification store
-        if (X509_STORE_add_cert(verifyStore, x509Cert) != 1) {
-            auto status = checkX509_STORE_error();
-            if (!status.isOK())
-                return status;
-        }
+        UniqueX509 x509Cert(d2i_X509(nullptr, &rawDataPtr, CFDataGetLength(rawData)));
+        uassert(50931,
+                str::stream() << "Error parsing X509 certificate from system keychain: "
+                              << ERR_reason_error_string(ERR_peek_last_error()),
+                x509Cert);
+        ret.push_back(std::move(x509Cert));
     }
 
-    return Status::OK();
+    return ret;
 }
 #endif
 
@@ -1098,7 +1142,6 @@ Status SSLManagerOpenSSL::_setupSystemCA(SSL_CTX* context) {
                               << X509_get_default_cert_dir()
                               << ")"};
     }
-    return Status::OK();
 #else
 
     X509_STORE* verifyStore = SSL_CTX_get_cert_store(context);
@@ -1112,9 +1155,13 @@ Status SSLManagerOpenSSL::_setupSystemCA(SSL_CTX* context) {
         return status;
     return importCertStoreToX509_STORE(L"CA", CERT_SYSTEM_STORE_CURRENT_USER, verifyStore);
 #elif defined(__APPLE__)
-    return importKeychainToX509_STORE(verifyStore);
+    for (const auto& cert : _systemCACertificates) {
+        X509_STORE_add_cert(verifyStore, cert.get());
+    }
 #endif
 #endif
+
+    return Status::OK();
 }
 
 bool SSLManagerOpenSSL::_setupCRL(SSL_CTX* context, const std::string& crlFile) {
@@ -1237,35 +1284,34 @@ SSLConnectionInterface* SSLManagerOpenSSL::accept(Socket* socket,
 }
 
 
-void recordTLSVersion(const SSL* conn) {
+StatusWith<TLSVersion> mapTLSVersion(SSL* conn) {
     int protocol = SSL_version(conn);
 
-    auto& counts = mongo::TLSVersionCounts::get(getGlobalServiceContext());
     switch (protocol) {
         case TLS1_VERSION:
-            counts.tls10.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS10;
         case TLS1_1_VERSION:
-            counts.tls11.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS11;
         case TLS1_2_VERSION:
-            counts.tls12.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS12;
 #ifdef TLS1_3_VERSION
         case TLS1_3_VERSION:
-            counts.tls13.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS13;
 #endif
         default:
-            // Do nothing
-            break;
+            return TLSVersion::kUnknown;
     }
 }
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeerCertificate(
-    SSL* conn, const std::string& remoteHost) {
+    SSL* conn, const std::string& remoteHost, const HostAndPort& hostForLogging) {
 
-    recordTLSVersion(conn);
+    auto tlsVersionStatus = mapTLSVersion(conn);
+    if (!tlsVersionStatus.isOK()) {
+        return tlsVersionStatus.getStatus();
+    }
+
+    recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     if (!_sslConfiguration.hasCA && isSSLServer)
         return {boost::none};
@@ -1319,6 +1365,9 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
             SSLPeerInfo(peerSubject, std::move(swPeerCertificateRoles.getValue())));
     }
 
+    // This is to standardize the IPAddress format for comparison.
+    auto swCIDRRemoteHost = CIDR::parse(remoteHost);
+
     // Try to match using the Subject Alternate Name, if it exists.
     // RFC-2818 requires the Subject Alternate Name to be used if present.
     // Otherwise, the most specific Common Name field in the subject field
@@ -1337,12 +1386,44 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
         for (int i = 0; i < sanNamesList; i++) {
             const GENERAL_NAME* currentName = sk_GENERAL_NAME_value(sanNames, i);
             if (currentName && currentName->type == GEN_DNS) {
-                char* dnsName = reinterpret_cast<char*>(ASN1_STRING_data(currentName->d.dNSName));
+                std::string dnsName(
+                    reinterpret_cast<char*>(ASN1_STRING_data(currentName->d.dNSName)));
+                auto swCIDRDNSName = CIDR::parse(dnsName);
+                if (swCIDRDNSName.isOK()) {
+                    warning() << "You have an IP Address in the DNS Name field on your "
+                                 "certificate. This formulation is deprecated.";
+                    if (swCIDRRemoteHost.isOK() &&
+                        swCIDRRemoteHost.getValue() == swCIDRDNSName.getValue()) {
+                        sanMatch = true;
+                        break;
+                    }
+                }
                 if (hostNameMatchForX509Certificates(remoteHost, dnsName)) {
                     sanMatch = true;
                     break;
                 }
-                certificateNames << std::string(dnsName) << " ";
+                certificateNames << std::string(dnsName) << ", ";
+            } else if (currentName && currentName->type == GEN_IPADD) {
+                auto ipAddrStruct = currentName->d.iPAddress;
+                struct sockaddr_storage ss;
+                memset(&ss, 0, sizeof(ss));
+                if (ipAddrStruct->length == 4) {
+                    struct sockaddr_in* sa = reinterpret_cast<struct sockaddr_in*>(&ss);
+                    sa->sin_family = AF_INET;
+                    memcpy(&(sa->sin_addr), ipAddrStruct->data, ipAddrStruct->length);
+                } else if (ipAddrStruct->length == 16) {
+                    struct sockaddr_in6* sa = reinterpret_cast<struct sockaddr_in6*>(&ss);
+                    sa->sin6_family = AF_INET6;
+                    memcpy(&(sa->sin6_addr), ipAddrStruct->data, ipAddrStruct->length);
+                }
+                auto ipAddress = SockAddr(ss, sizeof(ss)).getAddr();
+                auto swIpAddress = CIDR::parse(ipAddress);
+                if (swCIDRRemoteHost.isOK() && swIpAddress.isOK() &&
+                    swCIDRRemoteHost.getValue() == swIpAddress.getValue()) {
+                    sanMatch = true;
+                    break;
+                }
+                certificateNames << ipAddress << ", ";
             }
         }
         sk_GENERAL_NAME_pop_free(sanNames, GENERAL_NAME_free);
@@ -1379,10 +1460,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
 
 
 SSLPeerInfo SSLManagerOpenSSL::parseAndValidatePeerCertificateDeprecated(
-    const SSLConnectionInterface* connInterface, const std::string& remoteHost) {
+    const SSLConnectionInterface* connInterface,
+    const std::string& remoteHost,
+    const HostAndPort& hostForLogging) {
     const SSLConnectionOpenSSL* conn = checked_cast<const SSLConnectionOpenSSL*>(connInterface);
 
-    auto swPeerSubjectName = parseAndValidatePeerCertificate(conn->ssl, remoteHost);
+    auto swPeerSubjectName = parseAndValidatePeerCertificate(conn->ssl, remoteHost, hostForLogging);
     // We can't use uassertStatusOK here because we need to throw a NetworkException.
     if (!swPeerSubjectName.isOK()) {
         throwSocketError(SocketErrorKind::CONNECT_ERROR, swPeerSubjectName.getStatus().reason());

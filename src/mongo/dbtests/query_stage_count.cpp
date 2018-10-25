@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -122,8 +124,7 @@ public:
     void update(const RecordId& oldrecordId, const BSONObj& newDoc) {
         WriteUnitOfWork wunit(&_opCtx);
         BSONObj oldDoc = _coll->getRecordStore()->dataFor(&_opCtx, oldrecordId).releaseToBson();
-        OplogUpdateEntryArgs args;
-        args.nss = _coll->ns();
+        CollectionUpdateArgs args;
         _coll->updateDocument(&_opCtx,
                               oldrecordId,
                               Snapshotted<BSONObj>(_opCtx.recoveryUnit()->getSnapshotId(), oldDoc),
@@ -207,8 +208,7 @@ public:
         IndexDescriptor* descriptor = indexes[0];
 
         // We are not testing indexing here so use maximal bounds
-        IndexScanParams params;
-        params.descriptor = descriptor;
+        IndexScanParams params(&_opCtx, *descriptor);
         params.bounds.isSimpleRange = true;
         params.bounds.startKey = BSON("" << 0);
         params.bounds.endKey = BSON("" << kDocuments + 1);
@@ -306,10 +306,8 @@ public:
             // At this point, our first interjection, we've counted _recordIds[0]
             // and are about to count _recordIds[1]
             WriteUnitOfWork wunit(&_opCtx);
-            count_stage.invalidate(&_opCtx, _recordIds[interjection], INVALIDATION_DELETION);
             remove(_recordIds[interjection]);
 
-            count_stage.invalidate(&_opCtx, _recordIds[interjection + 1], INVALIDATION_DELETION);
             remove(_recordIds[interjection + 1]);
             wunit.commit();
         }
@@ -330,11 +328,9 @@ public:
     // At the point which this is called we are in between the first and second record
     void interject(CountStage& count_stage, int interjection) {
         if (interjection == 0) {
-            count_stage.invalidate(&_opCtx, _recordIds[0], INVALIDATION_MUTATION);
             OID id1 = _coll->docFor(&_opCtx, _recordIds[0]).value().getField("_id").OID();
             update(_recordIds[0], BSON("_id" << id1 << "x" << 100));
 
-            count_stage.invalidate(&_opCtx, _recordIds[1], INVALIDATION_MUTATION);
             OID id2 = _coll->docFor(&_opCtx, _recordIds[1]).value().getField("_id").OID();
             update(_recordIds[1], BSON("_id" << id2 << "x" << 100));
         }

@@ -1,25 +1,27 @@
 // biggie_sorted_impl.h
 
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -41,10 +43,13 @@ public:
     SortedDataBuilderInterface(OperationContext* opCtx,
                                bool dupsAllowed,
                                Ordering order,
-                               std::string prefix,
-                               std::string identEnd);
-    void commit(bool mayInterrupt) override;
-    virtual Status addKey(const BSONObj& key, const RecordId& loc);
+                               const std::string& prefix,
+                               const std::string& identEnd,
+                               const std::string& collectionNamespace,
+                               const std::string& indexName,
+                               const BSONObj& keyPattern);
+    SpecialFormatInserted commit(bool mayInterrupt) override;
+    virtual StatusWith<SpecialFormatInserted> addKey(const BSONObj& key, const RecordId& loc);
 
 private:
     OperationContext* _opCtx;
@@ -54,6 +59,10 @@ private:
     // Prefix and identEnd for the ident.
     std::string _prefix;
     std::string _identEnd;
+    // Index metadata.
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
     // Whether or not we've already added something before.
     bool _hasLast;
     // This is the KeyString of the last key added.
@@ -70,10 +79,10 @@ public:
     SortedDataInterface(const Ordering& ordering, bool isUnique, StringData ident);
     virtual SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx,
                                                        bool dupsAllowed) override;
-    virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& loc,
-                          bool dupsAllowed) override;
+    virtual StatusWith<SpecialFormatInserted> insert(OperationContext* opCtx,
+                                                     const BSONObj& key,
+                                                     const RecordId& loc,
+                                                     bool dupsAllowed) override;
     virtual void unindex(OperationContext* opCtx,
                          const BSONObj& key,
                          const RecordId& loc,
@@ -133,8 +142,8 @@ public:
         // This is the "working copy" of the master "branch" in the git analogy.
         StringStore* _workingCopy;
         // These store the end positions.
-        boost::optional<StringStore::iterator> _endPos;
-        boost::optional<StringStore::reverse_iterator> _endPosReverse;
+        boost::optional<StringStore::const_iterator> _endPos;
+        boost::optional<StringStore::const_reverse_iterator> _endPosReverse;
         // This means if the cursor is a forward or reverse cursor.
         bool _forward;
         // This means whether the cursor has reached the last EOF (with regard to this index).
@@ -146,10 +155,10 @@ public:
         // These are the same as before.
         std::string _prefix;
         std::string _identEnd;
-        // These two store the iterator, which is the data structure for cursors. The one we use
-        // depends on _forward.
-        StringStore::iterator _forwardIt;
-        StringStore::reverse_iterator _reverseIt;
+        // These two store the const_iterator, which is the data structure for cursors. The one we
+        // use depends on _forward.
+        StringStore::const_iterator _forwardIt;
+        StringStore::const_reverse_iterator _reverseIt;
         // This is the ordering for the key's values for multi-field keys.
         Ordering _order;
         // This stores whether or not the end position is inclusive for restore.
@@ -168,13 +177,15 @@ private:
     // These two are the same as before.
     std::string _prefix;
     std::string _identEnd;
+    // Index metadata.
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
     // These are the keystring representations of the _prefix and the _identEnd.
     std::string _KSForIdentStart;
     std::string _KSForIdentEnd;
     // This stores whether or not the end position is inclusive.
     bool _isUnique;
-    // This stores whethert or not dups are allowed.
-    bool _dupsAllowed;
 };
 }  // namespace biggie
 }  // namespace mongo

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -68,10 +70,13 @@ OplogEntry::CommandType parseCommandType(const BSONObj& objectField) {
         return OplogEntry::CommandType::kDropIndexes;
     } else if (commandString == "commitTransaction") {
         return OplogEntry::CommandType::kCommitTransaction;
+    } else if (commandString == "abortTransaction") {
+        return OplogEntry::CommandType::kAbortTransaction;
     } else {
-        severe() << "Unknown oplog entry command type: " << commandString
-                 << " Object field: " << redact(objectField);
-        fassertFailedNoTrace(40444);
+        uasserted(ErrorCodes::BadValue,
+                  str::stream() << "Unknown oplog entry command type: " << commandString
+                                << " Object field: "
+                                << redact(objectField));
     }
     MONGO_UNREACHABLE;
 }
@@ -102,7 +107,7 @@ BSONObj makeOplogEntryDoc(OpTime opTime,
     builder.append(OplogEntryBase::kHashFieldName, hash);
     builder.append(OplogEntryBase::kVersionFieldName, version);
     builder.append(OplogEntryBase::kOpTypeFieldName, OpType_serializer(opType));
-    builder.append(OplogEntryBase::kNamespaceFieldName, nss.toString());
+    builder.append(OplogEntryBase::kNssFieldName, nss.toString());
     if (uuid) {
         uuid->appendToBuilder(&builder, OplogEntryBase::kUuidFieldName);
     }
@@ -148,7 +153,7 @@ ReplOperation OplogEntry::makeInsertOperation(const NamespaceString& nss,
                                               const BSONObj& docToInsert) {
     ReplOperation op;
     op.setOpType(OpTypeEnum::kInsert);
-    op.setNamespace(nss);
+    op.setNss(nss);
     op.setUuid(uuid);
     op.setObject(docToInsert.getOwned());
     return op;
@@ -160,7 +165,7 @@ ReplOperation OplogEntry::makeUpdateOperation(const NamespaceString nss,
                                               const BSONObj& criteria) {
     ReplOperation op;
     op.setOpType(OpTypeEnum::kUpdate);
-    op.setNamespace(nss);
+    op.setNss(nss);
     op.setUuid(uuid);
     op.setObject(update.getOwned());
     op.setObject2(criteria.getOwned());
@@ -172,14 +177,14 @@ ReplOperation OplogEntry::makeDeleteOperation(const NamespaceString& nss,
                                               const BSONObj& docToDelete) {
     ReplOperation op;
     op.setOpType(OpTypeEnum::kDelete);
-    op.setNamespace(nss);
+    op.setNss(nss);
     op.setUuid(uuid);
     op.setObject(docToDelete.getOwned());
     return op;
 }
 
 size_t OplogEntry::getReplOperationSize(const ReplOperation& op) {
-    return sizeof(op) + op.getNamespace().size() + op.getObject().objsize() +
+    return sizeof(op) + op.getNss().size() + op.getObject().objsize() +
         (op.getObject2() ? op.getObject2()->objsize() : 0);
 }
 
@@ -192,8 +197,7 @@ StatusWith<OplogEntry> OplogEntry::parse(const BSONObj& object) {
     MONGO_UNREACHABLE;
 }
 
-OplogEntry::OplogEntry(BSONObj rawInput)
-    : raw(std::move(rawInput)), _commandType(OplogEntry::CommandType::kNotCommand) {
+OplogEntry::OplogEntry(BSONObj rawInput) : raw(std::move(rawInput)) {
     raw = raw.getOwned();
 
     parseProtected(IDLParserErrorContext("OplogEntryBase"), raw);
@@ -260,7 +264,6 @@ bool OplogEntry::isCrudOpType() const {
 }
 
 bool OplogEntry::shouldPrepare() const {
-    invariant(getCommandType() == OplogEntry::CommandType::kApplyOps);
     return getPrepare() && *getPrepare();
 }
 
@@ -288,8 +291,6 @@ BSONObj OplogEntry::getOperationToApply() const {
 }
 
 OplogEntry::CommandType OplogEntry::getCommandType() const {
-    invariant(isCommand());
-    invariant(_commandType != OplogEntry::CommandType::kNotCommand);
     return _commandType;
 }
 

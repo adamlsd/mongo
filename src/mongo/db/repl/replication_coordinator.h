@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -66,7 +68,6 @@ namespace repl {
 
 class BackgroundSync;
 class IsMasterResponse;
-class OplogReader;
 class OpTime;
 class ReadConcernArgs;
 class ReplSetConfig;
@@ -187,17 +188,13 @@ public:
 
     /**
      * Causes this node to relinquish being primary for at least 'stepdownTime'.  If 'force' is
-     * false, before doing so it will wait for 'waitTime' for one other node to be within 10
-     * seconds of this node's optime before stepping down. Returns a Status with the code
-     * ErrorCodes::ExceededTimeLimit if no secondary catches up within waitTime,
-     * ErrorCodes::NotMaster if you are no longer primary when trying to step down,
-     * ErrorCodes::SecondaryAheadOfPrimary if we are primary but there is another node that
-     * seems to be ahead of us in replication, and Status::OK otherwise.
+     * false, before doing so it will wait for 'waitTime' for one other electable node to be caught
+     * up before stepping down. Throws on error.
      */
-    virtual Status stepDown(OperationContext* opCtx,
-                            bool force,
-                            const Milliseconds& waitTime,
-                            const Milliseconds& stepdownTime) = 0;
+    virtual void stepDown(OperationContext* opCtx,
+                          bool force,
+                          const Milliseconds& waitTime,
+                          const Milliseconds& stepdownTime) = 0;
 
     /**
      * Returns true if the node can be considered master for the purpose of introspective
@@ -766,7 +763,7 @@ public:
     virtual ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const = 0;
     virtual void setIndexPrefetchConfig(const ReplSettings::IndexPrefetchConfig cfg) = 0;
 
-    virtual Status stepUpIfEligible() = 0;
+    virtual Status stepUpIfEligible(bool skipDryRun) = 0;
 
     virtual ServiceContext* getServiceContext() = 0;
 
@@ -785,6 +782,12 @@ public:
      * operation.
      */
     bool isOplogDisabledFor(OperationContext* opCtx, const NamespaceString& nss);
+
+    /**
+     * Returns the stable timestamp that the storage engine recovered to on startup. If the
+     * recovery point was not stable, returns "none".
+     */
+    virtual boost::optional<Timestamp> getRecoveryTimestamp() = 0;
 
 protected:
     ReplicationCoordinator();

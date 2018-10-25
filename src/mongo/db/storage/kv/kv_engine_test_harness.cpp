@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -35,6 +37,7 @@
 #include "mongo/db/storage/kv/kv_prefix.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
+#include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/clock_source_mock.h"
@@ -144,7 +147,10 @@ TEST(KVEngineTestHarness, SimpleSorted1) {
     ASSERT(engine);
 
     string ident = "abc";
-    IndexDescriptor desc(NULL, "", BSON("key" << BSON("a" << 1)));
+    IndexDescriptor desc(nullptr,
+                         "",
+                         BSON("v" << static_cast<int>(IndexDescriptor::kLatestIndexVersion) << "key"
+                                  << BSON("a" << 1)));
     unique_ptr<SortedDataInterface> sorted;
     {
         MyOperationContext opCtx(engine);
@@ -487,6 +493,27 @@ TEST(KVCatalogTest, RestartForPrefixes) {
         ASSERT_EQ("a.b", md.ns);
         ASSERT_EQ(abCollPrefix, md.prefix);
         ASSERT_EQ(fooIndexPrefix, md.indexes[md.findIndexOffset("foo")].prefix);
+    }
+}
+
+DEATH_TEST(KVCatalogTest, TerminateOnNonNumericIndexVersion, "Fatal Assertion 50942") {
+    unique_ptr<KVHarnessHelper> helper(KVHarnessHelper::create());
+    KVEngine* engine = helper->getEngine();
+    ASSERT(engine);
+
+    string ident = "abc";
+    IndexDescriptor desc(nullptr,
+                         "",
+                         BSON("v"
+                              << "1"
+                              << "key"
+                              << BSON("a" << 1)));
+    unique_ptr<SortedDataInterface> sorted;
+    {
+        MyOperationContext opCtx(engine);
+        ASSERT_OK(engine->createSortedDataInterface(&opCtx, ident, &desc));
+        sorted.reset(engine->getSortedDataInterface(&opCtx, ident, &desc));
+        ASSERT(sorted);
     }
 }
 

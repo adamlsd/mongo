@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -76,7 +78,8 @@ public:
             auto client = _serviceCtx->makeClient(name.toString());
             auto opCtx = client->makeOperationContext();
 
-            cb(opCtx.get(), _timeout);
+            opCtx->runWithDeadline(
+                _timeout, ErrorCodes::ExceededTimeLimit, [&] { cb(opCtx.get()); });
         });
     }
 
@@ -96,20 +99,6 @@ public:
     }
 };
 
-template <typename Timeout>
-class ProducerConsumerQueueTestHelper<Timeout> {
-public:
-    ProducerConsumerQueueTestHelper(Timeout timeout) : _timeout(timeout) {}
-
-    template <typename Callback>
-    stdx::thread runThread(StringData name, Callback&& cb) {
-        return stdx::thread([this, name, cb] { cb(_timeout); });
-    }
-
-private:
-    Timeout _timeout;
-};
-
 class ProducerConsumerQueueTest : public unittest::Test {
 public:
     template <typename Callback>
@@ -127,27 +116,17 @@ public:
         const Minutes duration(30);
 
         callback(ProducerConsumerQueueTestHelper<OperationContext>(_serviceCtx.get()));
-        callback(ProducerConsumerQueueTestHelper<OperationContext, Milliseconds>(_serviceCtx.get(),
-                                                                                 duration));
         callback(ProducerConsumerQueueTestHelper<OperationContext, Date_t>(
             _serviceCtx.get(), _serviceCtx->getPreciseClockSource()->now() + duration));
         callback(ProducerConsumerQueueTestHelper<>());
-        callback(ProducerConsumerQueueTestHelper<Milliseconds>(duration));
-        callback(ProducerConsumerQueueTestHelper<Date_t>(
-            _serviceCtx->getPreciseClockSource()->now() + duration));
     }
 
     template <typename Callback>
     void runTimeoutPermutations(Callback&& callback) {
         const Milliseconds duration(10);
 
-        callback(ProducerConsumerQueueTestHelper<OperationContext, Milliseconds>(_serviceCtx.get(),
-                                                                                 duration));
         callback(ProducerConsumerQueueTestHelper<OperationContext, Date_t>(
             _serviceCtx.get(), _serviceCtx->getPreciseClockSource()->now() + duration));
-        callback(ProducerConsumerQueueTestHelper<Milliseconds>(duration));
-        callback(ProducerConsumerQueueTestHelper<Date_t>(
-            _serviceCtx->getPreciseClockSource()->now() + duration));
     }
 
 private:

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -39,6 +41,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/client/fetcher.h"
+#include "mongo/db/audit.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/test_commands_enabled.h"
@@ -61,6 +64,7 @@
 #include "mongo/db/repl/repl_set_request_votes_args.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_process.h"
+#include "mongo/db/repl/replication_state_transition_lock_guard.h"
 #include "mongo/db/repl/rslog.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/topology_coordinator.h"
@@ -68,7 +72,7 @@
 #include "mongo/db/repl/vote_requester.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/executor/connection_pool_stats.h"
@@ -90,6 +94,7 @@ namespace repl {
 
 MONGO_FAIL_POINT_DEFINE(stepdownHangBeforePerformingPostMemberStateUpdateActions);
 MONGO_FAIL_POINT_DEFINE(transitionToPrimaryHangBeforeTakingGlobalExclusiveLock);
+MONGO_FAIL_POINT_DEFINE(holdStableTimestampAtSpecificTimestamp);
 
 using CallbackArgs = executor::TaskExecutor::CallbackArgs;
 using CallbackFn = executor::TaskExecutor::CallbackFn;
@@ -238,15 +243,19 @@ public:
      * _list is guarded by ReplicationCoordinatorImpl::_mutex, thus it is illegal to construct one
      * of these without holding _mutex
      */
-    WaiterGuard(WaiterList* list, Waiter* waiter) : _list(list), _waiter(waiter) {
+    WaiterGuard(const stdx::unique_lock<stdx::mutex>& lock, WaiterList* list, Waiter* waiter)
+        : _lock(lock), _list(list), _waiter(waiter) {
+        invariant(_lock.owns_lock());
         list->add_inlock(_waiter);
     }
 
     ~WaiterGuard() {
+        invariant(_lock.owns_lock());
         _list->remove_inlock(_waiter);
     }
 
 private:
+    const stdx::unique_lock<stdx::mutex>& _lock;
     WaiterList* _list;
     Waiter* _waiter;
 };
@@ -494,6 +503,16 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
     ReplSetConfig localConfig;
     status = localConfig.initialize(cfg.getValue());
     if (!status.isOK()) {
+        if (status.code() == ErrorCodes::RepairedReplicaSetNode) {
+            severe()
+                << "This instance has been repaired and may contain modified replicated data that "
+                   "would not match other replica set members. To see your repaired data, start "
+                   "mongod without the --replSet option. When you are finished recovering your "
+                   "data and would like to perform a complete re-sync, please refer to the "
+                   "documentation here: "
+                   "https://docs.mongodb.com/manual/tutorial/resync-replica-set-member/";
+            fassertFailedNoTrace(50923);
+        }
         error() << "Locally stored replica set configuration does not parse; See "
                    "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config "
                    "for information on how to recover from this. Got \""
@@ -588,6 +607,18 @@ void ReplicationCoordinatorImpl::_finishLoadLocalConfig(
     }
 
     auto opCtx = cc().makeOperationContext();
+    auto consistency = DataConsistency::Inconsistent;
+    if (!lastOpTime.isNull()) {
+
+        // If we have an oplog, it is still possible that our data is not in a consistent state. For
+        // example, if we are starting up after a crash following a post-rollback RECOVERING state.
+        // To detect this, we see if our last optime is >= the 'minValid' optime, which
+        // should be persistent across node crashes.
+        OpTime minValid = _replicationProcess->getConsistencyMarkers()->getMinValid(opCtx.get());
+        consistency =
+            (lastOpTime >= minValid) ? DataConsistency::Consistent : DataConsistency::Inconsistent;
+    }
+
     stdx::unique_lock<stdx::mutex> lock(_mutex);
     invariant(_rsConfigState == kConfigStartingUp);
     const PostMemberStateUpdateAction action =
@@ -596,15 +627,6 @@ void ReplicationCoordinatorImpl::_finishLoadLocalConfig(
     // Set our last applied and durable optimes to the top of the oplog, if we have one.
     if (!lastOpTime.isNull()) {
         bool isRollbackAllowed = false;
-
-        // If we have an oplog, it is still possible that our data is not in a consistent state. For
-        // example, if we are starting up after a crash following a post-rollback RECOVERING state.
-        // To detect this, we see if our last optime is >= the 'minValid' optime, which
-        // should be persistent across node crashes.
-        OpTime minValid = _replicationProcess->getConsistencyMarkers()->getMinValid(opCtx.get());
-        auto consistency =
-            (lastOpTime >= minValid) ? DataConsistency::Consistent : DataConsistency::Inconsistent;
-
         _setMyLastAppliedOpTime_inlock(lastOpTime, isRollbackAllowed, consistency);
         _setMyLastDurableOpTime_inlock(lastOpTime, isRollbackAllowed);
         _reportUpstream_inlock(std::move(lock));  // unlocks _mutex.
@@ -1260,10 +1282,9 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
                                                     OpTime targetOpTime,
                                                     boost::optional<Date_t> deadline) {
     if (!isMajorityCommittedRead) {
-        // This assumes the read concern is "local" level.
-        // We need to wait for all committed writes to be visible, even in the oplog (which uses
-        // special visibility rules).
-        _externalState->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+        if (!_externalState->oplogExists(opCtx)) {
+            return {ErrorCodes::NotYetInitialized, "The oplog does not exist."};
+        }
     }
 
     stdx::unique_lock<stdx::mutex> lock(_mutex);
@@ -1304,7 +1325,7 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
         // We just need to wait for the opTime to catch up to what we need (not majority RC).
         stdx::condition_variable condVar;
         ThreadWaiter waiter(targetOpTime, nullptr, &condVar);
-        WaiterGuard guard(&_opTimeWaiterList, &waiter);
+        WaiterGuard guard(lock, &_opTimeWaiterList, &waiter);
 
         LOG(3) << "waitUntilOpTime: OpID " << opCtx->getOpID() << " is waiting for OpTime "
                << waiter << " until " << opCtx->getDeadline();
@@ -1327,6 +1348,18 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
         }
     }
 
+    lock.unlock();
+
+    if (!isMajorityCommittedRead) {
+        // This assumes the read concern is "local" level.
+        // We need to wait for all committed writes to be visible, even in the oplog (which uses
+        // special visibility rules).  We must do this after waiting for our target optime, because
+        // only then do we know that it will fill in all "holes" before that time.  If we do it
+        // earlier, we may return when the requested optime has been reached, but other writes
+        // at optimes before that time are not yet visible.
+        _storage->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+    }
+
     return Status::OK();
 }
 
@@ -1346,9 +1379,9 @@ Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(OperationContext
     invariant(!readConcern.getArgsOpTime());
 
     // TODO SERVER-34620: Re-enable speculative behavior when "atClusterTime" is specified.
-    auto session = OperationContextSession::get(opCtx);
-    const bool speculative =
-        session && session->inMultiDocumentTransaction() && !readConcern.getArgsAtClusterTime();
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    const bool speculative = txnParticipant && txnParticipant->inMultiDocumentTransaction() &&
+        !readConcern.getArgsAtClusterTime();
 
     const bool isMajorityCommittedRead =
         (readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern ||
@@ -1491,6 +1524,23 @@ ReplicationCoordinator::StatusAndDuration ReplicationCoordinatorImpl::awaitRepli
     return {std::move(status), duration_cast<Milliseconds>(timer.elapsed())};
 }
 
+BSONObj ReplicationCoordinatorImpl::_getReplicationProgress(WithLock wl) const {
+    BSONObjBuilder progress;
+
+    const auto lastCommittedOpTime = _topCoord->getLastCommittedOpTime();
+    progress.append("lastCommittedOpTime", lastCommittedOpTime.toBSON());
+
+    const auto currentCommittedSnapshotOpTime = _getCurrentCommittedSnapshotOpTime_inlock();
+    progress.append("currentCommittedSnapshotOpTime", currentCommittedSnapshotOpTime.toBSON());
+
+    const auto earliestDropPendingOpTime = _externalState->getEarliestDropPendingOpTime();
+    if (earliestDropPendingOpTime) {
+        progress.append("earliestDropPendingOpTime", earliestDropPendingOpTime->toBSON());
+    }
+
+    _topCoord->fillMemberData(&progress);
+    return progress.obj();
+}
 Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     stdx::unique_lock<stdx::mutex>* lock,
     OperationContext* opCtx,
@@ -1570,7 +1620,16 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     // Must hold _mutex before constructing waitInfo as it will modify _replicationWaiterList
     stdx::condition_variable condVar;
     ThreadWaiter waiter(opTime, &writeConcern, &condVar);
-    WaiterGuard guard(&_replicationWaiterList, &waiter);
+    WaiterGuard guard(*lock, &_replicationWaiterList, &waiter);
+
+    ScopeGuard failGuard = MakeGuard([&]() {
+        if (getTestCommandsEnabled()) {
+            log() << "Replication failed for write concern: " << writeConcern.toBSON()
+                  << ", waitInfo: " << waiter << ", opID: " << opCtx->getOpID()
+                  << ", progress: " << _getReplicationProgress(*lock);
+        }
+    });
+
     while (!_doneWaitingForReplication_inlock(opTime, writeConcern)) {
 
         if (_inShutdown) {
@@ -1583,14 +1642,6 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
         }
 
         if (status.getValue() == stdx::cv_status::timeout) {
-            if (getTestCommandsEnabled()) {
-                // log state of replica set on timeout to help with diagnosis.
-                BSONObjBuilder progress;
-                _topCoord->fillMemberData(&progress);
-                log() << "Replication for failed WC: " << writeConcern.toBSON()
-                      << ", waitInfo: " << waiter << ", opID: " << opCtx->getOpID()
-                      << ", progress: " << progress.done();
-            }
             return {ErrorCodes::WriteConcernFailed, "waiting for replication timed out"};
         }
 
@@ -1600,7 +1651,13 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
         }
     }
 
-    return _checkIfWriteConcernCanBeSatisfied_inlock(writeConcern);
+    auto satisfiableStatus = _checkIfWriteConcernCanBeSatisfied_inlock(writeConcern);
+    if (!satisfiableStatus.isOK()) {
+        return satisfiableStatus;
+    }
+
+    failGuard.Dismiss();
+    return Status::OK();
 }
 
 void ReplicationCoordinatorImpl::waitForStepDownAttempt_forTest() {
@@ -1615,60 +1672,41 @@ void ReplicationCoordinatorImpl::waitForStepDownAttempt_forTest() {
     }
 }
 
-Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
-                                            const bool force,
-                                            const Milliseconds& waitTime,
-                                            const Milliseconds& stepdownTime) {
+void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
+                                          const bool force,
+                                          const Milliseconds& waitTime,
+                                          const Milliseconds& stepdownTime) {
 
     const Date_t startTime = _replExecutor->now();
     const Date_t stepDownUntil = startTime + stepdownTime;
     const Date_t waitUntil = startTime + waitTime;
 
-    if (!getMemberState().primary()) {
-        // Note this check is inherently racy - it's always possible for the node to
-        // stepdown from some other path before we acquire the global exclusive lock.  This check
-        // is just to try to save us from acquiring the global X lock unnecessarily.
-        return {ErrorCodes::NotMaster, "not primary so can't step down"};
-    }
+    // Note this check is inherently racy - it's always possible for the node to stepdown from some
+    // other path before we acquire the global exclusive lock.  This check is just to try to save us
+    // from acquiring the global X lock unnecessarily.
+    uassert(ErrorCodes::NotMaster, "not primary so can't step down", getMemberState().primary());
 
+    ReplicationStateTransitionLockGuard::Args transitionArgs;
+    // Kill all user operations to help us get the global lock faster, as well as to ensure that
+    // operations that are no longer safe to run (like writes) get killed.
+    transitionArgs.killUserOperations = true;
     // Using 'force' sets the default for the wait time to zero, which means the stepdown will
     // fail if it does not acquire the lock immediately. In such a scenario, we use the
     // stepDownUntil deadline instead.
-    auto lockDeadline = force ? stepDownUntil : waitUntil;
+    transitionArgs.lockDeadline = force ? stepDownUntil : waitUntil;
 
-    auto globalLock = stdx::make_unique<Lock::GlobalLock>(opCtx,
-                                                          MODE_X,
-                                                          lockDeadline,
-                                                          Lock::InterruptBehavior::kThrow,
-                                                          Lock::GlobalLock::EnqueueOnly());
-
-    // We've requested the global exclusive lock which will stop new operations from coming in,
-    // but existing operations could take a long time to finish, so kill all user operations
-    // to help us get the global lock faster.
-    _externalState->killAllUserOperations(opCtx);
-
-    globalLock->waitForLockUntil(lockDeadline);
-    if (!globalLock->isLocked()) {
-        return {ErrorCodes::ExceededTimeLimit,
-                "Could not acquire the global shared lock before the deadline for stepdown"};
-    }
+    ReplicationStateTransitionLockGuard transitionGuard(opCtx, transitionArgs);
+    invariant(opCtx->lockState()->isW());
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
-    auto status = opCtx->checkForInterruptNoAssert();
-    if (!status.isOK()) {
-        return status;
-    }
+    opCtx->checkForInterrupt();
 
     const long long termAtStart = _topCoord->getTerm();
 
-    status = _topCoord->prepareForStepDownAttempt();
-    if (!status.isOK()) {
-        // This will cause us to fail if we're already in the process of stepping down.
-        // It is also possible to get here even if we're done stepping down via another path,
-        // and this will also elicit a failure from this call.
-        return status;
-    }
+    // This will cause us to fail if we're already in the process of stepping down, or if we've
+    // already successfully stepped down via another path.
+    auto abortFn = uassertStatusOK(_topCoord->prepareForStepDownAttempt());
 
     // Update _canAcceptNonLocalWrites from the TopologyCoordinator now that we're in the middle
     // of a stepdown attempt.  This will prevent us from accepting writes so that if our stepdown
@@ -1704,14 +1742,14 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
         _performPostMemberStateUpdateAction(action);
     };
     ScopeGuard onExitGuard = MakeGuard([&] {
-        _topCoord->abortAttemptedStepDownIfNeeded();
+        abortFn();
         updateMemberState();
     });
 
-    try {
+    auto waitTimeout = std::min(waitTime, stepdownTime);
+    auto lastAppliedOpTime = _getMyLastAppliedOpTime_inlock();
 
-        auto waitTimeout = std::min(waitTime, stepdownTime);
-        auto lastAppliedOpTime = _getMyLastAppliedOpTime_inlock();
+    {  // Add a scope to ensure that the WaiterGuard destructor runs before the mutex is released.
 
         // Set up a waiter which will be signalled when we process a heartbeat or updatePosition
         // and have a majority of nodes at our optime.
@@ -1719,7 +1757,7 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
         const WriteConcernOptions waiterWriteConcern(
             WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::NONE, waitTimeout);
         ThreadWaiter waiter(lastAppliedOpTime, &waiterWriteConcern, &condVar);
-        WaiterGuard guard(&_replicationWaiterList, &waiter);
+        WaiterGuard guard(lk, &_replicationWaiterList, &waiter);
 
         while (!_topCoord->attemptStepDown(
             termAtStart, _replExecutor->now(), waitUntil, stepDownUntil, force)) {
@@ -1727,7 +1765,7 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
             // The stepdown attempt failed. We now release the global lock to allow secondaries
             // to read the oplog, then wait until enough secondaries are caught up for us to
             // finish stepdown.
-            globalLock.reset();
+            transitionGuard.releaseGlobalLock();
             invariant(!opCtx->lockState()->isLocked());
 
             // Make sure we re-acquire the global lock before returning so that we're always holding
@@ -1744,9 +1782,8 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
                 // clean up a failed stepdown attempt, we might as well spend whatever time we need
                 // to acquire it now.  For the same reason, we also disable lock acquisition
                 // interruption, to guarantee that we get the lock eventually.
-                UninterruptibleLockGuard noInterrupt(opCtx->lockState());
-                globalLock.reset(new Lock::GlobalLock(opCtx, MODE_X));
-                invariant(globalLock->isLocked());
+                transitionGuard.reacquireGlobalLock();
+                invariant(opCtx->lockState()->isW());
                 lk.lock();
             });
 
@@ -1757,8 +1794,6 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
             opCtx->waitForConditionOrInterruptUntil(
                 condVar, lk, std::min(stepDownUntil, waitUntil));
         }
-    } catch (const DBException& e) {
-        return e.toStatus();
     }
 
     // Stepdown success!
@@ -1775,7 +1810,6 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     if (!force && enableElectionHandoff.load()) {
         _performElectionHandoff();
     }
-    return Status::OK();
 }
 
 void ReplicationCoordinatorImpl::_performElectionHandoff() {
@@ -1788,7 +1822,8 @@ void ReplicationCoordinatorImpl::_performElectionHandoff() {
     }
 
     auto target = _rsConfig.getMemberAt(candidateIndex).getHostAndPort();
-    executor::RemoteCommandRequest request(target, "admin", BSON("replSetStepUp" << 1), nullptr);
+    executor::RemoteCommandRequest request(
+        target, "admin", BSON("replSetStepUp" << 1 << "skipDryRun" << true), nullptr);
     log() << "Handing off election to " << target;
 
     auto callbackHandleSW = _replExecutor->scheduleRemoteCommand(
@@ -1924,8 +1959,8 @@ Status ReplicationCoordinatorImpl::checkCanServeReadsFor_UNSAFE(OperationContext
         return Status::OK();
     }
 
-    auto session = OperationContextSession::get(opCtx);
-    if (session && session->inMultiDocumentTransaction()) {
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
         if (!_canAcceptNonLocalWrites && !getTestCommandsEnabled()) {
             return Status(ErrorCodes::NotMaster,
                           "Multi-document transactions are only allowed on replica set primaries.");
@@ -2042,6 +2077,11 @@ void ReplicationCoordinatorImpl::fillIsMasterForReplSet(IsMasterResponse* respon
         // Report that we are secondary to ismaster callers until drain completes.
         response->setIsMaster(false);
         response->setIsSecondary(true);
+    }
+
+    if (_inShutdown) {
+        response->setIsMaster(false);
+        response->setIsSecondary(false);
     }
 }
 
@@ -2223,6 +2263,9 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
     if (args.force) {
         newConfigObj = incrementConfigVersionByRandom(newConfigObj);
     }
+
+    BSONObj oldConfigObj = oldConfig.toBSON();
+    audit::logReplSetReconfig(opCtx->getClient(), &oldConfigObj, &newConfigObj);
 
     Status status = newConfig.initialize(newConfigObj, oldConfig.getReplicaSetId());
     if (!status.isOK()) {
@@ -2734,6 +2777,10 @@ void ReplicationCoordinatorImpl::signalDropPendingCollectionsRemovedFromStorage(
     _wakeReadyWaiters_inlock();
 }
 
+boost::optional<Timestamp> ReplicationCoordinatorImpl::getRecoveryTimestamp() {
+    return _storage->getRecoveryTimestamp(getServiceContext());
+}
+
 void ReplicationCoordinatorImpl::_enterDrainMode_inlock() {
     _applierState = ApplierState::Draining;
     _externalState->stopProducer();
@@ -3014,6 +3061,13 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime_inloc
         maximumStableTimestamp =
             std::min(_storage->getAllCommittedTimestamp(_service), commitPoint.getTimestamp());
     }
+
+    MONGO_FAIL_POINT_BLOCK(holdStableTimestampAtSpecificTimestamp, data) {
+        const BSONObj& dataObj = data.getData();
+        const auto holdStableTimestamp = dataObj["timestamp"].timestamp();
+        maximumStableTimestamp = std::min(maximumStableTimestamp, holdStableTimestamp);
+    }
+
     const auto maximumStableOpTime = OpTime(maximumStableTimestamp, commitPoint.getTerm());
 
     // Find the greatest optime candidate that is less than or equal to the commit point.
@@ -3449,8 +3503,12 @@ CallbackFn ReplicationCoordinatorImpl::_wrapAsCallbackFn(const stdx::function<vo
     };
 }
 
-Status ReplicationCoordinatorImpl::stepUpIfEligible() {
-    _startElectSelfIfEligibleV1(TopologyCoordinator::StartElectionReason::kStepUpRequest);
+Status ReplicationCoordinatorImpl::stepUpIfEligible(bool skipDryRun) {
+
+    auto reason = skipDryRun ? TopologyCoordinator::StartElectionReason::kStepUpRequestSkipDryRun
+                             : TopologyCoordinator::StartElectionReason::kStepUpRequest;
+    _startElectSelfIfEligibleV1(reason);
+
     EventHandle finishEvent;
     {
         stdx::lock_guard<stdx::mutex> lk(_mutex);

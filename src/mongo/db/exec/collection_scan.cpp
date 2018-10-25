@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -39,7 +41,6 @@
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/storage/record_fetcher.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -63,8 +64,7 @@ CollectionScan::CollectionScan(OperationContext* opCtx,
       _workingSet(workingSet),
       _filter(filter),
       _params(params),
-      _isDead(false),
-      _wsidForFetch(_workingSet->allocate()) {
+      _isDead(false) {
     // Explain reports the direction of the collection scan.
     _specificStats.direction = params.direction;
     _specificStats.maxTs = params.maxTs;
@@ -121,12 +121,12 @@ PlanStage::StageState CollectionScan::doWork(WorkingSetID* out) {
 
             if (!_lastSeenId.isNull()) {
                 invariant(_params.tailable);
-                // Seek to where we were last time. If it no longer exists, mark us as dead
-                // since we want to signal an error rather than silently dropping data from the
-                // stream. This is related to the _lastSeenId handling in invalidate. Note that
-                // we want to return the record *after* this one since we have already returned
-                // this one. This is only possible in the tailing case because that is the only
-                // time we'd need to create a cursor after already getting a record out of it.
+                // Seek to where we were last time. If it no longer exists, mark us as dead since we
+                // want to signal an error rather than silently dropping data from the stream.
+                //
+                // Note that we want to return the record *after* this one since we have already
+                // returned this one. This is only possible in the tailing case because that is the
+                // only time we'd need to create a cursor after already getting a record out of it.
                 if (!_cursor->seekExact(_lastSeenId)) {
                     _isDead = true;
                     Status status(ErrorCodes::CappedPositionLost,
@@ -145,16 +145,6 @@ PlanStage::StageState CollectionScan::doWork(WorkingSetID* out) {
         if (_lastSeenId.isNull() && !_params.start.isNull()) {
             record = _cursor->seekExact(_params.start);
         } else {
-            // See if the record we're about to access is in memory. If not, pass a fetch
-            // request up.
-            if (auto fetcher = _cursor->fetcherForNext()) {
-                // Pass the RecordFetcher up.
-                WorkingSetMember* member = _workingSet->get(_wsidForFetch);
-                member->setFetcher(fetcher.release());
-                *out = _wsidForFetch;
-                return PlanStage::NEED_YIELD;
-            }
-
             record = _cursor->next();
         }
     } catch (const WriteConflictException&) {
@@ -232,29 +222,6 @@ PlanStage::StageState CollectionScan::returnIfMatches(WorkingSetMember* member,
 
 bool CollectionScan::isEOF() {
     return _commonStats.isEOF || _isDead;
-}
-
-void CollectionScan::doInvalidate(OperationContext* opCtx,
-                                  const RecordId& id,
-                                  InvalidationType type) {
-    // We don't care about mutations since we apply any filters to the result when we (possibly)
-    // return it.
-    if (INVALIDATION_DELETION != type) {
-        return;
-    }
-
-    // If we're here, 'id' is being deleted.
-
-    // Deletions can harm the underlying RecordCursor so we must pass them down.
-    if (_cursor) {
-        _cursor->invalidate(opCtx, id);
-    }
-
-    if (_params.tailable && id == _lastSeenId) {
-        // This means that deletes have caught up to the reader. We want to error in this case
-        // so readers don't miss potentially important data.
-        _isDead = true;
-    }
 }
 
 void CollectionScan::doSaveState() {

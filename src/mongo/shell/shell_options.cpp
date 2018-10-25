@@ -1,29 +1,31 @@
-/*
- *    Copyright (C) 2013 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault;
@@ -42,6 +44,7 @@
 #include "mongo/config.h"
 #include "mongo/db/auth/sasl_command_constants.h"
 #include "mongo/db/server_options.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/rpc/protocol.h"
 #include "mongo/shell/shell_utils.h"
 #include "mongo/transport/message_compressor_registry.h"
@@ -59,6 +62,11 @@ using std::string;
 using std::vector;
 
 ShellGlobalParams shellGlobalParams;
+
+// SERVER-36807: Limit --setShellParameter to SetParameters we know we want to expose.
+const std::set<std::string> kSetShellParameterWhitelist = {
+    "disabledSecureAllocatorDomains",
+};
 
 Status addMongoShellOptions(moe::OptionSection* options) {
     options->addOptionChaining(
@@ -214,6 +222,11 @@ Status addMongoShellOptions(moe::OptionSection* options) {
         moe::Switch,
         "automatically retry write operations upon transient network errors");
 
+    options->addOptionChaining("disableImplicitSessions",
+                               "disableImplicitSessions",
+                               moe::Switch,
+                               "do not automatically create and use implicit sessions");
+
     options
         ->addOptionChaining(
             "rpcProtocols", "rpcProtocols", moe::String, " none, opQueryOnly, opMsgOnly, all")
@@ -226,6 +239,14 @@ Status addMongoShellOptions(moe::OptionSection* options) {
 
     options->addOptionChaining(
         "jsHeapLimitMB", "jsHeapLimitMB", moe::Int, "set the js scope's heap size limit");
+
+    options
+        ->addOptionChaining("setShellParameter",
+                            "setShellParameter",
+                            moe::StringMap,
+                            "Set a configurable parameter")
+        .composing()
+        .hidden();
 
     return Status::OK();
 }
@@ -322,6 +343,13 @@ Status storeMongoShellOptions(const moe::Environment& params,
         shellGlobalParams.gssapiHostName = params["gssapiHostName"].as<string>();
     }
 
+    if (params.count("net.compression.compressors")) {
+        auto compressors = params["net.compression.compressors"].as<string>();
+        if (compressors != "disabled") {
+            shellGlobalParams.networkMessageCompressors = std::move(compressors);
+        }
+    }
+
     if (params.count("shell")) {
         shellGlobalParams.runShell = true;
     }
@@ -372,6 +400,9 @@ Status storeMongoShellOptions(const moe::Environment& params,
     }
     if (params.count("retryWrites")) {
         shellGlobalParams.shouldRetryWrites = true;
+    }
+    if (params.count("disableImplicitSessions")) {
+        shellGlobalParams.shouldUseImplicitSessions = false;
     }
     if (params.count("rpcProtocols")) {
         std::string protos = params["rpcProtocols"].as<string>();
@@ -434,38 +465,131 @@ Status storeMongoShellOptions(const moe::Environment& params,
 
         auto cs = cs_status.getValue();
         auto uriOptions = cs.getOptions();
-        StringBuilder sb;
-        sb << "ERROR: Cannot specify ";
 
-        if (!shellGlobalParams.username.empty() && !cs.getUser().empty() &&
-            shellGlobalParams.username != cs.getUser()) {
-            sb << "different usernames";
-        } else if (!shellGlobalParams.password.empty() && !cs.getPassword().empty() &&
-                   shellGlobalParams.password != cs.getPassword()) {
-            sb << "different passwords";
-        } else if (!shellGlobalParams.authenticationMechanism.empty() &&
-                   uriOptions.count("authMechanism") &&
-                   uriOptions["authMechanism"] != shellGlobalParams.authenticationMechanism) {
-            sb << "different authentication mechanisms";
-        } else if (!shellGlobalParams.authenticationDatabase.empty() &&
-                   uriOptions.count("authSource") &&
-                   uriOptions["authSource"] != shellGlobalParams.authenticationDatabase) {
-            sb << "different authentication databases ";
-        } else if (shellGlobalParams.gssapiServiceName != saslDefaultServiceName &&
-                   uriOptions.count("gssapiServiceName")) {
-            sb << "the GSSAPI service name";
-        } else {
-            return Status::OK();
-        }
+        auto handleURIOptions = [&] {
+            StringBuilder sb;
+            sb << "ERROR: Cannot specify ";
 
-        sb << " in connection URI and as a command-line option";
-        return Status(ErrorCodes::InvalidOptions, sb.str());
+            if (!shellGlobalParams.username.empty() && !cs.getUser().empty() &&
+                shellGlobalParams.username != cs.getUser()) {
+                sb << "different usernames";
+            } else if (!shellGlobalParams.password.empty() && !cs.getPassword().empty() &&
+                       shellGlobalParams.password != cs.getPassword()) {
+                sb << "different passwords";
+            } else if (!shellGlobalParams.authenticationMechanism.empty() &&
+                       uriOptions.count("authMechanism") &&
+                       uriOptions["authMechanism"] != shellGlobalParams.authenticationMechanism) {
+                sb << "different authentication mechanisms";
+            } else if (!shellGlobalParams.authenticationDatabase.empty() &&
+                       uriOptions.count("authSource") &&
+                       uriOptions["authSource"] != shellGlobalParams.authenticationDatabase) {
+                sb << "different authentication databases";
+            } else if (shellGlobalParams.gssapiServiceName != saslDefaultServiceName &&
+                       uriOptions.count("gssapiServiceName")) {
+                sb << "the GSSAPI service name";
+            } else if (!shellGlobalParams.networkMessageCompressors.empty() &&
+                       uriOptions.count("compressors") &&
+                       uriOptions["compressors"] != shellGlobalParams.networkMessageCompressors) {
+                sb << "different network message compressors";
+            } else {
+                return Status::OK();
+            }
+
+            sb << " in connection URI and as a command-line option";
+            return Status(ErrorCodes::InvalidOptions, sb.str());
+        };
+
+        auto uriStatus = handleURIOptions();
+        if (!uriStatus.isOK())
+            return uriStatus;
+
+        if (uriOptions.count("compressors"))
+            shellGlobalParams.networkMessageCompressors = uriOptions["compressors"];
     }
 
-    auto ret = storeMessageCompressionOptions(params);
-    if (!ret.isOK())
-        return ret;
+    if (!shellGlobalParams.networkMessageCompressors.empty()) {
+        const auto ret =
+            storeMessageCompressionOptions(shellGlobalParams.networkMessageCompressors);
+        if (!ret.isOK()) {
+            return ret;
+        }
+    }
+
+    if (params.count("setShellParameter")) {
+        auto ssp = params["setShellParameter"].as<std::map<std::string, std::string>>();
+        auto map = ServerParameterSet::getGlobal()->getMap();
+        for (auto it : ssp) {
+            const auto& name = it.first;
+            auto paramIt = map.find(name);
+            if (paramIt == map.end() || !kSetShellParameterWhitelist.count(name)) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "Unknown --setShellParameter '" << name << "'"};
+            }
+            auto* param = paramIt->second;
+            if (!param->allowedToChangeAtStartup()) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "Cannot use --setShellParameter to set '" << name
+                                      << "' at startup"};
+            }
+            auto status = param->setFromString(it.second);
+            if (!status.isOK()) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "Bad value for parameter '" << name << "': "
+                                      << status.reason()};
+            }
+        }
+    }
 
     return Status::OK();
+}
+
+void redactPasswordOptions(int argc, char** argv) {
+    constexpr auto kLongPasswordOption = "--password"_sd;
+    constexpr auto kShortPasswordOption = "-p"_sd;
+    for (int i = 0; i < argc; ++i) {
+        StringData arg(argv[i]);
+        if (arg.startsWith(kShortPasswordOption)) {
+            char* toRedact = nullptr;
+            // Handle -p password
+            if ((arg == kShortPasswordOption) && (i + 1 < argc)) {
+                toRedact = argv[++i];
+                // Handle -ppassword
+            } else {
+                toRedact = argv[i] + kShortPasswordOption.size();
+            }
+
+            invariant(toRedact);
+            // The arg should be null-terminated, replace everything up to \0 to 'x'
+            while (*toRedact) {
+                *toRedact++ = 'x';
+            }
+        }
+        if (arg.startsWith(kLongPasswordOption)) {
+            char* toRedact = nullptr;
+            // Handle --password password
+            if ((arg == kLongPasswordOption) && (i + 1 < argc)) {
+                toRedact = argv[++i];
+                // Handle --password=password
+            } else if (arg.size() != kLongPasswordOption.size()) {
+                toRedact = argv[i] + kLongPasswordOption.size();
+                // It's not valid to do --passwordpassword, make sure there's an = separator
+                invariant(*(toRedact++) == '=');
+            }
+
+            // If there's nothing to redact, just exit
+            if (!toRedact) {
+                continue;
+            }
+
+            // The arg should be null-terminated, replace everything up to \0 to 'x'
+            while (*toRedact) {
+                *toRedact++ = 'x';
+            }
+        } else if (MongoURI::isMongoURI(arg)) {
+            auto reformedURI = MongoURI::redact(arg);
+            auto length = arg.size();
+            ::strncpy(argv[i], reformedURI.data(), length);
+        }
+    }
 }
 }  // namespace mongo

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -851,6 +853,60 @@ TEST(QueryRequestTest, ParseFromCommandDefaultBatchSize) {
 }
 
 //
+// Test asFindCommand ns and uuid variants.
+//
+
+TEST(QueryRequestTest, AsFindCommandAllNonOptionFields) {
+    BSONObj cmdObj = fromjson(
+        "{find: 'testns',"
+        "filter: {a: 1},"
+        "projection: {c: 1},"
+        "sort: {b: 1},"
+        "hint: {d: 1},"
+        "readConcern: {e: 1},"
+        "collation: {f: 1},"
+        "skip: 5,"
+        "limit: 3,"
+        "batchSize: 90,"
+        "singleBatch: true}");
+    const NamespaceString nss("test.testns");
+    bool isExplain = false;
+    unique_ptr<QueryRequest> qr(
+        assertGet(QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain)));
+    ASSERT_BSONOBJ_EQ(cmdObj, qr->asFindCommand());
+}
+
+TEST(QueryRequestTest, AsFindCommandWithUuidAllNonOptionFields) {
+    BSONObj cmdObj = fromjson(
+        // This binary value is UUID("01234567-89ab-cdef-edcb-a98765432101")
+        "{find: { \"$binary\" : \"ASNFZ4mrze/ty6mHZUMhAQ==\", \"$type\" : \"04\" },"
+        "filter: {a: 1},"
+        "projection: {c: 1},"
+        "sort: {b: 1},"
+        "hint: {d: 1},"
+        "readConcern: {e: 1},"
+        "collation: {f: 1},"
+        "skip: 5,"
+        "limit: 3,"
+        "batchSize: 90,"
+        "singleBatch: true}");
+    const NamespaceString nss("test.testns");
+    bool isExplain = false;
+    unique_ptr<QueryRequest> qr(
+        assertGet(QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain)));
+    ASSERT_BSONOBJ_EQ(cmdObj, qr->asFindCommandWithUuid());
+}
+
+TEST(QueryRequestTest, AsFindCommandWithUuidNoAvailableNamespace) {
+    BSONObj cmdObj =
+        fromjson("{find: { \"$binary\" : \"ASNFZ4mrze/ty6mHZUMhAQ==\", \"$type\" : \"04\" }}");
+    QueryRequest qr(NamespaceStringOrUUID(
+        "test", UUID::parse("01234567-89ab-cdef-edcb-a98765432101").getValue()));
+    ASSERT_BSONOBJ_EQ(cmdObj, qr.asFindCommandWithUuid());
+}
+
+//
+//
 // Errors checked in QueryRequest::validate().
 //
 
@@ -1332,7 +1388,7 @@ TEST_F(QueryRequestTest, ParseFromUUID) {
     Collection coll(stdx::make_unique<CollectionMock>(nss));
     UUIDCatalog& catalog = UUIDCatalog::get(opCtx.get());
     catalog.onCreateCollection(opCtx.get(), &coll, uuid);
-    QueryRequest qr(uuid);
+    QueryRequest qr(NamespaceStringOrUUID("test", uuid));
     // Ensure a call to refreshNSS succeeds.
     qr.refreshNSS(opCtx.get());
     ASSERT_EQ(nss, qr.nss());

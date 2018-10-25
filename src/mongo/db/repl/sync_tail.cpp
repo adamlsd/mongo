@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2008 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
 
@@ -49,6 +51,7 @@
 #include "mongo/db/commands/fsync.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
@@ -70,6 +73,8 @@
 #include "mongo/db/session.h"
 #include "mongo/db/session_txn_record_gen.h"
 #include "mongo/db/stats/timer_stats.h"
+#include "mongo/db/storage/recovery_unit.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
@@ -79,11 +84,7 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
-
-using std::endl;
-
 namespace repl {
-
 namespace {
 
 MONGO_FAIL_POINT_DEFINE(pauseBatchApplicationBeforeCompletion);
@@ -207,7 +208,7 @@ void ApplyBatchFinalizerForJournal::_run() {
 NamespaceString parseUUIDOrNs(OperationContext* opCtx, const OplogEntry& oplogEntry) {
     auto optionalUuid = oplogEntry.getUuid();
     if (!optionalUuid) {
-        return oplogEntry.getNamespace();
+        return oplogEntry.getNss();
     }
 
     const auto& uuid = optionalUuid.get();
@@ -271,10 +272,6 @@ Status SyncTail::syncApply(OperationContext* opCtx,
         Lock::DBLock dbLock(opCtx, nss.db(), MODE_X);
         OldClientContext ctx(opCtx, nss.ns());
         return applyOp(ctx.db());
-    } else if (opType == OpTypeEnum::kInsert && nss.isSystemDotIndexes()) {
-        Lock::DBLock dbLock(opCtx, nss.db(), MODE_X);
-        OldClientContext ctx(opCtx, nss.ns());
-        return applyOp(ctx.db());
     } else if (OplogEntry::isCrudOpType(opType)) {
         return writeConflictRetry(opCtx, "syncApply_CRUD", nss.ns(), [&] {
             // Need to throw instead of returning a status for it to be properly ignored.
@@ -306,12 +303,23 @@ Status SyncTail::syncApply(OperationContext* opCtx,
         });
     } else if (opType == OpTypeEnum::kCommand) {
         return writeConflictRetry(opCtx, "syncApply_command", nss.ns(), [&] {
-            // a command may need a global write lock. so we will conservatively go
-            // ahead and grab one here. suboptimal. :-(
-            Lock::GlobalWrite globalWriteLock(opCtx);
+            // A command may need a global write lock. so we will conservatively go
+            // ahead and grab one for non-transaction commands.
+            // Transactions have to acquire the same locks on secondaries as on primary.
+            boost::optional<Lock::GlobalWrite> globalWriteLock;
+
+            // TODO SERVER-37180 Remove this double-parsing.
+            // The command entry has been parsed before, so it must be valid.
+            auto entry = uassertStatusOK(OplogEntry::parse(op));
+            const StringData commandName(op["o"].embeddedObject().firstElementFieldName());
+            // SERVER-37313: createIndex does not need to take the Global X lock.
+            if (!op.getBoolField("prepare") && commandName != "abortTransaction" &&
+                commandName != "createIndexes") {
+                globalWriteLock.emplace(opCtx);
+            }
 
             // special case apply for commands to avoid implicit database creation
-            Status status = applyCommand_inlock(opCtx, op, oplogApplicationMode);
+            Status status = applyCommand_inlock(opCtx, op, entry, oplogApplicationMode);
             incrementOpsAppliedStats();
             return status;
         });
@@ -501,7 +509,7 @@ void fillWriterVectors(OperationContext* opCtx,
     CachedCollectionProperties collPropertiesCache;
 
     for (auto&& op : *ops) {
-        StringMapTraits::HashedKey hashedNs(op.getNamespace().ns());
+        StringMapTraits::HashedKey hashedNs(op.getNss().ns());
         uint32_t hash = hashedNs.hash();
 
         // We need to track all types of ops, including type 'n' (these are generated from chunk
@@ -538,15 +546,12 @@ void fillWriterVectors(OperationContext* opCtx,
 
         // Extract applyOps operations and fill writers with extracted operations using this
         // function.
-        if (op.isCommand() && op.getCommandType() == OplogEntry::CommandType::kApplyOps) {
-            if (op.shouldPrepare()) {
-                // TODO (SERVER-35307) mark operations as needing prepare.
-                continue;
-            }
+        if (op.getCommandType() == OplogEntry::CommandType::kApplyOps && !op.shouldPrepare()) {
             try {
                 derivedOps->emplace_back(ApplyOps::extractOperations(op));
-                fillWriterVectors(
-                    opCtx, &derivedOps->back(), writerVectors, derivedOps, sessionUpdateTracker);
+
+                // Nested entries cannot have different session updates.
+                fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
             } catch (...) {
                 fassertFailedWithStatusNoTrace(
                     50711,
@@ -579,9 +584,6 @@ void fillWriterVectors(OperationContext* opCtx,
     }
 }
 
-}  // namespace
-
-namespace {
 void tryToGoLiveAsASecondary(OperationContext* opCtx,
                              ReplicationCoordinator* replCoord,
                              OpTime minValid) {
@@ -628,7 +630,8 @@ void tryToGoLiveAsASecondary(OperationContext* opCtx,
                   << ". Current state: " << replCoord->getMemberState() << causedBy(status);
     }
 }
-}
+
+}  // namespace
 
 class SyncTail::OpQueueBatcher {
     MONGO_DISALLOW_COPYING(OpQueueBatcher);
@@ -933,8 +936,9 @@ bool SyncTail::tryPopAndWaitForMore(OperationContext* opCtx,
     // Oplog entries on 'system.views' should also be processed one at a time. View catalog
     // immediately reflects changes for each oplog entry so we can see inconsistent view catalog if
     // multiple oplog entries on 'system.views' are being applied out of the original order.
-    if ((entry.isCommand() && entry.getCommandType() != OplogEntry::CommandType::kApplyOps) ||
-        entry.getNamespace().isSystemDotViews()) {
+    if ((entry.isCommand() &&
+         (entry.getCommandType() != OplogEntry::CommandType::kApplyOps || entry.shouldPrepare())) ||
+        entry.getNss().isSystemDotViews()) {
         if (ops->getCount() == 1) {
             // apply commands one-at-a-time
             _consume(opCtx, oplogBuffer);
@@ -1001,12 +1005,12 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
             bool ok = missingObjReader.connect(*source);
             if (!ok) {
                 warning() << "network problem detected while connecting to the "
-                          << "sync source, attempt " << retryCount << " of " << retryMax << endl;
+                          << "sync source, attempt " << retryCount << " of " << retryMax;
                 continue;  // try again
             }
         } catch (const NetworkException&) {
             warning() << "network problem detected while connecting to the "
-                      << "sync source, attempt " << retryCount << " of " << retryMax << endl;
+                      << "sync source, attempt " << retryCount << " of " << retryMax;
             continue;  // try again
         }
 
@@ -1021,7 +1025,7 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
 
         BSONObj query = BSONObjBuilder().append(idElem).obj();
         BSONObj missingObj;
-        auto nss = oplogEntry.getNamespace();
+        auto nss = oplogEntry.getNss();
         try {
             auto uuid = oplogEntry.getUuid();
             if (!uuid) {
@@ -1033,10 +1037,10 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
             }
         } catch (const NetworkException&) {
             warning() << "network problem detected while fetching a missing document from the "
-                      << "sync source, attempt " << retryCount << " of " << retryMax << endl;
+                      << "sync source, attempt " << retryCount << " of " << retryMax;
             continue;  // try again
         } catch (DBException& e) {
-            error() << "assertion fetching missing object: " << redact(e) << endl;
+            error() << "assertion fetching missing object: " << redact(e);
             throw;
         }
 
@@ -1134,7 +1138,10 @@ Status multiSyncApply(OperationContext* opCtx,
 
     UnreplicatedWritesBlock uwb(opCtx);
     DisableDocumentValidation validationDisabler(opCtx);
-    ShouldNotConflictWithSecondaryBatchApplicationBlock shouldNotConflictBlock(opCtx->lockState());
+    // Since we swap the locker in stash / unstash transaction resources,
+    // ShouldNotConflictWithSecondaryBatchApplicationBlock will touch the locker that has been
+    // destroyed by unstash in its destructor. Thus we set the flag explicitly.
+    opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
 
     // Explicitly start future read transactions without a timestamp.
     opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNoTimestamp);
@@ -1156,7 +1163,7 @@ Status multiSyncApply(OperationContext* opCtx,
         MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo();
 
         for (auto it = ops->cbegin(); it != ops->cend(); ++it) {
-            const auto& entry = **it;
+            const OplogEntry& entry = **it;
 
             // If we are successful in grouping and applying inserts, advance the current iterator
             // past the end of the inserted group of entries.
@@ -1231,9 +1238,35 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
         // Each node records cumulative batch application stats for itself using this timer.
         TimerHolder timer(&applyBatchStats);
 
+        const bool pinOldestTimestamp = !serverGlobalParams.enableMajorityReadConcern;
+        std::unique_ptr<RecoveryUnit> pinningTransaction;
+        if (pinOldestTimestamp) {
+            // If `enableMajorityReadConcern` is false, storage aggressively trims
+            // history. Documents may not be inserted before the cutoff point. This piece will pin
+            // the "oldest timestamp" until after the batch is fully applied.
+            //
+            // When `enableMajorityReadConcern` is false, storage sets the "oldest timestamp" to
+            // the "get all committed" timestamp. Opening a transaction and setting its timestamp
+            // to first oplog entry's timestamp will prevent the "get all committed" timestamp
+            // from advancing.
+            //
+            // This transaction will be aborted after all writes from the batch of operations are
+            // complete. Aborting the transaction allows the "get all committed" point to be
+            // move forward.
+            pinningTransaction = std::unique_ptr<RecoveryUnit>(
+                opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit());
+            pinningTransaction->beginUnitOfWork(opCtx);
+            fassert(40677, pinningTransaction->setTimestamp(ops.front().getTimestamp()));
+        }
+
         // We must wait for the all work we've dispatched to complete before leaving this block
         // because the spawned threads refer to objects on the stack
-        ON_BLOCK_EXIT([&] { _writerPool->waitForIdle(); });
+        ON_BLOCK_EXIT([&] {
+            _writerPool->waitForIdle();
+            if (pinOldestTimestamp) {
+                pinningTransaction->abortUnitOfWork();
+            }
+        });
 
         // Write batch of ops into oplog.
         if (!_options.skipWritesToOplog) {
@@ -1281,14 +1314,13 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
                 }
             }
         }
-
-        // Notify the storage engine that a replication batch has completed.
-        // This means that all the writes associated with the oplog entries in the batch are
-        // finished and no new writes with timestamps associated with those oplog entries will show
-        // up in the future.
-        const auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
-        storageEngine->replicationBatchIsComplete();
     }
+
+    // Notify the storage engine that a replication batch has completed. This means that all the
+    // writes associated with the oplog entries in the batch are finished and no new writes with
+    // timestamps associated with those oplog entries will show up in the future.
+    const auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
+    storageEngine->replicationBatchIsComplete();
 
     // Use this fail point to hold the PBWM lock and prevent the batch from completing.
     if (MONGO_FAIL_POINT(pauseBatchApplicationBeforeCompletion)) {

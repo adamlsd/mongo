@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2012 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -38,7 +40,6 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
-#include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/client.h"
@@ -48,7 +49,7 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/backup_cursor_service.h"
+#include "mongo/db/storage/backup_cursor_hooks.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/util/assert_util.h"
@@ -71,12 +72,16 @@ Lock::ResourceMutex commandMutex("fsyncCommandMutex");
  */
 class FSyncLockThread : public BackgroundJob {
 public:
-    FSyncLockThread() : BackgroundJob(false) {}
+    FSyncLockThread(bool allowFsyncFailure)
+        : BackgroundJob(false), _allowFsyncFailure(allowFsyncFailure) {}
     virtual ~FSyncLockThread() {}
     virtual string name() const {
         return "FSyncLockThread";
     }
     virtual void run();
+
+private:
+    bool _allowFsyncFailure;
 };
 
 class FSyncCommand : public ErrmsgCommandDeprecated {
@@ -128,11 +133,15 @@ public:
             return false;
         }
 
-
         const bool sync =
             !cmdObj["async"].trueValue();  // async means do an fsync, but return immediately
         const bool lock = cmdObj["lock"].trueValue();
         log() << "CMD fsync: sync:" << sync << " lock:" << lock;
+
+        // fsync + lock is sometimes used to block writes out of the system and does not care if
+        // the `BackupCursorService::fsyncLock` call succeeds.
+        const bool allowFsyncFailure =
+            getTestCommandsEnabled() && cmdObj["allowFsyncFailure"].trueValue();
 
         if (!lock) {
             // Take a global IS lock to ensure the storage engine is not shutdown
@@ -160,7 +169,7 @@ public:
                 stdx::unique_lock<stdx::mutex> lk(lockStateMutex);
                 threadStatus = Status::OK();
                 threadStarted = false;
-                _lockThread = stdx::make_unique<FSyncLockThread>();
+                _lockThread = stdx::make_unique<FSyncLockThread>(allowFsyncFailure);
                 _lockThread->go();
 
                 while (!threadStarted && threadStatus.isOK()) {
@@ -324,6 +333,7 @@ SimpleMutex filesLockedFsync;
 
 void FSyncLockThread::run() {
     Client::initThread("fsyncLockWorker");
+    ON_BLOCK_EXIT([] { Client::destroy(); });
     stdx::lock_guard<SimpleMutex> lkf(filesLockedFsync);
     stdx::unique_lock<stdx::mutex> lk(fsyncCmd.lockStateMutex);
 
@@ -345,16 +355,35 @@ void FSyncLockThread::run() {
             return;
         }
 
-        auto backupCursorService = BackupCursorService::get(opCtx.getServiceContext());
+        bool successfulFsyncLock = false;
+        auto backupCursorHooks = BackupCursorHooks::get(opCtx.getServiceContext());
         try {
-            writeConflictRetry(&opCtx, "beginBackup", "global", [&opCtx, backupCursorService] {
-                backupCursorService->fsyncLock(&opCtx);
-            });
+            writeConflictRetry(&opCtx,
+                               "beginBackup",
+                               "global",
+                               [&opCtx, backupCursorHooks, &successfulFsyncLock, storageEngine] {
+                                   if (backupCursorHooks->enabled()) {
+                                       backupCursorHooks->fsyncLock(&opCtx);
+                                       successfulFsyncLock = true;
+                                   } else {
+                                       // Have the uassert be caught by the DBException
+                                       // block. Maintain "allowFsyncFailure" compatibility in
+                                       // community.
+                                       uassertStatusOK(storageEngine->beginBackup(&opCtx));
+                                       successfulFsyncLock = true;
+                                   }
+                               });
         } catch (const DBException& e) {
-            error() << "storage engine unable to begin backup : " << e.toString();
-            fsyncCmd.threadStatus = e.toStatus();
-            fsyncCmd.acquireFsyncLockSyncCV.notify_one();
-            return;
+            if (_allowFsyncFailure) {
+                warning() << "Locking despite storage engine being unable to begin backup : "
+                          << e.toString();
+                opCtx.recoveryUnit()->waitUntilDurable();
+            } else {
+                error() << "storage engine unable to begin backup : " << e.toString();
+                fsyncCmd.threadStatus = e.toStatus();
+                fsyncCmd.acquireFsyncLockSyncCV.notify_one();
+                return;
+            }
         }
 
         fsyncCmd.threadStarted = true;
@@ -364,7 +393,13 @@ void FSyncLockThread::run() {
             fsyncCmd.releaseFsyncLockSyncCV.wait(lk);
         }
 
-        backupCursorService->fsyncUnlock(&opCtx);
+        if (successfulFsyncLock) {
+            if (backupCursorHooks->enabled()) {
+                backupCursorHooks->fsyncUnlock(&opCtx);
+            } else {
+                storageEngine->endBackup(&opCtx);
+            }
+        }
 
     } catch (const std::exception& e) {
         severe() << "FSyncLockThread exception: " << e.what();

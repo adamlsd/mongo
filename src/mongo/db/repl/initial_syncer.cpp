@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -26,7 +28,7 @@
  *    it in the license file.
  */
 
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplicationInitialSync
 
 #include "mongo/platform/basic.h"
 
@@ -87,6 +89,9 @@ MONGO_FAIL_POINT_DEFINE(initialSyncHangBeforeFinish);
 // Failpoint which causes the initial sync function to hang before calling shouldRetry on a failed
 // operation.
 MONGO_FAIL_POINT_DEFINE(initialSyncHangBeforeGettingMissingDocument);
+
+// Failpoint which causes the initial sync function to hang before creating the oplog.
+MONGO_FAIL_POINT_DEFINE(initialSyncHangBeforeCreatingOplog);
 
 // Failpoint which stops the applier.
 MONGO_FAIL_POINT_DEFINE(rsSyncApplyStop);
@@ -378,6 +383,12 @@ void InitialSyncer::setScheduleDbWorkFn_forTest(const CollectionCloner::Schedule
     _scheduleDbWorkFn = work;
 }
 
+void InitialSyncer::setStartCollectionClonerFn(
+    const StartCollectionClonerFn& startCollectionCloner) {
+    LockGuard lk(_mutex);
+    _startCollectionClonerFn = startCollectionCloner;
+}
+
 void InitialSyncer::_setUp_inlock(OperationContext* opCtx, std::uint32_t initialSyncMaxAttempts) {
     // 'opCtx' is passed through from startup().
     _replicationProcess->getConsistencyMarkers()->setInitialSyncFlag(opCtx);
@@ -506,7 +517,7 @@ void InitialSyncer::_chooseSyncSourceCallback(
     std::uint32_t chooseSyncSourceAttempt,
     std::uint32_t chooseSyncSourceMaxAttempts,
     std::shared_ptr<OnCompletionGuard> onCompletionGuard) {
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    stdx::unique_lock<stdx::mutex> lock(_mutex);
     // Cancellation should be treated the same as other errors. In this case, the most likely cause
     // of a failed _chooseSyncSourceCallback() task is a cancellation triggered by
     // InitialSyncer::shutdown() or the task executor shutting down.
@@ -553,6 +564,17 @@ void InitialSyncer::_chooseSyncSourceCallback(
             return;
         }
         return;
+    }
+
+    if (MONGO_FAIL_POINT(initialSyncHangBeforeCreatingOplog)) {
+        // This log output is used in js tests so please leave it.
+        log() << "initial sync - initialSyncHangBeforeCreatingOplog fail point "
+                 "enabled. Blocking until fail point is disabled.";
+        lock.unlock();
+        while (MONGO_FAIL_POINT(initialSyncHangBeforeCreatingOplog) && !_isShuttingDown()) {
+            mongo::sleepsecs(1);
+        }
+        lock.lock();
     }
 
     // There is no need to schedule separate task to create oplog collection since we are already in
@@ -822,6 +844,9 @@ void InitialSyncer::_fcvFetcherCallback(const StatusWith<Fetcher::QueryResponse>
         // to the CollectionCloner so that CollectionCloner's default TaskRunner can be disabled to
         // facilitate testing.
         _initialSyncState->dbsCloner->setScheduleDbWorkFn_forTest(_scheduleDbWorkFn);
+    }
+    if (_startCollectionClonerFn) {
+        _initialSyncState->dbsCloner->setStartCollectionClonerFn(_startCollectionClonerFn);
     }
 
     LOG(2) << "Starting DatabasesCloner: " << _initialSyncState->dbsCloner->toString();

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -78,8 +80,6 @@ using std::vector;
 using std::set;
 
 namespace {
-
-const Seconds kDefaultFindHostMaxWaitTime(20);
 
 const ReadPreferenceSetting kConfigReadSelector(ReadPreference::Nearest, TagSet{});
 const WriteConcernOptions kNoWaitWriteConcern(1, WriteConcernOptions::SyncMode::UNSET, Seconds(0));
@@ -167,15 +167,17 @@ void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss)
 
 Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
-    catalogClient
-        ->logChange(opCtx,
-                    "dropCollection.start",
-                    nss.ns(),
-                    BSONObj(),
-                    ShardingCatalogClientImpl::kMajorityWriteConcern)
-        .ignore();
+    const Status logStatus =
+        catalogClient->logChangeChecked(opCtx,
+                                        "dropCollection.start",
+                                        nss.ns(),
+                                        BSONObj(),
+                                        ShardingCatalogClient::kMajorityWriteConcern);
+    if (!logStatus.isOK()) {
+        return logStatus;
+    }
 
-    auto shardsStatus =
+    const auto shardsStatus =
         catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
     if (!shardsStatus.isOK()) {
         return shardsStatus.getStatus();
@@ -348,13 +350,8 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
 
     LOG(1) << "dropCollection " << nss.ns() << " completed";
 
-    catalogClient
-        ->logChange(opCtx,
-                    "dropCollection",
-                    nss.ns(),
-                    BSONObj(),
-                    ShardingCatalogClientImpl::kMajorityWriteConcern)
-        .ignore();
+    catalogClient->logChange(
+        opCtx, "dropCollection", nss.ns(), BSONObj(), ShardingCatalogClient::kMajorityWriteConcern);
 
     return Status::OK();
 }
@@ -386,11 +383,12 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
         }
         collectionDetail.append("primary", primaryShard->toString());
         collectionDetail.append("numChunks", static_cast<int>(splitPoints.size() + 1));
-        uassertStatusOK(catalogClient->logChange(opCtx,
-                                                 "shardCollection.start",
-                                                 nss.ns(),
-                                                 collectionDetail.obj(),
-                                                 ShardingCatalogClient::kMajorityWriteConcern));
+        uassertStatusOK(
+            catalogClient->logChangeChecked(opCtx,
+                                            "shardCollection.start",
+                                            nss.ns(),
+                                            collectionDetail.obj(),
+                                            ShardingCatalogClient::kMajorityWriteConcern));
     }
 
     // Construct the collection default collator.
@@ -400,8 +398,11 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                                               ->makeFromBSON(defaultCollation));
     }
 
-    const auto initialChunks = InitialSplitPolicy::writeFirstChunksToConfig(
-        opCtx, nss, fieldsAndOrder, dbPrimaryShardId, splitPoints, distributeInitialChunks);
+    std::vector<TagsType> tags;
+    const auto initialChunks = InitialSplitPolicy::createFirstChunks(
+        opCtx, nss, fieldsAndOrder, dbPrimaryShardId, splitPoints, tags, distributeInitialChunks);
+
+    InitialSplitPolicy::writeFirstChunksToConfig(opCtx, initialChunks);
 
     {
         CollectionType coll;
@@ -444,13 +445,11 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                   << dbPrimaryShardId << causedBy(redact(status));
     }
 
-    catalogClient
-        ->logChange(opCtx,
-                    "shardCollection.end",
-                    nss.ns(),
-                    BSON("version" << initialChunks.collVersion().toString()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    catalogClient->logChange(opCtx,
+                             "shardCollection.end",
+                             nss.ns(),
+                             BSON("version" << initialChunks.collVersion().toString()),
+                             ShardingCatalogClient::kMajorityWriteConcern);
 }
 
 void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(OperationContext* opCtx) {

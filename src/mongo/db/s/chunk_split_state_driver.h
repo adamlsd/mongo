@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -45,7 +47,7 @@ namespace mongo {
  * when it is decided that a split should be performed and then passed along to
  * the ChunkSplitter which will drive these state changes.
  */
-class ChunkSplitStateDriver {
+class ChunkSplitStateDriver final {
     MONGO_DISALLOW_COPYING(ChunkSplitStateDriver);
 
 public:
@@ -54,7 +56,7 @@ public:
      * constructs and returns a ChunkSplitStateDriver object. If it fails due to the
      * writesTracker already being locked, returns boost::none.
      */
-    static boost::optional<ChunkSplitStateDriver> tryInitiateSplit(
+    static std::shared_ptr<ChunkSplitStateDriver> tryInitiateSplit(
         std::shared_ptr<ChunkWritesTracker> writesTracker);
 
     /**
@@ -62,7 +64,7 @@ public:
      * doesn't try to cancel any ongoing split in its destructor. This
      * constructor is required for boost::optional.
      */
-    ChunkSplitStateDriver(ChunkSplitStateDriver&& other);
+    ChunkSplitStateDriver(ChunkSplitStateDriver&& other) noexcept;
 
     /**
      * Not needed.
@@ -79,6 +81,15 @@ public:
      * the split is later canceled.
      */
     void prepareSplit();
+
+    /**
+     * In the case that we trigger a split but decide not to split due to the
+     * actual size of a chunk on disk being too small, we update our estimate
+     * by abandoning the stashed bytes we had written prior to prepare. That
+     * way we won't continue to trigger splits on a chunk that is smaller than
+     * we currently estimate it to be.
+     */
+    void abandonPrepare();
 
     /**
      * Marks the split as committed, which means that shouldSplit will

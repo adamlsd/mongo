@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -679,7 +681,21 @@ void ShardServerCatalogCacheLoader::_schedulePrimaryGetChunksSince(
 
                 swCollectionAndChangedChunks =
                     _getLoaderMetadata(opCtx, nss, catalogCacheSinceVersion, termScheduled);
-                if (swCollectionAndChangedChunks.isOK()) {
+
+                const auto termAfterRefresh = [&] {
+                    stdx::lock_guard<stdx::mutex> lock(_mutex);
+                    return _term;
+                }();
+
+                if (termAfterRefresh != termScheduled) {
+                    // Raising a ConflictingOperationInProgress error here will cause the
+                    // CatalogCache to attempt the refresh as secondary instead of failing the
+                    // operation
+                    swCollectionAndChangedChunks = Status(
+                        ErrorCodes::ConflictingOperationInProgress,
+                        str::stream() << "Replication stepdown occurred during refresh for  '"
+                                      << nss.toString());
+                } else if (swCollectionAndChangedChunks.isOK()) {
                     // After finding metadata remotely, we must have found metadata locally.
                     invariant(!collAndChunks.changedChunks.empty());
                 }
@@ -749,12 +765,12 @@ StatusWith<CollectionAndChangedChunks> ShardServerCatalogCacheLoader::_getLoader
     OperationContext* opCtx,
     const NamespaceString& nss,
     const ChunkVersion& catalogCacheSinceVersion,
-    const long long term) {
+    long long expectedTerm) {
 
     // Get the enqueued metadata first. Otherwise we could miss data between reading persisted and
     // enqueued, if an enqueued task finished after the persisted read but before the enqueued read.
 
-    auto enqueuedRes = _getEnqueuedMetadata(nss, catalogCacheSinceVersion, term);
+    auto enqueuedRes = _getEnqueuedMetadata(nss, catalogCacheSinceVersion, expectedTerm);
     bool tasksAreEnqueued = std::move(enqueuedRes.first);
     CollectionAndChangedChunks enqueued = std::move(enqueuedRes.second);
 
@@ -858,12 +874,6 @@ std::pair<bool, CollectionAndChangedChunks> ShardServerCatalogCacheLoader::_getE
 
 Status ShardServerCatalogCacheLoader::_ensureMajorityPrimaryAndScheduleCollAndChunksTask(
     OperationContext* opCtx, const NamespaceString& nss, collAndChunkTask task) {
-    Status linearizableReadStatus = waitForLinearizableReadConcern(opCtx);
-    if (!linearizableReadStatus.isOK()) {
-        return linearizableReadStatus.withContext(
-            "Unable to schedule routing table update because this is not the majority primary and "
-            "may not have the latest data.");
-    }
 
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     const bool wasEmpty = _collAndChunkTaskLists[nss].empty();
@@ -887,12 +897,6 @@ Status ShardServerCatalogCacheLoader::_ensureMajorityPrimaryAndScheduleCollAndCh
 
 Status ShardServerCatalogCacheLoader::_ensureMajorityPrimaryAndScheduleDbTask(
     OperationContext* opCtx, StringData dbName, DBTask task) {
-    Status linearizableReadStatus = waitForLinearizableReadConcern(opCtx);
-    if (!linearizableReadStatus.isOK()) {
-        return linearizableReadStatus.withContext(
-            "Unable to schedule routing table update because this is not the majority primary and "
-            "may not have the latest data.");
-    }
 
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     const bool wasEmpty = _dbTaskLists[dbName.toString()].empty();

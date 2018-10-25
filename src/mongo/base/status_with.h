@@ -1,28 +1,31 @@
-/*    Copyright 2013 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -52,7 +55,7 @@ class StatusWith;
 
 // Using extern constexpr to prevent the compiler from allocating storage as a poor man's c++17
 // inline constexpr variable.
-// TODO delete extern in c++17 because inline is the default for constexper variables.
+// TODO delete extern in c++17 because inline is the default for constexpr variables.
 template <typename T>
 extern constexpr bool isStatusWith = false;
 template <typename T>
@@ -84,8 +87,21 @@ using StatusOrStatusWith = std::conditional_t<std::is_void<T>::value, Status, St
  */
 template <typename T>
 class MONGO_WARN_UNUSED_RESULT_CLASS StatusWith {
+private:
     MONGO_STATIC_ASSERT_MSG(!isStatusOrStatusWith<T>,
                             "StatusWith<Status> and StatusWith<StatusWith<T>> are banned.");
+    // `TagTypeBase` is used as a base for the `TagType` type, to prevent it from being an
+    // aggregate.
+    struct TagTypeBase {
+    protected:
+        TagTypeBase() = default;
+    };
+    // `TagType` is used as a placeholder type in parameter lists for `enable_if` clauses.  They
+    // have to be real parameters, not template parameters, due to MSVC limitations.
+    class TagType : TagTypeBase {
+        TagType() = default;
+        friend StatusWith;
+    };
 
 public:
     using value_type = T;
@@ -114,6 +130,12 @@ public:
      * for the OK case
      */
     StatusWith(T t) : _status(Status::OK()), _t(std::move(t)) {}
+
+    template <typename Alien>
+    StatusWith(Alien&& alien,
+               typename std::enable_if_t<std::is_convertible<Alien, T>::value, TagType> = makeTag(),
+               typename std::enable_if_t<!std::is_same<Alien, T>::value, TagType> = makeTag())
+        : StatusWith(static_cast<T>(std::forward<Alien>(alien))) {}
 
     const T& getValue() const {
         dassert(isOK());
@@ -149,6 +171,12 @@ public:
     void status_with_transitional_ignore() const& noexcept = delete;
 
 private:
+    // The `TagType` type cannot be constructed as a default function-parameter in Clang.  So we use
+    // a static member function that initializes that default parameter.
+    static TagType makeTag() {
+        return {};
+    }
+
     Status _status;
     boost::optional<T> _t;
 };

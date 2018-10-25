@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -32,6 +34,7 @@
 #include <memory>
 #include <string>
 
+#include "mongo/base/shim.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
@@ -41,12 +44,12 @@
 #include "mongo/db/catalog/collection_info_cache.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/index_consistency.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/cursor_manager.h"
 #include "mongo/db/exec/collection_scan_common.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/op_observer.h"
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/repl/oplog.h"
@@ -65,12 +68,9 @@ class IndexCatalog;
 class IndexDescriptor;
 class DatabaseImpl;
 class MatchExpression;
-class MultiIndexBlock;
 class OpDebug;
 class OperationContext;
-struct OplogUpdateEntryArgs;
 class RecordCursor;
-class RecordFetcher;
 class UpdateDriver;
 class UpdateRequest;
 
@@ -96,6 +96,32 @@ struct CompactOptions {
 
 struct CompactStats {
     long long corruptDocuments = 0;
+};
+
+/**
+ * Holds information update an update operation.
+ */
+struct CollectionUpdateArgs {
+    enum class StoreDocOption { None, PreImage, PostImage };
+
+    StmtId stmtId = kUninitializedStmtId;
+
+    // The document before modifiers were applied.
+    boost::optional<BSONObj> preImageDoc;
+
+    // Fully updated document with damages (update modifiers) applied.
+    BSONObj updatedDoc;
+
+    // Document containing update modifiers -- e.g. $set and $unset
+    BSONObj update;
+
+    // Document containing the _id field of the doc being updated.
+    BSONObj criteria;
+
+    // True if this update comes from a chunk migration.
+    bool fromMigrate = false;
+
+    StoreDocOption storeDocOption = StoreDocOption::None;
 };
 
 /**
@@ -157,13 +183,13 @@ private:
  * this is NOT safe through a yield right now.
  * not sure if it will be, or what yet.
  */
-class Collection final : CappedCallback, UpdateNotifier {
+class Collection final : CappedCallback {
 public:
     enum ValidationAction { WARN, ERROR_V };
     enum ValidationLevel { OFF, MODERATE, STRICT_V };
     enum class StoreDeletedDoc { Off, On };
 
-    class Impl : virtual CappedCallback, virtual UpdateNotifier {
+    class Impl : virtual CappedCallback {
     public:
         virtual ~Impl() = 0;
 
@@ -179,9 +205,6 @@ public:
                                            const RecordId& loc,
                                            RecordData data) = 0;
 
-        virtual Status recordStoreGoingToUpdateInPlace(OperationContext* opCtx,
-                                                       const RecordId& loc) = 0;
-
     public:
         virtual bool ok() const = 0;
 
@@ -192,6 +215,8 @@ public:
         virtual const CollectionInfoCache* infoCache() const = 0;
 
         virtual const NamespaceString& ns() const = 0;
+        virtual void setNs(NamespaceString) = 0;
+
         virtual OptionalCollectionUUID uuid() const = 0;
 
         virtual const IndexCatalog* getIndexCatalog() const = 0;
@@ -247,7 +272,7 @@ public:
                                         const BSONObj& newDoc,
                                         bool indexesAffected,
                                         OpDebug* opDebug,
-                                        OplogUpdateEntryArgs* args) = 0;
+                                        CollectionUpdateArgs* args) = 0;
 
         virtual bool updateWithDamagesSupported() const = 0;
 
@@ -257,7 +282,7 @@ public:
             const Snapshotted<RecordData>& oldRec,
             const char* damageSource,
             const mutablebson::DamageVector& damages,
-            OplogUpdateEntryArgs* args) = 0;
+            CollectionUpdateArgs* args) = 0;
 
         virtual StatusWith<CompactStats> compact(OperationContext* opCtx,
                                                  const CompactOptions* options) = 0;
@@ -319,6 +344,8 @@ public:
         virtual void notifyCappedWaitersIfNeeded() = 0;
 
         virtual const CollatorInterface* getDefaultCollator() const = 0;
+
+        virtual std::unique_ptr<MultiIndexBlock> createMultiIndexBlock(OperationContext* opCtx) = 0;
     };
 
 public:
@@ -370,6 +397,10 @@ public:
 
     inline const NamespaceString& ns() const {
         return this->_impl().ns();
+    }
+
+    inline void setNs(NamespaceString nss) {
+        this->_impl().setNs(std::move(nss));
     }
 
     inline OptionalCollectionUUID uuid() const {
@@ -426,7 +457,6 @@ public:
      * real delete.
      * 'loc' key to uniquely identify a record in a collection.
      * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
-     * 'cappedOK' if true, allows deletes on capped collections (Cloner::copyDB uses this).
      * 'noWarn' if unindexing the record causes an error, if noWarn is true the error
      * will not be logged.
      */
@@ -506,7 +536,7 @@ public:
                                    const BSONObj& newDoc,
                                    const bool indexesAffected,
                                    OpDebug* const opDebug,
-                                   OplogUpdateEntryArgs* const args) {
+                                   CollectionUpdateArgs* const args) {
         return this->_impl().updateDocument(
             opCtx, oldLocation, oldDoc, newDoc, indexesAffected, opDebug, args);
     }
@@ -528,7 +558,7 @@ public:
         const Snapshotted<RecordData>& oldRec,
         const char* const damageSource,
         const mutablebson::DamageVector& damages,
-        OplogUpdateEntryArgs* const args) {
+        CollectionUpdateArgs* const args) {
         return this->_impl().updateDocumentWithDamages(
             opCtx, loc, oldRec, damageSource, damages, args);
     }
@@ -705,6 +735,12 @@ public:
         return this->_impl().getDefaultCollator();
     }
 
+    /**
+     * Creates an instance of MultiIndexBlock.
+     */
+    inline std::unique_ptr<MultiIndexBlock> createMultiIndexBlock(OperationContext* opCtx) {
+        return this->_impl().createMultiIndexBlock(opCtx);
+    }
 
 private:
     inline DatabaseCatalogEntry* dbce() const {
@@ -719,11 +755,6 @@ private:
                                       const RecordId& loc,
                                       const RecordData data) final {
         return this->_impl().aboutToDeleteCapped(opCtx, loc, data);
-    }
-
-    inline Status recordStoreGoingToUpdateInPlace(OperationContext* const opCtx,
-                                                  const RecordId& loc) final {
-        return this->_impl().recordStoreGoingToUpdateInPlace(opCtx, loc);
     }
 
     // This structure exists to give us a customization point to decide how to force users of this

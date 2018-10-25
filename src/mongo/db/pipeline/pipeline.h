@@ -1,29 +1,31 @@
+
 /**
- * Copyright 2011 (c) 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects for
- * all of the code used other than as permitted herein. If you modify file(s)
- * with this exception, you may extend this exception to your version of the
- * file(s), but you are not obligated to do so. If you do not wish to do so,
- * delete this exception statement from your version. If you delete this
- * exception statement from all source files in the program, then also delete
- * it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -48,9 +50,9 @@
 namespace mongo {
 class BSONObj;
 class BSONObjBuilder;
-class ExpressionContext;
-class DocumentSource;
 class CollatorInterface;
+class DocumentSource;
+class ExpressionContext;
 class OperationContext;
 class PipelineDeleter;
 
@@ -132,6 +134,19 @@ public:
      */
     static bool aggSupportsWriteConcern(const BSONObj& cmd);
 
+    /**
+     * Given 'pathsOfInterest' which describes a set of paths which the caller is interested in,
+     * returns boost::none if any of those paths are modified by the section of a pipeline
+     * described by 'rstart' and 'rend', or a mapping from their name at the end of the pipeline to
+     * their name at the beginning of the pipeline if they are preserved but possibly renamed by
+     * this pipeline. Note that the analysis proceeds backwards, so the iterators must be reverse
+     * iterators.
+     */
+    static boost::optional<StringMap<std::string>> renamedPaths(
+        SourceContainer::const_reverse_iterator rstart,
+        SourceContainer::const_reverse_iterator rend,
+        std::set<std::string> pathsOfInterest);
+
     const boost::intrusive_ptr<ExpressionContext>& getContext() const {
         return pCtx;
     }
@@ -172,37 +187,16 @@ public:
     bool usedDisk();
 
     /**
-     * Split the current Pipeline into a Pipeline for each shard, and a Pipeline that combines the
-     * results within mongos. This permanently alters this pipeline for the merging operation, and
-     * returns a Pipeline object that should be executed on each targeted shard.
-    */
-    std::unique_ptr<Pipeline, PipelineDeleter> splitForSharded();
-
-    /**
-     * Returns true if this pipeline has not been split.
+     * Communicates to the pipeline which part of a split pipeline it is when the pipeline has been
+     * split in two.
      */
-    bool isUnsplit() const {
-        return _splitState == SplitState::kUnsplit;
+    void setSplitState(SplitState state) {
+        _splitState = state;
     }
 
     /**
-     * Returns true if this pipeline is the part of a split pipeline which should be targeted to the
-     * shards.
-     */
-    bool isSplitForShards() const {
-        return _splitState == SplitState::kSplitForShards;
-    }
-
-    /**
-     * Returns true if this pipeline is the part of a split pipeline which is responsible for
-     * merging the results from the shards.
-     */
-    bool isSplitForMerge() const {
-        return _splitState == SplitState::kSplitForMerge;
-    }
-
-    /** If the pipeline starts with a $match, return its BSON predicate.
-     *  Returns empty BSON if the first stage isn't $match.
+     * If the pipeline starts with a stage which is or includes a query predicate (e.g. a $match),
+     * returns a BSON object representing that query. Otherwise, returns an empty BSON object.
      */
     BSONObj getInitialQuery() const;
 
@@ -271,6 +265,15 @@ public:
      */
     DepsTracker getDependencies(DepsTracker::MetadataAvailable metadataAvailable) const;
 
+    /**
+     * Given 'pathsOfInterest' which describes a set of paths which the caller is interested in,
+     * returns boost::none if any of those paths are modified by this pipeline, or a mapping from
+     * their name at the end of the pipeline to their name at the beginning of the pipeline if they
+     * are preserved but possibly renamed by this pipeline.
+     */
+    boost::optional<StringMap<std::string>> renamedPaths(
+        std::set<std::string> pathsOfInterest) const;
+
     const SourceContainer& getSources() const {
         return _sources;
     }
@@ -280,6 +283,11 @@ public:
      * empty.
      */
     boost::intrusive_ptr<DocumentSource> popFront();
+
+    /**
+     * Returns a pointer to the first stage of the pipeline, or a nullptr if the pipeline is empty.
+     */
+    DocumentSource* peekFront() const;
 
     /**
      * Removes and returns the last stage of the pipeline. Returns nullptr if the pipeline is empty.

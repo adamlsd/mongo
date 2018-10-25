@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2011 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #include "mongo/platform/basic.h"
 
@@ -43,16 +45,71 @@
 namespace mongo {
 
 using boost::intrusive_ptr;
-using std::shared_ptr;
 using std::pair;
+using std::shared_ptr;
 using std::vector;
+
+Document GroupFromFirstDocumentTransformation::applyTransformation(const Document& input) {
+    MutableDocument output(_accumulatorExprs.size());
+
+    for (auto&& expr : _accumulatorExprs) {
+        auto value = expr.second->evaluate(input);
+        output.addField(expr.first, value.missing() ? Value(BSONNULL) : value);
+    }
+
+    return output.freeze();
+}
+
+void GroupFromFirstDocumentTransformation::optimize() {
+    for (auto&& expr : _accumulatorExprs) {
+        expr.second = expr.second->optimize();
+    }
+}
+
+Document GroupFromFirstDocumentTransformation::serializeTransformation(
+    boost::optional<ExplainOptions::Verbosity> explain) const {
+
+    MutableDocument newRoot(_accumulatorExprs.size());
+    for (auto&& expr : _accumulatorExprs) {
+        newRoot.addField(expr.first, expr.second->serialize(static_cast<bool>(explain)));
+    }
+
+    return {{"newRoot", newRoot.freezeToValue()}};
+}
+
+DepsTracker::State GroupFromFirstDocumentTransformation::addDependencies(DepsTracker* deps) const {
+    for (auto&& expr : _accumulatorExprs) {
+        expr.second->addDependencies(deps);
+    }
+
+    // This stage will replace the entire document with a new document, so any existing fields
+    // will be replaced and cannot be required as dependencies. We use EXHAUSTIVE_ALL here
+    // instead of EXHAUSTIVE_FIELDS, as in ReplaceRootTransformation, because the stages that
+    // follow a $group stage should not depend on document metadata.
+    return DepsTracker::State::EXHAUSTIVE_ALL;
+}
+
+DocumentSource::GetModPathsReturn GroupFromFirstDocumentTransformation::getModifiedPaths() const {
+    // Replaces the entire root, so all paths are modified.
+    return {DocumentSource::GetModPathsReturn::Type::kAllPaths, std::set<std::string>{}, {}};
+}
+
+std::unique_ptr<GroupFromFirstDocumentTransformation> GroupFromFirstDocumentTransformation::create(
+    const intrusive_ptr<ExpressionContext>& expCtx,
+    const std::string& groupId,
+    vector<pair<std::string, intrusive_ptr<Expression>>> accumulatorExprs) {
+    return std::make_unique<GroupFromFirstDocumentTransformation>(groupId,
+                                                                  std::move(accumulatorExprs));
+}
+
+constexpr StringData DocumentSourceGroup::kStageName;
 
 REGISTER_DOCUMENT_SOURCE(group,
                          LiteParsedDocumentSourceDefault::parse,
                          DocumentSourceGroup::createFromBson);
 
 const char* DocumentSourceGroup::getSourceName() const {
-    return "$group";
+    return kStageName.rawData();
 }
 
 DocumentSource::GetNextResult DocumentSourceGroup::getNext() {
@@ -239,6 +296,25 @@ DepsTracker::State DocumentSourceGroup::getDependencies(DepsTracker* deps) const
     }
 
     return DepsTracker::State::EXHAUSTIVE_ALL;
+}
+
+DocumentSource::GetModPathsReturn DocumentSourceGroup::getModifiedPaths() const {
+    // We preserve none of the fields, but any fields referenced as part of the group key are
+    // logically just renamed.
+    StringMap<std::string> renames;
+    for (std::size_t i = 0; i < _idExpressions.size(); ++i) {
+        auto idExp = _idExpressions[i];
+        auto pathToPutResultOfExpression =
+            _idFieldNames.empty() ? "_id" : "_id." + _idFieldNames[i];
+        auto computedPaths = idExp->getComputedPaths(pathToPutResultOfExpression);
+        for (auto&& rename : computedPaths.renames) {
+            renames[rename.first] = rename.second;
+        }
+    }
+
+    return {DocumentSource::GetModPathsReturn::Type::kAllExcept,
+            std::set<std::string>{},  // No fields are preserved.
+            std::move(renames)};
 }
 
 intrusive_ptr<DocumentSourceGroup> DocumentSourceGroup::create(
@@ -839,13 +915,13 @@ intrusive_ptr<DocumentSource> DocumentSourceGroup::getShardSource() {
     return this;  // No modifications necessary when on shard
 }
 
-std::list<intrusive_ptr<DocumentSource>> DocumentSourceGroup::getMergeSources() {
-    intrusive_ptr<DocumentSourceGroup> pMerger(new DocumentSourceGroup(pExpCtx));
-    pMerger->setDoingMerge(true);
+NeedsMergerDocumentSource::MergingLogic DocumentSourceGroup::mergingLogic() {
+    intrusive_ptr<DocumentSourceGroup> mergingGroup(new DocumentSourceGroup(pExpCtx));
+    mergingGroup->setDoingMerge(true);
 
     VariablesParseState vps = pExpCtx->variablesParseState;
     /* the merger will use the same grouping key */
-    pMerger->setIdExpression(ExpressionFieldPath::parse(pExpCtx, "$$ROOT._id", vps));
+    mergingGroup->setIdExpression(ExpressionFieldPath::parse(pExpCtx, "$$ROOT._id", vps));
 
     for (auto&& accumulatedField : _accumulatedFields) {
         // The merger's output field names will be the same, as will the accumulator factories.
@@ -855,12 +931,91 @@ std::list<intrusive_ptr<DocumentSource>> DocumentSourceGroup::getMergeSources() 
         auto copiedAccumuledField = accumulatedField;
         copiedAccumuledField.expression =
             ExpressionFieldPath::parse(pExpCtx, "$$ROOT." + accumulatedField.fieldName, vps);
-        pMerger->addAccumulator(copiedAccumuledField);
+        mergingGroup->addAccumulator(copiedAccumuledField);
     }
 
-    return {pMerger};
+    return {mergingGroup};
 }
+
+bool DocumentSourceGroup::pathIncludedInGroupKeys(const std::string& dottedPath) const {
+    return std::any_of(
+        _idExpressions.begin(), _idExpressions.end(), [&dottedPath](const auto& exp) {
+            if (auto fieldExp = dynamic_cast<ExpressionFieldPath*>(exp.get())) {
+                if (fieldExp->representsPath(dottedPath)) {
+                    return true;
+                }
+            }
+            return false;
+        });
 }
+
+bool DocumentSourceGroup::canRunInParallelBeforeOut(
+    const std::set<std::string>& nameOfShardKeyFieldsUponEntryToStage) const {
+    if (_doingMerge) {
+        return true;  // This is fine.
+    }
+
+    // Certain $group stages are allowed to execute on each exchange consumer. In order to
+    // guarantee each consumer will only group together data from its own shard, the $group must
+    // group on a superset of the shard key.
+    for (auto&& currentPathOfShardKey : nameOfShardKeyFieldsUponEntryToStage) {
+        if (!pathIncludedInGroupKeys(currentPathOfShardKey)) {
+            // This requires an exact path match, but as a future optimization certain path
+            // prefixes should be okay. For example, if the shard key path is "a.b", and we're
+            // grouping by "a", then each group of "a" is strictly more specific than "a.b", so
+            // we can deduce that grouping by "a" will not need to group together documents
+            // across different values of the shard key field "a.b", and thus as long as any
+            // other shard key fields are similarly preserved will not need to consume a merged
+            // stream to perform the group.
+            return false;
+        }
+    }
+    return true;
+}
+
+std::unique_ptr<GroupFromFirstDocumentTransformation>
+DocumentSourceGroup::rewriteGroupAsTransformOnFirstDocument() const {
+    if (!_idFieldNames.empty()) {
+        // This transformation is only intended for $group stages that group on a single field.
+        return nullptr;
+    }
+
+    invariant(_idExpressions.size() == 1);
+    auto fieldPathExpr = dynamic_cast<ExpressionFieldPath*>(_idExpressions.front().get());
+    if (!fieldPathExpr || !fieldPathExpr->isRootFieldPath()) {
+        return nullptr;
+    }
+
+    const auto fieldPath = fieldPathExpr->getFieldPath();
+    if (fieldPath.getPathLength() == 1) {
+        // The path is $$CURRENT or $$ROOT. This isn't really a sensible value to group by (since
+        // each document has a unique _id, it will just return the entire collection). We only
+        // apply the rewrite when grouping by a single field, so we cannot apply it in this case,
+        // where we are grouping by the entire document.
+        invariant(fieldPath.getFieldName(0) == "CURRENT" || fieldPath.getFieldName(0) == "ROOT");
+        return nullptr;
+    }
+
+    const auto groupId = fieldPath.tail().fullPath();
+
+    // We can't do this transformation if there are any non-$first accumulators.
+    for (auto&& accumulator : _accumulatedFields) {
+        if (AccumulatorDocumentsNeeded::kFirstDocument !=
+            accumulator.makeAccumulator(pExpCtx)->documentsNeeded()) {
+            return nullptr;
+        }
+    }
+
+    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>> fields;
+    fields.push_back(std::make_pair("_id", ExpressionFieldPath::create(pExpCtx, groupId)));
+
+    for (auto&& accumulator : _accumulatedFields) {
+        fields.push_back(std::make_pair(accumulator.fieldName, accumulator.expression));
+    }
+
+    return GroupFromFirstDocumentTransformation::create(pExpCtx, groupId, std::move(fields));
+}
+}  // namespace mongo
 
 #include "mongo/db/sorter/sorter.cpp"
 // Explicit instantiation unneeded since we aren't exposing Sorter outside of this file.

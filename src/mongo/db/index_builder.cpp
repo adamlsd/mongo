@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2012 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -35,7 +37,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
@@ -119,6 +121,7 @@ std::string IndexBuilder::name() const {
 
 void IndexBuilder::run() {
     Client::initThread(name().c_str());
+    ON_BLOCK_EXIT([] { Client::destroy(); });
     LOG(2) << "IndexBuilder building index " << _index;
 
     auto opCtx = cc().makeOperationContext();
@@ -133,8 +136,6 @@ void IndexBuilder::run() {
     NamespaceString ns(_index["ns"].String());
 
     Lock::DBLock dlk(opCtx.get(), ns.db(), MODE_X);
-    OldClientContext ctx(opCtx.get(), ns.getSystemIndexesCollection());
-
     Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx.get(), ns.db().toString());
 
     Status status = _build(opCtx.get(), db, true, &dlk);
@@ -196,7 +197,8 @@ Status IndexBuilder::_build(OperationContext* opCtx,
         CurOp::get(opCtx)->setOpDescription_inlock(_index);
     }
 
-    MultiIndexBlock indexer(opCtx, coll);
+    auto indexerPtr = coll->createMultiIndexBlock(opCtx);
+    MultiIndexBlock& indexer(*indexerPtr);
     indexer.allowInterruption();
     if (allowBackgroundBuilding)
         indexer.allowBackgroundBuilding();
@@ -233,6 +235,13 @@ Status IndexBuilder::_build(OperationContext* opCtx,
         status = indexer.insertAllDocumentsInCollection();
     }
     if (!status.isOK()) {
+        if (allowBackgroundBuilding) {
+            UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+            dbLock->relockWithMode(MODE_X);
+            if (status == ErrorCodes::InterruptedAtShutdown)
+                return _failIndexBuild(indexer, status, allowBackgroundBuilding);
+            opCtx->checkForInterrupt();
+        }
         return _failIndexBuild(indexer, status, allowBackgroundBuilding);
     }
 
@@ -242,10 +251,26 @@ Status IndexBuilder::_build(OperationContext* opCtx,
     writeConflictRetry(opCtx, "Commit index build", ns.ns(), [opCtx, &indexer, &ns] {
         WriteUnitOfWork wunit(opCtx);
         indexer.commit();
+
         if (requiresGhostCommitTimestamp(opCtx, ns)) {
-            fassert(50701,
-                    opCtx->recoveryUnit()->setTimestamp(
-                        LogicalClock::get(opCtx)->getClusterTime().asTimestamp()));
+
+            auto tryTimestamp = [opCtx] {
+                auto status = opCtx->recoveryUnit()->setTimestamp(
+                    LogicalClock::get(opCtx)->getClusterTime().asTimestamp());
+                if (status.code() == ErrorCodes::BadValue) {
+                    LOG(1) << "Temporarily could not timestamp the index build commit: "
+                           << status.reason();
+                    return false;
+                }
+                fassert(50701, status);
+                return true;
+            };
+
+            // Timestamping the index build may fail in rare cases if retrieving the cluster time
+            // races with the stable timestamp advancing. It should be retried immediately.
+            while (!tryTimestamp()) {
+                opCtx->checkForInterrupt();
+            }
         }
         wunit.commit();
     });

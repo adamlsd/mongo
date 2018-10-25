@@ -1,23 +1,25 @@
-/*
- *    Copyright (C) 2013 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -301,15 +303,14 @@ Status addMongodOptions(moe::OptionSection* options) {
                            "specify index prefetching behavior (if secondary) [none|_id_only|all]")
         .format("(:?none)|(:?_id_only)|(:?all)", "(none/_id_only/all)");
 
-    // `enableMajorityReadConcern` is always enabled starting in 3.6, regardless of user
-    // settings. We're leaving the option in to not break existing deployment scripts. A warning
-    // will appear if explicitly set to false.
+    // `enableMajorityReadConcern` is enabled by default starting in 3.6.
     rs_options
         .addOptionChaining("replication.enableMajorityReadConcern",
                            "enableMajorityReadConcern",
-                           moe::Switch,
+                           moe::Bool,
                            "enables majority readConcern")
-        .setDefault(moe::Value(true));
+        .setDefault(moe::Value(true))
+        .setImplicit(moe::Value(true));
 
     replication_options.addOptionChaining(
         "master", "master", moe::Switch, "Master/slave replication no longer supported");
@@ -873,11 +874,8 @@ Status storeMongodOptions(const moe::Environment& params) {
     }
 
     if (params.count("replication.enableMajorityReadConcern")) {
-        bool val = params["replication.enableMajorityReadConcern"].as<bool>();
-        if (!val) {
-            warning() << "enableMajorityReadConcern startup parameter was supplied, but its value "
-                         "was ignored; majority read concern cannot be disabled.";
-        }
+        serverGlobalParams.enableMajorityReadConcern =
+            params["replication.enableMajorityReadConcern"].as<bool>();
     }
 
     if (params.count("storage.indexBuildRetry")) {
@@ -933,6 +931,15 @@ Status storeMongodOptions(const moe::Environment& params) {
         auto clusterRoleParam = params["sharding.clusterRole"].as<std::string>();
         if (clusterRoleParam == "configsvr") {
             serverGlobalParams.clusterRole = ClusterRole::ConfigServer;
+
+            if (params.count("replication.enableMajorityReadConcern") &&
+                !params["replication.enableMajorityReadConcern"].as<bool>()) {
+                warning()
+                    << "Config servers require majority read concern, but it was explicitly "
+                       "disabled. The override is being ignored and the process is continuing "
+                       "with majority read concern enabled.";
+            }
+            serverGlobalParams.enableMajorityReadConcern = true;
 
             // If we haven't explicitly specified a journal option, default journaling to true for
             // the config server role

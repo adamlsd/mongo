@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -31,17 +33,21 @@
 #include "mongo/db/query/query_solution.h"
 
 #include "mongo/bson/bsontypes.h"
+#include "mongo/bson/mutable/document.h"
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/matcher/expression_geo.h"
 #include "mongo/db/query/collation/collation_index_key.h"
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/planner_analysis.h"
+#include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_planner_common.h"
 
 namespace mongo {
 
 namespace {
+
+namespace wcp = ::mongo::wildcard_planning;
 
 // Create an ordred interval list which represents the bounds for all BSON elements of type String,
 // Object, or Array.
@@ -185,7 +191,7 @@ void TextNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     addIndent(ss, indent);
     *ss << "TEXT\n";
     addIndent(ss, indent + 1);
-    *ss << "name = " << index.name << '\n';
+    *ss << "name = " << index.identifier.catalogName << '\n';
     addIndent(ss, indent + 1);
     *ss << "keyPattern = " << index.keyPattern.toString() << '\n';
     addIndent(ss, indent + 1);
@@ -515,13 +521,14 @@ IndexScanNode::IndexScanNode(IndexEntry index)
       index(std::move(index)),
       direction(1),
       addKeyMetadata(false),
+      shouldDedup(index.multikey),
       queryCollator(nullptr) {}
 
 void IndexScanNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     addIndent(ss, indent);
     *ss << "IXSCAN\n";
     addIndent(ss, indent + 1);
-    *ss << "indexName = " << index.name << '\n';
+    *ss << "indexName = " << index.identifier.catalogName << '\n';
     *ss << "keyPattern = " << index.keyPattern << '\n';
     if (NULL != filter) {
         addIndent(ss, indent + 1);
@@ -535,6 +542,12 @@ void IndexScanNode::appendToString(mongoutils::str::stream* ss, int indent) cons
 }
 
 bool IndexScanNode::hasField(const string& field) const {
+    // A $** index whose bounds overlap the object type bracket cannot provide covering, since the
+    // index only contains the leaf nodes along each of the object's subpaths.
+    if (index.type == IndexType::INDEX_WILDCARD && wcp::isWildcardObjectSubpathScan(this)) {
+        return false;
+    }
+
     // The index is multikey but does not have any path-level multikeyness information. Such indexes
     // can never provide covering.
     if (index.multikey && index.multikeyPaths.empty()) {
@@ -558,6 +571,13 @@ bool IndexScanNode::hasField(const string& field) const {
 
     size_t keyPatternFieldIndex = 0;
     for (auto&& elt : index.keyPattern) {
+        // For $** indexes, the keyPattern is prefixed by a virtual field, '$_path'. We therefore
+        // skip the first keyPattern field when deciding whether we can provide the requested field.
+        if (index.type == IndexType::INDEX_WILDCARD && !keyPatternFieldIndex) {
+            invariant(elt.fieldNameStringData() == "$_path"_sd);
+            ++keyPatternFieldIndex;
+            continue;
+        }
         // The index can provide this field if the requested path appears in the index key pattern,
         // and that path has no multikey components. We can't cover a field that has multikey
         // components because the index keys contain individual array elements, and we can't
@@ -667,10 +687,20 @@ std::set<StringData> getMultikeyFields(const BSONObj& keyPattern,
     }
     return multikeyFields;
 }
-}  // namespace
 
-void IndexScanNode::computeProperties() {
-    _sorts.clear();
+/**
+ * Computes sort orders for index scans, including DISTINCT_SCAN. The 'sortsOut' set gets populated
+ * with all the sort orders that will be provided by the index scan, and the 'multikeyFieldsOut'
+ * field gets populated with the names of all fields that the index indicates are multikey.
+ */
+void computeSortsAndMultikeyPathsForScan(const IndexEntry& index,
+                                         int direction,
+                                         const IndexBounds& bounds,
+                                         const CollatorInterface* queryCollator,
+                                         BSONObjSet* sortsOut,
+                                         std::set<StringData>* multikeyFieldsOut) {
+    sortsOut->clear();
+    multikeyFieldsOut->clear();
 
     // If the index is multikey but does not have path-level multikey metadata, then this index
     // cannot provide any sorts.
@@ -683,7 +713,7 @@ void IndexScanNode::computeProperties() {
         sortPattern = QueryPlannerCommon::reverseSortObj(sortPattern);
     }
 
-    _sorts.insert(sortPattern);
+    sortsOut->insert(sortPattern);
 
     const int nFields = sortPattern.nFields();
     if (nFields > 1) {
@@ -695,7 +725,7 @@ void IndexScanNode::computeProperties() {
             for (int j = 0; j <= i; ++j) {
                 prefixBob.append(it.next());
             }
-            _sorts.insert(prefixBob.obj());
+            sortsOut->insert(prefixBob.obj());
         }
     }
 
@@ -732,18 +762,19 @@ void IndexScanNode::computeProperties() {
     }
 
     if (!equalityFields.empty()) {
-        addEqualityFieldSorts(sortPattern, equalityFields, &_sorts);
+        addEqualityFieldSorts(sortPattern, equalityFields, sortsOut);
     }
 
     if (!CollatorInterface::collatorsMatch(queryCollator, index.collator)) {
         // Prune sorts containing fields that don't match the collation.
-        std::set<StringData> collatedFields = getFieldsWithStringBounds(bounds, index.keyPattern);
-        auto sortsIt = _sorts.begin();
-        while (sortsIt != _sorts.end()) {
+        std::set<StringData> collatedFields =
+            IndexScanNode::getFieldsWithStringBounds(bounds, index.keyPattern);
+        auto sortsIt = sortsOut->begin();
+        while (sortsIt != sortsOut->end()) {
             bool matched = false;
             for (const BSONElement& el : *sortsIt) {
                 if (collatedFields.find(el.fieldNameStringData()) != collatedFields.end()) {
-                    sortsIt = _sorts.erase(sortsIt);
+                    sortsIt = sortsOut->erase(sortsIt);
                     matched = true;
                     break;
                 }
@@ -758,23 +789,30 @@ void IndexScanNode::computeProperties() {
     // We cannot provide a sort which involves a multikey field. Prune such sort orders, if the
     // index is multikey.
     if (index.multikey) {
-        multikeyFields = getMultikeyFields(index.keyPattern, index.multikeyPaths);
-        for (auto sortsIt = _sorts.begin(); sortsIt != _sorts.end();) {
+        *multikeyFieldsOut = getMultikeyFields(index.keyPattern, index.multikeyPaths);
+        for (auto sortsIt = sortsOut->begin(); sortsIt != sortsOut->end();) {
             bool foundMultikeyField = false;
             for (auto&& elt : *sortsIt) {
-                if (multikeyFields.find(elt.fieldNameStringData()) != multikeyFields.end()) {
+                if (multikeyFieldsOut->find(elt.fieldNameStringData()) !=
+                    multikeyFieldsOut->end()) {
                     foundMultikeyField = true;
                     break;
                 }
             }
 
             if (foundMultikeyField) {
-                sortsIt = _sorts.erase(sortsIt);
+                sortsIt = sortsOut->erase(sortsIt);
             } else {
                 ++sortsIt;
             }
         }
     }
+}
+}  // namespace
+
+void IndexScanNode::computeProperties() {
+    computeSortsAndMultikeyPathsForScan(
+        index, direction, bounds, queryCollator, &_sorts, &multikeyFields);
 }
 
 QuerySolutionNode* IndexScanNode::clone() const {
@@ -981,7 +1019,7 @@ void GeoNear2DNode::appendToString(mongoutils::str::stream* ss, int indent) cons
     addIndent(ss, indent);
     *ss << "GEO_NEAR_2D\n";
     addIndent(ss, indent + 1);
-    *ss << "name = " << index.name << '\n';
+    *ss << "name = " << index.identifier.catalogName << '\n';
     addIndent(ss, indent + 1);
     *ss << "keyPattern = " << index.keyPattern.toString() << '\n';
     addCommon(ss, indent);
@@ -1013,7 +1051,7 @@ void GeoNear2DSphereNode::appendToString(mongoutils::str::stream* ss, int indent
     addIndent(ss, indent);
     *ss << "GEO_NEAR_2DSPHERE\n";
     addIndent(ss, indent + 1);
-    *ss << "name = " << index.name << '\n';
+    *ss << "name = " << index.identifier.catalogName << '\n';
     addIndent(ss, indent + 1);
     *ss << "keyPattern = " << index.keyPattern.toString() << '\n';
     addCommon(ss, indent);
@@ -1073,7 +1111,7 @@ void DistinctNode::appendToString(mongoutils::str::stream* ss, int indent) const
     addIndent(ss, indent);
     *ss << "DISTINCT\n";
     addIndent(ss, indent + 1);
-    *ss << "name = " << index.name << '\n';
+    *ss << "name = " << index.identifier.catalogName << '\n';
     addIndent(ss, indent + 1);
     *ss << "keyPattern = " << index.keyPattern << '\n';
     addIndent(ss, indent + 1);
@@ -1089,9 +1127,18 @@ QuerySolutionNode* DistinctNode::clone() const {
     copy->sorts = this->sorts;
     copy->direction = this->direction;
     copy->bounds = this->bounds;
+    copy->queryCollator = this->queryCollator;
     copy->fieldNo = this->fieldNo;
 
     return copy;
+}
+
+void DistinctNode::computeProperties() {
+    // Note that we don't need to save the 'multikeyFields' for a DISTINCT_SCAN. They are only
+    // needed for explodeForSort(), which works on IXSCAN but not DISTINCT_SCAN.
+    std::set<StringData> multikeyFields;
+    computeSortsAndMultikeyPathsForScan(
+        index, direction, bounds, queryCollator, &sorts, &multikeyFields);
 }
 
 //
@@ -1102,7 +1149,7 @@ void CountScanNode::appendToString(mongoutils::str::stream* ss, int indent) cons
     addIndent(ss, indent);
     *ss << "COUNT\n";
     addIndent(ss, indent + 1);
-    *ss << "name = " << index.name << '\n';
+    *ss << "name = " << index.identifier.catalogName << '\n';
     addIndent(ss, indent + 1);
     *ss << "keyPattern = " << index.keyPattern << '\n';
     addIndent(ss, indent + 1);

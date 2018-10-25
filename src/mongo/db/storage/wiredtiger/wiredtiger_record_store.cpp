@@ -1,26 +1,27 @@
 // wiredtiger_record_store.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -119,7 +120,7 @@ public:
 
     void commit(boost::optional<Timestamp>) final {
         invariant(_bytesInserted >= 0);
-        invariant(_highestInserted.isNormal());
+        invariant(_highestInserted.isValid());
 
         _oplogStones->_currentRecords.addAndFetch(_countInserted);
         int64_t newCurrentBytes = _oplogStones->_currentBytes.addAndFetch(_bytesInserted);
@@ -196,38 +197,17 @@ void WiredTigerRecordStore::OplogStones::awaitHasExcessStonesOrDead() {
             MONGO_IDLE_THREAD_BLOCK;
             stdx::lock_guard<stdx::mutex> lk(_mutex);
             if (hasExcessStones_inlock()) {
-                // There are now excess oplog stones.
-
-                // We can always truncate the oplog on non recover to stable timestamp storage
-                // engines. Replication does not need the history.
-                if (!_rs->supportsRecoverToStableTimestamp()) {
-                    break;
-                }
-
-                // However, for recover to stable timestamp supporting engines, we cannot delete
-                // oplog entries newer than the last stable recovery timestamp.
+                // There are now excess oplog stones. However, there it may be necessary to keep
+                // additional oplog.
                 //
-                // Recoverable rollback on the replication layer requires oplog history back to the
-                // stable timestamp. The storage engine will delete all regular data newer than
-                // stable on recoverToStableTimestamp, then replication must catch up the rest from
-                // that point via the oplog.
-                //
-                // Furthermore, for the durable engines, replication will need oplog back to the
-                // last stable checkpoint for crash recovery without resync. Replication must play
-                // the oplog history forward from the last checkpoint to the present, because the
-                // engine is not set to journal regular data and thus will only recover checkpointed
-                // data on startup.
-                //
-                // The recovery timestamp contains the above contraints based on the engine in use.
-                auto optionalLastStableRecoveryTimestamp = _rs->getLastStableRecoveryTimestamp();
-                auto lastStableRecoveryTimestamp = optionalLastStableRecoveryTimestamp
-                    ? *optionalLastStableRecoveryTimestamp
-                    : Timestamp::min();
-
+                // During startup or after rollback, the current state of the data goes "back in
+                // time" and replication recovery replays oplog entries to bring the data to a
+                // desired state. This process may require more oplog than the user dictated oplog
+                // size allotment.
                 auto stone = _stones.front();
-                invariant(stone.lastRecord.isNormal());
+                invariant(stone.lastRecord.isValid());
                 if (static_cast<std::uint64_t>(stone.lastRecord.repr()) <
-                    lastStableRecoveryTimestamp.asULL()) {
+                    _rs->getPinnedOplog().asULL()) {
                     break;
                 }
             }
@@ -976,12 +956,8 @@ int64_t WiredTigerRecordStore::_cappedDeleteAsNeeded(OperationContext* opCtx,
     return _cappedDeleteAsNeeded_inlock(opCtx, justInserted);
 }
 
-boost::optional<Timestamp> WiredTigerRecordStore::getLastStableRecoveryTimestamp() const {
-    return _kvEngine->getLastStableRecoveryTimestamp();
-}
-
-bool WiredTigerRecordStore::supportsRecoverToStableTimestamp() const {
-    return _kvEngine->supportsRecoverToStableTimestamp();
+Timestamp WiredTigerRecordStore::getPinnedOplog() const {
+    return _kvEngine->getPinnedOplog();
 }
 
 void WiredTigerRecordStore::_positionAtFirstRecordId(OperationContext* opCtx,
@@ -1016,11 +992,12 @@ int64_t WiredTigerRecordStore::_cappedDeleteAsNeeded_inlock(OperationContext* op
                                                             const RecordId& justInserted) {
     // we do this in a side transaction in case it aborts
     WiredTigerRecoveryUnit* realRecoveryUnit =
-        checked_cast<WiredTigerRecoveryUnit*>(opCtx->releaseRecoveryUnit());
+        checked_cast<WiredTigerRecoveryUnit*>(opCtx->releaseRecoveryUnit().release());
     invariant(realRecoveryUnit);
     WiredTigerSessionCache* sc = realRecoveryUnit->getSessionCache();
-    WriteUnitOfWork::RecoveryUnitState const realRUstate = opCtx->setRecoveryUnit(
-        new WiredTigerRecoveryUnit(sc), WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+    WriteUnitOfWork::RecoveryUnitState const realRUstate =
+        opCtx->setRecoveryUnit(std::make_unique<WiredTigerRecoveryUnit>(sc),
+                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
 
@@ -1148,18 +1125,18 @@ int64_t WiredTigerRecordStore::_cappedDeleteAsNeeded_inlock(OperationContext* op
             }
         }
     } catch (const WriteConflictException&) {
-        delete opCtx->releaseRecoveryUnit();
-        opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
+        opCtx->releaseRecoveryUnit();
+        opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(realRecoveryUnit), realRUstate);
         log() << "got conflict truncating capped, ignoring";
         return 0;
     } catch (...) {
-        delete opCtx->releaseRecoveryUnit();
-        opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
+        opCtx->releaseRecoveryUnit();
+        opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(realRecoveryUnit), realRUstate);
         throw;
     }
 
-    delete opCtx->releaseRecoveryUnit();
-    opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
+    opCtx->releaseRecoveryUnit();
+    opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(realRecoveryUnit), realRUstate);
     return docsRemoved;
 }
 
@@ -1192,27 +1169,15 @@ bool WiredTigerRecordStore::yieldAndAwaitOplogDeletionRequest(OperationContext* 
 }
 
 void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx) {
-    if (!_kvEngine->supportsRecoverToStableTimestamp()) {
-        // For non-RTT storage engines, the oplog can always be truncated. They do not need the
-        // history for recoverable rollback or crash recovery.
-        reclaimOplog(opCtx, Timestamp::max());
-        return;
-    }
-
-    auto optionalLastStableRecoveryTimestamp = _kvEngine->getLastStableRecoveryTimestamp();
-    Timestamp lastStableRecoveryTimestamp = optionalLastStableRecoveryTimestamp
-        ? *optionalLastStableRecoveryTimestamp
-        : Timestamp::min();
-
-    reclaimOplog(opCtx, lastStableRecoveryTimestamp);
+    reclaimOplog(opCtx, _kvEngine->getPinnedOplog());
 }
 
-void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx, Timestamp recoveryTimestamp) {
+void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx, Timestamp mayTruncateUpTo) {
     Timer timer;
     while (auto stone = _oplogStones->peekOldestStoneIfNeeded()) {
-        invariant(stone->lastRecord.isNormal());
+        invariant(stone->lastRecord.isValid());
 
-        if (static_cast<std::uint64_t>(stone->lastRecord.repr()) >= recoveryTimestamp.asULL()) {
+        if (static_cast<std::uint64_t>(stone->lastRecord.repr()) >= mayTruncateUpTo.asULL()) {
             // Do not truncate oplogs needed for replication recovery.
             return;
         }
@@ -1424,8 +1389,7 @@ Status WiredTigerRecordStore::insertRecordsWithDocWriter(OperationContext* opCtx
 Status WiredTigerRecordStore::updateRecord(OperationContext* opCtx,
                                            const RecordId& id,
                                            const char* data,
-                                           int len,
-                                           UpdateNotifier* notifier) {
+                                           int len) {
     dassert(opCtx->lockState()->isWriteLocked());
 
     WiredTigerCursor curwrap(_uri, _tableId, true, opCtx);
@@ -1783,12 +1747,7 @@ void WiredTigerRecordStore::_increaseDataSize(OperationContext* opCtx, int64_t a
 void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
                                                 RecordId end,
                                                 bool inclusive) {
-    // Only log messages at a lower level here for testing.
-    int logLevel = getTestCommandsEnabled() ? 0 : 2;
-
     std::unique_ptr<SeekableRecordCursor> cursor = getCursor(opCtx, true);
-    LOG(logLevel) << "Truncating capped collection '" << _ns
-                  << "' in WiredTiger record store, (inclusive=" << inclusive << ")";
 
     auto record = cursor->seekExact(end);
     massert(28807, str::stream() << "Failed to seek to the record located at " << end, record);
@@ -1809,7 +1768,6 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         // that is being deleted.
         record = cursor->next();
         if (!record) {
-            LOG(logLevel) << "No records to delete for truncation";
             return;  // No records to delete.
         }
         lastKeptId = end;
@@ -1826,8 +1784,6 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
             }
             recordsRemoved++;
             bytesRemoved += record->data.size();
-            LOG(logLevel) << "Record id to delete for truncation of '" << _ns << "': " << record->id
-                          << " (" << Timestamp(record->id.repr()) << ")";
         } while ((record = cursor->next()));
     }
 
@@ -1838,10 +1794,6 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
     WiredTigerCursor startwrap(_uri, _tableId, true, opCtx);
     WT_CURSOR* start = startwrap.get();
     setKey(start, firstRemovedId);
-
-    LOG(logLevel) << "Truncating collection '" << _ns << "' from " << firstRemovedId << " ("
-                  << Timestamp(firstRemovedId.repr()) << ")"
-                  << " to the end. Number of records to delete: " << recordsRemoved;
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
     invariantWTOK(session->truncate(session, nullptr, start, nullptr, nullptr));
@@ -1855,24 +1807,31 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         // Immediately rewind visibility to our truncation point, to prevent new
         // transactions from appearing.
         Timestamp truncTs(lastKeptId.repr());
-        LOG(logLevel) << "Rewinding oplog visibility point to " << truncTs << " after truncation.";
 
+        if (!serverGlobalParams.enableMajorityReadConcern) {
+            // If majority read concern is disabled, we must set the oldest timestamp along with the
+            // commit timestamp. Otherwise, the commit timestamp might be set behind the oldest
+            // timestamp.
+            const bool force = true;
+            _kvEngine->setOldestTimestamp(truncTs, force);
+        } else {
+            char commitTSConfigString["commit_timestamp="_sd.size() +
+                                      (8 * 2) /* 8 hexadecimal characters */ +
+                                      1 /* trailing null */];
+            auto size = std::snprintf(commitTSConfigString,
+                                      sizeof(commitTSConfigString),
+                                      "commit_timestamp=%llx",
+                                      truncTs.asULL());
+            if (size < 0) {
+                int e = errno;
+                error() << "error snprintf " << errnoWithDescription(e);
+                fassertFailedNoTrace(40662);
+            }
 
-        char commitTSConfigString["commit_timestamp="_sd.size() +
-                                  (8 * 2) /* 8 hexadecimal characters */ + 1 /* trailing null */];
-        auto size = std::snprintf(commitTSConfigString,
-                                  sizeof(commitTSConfigString),
-                                  "commit_timestamp=%llx",
-                                  truncTs.asULL());
-        if (size < 0) {
-            int e = errno;
-            error() << "error snprintf " << errnoWithDescription(e);
-            fassertFailedNoTrace(40662);
+            invariant(static_cast<std::size_t>(size) < sizeof(commitTSConfigString));
+            auto conn = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache()->conn();
+            invariantWTOK(conn->set_timestamp(conn, commitTSConfigString));
         }
-
-        invariant(static_cast<std::size_t>(size) < sizeof(commitTSConfigString));
-        auto conn = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache()->conn();
-        invariantWTOK(conn->set_timestamp(conn, commitTSConfigString));
 
         _kvEngine->getOplogManager()->setOplogReadTimestamp(truncTs);
         LOG(1) << "truncation new read timestamp: " << truncTs;
@@ -1934,7 +1893,7 @@ boost::optional<Record> WiredTigerRecordStoreCursorBase::next() {
     }
 
     _skipNextAdvance = false;
-    if (!id.isNormal()) {
+    if (!id.isValid()) {
         id = getKey(c);
     }
 
@@ -2080,7 +2039,7 @@ void StandardWiredTigerRecordStore::setKey(WT_CURSOR* cursor, RecordId id) const
 
 std::unique_ptr<SeekableRecordCursor> StandardWiredTigerRecordStore::getCursor(
     OperationContext* opCtx, bool forward) const {
-    dassert(opCtx->lockState()->isReadLocked() || _isOplog);
+    dassert(opCtx->lockState()->isReadLocked());
 
     if (_isOplog && forward) {
         WiredTigerRecoveryUnit* wru = WiredTigerRecoveryUnit::get(opCtx);

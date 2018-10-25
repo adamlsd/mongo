@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -1231,6 +1233,53 @@ TEST_F(DConcurrencyTestFixture, TicketAcquireCanBeInterrupted) {
     ASSERT_THROWS_CODE(result.get(), AssertionException, ErrorCodes::Interrupted);
 }
 
+TEST_F(DConcurrencyTestFixture, TicketAcquireRespectsUninterruptibleLockGuard) {
+    auto clientOpctxPairs = makeKClientsWithLockers(1);
+    auto opCtx = clientOpctxPairs[0].second.get();
+    // Limit the locker to 0 tickets at a time.
+    UseGlobalThrottling throttle(opCtx, 0);
+
+    // This thread should block and return because it cannot acquire a ticket within the deadline.
+    auto result = runTaskAndKill(opCtx, [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+        Lock::GlobalRead R(
+            opCtx, Date_t::now() + Milliseconds(1500), Lock::InterruptBehavior::kThrow);
+        ASSERT(!R.isLocked());
+    });
+
+    result.get();  // This should not throw.
+}
+
+TEST_F(DConcurrencyTestFixture, TicketAcquireWithMaxDeadlineRespectsUninterruptibleLockGuard) {
+    auto clientOpctxPairs = makeKClientsWithLockers(2);
+    auto opCtx1 = clientOpctxPairs[0].second.get();
+    auto opCtx2 = clientOpctxPairs[1].second.get();
+    // Limit the locker to 1 ticket at a time.
+    UseGlobalThrottling throttle(opCtx1, 1);
+
+    // Take the only ticket available.
+    boost::optional<Lock::GlobalRead> R1;
+    R1.emplace(opCtx1, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    ASSERT(R1->isLocked());
+
+    boost::optional<Lock::GlobalRead> R2;
+
+    // Block until a ticket is available.
+    auto result =
+        runTaskAndKill(opCtx2,
+                       [&] {
+                           UninterruptibleLockGuard noInterrupt(opCtx2->lockState());
+                           R2.emplace(opCtx2, Date_t::max(), Lock::InterruptBehavior::kThrow);
+                       },
+                       [&] {
+                           // Relase the only ticket available to unblock the other thread.
+                           R1.reset();
+                       });
+
+    result.get();  // This should not throw.
+    ASSERT(R2->isLocked());
+}
+
 TEST_F(DConcurrencyTestFixture, TicketReacquireCanBeInterrupted) {
     auto clientOpctxPairs = makeKClientsWithLockers(2);
     auto opctx1 = clientOpctxPairs[0].second.get();
@@ -1658,7 +1707,7 @@ TEST_F(DConcurrencyTestFixture, TestGlobalLockAbandonsSnapshotWhenNotInWriteUnit
     auto opCtx = clients[0].second.get();
     auto recovUnitOwned = stdx::make_unique<RecoveryUnitMock>();
     auto recovUnitBorrowed = recovUnitOwned.get();
-    opCtx->setRecoveryUnit(recovUnitOwned.release(),
+    opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(recovUnitOwned.release()),
                            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     {
@@ -1683,7 +1732,7 @@ TEST_F(DConcurrencyTestFixture, TestGlobalLockDoesNotAbandonSnapshotWhenInWriteU
     auto opCtx = clients[0].second.get();
     auto recovUnitOwned = stdx::make_unique<RecoveryUnitMock>();
     auto recovUnitBorrowed = recovUnitOwned.get();
-    opCtx->setRecoveryUnit(recovUnitOwned.release(),
+    opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(recovUnitOwned.release()),
                            WriteUnitOfWork::RecoveryUnitState::kActiveUnitOfWork);
     opCtx->lockState()->beginWriteUnitOfWork();
 

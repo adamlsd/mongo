@@ -253,24 +253,25 @@ static int
 __debug_config(WT_SESSION_IMPL *session, WT_DBG *ds, const char *ofile)
 {
 	WT_BTREE *btree;
+	WT_DECL_RET;
 
 	memset(ds, 0, sizeof(WT_DBG));
 
 	ds->session = session;
 
-	WT_RET(__wt_scr_alloc(session, 512, &ds->t1));
-	WT_RET(__wt_scr_alloc(session, 512, &ds->t2));
+	WT_ERR(__wt_scr_alloc(session, 512, &ds->t1));
+	WT_ERR(__wt_scr_alloc(session, 512, &ds->t2));
 
 	/*
 	 * If we weren't given a file, we use the default event handler, and
 	 * we'll have to buffer messages.
 	 */
 	if (ofile == NULL) {
-		WT_RET(__wt_scr_alloc(session, 512, &ds->msg));
+		WT_ERR(__wt_scr_alloc(session, 512, &ds->msg));
 		ds->f = __dmsg_event;
 	} else {
 		if ((ds->fp = fopen(ofile, "w")) == NULL)
-			return (__wt_set_return(session, EIO));
+			WT_ERR(__wt_set_return(session, EIO));
 		__wt_stream_set_line_buffer(ds->fp);
 		ds->f = __dmsg_file;
 	}
@@ -279,6 +280,9 @@ __debug_config(WT_SESSION_IMPL *session, WT_DBG *ds, const char *ofile)
 	ds->key_format = btree->key_format;
 	ds->value_format = btree->value_format;
 	return (0);
+
+err:	WT_TRET(__debug_wrapup(ds));
+	return (ret);
 }
 
 /*
@@ -366,25 +370,18 @@ int
 __wt_debug_offset_blind(
     WT_SESSION_IMPL *session, wt_off_t offset, const char *ofile)
 {
-	WT_DECL_ITEM(buf);
-	WT_DECL_RET;
+	uint32_t checksum, size;
 
 	WT_ASSERT(session, S2BT_SAFE(session) != NULL);
 
 	/*
 	 * This routine depends on the default block manager's view of files,
 	 * where an address consists of a file offset, length, and checksum.
-	 * This is for debugging only.  Other block managers might not see a
-	 * file or address the same way, that's why there's no block manager
-	 * method.
+	 * This is for debugging only.
 	 */
-	WT_RET(__wt_scr_alloc(session, 1024, &buf));
-	WT_ERR(__wt_block_read_off_blind(
-	    session, S2BT(session)->bm->block, buf, offset));
-	ret = __wt_debug_disk(session, buf->mem, ofile);
-
-err:	__wt_scr_free(session, &buf);
-	return (ret);
+	WT_RET(__wt_block_read_off_blind(
+	    session, S2BT(session)->bm->block, offset, &size, &checksum));
+	return (__wt_debug_offset(session, offset, size, checksum, ofile));
 }
 
 /*
@@ -545,11 +542,13 @@ __debug_dsk_cell(WT_DBG *ds, const WT_PAGE_HEADER *dsk)
  *	Pretty-print information about a page.
  */
 static char *
-__debug_tree_shape_info(WT_PAGE *page, char *buf, size_t len)
+__debug_tree_shape_info(WT_REF *ref, char *buf, size_t len)
 {
+	WT_PAGE *page;
 	uint64_t v;
 	const char *unit;
 
+	page = ref->page;
 	v = page->memory_footprint;
 
 	if (v > WT_GIGABYTE) {
@@ -567,7 +566,7 @@ __debug_tree_shape_info(WT_PAGE *page, char *buf, size_t len)
 
 	(void)__wt_snprintf(buf, len, "(%p, %" PRIu64
 	    "%s, evict gen %" PRIu64 ", create gen %" PRIu64 ")",
-	    (void *)page, v, unit,
+	    (void *)ref, v, unit,
 	    page->evict_pass_gen, page->cache_create_gen);
 	return (buf);
 }
@@ -577,27 +576,27 @@ __debug_tree_shape_info(WT_PAGE *page, char *buf, size_t len)
  *	Dump information about the current page and descend.
  */
 static int
-__debug_tree_shape_worker(WT_DBG *ds, WT_PAGE *page, int level)
+__debug_tree_shape_worker(WT_DBG *ds, WT_REF *ref, int level)
 {
-	WT_REF *ref;
+	WT_REF *walk;
 	WT_SESSION_IMPL *session;
 	char buf[128];
 
 	session = ds->session;
 
-	if (WT_PAGE_IS_INTERNAL(page)) {
+	if (WT_PAGE_IS_INTERNAL(ref->page)) {
 		WT_RET(ds->f(ds, "%*s" "I" "%d %s\n",
 		    level * 3, " ", level,
-		    __debug_tree_shape_info(page, buf, sizeof(buf))));
-		WT_INTL_FOREACH_BEGIN(session, page, ref) {
-			if (ref->state == WT_REF_MEM)
+		    __debug_tree_shape_info(ref, buf, sizeof(buf))));
+		WT_INTL_FOREACH_BEGIN(session, ref->page, walk) {
+			if (walk->state == WT_REF_MEM)
 				WT_RET(__debug_tree_shape_worker(
-				    ds, ref->page, level + 1));
+				    ds, walk, level + 1));
 		} WT_INTL_FOREACH_END;
 	} else
 		WT_RET(ds->f(ds, "%*s" "L" " %s\n",
 		    level * 3, " ",
-		    __debug_tree_shape_info(page, buf, sizeof(buf))));
+		    __debug_tree_shape_info(ref, buf, sizeof(buf))));
 	return (0);
 }
 
@@ -607,7 +606,7 @@ __debug_tree_shape_worker(WT_DBG *ds, WT_PAGE *page, int level)
  */
 int
 __wt_debug_tree_shape(
-    WT_SESSION_IMPL *session, WT_PAGE *page, const char *ofile)
+    WT_SESSION_IMPL *session, WT_REF *ref, const char *ofile)
 {
 	WT_DBG *ds, _ds;
 	WT_DECL_RET;
@@ -617,12 +616,12 @@ __wt_debug_tree_shape(
 	ds = &_ds;
 	WT_RET(__debug_config(session, ds, ofile));
 
-	/* A NULL page starts at the top of the tree -- it's a convenience. */
-	if (page == NULL)
-		page = S2BT(session)->root.page;
+	/* A NULL WT_REF starts at the top of the tree -- it's a convenience. */
+	if (ref == NULL)
+		ref = &S2BT(session)->root;
 
 	WT_WITH_PAGE_INDEX(session,
-	    ret = __debug_tree_shape_worker(ds, page, 1));
+	    ret = __debug_tree_shape_worker(ds, ref, 1));
 
 	WT_TRET(__debug_wrapup(ds));
 	return (ret);

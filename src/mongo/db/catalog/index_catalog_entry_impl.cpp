@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2013 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kIndex
 
@@ -48,24 +50,12 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
-MONGO_REGISTER_SHIM(IndexCatalogEntry::makeImpl)
-(IndexCatalogEntry* const this_,
- OperationContext* const opCtx,
- const StringData ns,
- CollectionCatalogEntry* const collection,
- std::unique_ptr<IndexDescriptor> descriptor,
- CollectionInfoCache* const infoCache,
- PrivateTo<IndexCatalogEntry>)
-    ->std::unique_ptr<IndexCatalogEntry::Impl> {
-    return std::make_unique<IndexCatalogEntryImpl>(
-        this_, opCtx, ns, collection, std::move(descriptor), infoCache);
-}
 
 using std::string;
 
@@ -87,8 +77,7 @@ private:
     IndexCatalogEntry* _catalogEntry;
 };
 
-IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry* const this_,
-                                             OperationContext* const opCtx,
+IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
                                              const StringData ns,
                                              CollectionCatalogEntry* const collection,
                                              std::unique_ptr<IndexDescriptor> descriptor,
@@ -97,11 +86,11 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry* const this_,
       _collection(collection),
       _descriptor(std::move(descriptor)),
       _infoCache(infoCache),
-      _headManager(stdx::make_unique<HeadManagerImpl>(this_)),
+      _headManager(stdx::make_unique<HeadManagerImpl>(this)),
       _ordering(Ordering::make(_descriptor->keyPattern())),
       _isReady(false),
       _prefix(collection->getIndexPrefix(opCtx, _descriptor->indexName())) {
-    _descriptor->_cachedEntry = this_;
+    _descriptor->_cachedEntry = this;
 
     _isReady = _catalogIsReady(opCtx);
     _head = _catalogHead(opCtx);
@@ -112,9 +101,8 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry* const this_,
         _indexTracksPathLevelMultikeyInfo = !_indexMultikeyPaths.empty();
     }
 
-    if (BSONElement collationElement = _descriptor->getInfoElement("collation")) {
-        invariant(collationElement.isABSONObj());
-        BSONObj collation = collationElement.Obj();
+    const BSONObj& collation = _descriptor->collation();
+    if (!collation.isEmpty()) {
         auto statusWithCollator =
             CollatorFactoryInterface::get(opCtx->getServiceContext())->makeFromBSON(collation);
 
@@ -124,9 +112,9 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry* const this_,
         _collator = std::move(statusWithCollator.getValue());
     }
 
-    if (BSONElement filterElement = _descriptor->getInfoElement("partialFilterExpression")) {
-        invariant(filterElement.isABSONObj());
-        BSONObj filter = filterElement.Obj();
+    if (_descriptor->isPartial()) {
+        const BSONObj& filter = _descriptor->partialFilterExpression();
+
         boost::intrusive_ptr<ExpressionContext> expCtx(
             new ExpressionContext(opCtx, _collator.get()));
 
@@ -162,12 +150,12 @@ const RecordId& IndexCatalogEntryImpl::head(OperationContext* opCtx) const {
 }
 
 bool IndexCatalogEntryImpl::isReady(OperationContext* opCtx) const {
-    auto session = OperationContextSession::get(opCtx);
+    auto txnParticipant = TransactionParticipant::get(opCtx);
     // For multi-document transactions, we can open a snapshot prior to checking the
     // minimumSnapshotVersion on a collection.  This means we are unprotected from reading
     // out-of-sync index catalog entries.  To fix this, we uassert if we detect that the
     // in-memory catalog is out-of-sync with the on-disk catalog.
-    if (session && session->inMultiDocumentTransaction()) {
+    if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
         if (!_catalogIsPresent(opCtx) || _catalogIsReady(opCtx) != _isReady) {
             uasserted(ErrorCodes::SnapshotUnavailable,
                       str::stream() << "Unable to read from a snapshot due to pending collection"
@@ -192,12 +180,12 @@ bool IndexCatalogEntryImpl::isMultikey(OperationContext* opCtx) const {
     // To accomplish this, the write-path will persist multikey changes on the `Session` object
     // and the read-path will query this state before determining there is no interesting multikey
     // state. Note, it's always legal, though potentially wasteful, to return `true`.
-    auto session = OperationContextSession::get(opCtx);
-    if (!session || !session->inMultiDocumentTransaction()) {
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    if (!txnParticipant || !txnParticipant->inMultiDocumentTransaction()) {
         return false;
     }
 
-    for (const MultikeyPathInfo& path : session->getMultikeyPathInfo()) {
+    for (const MultikeyPathInfo& path : txnParticipant->getMultikeyPathInfo()) {
         if (path.nss == NamespaceString(_ns) && path.indexName == _descriptor->indexName()) {
             return true;
         }
@@ -209,13 +197,13 @@ bool IndexCatalogEntryImpl::isMultikey(OperationContext* opCtx) const {
 MultikeyPaths IndexCatalogEntryImpl::getMultikeyPaths(OperationContext* opCtx) const {
     stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
 
-    auto session = OperationContextSession::get(opCtx);
-    if (!session || !session->inMultiDocumentTransaction()) {
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    if (!txnParticipant || !txnParticipant->inMultiDocumentTransaction()) {
         return _indexMultikeyPaths;
     }
 
     MultikeyPaths ret = _indexMultikeyPaths;
-    for (const MultikeyPathInfo& path : session->getMultikeyPathInfo()) {
+    for (const MultikeyPathInfo& path : txnParticipant->getMultikeyPathInfo()) {
         if (path.nss == NamespaceString(_ns) && path.indexName == _descriptor->indexName()) {
             MultikeyPathTracker::mergeMultikeyPaths(&ret, path.multikeyPaths);
         }
@@ -342,14 +330,23 @@ void IndexCatalogEntryImpl::setMultikey(OperationContext* opCtx,
         });
 
     // Keep multikey changes in memory to correctly service later reads using this index.
-    auto session = OperationContextSession::get(opCtx);
-    if (session && session->inMultiDocumentTransaction()) {
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
         MultikeyPathInfo info;
         info.nss = _collection->ns();
         info.indexName = _descriptor->indexName();
         info.multikeyPaths = paths;
-        session->addMultikeyPathInfo(std::move(info));
+        txnParticipant->addMultikeyPathInfo(std::move(info));
     }
+}
+
+void IndexCatalogEntryImpl::setIndexKeyStringWithLongTypeBitsExistsOnDisk(OperationContext* opCtx) {
+    _collection->setIndexKeyStringWithLongTypeBitsExistsOnDisk(opCtx);
+}
+
+void IndexCatalogEntryImpl::setNs(NamespaceString ns) {
+    _ns = ns.toString();
+    _descriptor->setNs(std::move(ns));
 }
 
 // ----

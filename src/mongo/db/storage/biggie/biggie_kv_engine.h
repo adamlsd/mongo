@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -45,7 +47,7 @@ class JournalListener;
  */
 class KVEngine : public ::mongo::KVEngine {
     std::shared_ptr<StringStore> _master = std::make_shared<StringStore>();
-    std::set<StringData> _idents;  // TODO : replace with a query to _master.
+    std::map<std::string, bool> _idents;  // TODO : replace with a query to _master.
     mutable stdx::mutex _masterLock;
 
 public:
@@ -73,16 +75,14 @@ public:
                                                                StringData ident,
                                                                const IndexDescriptor* desc);
 
-    virtual Status dropIdent(OperationContext* opCtx, StringData ident) {
-        return Status::OK();
-    }
+    virtual Status dropIdent(OperationContext* opCtx, StringData ident);
 
     virtual bool supportsDocLocking() const {
-        return false;  // TODO : do this later.
+        return true;
     }
 
     virtual bool supportsDirectoryPerDB() const {
-        return false;  // TODO : do this later.
+        return false;  // Not persistant so no Directories
     }
 
     virtual bool supportsCappedCollections() const {
@@ -106,8 +106,9 @@ public:
 
     virtual void setCachePressureForTest(int pressure) override;
 
+    // only called by KVDatabaseCatalogEntryBase::sizeOnDisk so return 0
     virtual int64_t getIdentSize(OperationContext* opCtx, StringData ident) {
-        return 1;  // TODO : implement.
+        return 0;
     }
 
     virtual Status repairIdent(OperationContext* opCtx, StringData ident) {
@@ -119,7 +120,11 @@ public:
     }
 
     std::vector<std::string> getAllIdents(OperationContext* opCtx) const {
-        return std::vector<std::string>();
+        std::vector<std::string> idents;
+        for (const auto& i : _idents) {
+            idents.push_back(i.first);
+        }
+        return idents;
     }
 
     virtual void cleanShutdown(){};
@@ -132,25 +137,18 @@ public:
 
     // Biggie Specific
 
-    /**
-     * Used to replace the master branch of the store with an updated copy.
-     * Appropriate lock must be taken externally.
-     */
-    // TODO: should possibly check store version numbers before setting.
-    void setMaster_inlock(std::unique_ptr<StringStore> newMaster);
-
     std::shared_ptr<StringStore> getMaster() const;
-    std::shared_ptr<StringStore> getMaster_inlock() const;
+
     /**
-     * Get the lock around the master branch.
+     * Returns true and swaps _master to newMaster if both _master and compareAgainst are
+     * equivalent.
      */
-    stdx::mutex& getMasterLock() {
-        return _masterLock;
-    }
+    bool compareAndSwapMaster(std::shared_ptr<StringStore> compareAgainst,
+                              std::unique_ptr<StringStore>& newMaster);
 
 private:
     std::shared_ptr<void> _catalogInfo;
-    int _cachePressureForTest;
+    int _cachePressureForTest = 0;
 };
 }  // namespace biggie
 }  // namespace mongo

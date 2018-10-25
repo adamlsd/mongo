@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -44,10 +46,23 @@
 
 namespace mongo {
 
+/**
+ * An implementation of the MongoProcessInterface that is okay with changing the OperationContext,
+ * but has no other parts of the interface implemented.
+ */
+class StubMongoProcessOkWithOpCtxChanges : public StubMongoProcessInterface {
+public:
+    void setOperationContext(OperationContext* opCtx) final {
+        return;
+    }
+};
+
 class DocumentSourceExchangeTest : public AggregationContextFixture {
 protected:
     std::unique_ptr<executor::TaskExecutor> _executor;
     virtual void setUp() override {
+        getExpCtx()->mongoProcessInterface = std::make_shared<StubMongoProcessOkWithOpCtxChanges>();
+
         auto net = executor::makeNetworkInterface("ExchangeTest");
 
         ThreadPool::Options options;
@@ -65,6 +80,7 @@ protected:
 
     auto getMockSource(int cnt) {
         auto source = DocumentSourceMock::create();
+
         for (int i = 0; i < cnt; ++i)
             source->queue.emplace_back(Document{{"a", i}, {"b", "aaaaaaaaaaaaaaaaaaaaaaaaaaa"_sd}});
 
@@ -82,11 +98,17 @@ protected:
         PseudoRandom prng(seed);
 
         auto source = DocumentSourceMock::create();
+
         for (size_t i = 0; i < cnt; ++i)
             source->queue.emplace_back(Document{{"a", static_cast<int>(prng.nextInt32() % cnt)},
                                                 {"b", "aaaaaaaaaaaaaaaaaaaaaaaaaaa"_sd}});
 
         return source;
+    }
+
+    auto parseSpec(const BSONObj& spec) {
+        IDLParserErrorContext ctx("internalExchange");
+        return ExchangeSpec::parse(ctx, spec);
     }
 };
 
@@ -100,14 +122,13 @@ TEST_F(DocumentSourceExchangeTest, SimpleExchange1Consumer) {
     spec.setConsumers(1);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(spec, unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
-    ex->setSource(source.get());
-
-    auto input = ex->getNext(0);
+    auto input = ex->getNext(getExpCtx()->opCtx, 0);
 
     size_t docs = 0;
-    for (; input.isAdvanced(); input = ex->getNext(0)) {
+    for (; input.isAdvanced(); input = ex->getNext(getExpCtx()->opCtx, 0)) {
         ++docs;
     }
 
@@ -127,13 +148,13 @@ TEST_F(DocumentSourceExchangeTest, SimpleExchangeNConsumer) {
     spec.setConsumers(nConsumers);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(spec, unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
     std::vector<boost::intrusive_ptr<DocumentSourceExchange>> prods;
 
     for (size_t idx = 0; idx < nConsumers; ++idx) {
         prods.push_back(new DocumentSourceExchange(getExpCtx(), ex, idx));
-        prods.back()->setSource(source.get());
     }
 
     std::vector<executor::TaskExecutor::CallbackHandle> handles;
@@ -172,13 +193,13 @@ TEST_F(DocumentSourceExchangeTest, BroadcastExchangeNConsumer) {
     spec.setConsumers(nConsumers);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(spec, unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
     std::vector<boost::intrusive_ptr<DocumentSourceExchange>> prods;
 
     for (size_t idx = 0; idx < nConsumers; ++idx) {
         prods.push_back(new DocumentSourceExchange(getExpCtx(), ex, idx));
-        prods.back()->setSource(source.get());
     }
 
     std::vector<executor::TaskExecutor::CallbackHandle> handles;
@@ -217,19 +238,19 @@ TEST_F(DocumentSourceExchangeTest, RangeExchangeNConsumer) {
     ASSERT(nDocs % nConsumers == 0);
 
     ExchangeSpec spec;
-    spec.setPolicy(ExchangePolicyEnum::kRange);
+    spec.setPolicy(ExchangePolicyEnum::kKeyRange);
     spec.setKey(BSON("a" << 1));
     spec.setBoundaries(boundaries);
     spec.setConsumers(nConsumers);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(std::move(spec), unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
     std::vector<boost::intrusive_ptr<DocumentSourceExchange>> prods;
 
     for (size_t idx = 0; idx < nConsumers; ++idx) {
         prods.push_back(new DocumentSourceExchange(getExpCtx(), ex, idx));
-        prods.back()->setSource(source.get());
     }
 
     std::vector<executor::TaskExecutor::CallbackHandle> handles;
@@ -282,20 +303,20 @@ TEST_F(DocumentSourceExchangeTest, RangeShardingExchangeNConsumer) {
     ASSERT(nDocs % nConsumers == 0);
 
     ExchangeSpec spec;
-    spec.setPolicy(ExchangePolicyEnum::kRange);
+    spec.setPolicy(ExchangePolicyEnum::kKeyRange);
     spec.setKey(BSON("a" << 1));
     spec.setBoundaries(boundaries);
-    spec.setConsumerids(consumerIds);
+    spec.setConsumerIds(consumerIds);
     spec.setConsumers(nConsumers);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(std::move(spec), unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
     std::vector<boost::intrusive_ptr<DocumentSourceExchange>> prods;
 
     for (size_t idx = 0; idx < nConsumers; ++idx) {
         prods.push_back(new DocumentSourceExchange(getExpCtx(), ex, idx));
-        prods.back()->setSource(source.get());
     }
 
     std::vector<executor::TaskExecutor::CallbackHandle> handles;
@@ -340,19 +361,19 @@ TEST_F(DocumentSourceExchangeTest, RangeRandomExchangeNConsumer) {
     ASSERT(nDocs % nConsumers == 0);
 
     ExchangeSpec spec;
-    spec.setPolicy(ExchangePolicyEnum::kRange);
+    spec.setPolicy(ExchangePolicyEnum::kKeyRange);
     spec.setKey(BSON("a" << 1));
     spec.setBoundaries(boundaries);
     spec.setConsumers(nConsumers);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(std::move(spec), unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
     std::vector<boost::intrusive_ptr<DocumentSourceExchange>> prods;
 
     for (size_t idx = 0; idx < nConsumers; ++idx) {
         prods.push_back(new DocumentSourceExchange(getExpCtx(), ex, idx));
-        prods.back()->setSource(source.get());
     }
 
     std::vector<executor::TaskExecutor::CallbackHandle> handles;
@@ -407,20 +428,20 @@ TEST_F(DocumentSourceExchangeTest, RangeRandomHashExchangeNConsumer) {
     ASSERT(nDocs % nConsumers == 0);
 
     ExchangeSpec spec;
-    spec.setPolicy(ExchangePolicyEnum::kHash);
+    spec.setPolicy(ExchangePolicyEnum::kKeyRange);
     spec.setKey(BSON("a"
                      << "hashed"));
     spec.setBoundaries(boundaries);
     spec.setConsumers(nConsumers);
     spec.setBufferSize(1024);
 
-    boost::intrusive_ptr<Exchange> ex = new Exchange(spec);
+    boost::intrusive_ptr<Exchange> ex =
+        new Exchange(std::move(spec), unittest::assertGet(Pipeline::create({source}, getExpCtx())));
 
     std::vector<boost::intrusive_ptr<DocumentSourceExchange>> prods;
 
     for (size_t idx = 0; idx < nConsumers; ++idx) {
         prods.push_back(new DocumentSourceExchange(getExpCtx(), ex, idx));
-        prods.back()->setSource(source.get());
     }
 
     std::vector<executor::TaskExecutor::CallbackHandle> handles;
@@ -456,126 +477,184 @@ TEST_F(DocumentSourceExchangeTest, RangeRandomHashExchangeNConsumer) {
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectNoConsumers) {
-    BSONObj spec = BSON("$exchange" << BSON("policy"
-                                            << "broadcast"
-                                            << "consumers"
-                                            << 0));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50901);
+    BSONObj spec = BSON("policy"
+                        << "broadcast"
+                        << "consumers"
+                        << 0);
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50901);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidKey) {
-    BSONObj spec = BSON("$exchange" << BSON("policy"
-                                            << "broadcast"
-                                            << "consumers"
-                                            << 1
-                                            << "key"
-                                            << BSON("a" << 2)));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50896);
+    BSONObj spec = BSON("policy"
+                        << "broadcast"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << 2));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50896);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidKeyHashExpected) {
-    BSONObj spec = BSON("$exchange" << BSON("policy"
-                                            << "broadcast"
-                                            << "consumers"
-                                            << 1
-                                            << "key"
-                                            << BSON("a"
-                                                    << "nothash")));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50895);
+    BSONObj spec = BSON("policy"
+                        << "broadcast"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a"
+                                << "nothash"));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50895);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidKeyWrongType) {
-    BSONObj spec = BSON("$exchange" << BSON("policy"
-                                            << "broadcast"
-                                            << "consumers"
-                                            << 1
-                                            << "key"
-                                            << BSON("a" << true)));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50897);
+    BSONObj spec = BSON("policy"
+                        << "broadcast"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << true));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50897);
+}
+
+TEST_F(DocumentSourceExchangeTest, RejectInvalidKeyEmpty) {
+    BSONObj spec = BSON("policy"
+                        << "broadcast"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("" << 1));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        40352);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidBoundaries) {
-    BSONObj spec =
-        BSON("$exchange" << BSON("policy"
-                                 << "range"
-                                 << "consumers"
-                                 << 1
-                                 << "key"
-                                 << BSON("a" << 1)
-                                 << "boundaries"
-                                 << BSON_ARRAY(BSON("a" << MAXKEY) << BSON("a" << MINKEY))
-                                 << "consumerids"
-                                 << BSON_ARRAY(0)));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50893);
+    BSONObj spec = BSON("policy"
+                        << "keyRange"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << 1)
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << MAXKEY) << BSON("a" << MINKEY))
+                        << "consumerIds"
+                        << BSON_ARRAY(0));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50893);
+}
+
+TEST_F(DocumentSourceExchangeTest, RejectInvalidBoundariesMissingMin) {
+    BSONObj spec = BSON("policy"
+                        << "keyRange"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << 1)
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << 0) << BSON("a" << MAXKEY))
+                        << "consumerIds"
+                        << BSON_ARRAY(0));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50958);
+}
+
+TEST_F(DocumentSourceExchangeTest, RejectInvalidBoundariesMissingMax) {
+    BSONObj spec = BSON("policy"
+                        << "keyRange"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << 1)
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << 0))
+                        << "consumerIds"
+                        << BSON_ARRAY(0));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50959);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidBoundariesAndConsumerIds) {
-    BSONObj spec =
-        BSON("$exchange" << BSON("policy"
-                                 << "range"
-                                 << "consumers"
-                                 << 2
-                                 << "key"
-                                 << BSON("a" << 1)
-                                 << "boundaries"
-                                 << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
-                                 << "consumerids"
-                                 << BSON_ARRAY(0 << 1)));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50900);
+    BSONObj spec = BSON("policy"
+                        << "keyRange"
+                        << "consumers"
+                        << 2
+                        << "key"
+                        << BSON("a" << 1)
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
+                        << "consumerIds"
+                        << BSON_ARRAY(0 << 1));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50900);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidPolicyBoundaries) {
-    BSONObj spec =
-        BSON("$exchange" << BSON("policy"
-                                 << "roundrobin"
-                                 << "consumers"
-                                 << 1
-                                 << "key"
-                                 << BSON("a" << 1)
-                                 << "boundaries"
-                                 << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
-                                 << "consumerids"
-                                 << BSON_ARRAY(0)));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50899);
+    BSONObj spec = BSON("policy"
+                        << "roundrobin"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << 1)
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
+                        << "consumerIds"
+                        << BSON_ARRAY(0));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50899);
 }
 
 TEST_F(DocumentSourceExchangeTest, RejectInvalidConsumerIds) {
-    BSONObj spec =
-        BSON("$exchange" << BSON("policy"
-                                 << "range"
-                                 << "consumers"
-                                 << 1
-                                 << "key"
-                                 << BSON("a" << 1)
-                                 << "boundaries"
-                                 << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
-                                 << "consumerids"
-                                 << BSON_ARRAY(1)));
-    BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS_CODE(DocumentSourceExchange::createFromBson(specElement, getExpCtx()),
-                       AssertionException,
-                       50894);
+    BSONObj spec = BSON("policy"
+                        << "keyRange"
+                        << "consumers"
+                        << 1
+                        << "key"
+                        << BSON("a" << 1)
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
+                        << "consumerIds"
+                        << BSON_ARRAY(1));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50894);
+}
+
+TEST_F(DocumentSourceExchangeTest, RejectInvalidMissingKeys) {
+    BSONObj spec = BSON("policy"
+                        << "keyRange"
+                        << "consumers"
+                        << 1
+                        << "boundaries"
+                        << BSON_ARRAY(BSON("a" << MINKEY) << BSON("a" << MAXKEY))
+                        << "consumerIds"
+                        << BSON_ARRAY(0));
+    ASSERT_THROWS_CODE(
+        Exchange(parseSpec(spec), unittest::assertGet(Pipeline::create({}, getExpCtx()))),
+        AssertionException,
+        50967);
 }
 
 }  // namespace mongo

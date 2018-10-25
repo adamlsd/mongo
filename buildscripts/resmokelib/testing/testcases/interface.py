@@ -8,6 +8,7 @@ from __future__ import absolute_import
 import os
 import os.path
 import unittest
+import uuid
 
 from ... import logging
 from ...utils import registry
@@ -22,14 +23,14 @@ def make_test_case(test_kind, *args, **kwargs):
     return _TEST_CASES[test_kind](*args, **kwargs)
 
 
-class TestCase(unittest.TestCase):
+class TestCase(unittest.TestCase):  # pylint: disable=too-many-instance-attributes
     """A test case to execute."""
 
     __metaclass__ = registry.make_registry_metaclass(_TEST_CASES)  # type: ignore
 
     REGISTERED_NAME = registry.LEAVE_UNREGISTERED
 
-    def __init__(self, logger, test_kind, test_name):
+    def __init__(self, logger, test_kind, test_name, dynamic=False):
         """Initialize the TestCase with the name of the test."""
         unittest.TestCase.__init__(self, methodName="run_test")
 
@@ -42,6 +43,8 @@ class TestCase(unittest.TestCase):
         if not isinstance(test_name, basestring):
             raise TypeError("test_name must be a string")
 
+        self._id = uuid.uuid4()
+
         # When the TestCase is created by the TestSuiteExecutor (through a call to make_test_case())
         # logger is an instance of TestQueueLogger. When the TestCase is created by a hook
         # implementation it is an instance of BaseLogger.
@@ -51,6 +54,7 @@ class TestCase(unittest.TestCase):
 
         self.test_kind = test_kind
         self.test_name = test_name
+        self.dynamic = dynamic
 
         self.fixture = None
         self.return_code = None
@@ -71,7 +75,7 @@ class TestCase(unittest.TestCase):
 
     def id(self):
         """Return the id of the test."""
-        return self.test_name
+        return self._id
 
     def short_description(self):
         """Return the short_description of the test."""
@@ -104,9 +108,9 @@ class TestCase(unittest.TestCase):
         """Run the specified test."""
         raise NotImplementedError("run_test must be implemented by TestCase subclasses")
 
-    def as_command(self):
-        """Return the command invocation used to run the test."""
-        raise NotImplementedError("as_command must be implemented by TestCase subclasses")
+    def as_command(self):  # pylint: disable=no-self-use
+        """Return the command invocation used to run the test or None."""
+        return None
 
 
 class ProcessTestCase(TestCase):  # pylint: disable=abstract-method

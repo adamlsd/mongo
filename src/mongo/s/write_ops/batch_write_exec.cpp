@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -39,9 +41,10 @@
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/executor/task_executor_pool.h"
-#include "mongo/s/async_requests_sender.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/multi_statement_transaction_requests_sender.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/write_error_detail.h"
 #include "mongo/util/log.h"
@@ -206,13 +209,14 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 pendingBatches.emplace(targetShardId, nextBatch);
             }
 
-            AsyncRequestsSender ars(opCtx,
-                                    Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
-                                    clientRequest.getTargetingNS().db().toString(),
-                                    requests,
-                                    kPrimaryOnlyReadPreference,
-                                    opCtx->getTxnNumber() ? Shard::RetryPolicy::kIdempotent
-                                                          : Shard::RetryPolicy::kNoRetry);
+            MultiStatementTransactionRequestsSender ars(
+                opCtx,
+                Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
+                clientRequest.getNS().db().toString(),
+                requests,
+                kPrimaryOnlyReadPreference,
+                opCtx->getTxnNumber() ? Shard::RetryPolicy::kIdempotent
+                                      : Shard::RetryPolicy::kNoRetry);
             numSent += pendingBatches.size();
 
             //
@@ -269,6 +273,18 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                     LOG(4) << "Write results received from " << shardHost.toString() << ": "
                            << redact(batchedCommandResponse.toString());
+
+                    // If we are in a transaction, we must fail the whole batch.
+                    if (TransactionRouter::get(opCtx)) {
+                        // Note: this returns a bad status if any part of the batch failed.
+                        auto batchStatus = batchedCommandResponse.toStatus();
+                        if (!batchStatus.isOK()) {
+                            batchOp.forgetTargetedBatchesOnTransactionAbortingError();
+                            uassertStatusOK(batchStatus.withContext(
+                                str::stream() << "Encountered error from " << shardHost.toString()
+                                              << " during a transaction"));
+                        }
+                    }
 
                     // Dispatch was ok, note response
                     batchOp.noteBatchResponse(*batch, batchedCommandResponse, &trackedErrors);

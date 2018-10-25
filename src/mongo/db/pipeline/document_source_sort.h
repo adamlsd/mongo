@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -61,16 +63,14 @@ public:
         return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {}};
     }
 
-    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
-        StageConstraints constraints(
-            _mergingPresorted ? StreamType::kStreaming : StreamType::kBlocking,
-            PositionRequirement::kNone,
-            HostTypeRequirement::kNone,
-            _mergingPresorted ? DiskUseRequirement::kNoDiskUse : DiskUseRequirement::kWritesTmpData,
-            _mergingPresorted ? FacetRequirement::kNotAllowed : FacetRequirement::kAllowed,
-            TransactionRequirement::kAllowed,
-            _mergingPresorted ? ChangeStreamRequirement::kWhitelist
-                              : ChangeStreamRequirement::kBlacklist);
+    StageConstraints constraints(Pipeline::SplitState) const final {
+        StageConstraints constraints(StreamType::kBlocking,
+                                     PositionRequirement::kNone,
+                                     HostTypeRequirement::kNone,
+                                     DiskUseRequirement::kWritesTmpData,
+                                     FacetRequirement::kAllowed,
+                                     TransactionRequirement::kAllowed,
+                                     ChangeStreamRequirement::kBlacklist);
 
         // Can't swap with a $match if a limit has been absorbed, as $match can't swap with $limit.
         constraints.canSwapWithMatch = !_limitSrc;
@@ -84,7 +84,9 @@ public:
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
 
     boost::intrusive_ptr<DocumentSource> getShardSource() final;
-    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final;
+    MergingLogic mergingLogic() final;
+    bool canRunInParallelBeforeOut(
+        const std::set<std::string>& nameOfShardKeyFieldsUponEntryToStage) const final;
 
     /**
      * Write out a Document whose contents are the sort key pattern.
@@ -105,15 +107,7 @@ public:
         const boost::intrusive_ptr<ExpressionContext>& pExpCtx,
         BSONObj sortOrder,
         long long limit = -1,
-        boost::optional<uint64_t> maxMemoryUsageBytes = boost::none,
-        bool mergingPresorted = false);
-
-    /**
-     * Returns true if this $sort stage is merging presorted streams.
-     */
-    bool mergingPresorted() const {
-        return _mergingPresorted;
-    }
+        boost::optional<uint64_t> maxMemoryUsageBytes = boost::none);
 
     /**
      * Returns -1 for no limit.
@@ -267,7 +261,6 @@ private:
 
     uint64_t _maxMemoryUsageBytes;
     bool _done;
-    bool _mergingPresorted;  // TODO SERVER-34009 Remove this flag.
     std::unique_ptr<MySorter> _sorter;
     std::unique_ptr<MySorter::Iterator> _output;
     bool _usedDisk = false;

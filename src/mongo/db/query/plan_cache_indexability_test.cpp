@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -28,6 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/index/wildcard_key_generator.h"
 #include "mongo/db/json.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
@@ -51,15 +54,33 @@ std::unique_ptr<MatchExpression> parseMatchExpression(const BSONObj& obj,
     return std::move(status.getValue());
 }
 
+// Helper which constructs a $** IndexEntry and returns it along with an owned ProjectionExecAgg.
+// The latter simulates the ProjectionExecAgg which, during normal operation, is owned and
+// maintained by the $** index's IndexAccessMethod, and is required because the plan cache will
+// obtain unowned pointers to it.
+std::pair<IndexEntry, std::unique_ptr<ProjectionExecAgg>> makeWildcardEntry(
+    BSONObj keyPattern, const MatchExpression* filterExpr = nullptr) {
+    auto projExec = WildcardKeyGenerator::createProjectionExec(keyPattern, {});
+    return {IndexEntry(keyPattern,
+                       false,  // multikey
+                       false,  // sparse
+                       false,  // unique
+                       IndexEntry::Identifier{"indexName"},
+                       filterExpr,
+                       BSONObj(),
+                       projExec.get()),
+            std::move(projExec)};
+}
+
 // Test sparse index discriminators for a simple sparse index.
 TEST(PlanCacheIndexabilityTest, SparseIndexSimple) {
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1),
-                                           false,    // multikey
-                                           true,     // sparse
-                                           false,    // unique
-                                           "a_1",    // name
-                                           nullptr,  // filterExpr
+                                           false,                          // multikey
+                                           true,                           // sparse
+                                           false,                          // unique
+                                           IndexEntry::Identifier{"a_1"},  // name
+                                           nullptr,                        // filterExpr
                                            BSONObj())});
 
     auto discriminators = state.getDiscriminators("a");
@@ -88,11 +109,11 @@ TEST(PlanCacheIndexabilityTest, SparseIndexSimple) {
 TEST(PlanCacheIndexabilityTest, SparseIndexCompound) {
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1 << "b" << 1),
-                                           false,      // multikey
-                                           true,       // sparse
-                                           false,      // unique
-                                           "a_1_b_1",  // name
-                                           nullptr,    // filterExpr
+                                           false,                              // multikey
+                                           true,                               // sparse
+                                           false,                              // unique
+                                           IndexEntry::Identifier{"a_1_b_1"},  // name
+                                           nullptr,                            // filterExpr
                                            BSONObj())});
 
     {
@@ -128,10 +149,10 @@ TEST(PlanCacheIndexabilityTest, PartialIndexSimple) {
     std::unique_ptr<MatchExpression> filterExpr(parseMatchExpression(filterObj));
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1),
-                                           false,  // multikey
-                                           false,  // sparse
-                                           false,  // unique
-                                           "a_1",  // name
+                                           false,                          // multikey
+                                           false,                          // sparse
+                                           false,                          // unique
+                                           IndexEntry::Identifier{"a_1"},  // name
                                            filterExpr.get(),
                                            BSONObj())});
 
@@ -170,10 +191,10 @@ TEST(PlanCacheIndexabilityTest, PartialIndexAnd) {
     std::unique_ptr<MatchExpression> filterExpr(parseMatchExpression(filterObj));
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1),
-                                           false,  // multikey
-                                           false,  // sparse
-                                           false,  // unique
-                                           "a_1",  // name
+                                           false,                          // multikey
+                                           false,                          // sparse
+                                           false,                          // unique
+                                           IndexEntry::Identifier{"a_1"},  // name
                                            filterExpr.get(),
                                            BSONObj())});
 
@@ -224,17 +245,17 @@ TEST(PlanCacheIndexabilityTest, MultiplePartialIndexes) {
 
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1),
-                                           false,  // multikey
-                                           false,  // sparse
-                                           false,  // unique
-                                           "a_1",  // name
+                                           false,                          // multikey
+                                           false,                          // sparse
+                                           false,                          // unique
+                                           IndexEntry::Identifier{"a_1"},  // name
                                            filterExpr1.get(),
                                            BSONObj()),
                                 IndexEntry(BSON("b" << 1),
-                                           false,  // multikey
-                                           false,  // sparse
-                                           false,  // unique
-                                           "b_1",  // name
+                                           false,                          // multikey
+                                           false,                          // sparse
+                                           false,                          // unique
+                                           IndexEntry::Identifier{"b_1"},  // name
                                            filterExpr2.get(),
                                            BSONObj())});
 
@@ -297,10 +318,10 @@ TEST(PlanCacheIndexabilityTest, MultiplePartialIndexes) {
 TEST(PlanCacheIndexabilityTest, IndexNeitherSparseNorPartial) {
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1),
-                                           false,  // multikey
-                                           false,  // sparse
-                                           false,  // unique
-                                           "a_1",  // name
+                                           false,                          // multikey
+                                           false,                          // sparse
+                                           false,                          // unique
+                                           IndexEntry::Identifier{"a_1"},  // name
                                            nullptr,
                                            BSONObj())});
     auto discriminators = state.getDiscriminators("a");
@@ -312,11 +333,11 @@ TEST(PlanCacheIndexabilityTest, IndexNeitherSparseNorPartial) {
 TEST(PlanCacheIndexabilityTest, DiscriminatorForCollationIndicatesWhenCollationsAreCompatible) {
     PlanCacheIndexabilityState state;
     IndexEntry entry(BSON("a" << 1),
-                     false,    // multikey
-                     false,    // sparse
-                     false,    // unique
-                     "a_1",    // name
-                     nullptr,  // filterExpr
+                     false,                          // multikey
+                     false,                          // sparse
+                     false,                          // unique
+                     IndexEntry::Identifier{"a_1"},  // name
+                     nullptr,                        // filterExpr
                      BSONObj());
     CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
     entry.collator = &collator;
@@ -393,10 +414,10 @@ TEST(PlanCacheIndexabilityTest, DiscriminatorForCollationIndicatesWhenCollations
 TEST(PlanCacheIndexabilityTest, CompoundIndexCollationDiscriminator) {
     PlanCacheIndexabilityState state;
     state.updateDiscriminators({IndexEntry(BSON("a" << 1 << "b" << 1),
-                                           false,      // multikey
-                                           false,      // sparse
-                                           false,      // unique
-                                           "a_1_b_1",  // name
+                                           false,                              // multikey
+                                           false,                              // sparse
+                                           false,                              // unique
+                                           IndexEntry::Identifier{"a_1_b_1"},  // name
                                            nullptr,
                                            BSONObj())});
 
@@ -407,6 +428,147 @@ TEST(PlanCacheIndexabilityTest, CompoundIndexCollationDiscriminator) {
     auto discriminatorsB = state.getDiscriminators("b");
     ASSERT_EQ(1U, discriminatorsB.size());
     ASSERT(discriminatorsB.find("a_1_b_1") != discriminatorsB.end());
+}
+
+TEST(PlanCacheIndexabilityTest, WildcardDiscriminator) {
+    PlanCacheIndexabilityState state;
+    auto entryProjExecPair = makeWildcardEntry(BSON("a.$**" << 1));
+    state.updateDiscriminators({entryProjExecPair.first});
+
+    const auto unindexedPathDiscriminators = state.buildWildcardDiscriminators("notIndexed");
+    ASSERT_EQ(0U, unindexedPathDiscriminators.size());
+
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
+    ASSERT_EQ(1U, discriminatorsA.size());
+    ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
+
+    const auto disc = discriminatorsA["indexName"];
+
+    ASSERT_TRUE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: 'abc'}")).get()));
+
+    // Querying for array values isn't supported by wildcard indexes.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: [1, 2, 3]}")).get()));
+    // Querying for null isn't supported by wildcard indexes.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: null}")).get()));
+
+    // Equality on empty array is supported.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: []}")).get()));
+    // Inequality isn't.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$gt: []}}")).get()));
+
+    // Cases which use $in.
+    ASSERT_TRUE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$in: []}}")).get()));
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, 2, 's']}}")).get()));
+    // Empty array inside the $in.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, [], 's']}}")).get()));
+
+    // Objects, non-empty arrays and null inside a $in.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, {a: 1}, 's']}}")).get()));
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, [1,2,3], 's']}}")).get()));
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, 2, null]}}")).get()));
+}
+
+TEST(PlanCacheIndexabilityTest, WildcardWithCollationDiscriminator) {
+    PlanCacheIndexabilityState state;
+    auto entryProjExecPair = makeWildcardEntry(BSON("a.$**" << 1));
+    CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
+    entryProjExecPair.first.collator = &collator;
+    state.updateDiscriminators({entryProjExecPair.first});
+
+    const auto unindexedPathDiscriminators = state.buildWildcardDiscriminators("notIndexed");
+    ASSERT_EQ(0U, unindexedPathDiscriminators.size());
+
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
+    ASSERT_EQ(1U, discriminatorsA.size());
+    ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
+
+    const auto disc = discriminatorsA["indexName"];
+
+    // Match expression which uses the simple collation isn't compatible.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: \"hello world\"}"), nullptr).get()));
+    // Match expression which uses the same collation as the index is.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: \"hello world\"}"), &collator).get()));
+}
+
+TEST(PlanCacheIndexabilityTest, WildcardPartialIndexDiscriminator) {
+    PlanCacheIndexabilityState state;
+
+    // Need to keep the filter BSON object around for the duration of the test since the match
+    // expression will store (unowned) pointers into it.
+    BSONObj filterObj = fromjson("{a: {$gt: 5}}");
+    auto filterExpr = parseMatchExpression(filterObj);
+    auto entryProjExecPair = makeWildcardEntry(BSON("$**" << 1), filterExpr.get());
+    state.updateDiscriminators({entryProjExecPair.first});
+
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
+    ASSERT_EQ(1U, discriminatorsA.size());
+    ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
+
+    const auto disc = discriminatorsA["indexName"];
+
+    // Match expression which queries for a value not included by the filter expression cannot use
+    // the index.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: 0}")).get()));
+
+    // Match expression which queries for a value included by the filter expression does not get
+    // discriminated out.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: 6}")).get()));
+}
+
+TEST(PlanCacheIndexabilityTest,
+     WildcardIndexDiscriminatesBetweenEqualityToEmptyObjAndOtherObjComparisons) {
+    PlanCacheIndexabilityState state;
+    auto entryProjExecPair = makeWildcardEntry(BSON("a.$**" << 1));
+    state.updateDiscriminators({entryProjExecPair.first});
+
+    auto discriminatorsA = state.buildWildcardDiscriminators("a");
+    ASSERT_EQ(1U, discriminatorsA.size());
+    ASSERT(discriminatorsA.find("indexName") != discriminatorsA.end());
+
+    const auto disc = discriminatorsA["indexName"];
+
+    // Verify that the discriminator considers equality to empty object compatible.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {}}")).get()));
+
+    // $lte:{} is a synonym for $eq:{}, and therefore is also compatible.
+    ASSERT_TRUE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$lte: {}}}")).get()));
+
+    // An $in with an empty object is compatible.
+    ASSERT_TRUE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, {}, 's']}}")).get()));
+
+    // Equality to a non-empty object is not compatible.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {b: 1}}")).get()));
+
+    // Inequality with an empty object is not compatible.
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$lt: {}}}")).get()));
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$gt: {}}}")).get()));
+    ASSERT_FALSE(
+        disc.isMatchCompatibleWithIndex(parseMatchExpression(fromjson("{a: {$gte: {}}}")).get()));
+
+    // Inequality with a non-empty object is not compatible.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$gte: {b: 1}}}")).get()));
+
+    // An $in with a non-empty object is not compatible.
+    ASSERT_FALSE(disc.isMatchCompatibleWithIndex(
+        parseMatchExpression(fromjson("{a: {$in: [1, {a: 1}, 's']}}")).get()));
 }
 
 }  // namespace

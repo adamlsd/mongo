@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -48,8 +50,8 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/log.h"
 
@@ -228,11 +230,11 @@ public:
                 isExplain));
 
             auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-            const auto session = OperationContextSession::get(opCtx);
+            const auto txnParticipant = TransactionParticipant::get(opCtx);
             uassert(ErrorCodes::InvalidOptions,
                     "It is illegal to open a tailable cursor in a transaction",
-                    session == nullptr ||
-                        !(session->inMultiDocumentTransaction() && qr->isTailable()));
+                    !txnParticipant ||
+                        !(txnParticipant->inMultiDocumentTransaction() && qr->isTailable()));
 
             // Validate term before acquiring locks, if provided.
             if (auto term = qr->getReplicationTerm()) {
@@ -326,7 +328,7 @@ public:
             CursorResponseBuilder firstBatch(result, options);
             BSONObj obj;
             PlanExecutor::ExecState state = PlanExecutor::ADVANCED;
-            long long numResults = 0;
+            std::uint64_t numResults = 0;
             while (!FindCommon::enoughForFirstBatch(originalQR, numResults) &&
                    PlanExecutor::ADVANCED == (state = exec->getNext(&obj, nullptr))) {
                 // If we can't fit this result inside the current batch, then we stash it for later.
@@ -384,7 +386,8 @@ public:
                     pinnedCursor.getCursor()->setLeftoverMaxTimeMicros(
                         opCtx->getRemainingMaxTimeMicros());
                 }
-                pinnedCursor.getCursor()->setPos(numResults);
+                pinnedCursor.getCursor()->setNReturnedSoFar(numResults);
+                pinnedCursor.getCursor()->incNBatches();
 
                 // Fill out curop based on the results.
                 endQueryOp(opCtx, collection, *cursorExec, numResults, cursorId);

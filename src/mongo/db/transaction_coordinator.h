@@ -1,23 +1,25 @@
-/*
- *    Copyright (C) 2018 MongoDB, Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -29,17 +31,22 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <list>
 #include <map>
 #include <set>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/bson/timestamp.h"
 #include "mongo/s/shard_id.h"
+#include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/decorable.h"
+#include "mongo/util/future.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
+class OperationContext;
 class Session;
 
 /**
@@ -53,50 +60,6 @@ public:
     TransactionCoordinator() = default;
     ~TransactionCoordinator() = default;
 
-    static boost::optional<TransactionCoordinator>& get(Session* session);
-    static void create(Session* session);
-
-    /**
-     * The coordinateCommit command contains the full participant list that this node is responsible
-     * for coordinating the commit across.
-     *
-     * Stores the participant list.
-     *
-     * Throws if any participants that this node has already heard a vote from are not in the list.
-     */
-    void recvCoordinateCommit(const std::set<ShardId>& participants);
-
-    /**
-     * A participant sends a voteCommit command with its prepareTimestamp if it succeeded in
-     * preparing the transaction.
-     *
-     * Stores the participant's vote.
-     *
-     * Throws if the full participant list has been received and this shard is not one of the
-     * participants.
-     */
-    void recvVoteCommit(const ShardId& shardId, int prepareTimestamp);
-
-    /**
-     * A participant sends a voteAbort command if it failed to prepare the transaction.
-     *
-     * Stores the participant's vote and causes the coordinator to decide to abort the transaction.
-     *
-     * Throws if the full participant list has been received and this shard is not one of the
-     * participants.
-     */
-    void recvVoteAbort(const ShardId& shardId);
-
-    /**
-     * Marks this participant as having completed committing the transaction.
-     */
-    void recvCommitAck(const ShardId& shardId);
-
-    /**
-     * Marks this participant as having completed aborting the transaction.
-     */
-    void recvAbortAck(const ShardId& shardId);
-
     /**
      * The internal state machine, or "brain", used by the TransactionCoordinator to determine what
      * to do in response to an "event" (receiving a request or hearing back a response).
@@ -105,9 +68,10 @@ public:
         friend class TransactionCoordinator;
 
     public:
+        ~StateMachine();
         enum class State {
+            kWaitingForParticipantList,
             kWaitingForVotes,
-            kWaitingForAbortAcks,
             kAborted,
             kWaitingForCommitAcks,
             kCommitted,
@@ -121,22 +85,39 @@ public:
 
         // State machine inputs
         enum class Event {
-            kRecvFinalVoteCommit,
             kRecvVoteAbort,
+            kRecvVoteCommit,
+            kRecvParticipantList,
+            kRecvFinalVoteCommit,
             kRecvFinalCommitAck,
-            kRecvFinalAbortAck,
+            kRecvTryAbort,
         };
 
         // State machine outputs
         enum class Action { kNone, kSendCommit, kSendAbort };
 
-        Action onEvent(Event e);
+        // IMPORTANT: If there is a state transition, this will release the lock in order to signal
+        // any promises that may be waiting on a state change, and will not reacquire it.
+        Action onEvent(stdx::unique_lock<stdx::mutex> lk, Event e);
 
         State state() const {
             return _state;
         }
 
+        /**
+         * Returns a future that will be signaled when the state machine transitions to one of
+         * the states specified. If several are specified, the first state to be hit after the call
+         * to waitForTransitionTo will trigger the future. If the state machine is currently in one
+         * of the states specified when the function is called, the returned future will already be
+         * ready, and contain the current state. The set of states must ALWAYS include all terminal
+         * states of the state machine in order to prevent a Future that hangs forever, e.g.
+         * if the caller only waits for a state that has already happened or will never happen.
+         */
+        Future<State> waitForTransitionTo(const std::set<State>& states);
+
     private:
+        void _signalAllPromisesWaitingForState(stdx::unique_lock<stdx::mutex> lk, State state);
+
         struct Transition {
             Transition(Action action, State nextState) : action(action), nextState(nextState) {}
             Transition(State nextState) : Transition(Action::kNone, nextState) {}
@@ -147,9 +128,78 @@ public:
             boost::optional<State> nextState;
         };
 
+        struct StateTransitionPromise {
+            StateTransitionPromise(Promise<State> promiseArg, std::set<State> triggeringStatesArg)
+                : promise(std::move(promiseArg)), triggeringStates(triggeringStatesArg) {}
+
+            Promise<State> promise;
+            std::set<State> triggeringStates;
+        };
+
         static const std::map<State, std::map<Event, Transition>> transitionTable;
-        State _state{State::kWaitingForVotes};
+        State _state{State::kWaitingForParticipantList};
+        std::list<StateTransitionPromise> _stateTransitionPromises;
     };
+
+    /**
+     * The coordinateCommit command contains the full participant list that this node is responsible
+     * for coordinating the commit across.
+     *
+     * Stores the participant list.
+     *
+     * Throws if any participants that this node has already heard a vote from are not in the list.
+     */
+    StateMachine::Action recvCoordinateCommit(const std::set<ShardId>& participants);
+
+    /**
+     * A participant sends a voteCommit command with its prepareTimestamp if it succeeded in
+     * preparing the transaction.
+     *
+     * Stores the participant's vote.
+     *
+     * Throws if the full participant list has been received and this shard is not one of the
+     * participants.
+     */
+    StateMachine::Action recvVoteCommit(const ShardId& shardId, Timestamp prepareTimestamp);
+
+    /**
+     * A participant sends a voteAbort command if it failed to prepare the transaction.
+     *
+     * Stores the participant's vote and causes the coordinator to decide to abort the transaction.
+     *
+     * Throws if the full participant list has been received and this shard is not one of the
+     * participants.
+     */
+    StateMachine::Action recvVoteAbort(const ShardId& shardId);
+
+    /**
+     * A tryAbort event is received by the coordinator when a transaction is implicitly aborted when
+     * a new transaction is received for the same session with a higher transaction number.
+     */
+    StateMachine::Action recvTryAbort();
+
+    /**
+     * Returns a Future which will be signaled when the TransactionCoordinator either commits
+     * or aborts. The resulting future will contain the final state of the coordinator.
+     */
+    Future<TransactionCoordinator::StateMachine::State> waitForCompletion();
+
+    /**
+     * Marks this participant as having completed committing the transaction.
+     */
+    void recvCommitAck(const ShardId& shardId);
+
+    std::set<ShardId> getNonAckedCommitParticipants() const {
+        return _participantList.getNonAckedCommitParticipants();
+    }
+
+    std::set<ShardId> getNonVotedAbortParticipants() const {
+        return _participantList.getNonVotedAbortParticipants();
+    }
+
+    Timestamp getCommitTimestamp() const {
+        return _participantList.getHighestPrepareTimestamp();
+    }
 
     StateMachine::State state() const {
         return _stateMachine.state();
@@ -158,35 +208,40 @@ public:
     class ParticipantList {
     public:
         void recordFullList(const std::set<ShardId>& participants);
-        void recordVoteCommit(const ShardId& shardId, int prepareTimestamp);
+        void recordVoteCommit(const ShardId& shardId, Timestamp prepareTimestamp);
         void recordVoteAbort(const ShardId& shardId);
         void recordCommitAck(const ShardId& shardId);
         void recordAbortAck(const ShardId& shardId);
 
-        bool allParticipantsVotedCommit();
-        bool allParticipantsAckedAbort();
-        bool allParticipantsAckedCommit();
+        bool allParticipantsVotedCommit() const;
+        bool allParticipantsAckedAbort() const;
+        bool allParticipantsAckedCommit() const;
+
+        Timestamp getHighestPrepareTimestamp() const;
+
+        std::set<ShardId> getNonAckedCommitParticipants() const;
+        std::set<ShardId> getNonVotedAbortParticipants() const;
 
         class Participant {
         public:
             enum class Vote { kUnknown, kAbort, kCommit };
-            enum class Ack { kNone, kAbort, kCommit };
+            enum class Ack { kNone, kCommit };
 
             Vote vote{Vote::kUnknown};
             Ack ack{Ack::kNone};
-            // TODO: Use a real Timestamp (OpTime?)
-            boost::optional<int> prepareTimestamp{boost::none};
+            boost::optional<Timestamp> prepareTimestamp{boost::none};
         };
 
     private:
         void _recordParticipant(const ShardId& shardId);
         void _validate(const std::set<ShardId>& participants);
 
-        bool _participantListReceived{false};
+        bool _fullListReceived{false};
         std::map<ShardId, Participant> _participants;
     };
 
 private:
+    stdx::mutex _mutex;
     ParticipantList _participantList;
     StateMachine _stateMachine;
 };
@@ -196,12 +251,12 @@ inline StringBuilder& operator<<(StringBuilder& sb,
     using State = TransactionCoordinator::StateMachine::State;
     switch (state) {
         // clang-format off
-        case State::kWaitingForVotes:       return sb << "kWaitingForVotes";
-        case State::kWaitingForAbortAcks:   return sb << "kWaitingForAbortAcks";
-        case State::kAborted:               return sb << "kAborted";
-        case State::kWaitingForCommitAcks:  return sb << "kWaitingForCommitAcks";
-        case State::kCommitted:             return sb << "kCommitted";
-        case State::kBroken:                return sb << "kBroken";
+        case State::kWaitingForParticipantList:     return sb << "kWaitingForParticipantlist";
+        case State::kWaitingForVotes:               return sb << "kWaitingForVotes";
+        case State::kAborted:                       return sb << "kAborted";
+        case State::kWaitingForCommitAcks:          return sb << "kWaitingForCommitAcks";
+        case State::kCommitted:                     return sb << "kCommitted";
+        case State::kBroken:                        return sb << "kBroken";
         // clang-format on
         default:
             MONGO_UNREACHABLE;
@@ -220,10 +275,11 @@ inline StringBuilder& operator<<(StringBuilder& sb,
     using Event = TransactionCoordinator::StateMachine::Event;
     switch (event) {
         // clang-format off
-        case Event::kRecvFinalVoteCommit:   return sb << "kRecvFinalVoteCommit";
         case Event::kRecvVoteAbort:         return sb << "kRecvVoteAbort";
+        case Event::kRecvVoteCommit:        return sb << "kRecvVoteCommit";
+        case Event::kRecvParticipantList:   return sb << "kRecvParticipantList";
+        case Event::kRecvFinalVoteCommit:   return sb << "kRecvFinalVoteCommit";
         case Event::kRecvFinalCommitAck:    return sb << "kRecvFinalCommitAck";
-        case Event::kRecvFinalAbortAck:     return sb << "kRecvFinalAbortAck";
         // clang-format on
         default:
             MONGO_UNREACHABLE;
@@ -237,4 +293,23 @@ inline std::ostream& operator<<(std::ostream& os,
     return os << sb.str();
 }
 
+inline StringBuilder& operator<<(StringBuilder& sb,
+                                 const TransactionCoordinator::StateMachine::Action& action) {
+    using Action = TransactionCoordinator::StateMachine::Action;
+    // clang-format off
+    switch (action) {
+        case Action::kSendCommit:        return sb << "kSendCommit";
+        case Action::kSendAbort:         return sb << "kSendAbort";
+        case Action::kNone:              return sb << "kNone";
+    };
+    // clang-format on
+    MONGO_UNREACHABLE;
+}
+
+inline std::ostream& operator<<(std::ostream& os,
+                                const TransactionCoordinator::StateMachine::Action& action) {
+    StringBuilder sb;
+    sb << action;
+    return os << sb.str();
+}
 }  // namespace mongo

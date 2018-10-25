@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -33,7 +35,8 @@
 
 #include "mongo/bson/ordering.h"
 #include "mongo/db/pipeline/document_source.h"
-#include "mongo/db/pipeline/document_source_exchange_gen.h"
+#include "mongo/db/pipeline/exchange_spec_gen.h"
+#include "mongo/db/pipeline/field_path.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
 
@@ -41,13 +44,15 @@ namespace mongo {
 
 class Exchange : public RefCountable {
     static constexpr size_t kInvalidThreadId{std::numeric_limits<size_t>::max()};
+    static constexpr size_t kMaxBufferSize = 100 * 1024 * 1024;  // 100 MB
+    static constexpr size_t kMaxNumberConsumers = 100;
 
     /**
      * Convert the BSON representation of boundaries (as deserialized off the wire) to the internal
      * format (KeyString).
      */
     static std::vector<std::string> extractBoundaries(
-        const boost::optional<std::vector<BSONObj>>& obj);
+        const boost::optional<std::vector<BSONObj>>& obj, Ordering ordering);
 
     /**
      * Validate consumer ids coming off the wire. If the ids pass the validation then return them.
@@ -59,23 +64,26 @@ class Exchange : public RefCountable {
     /**
      * Extract the order description from the key.
      */
-    static Ordering extractOrdering(const BSONObj& obj);
+    static Ordering extractOrdering(const BSONObj& keyPattern);
+
+    /**
+     * Extract dotted paths from the key.
+     */
+    static std::vector<FieldPath> extractKeyPaths(const BSONObj& keyPattern);
 
 public:
-    explicit Exchange(const ExchangeSpec& spec);
-    DocumentSource::GetNextResult getNext(size_t consumerId);
+    Exchange(ExchangeSpec spec, std::unique_ptr<Pipeline, PipelineDeleter> pipeline);
+    DocumentSource::GetNextResult getNext(OperationContext* opCtx, size_t consumerId);
 
     size_t getConsumers() const {
         return _consumers.size();
     }
 
-    void setSource(DocumentSource* source) {
-        pSource = source;
-    }
-
-    const auto& getSpec() const {
+    auto& getSpec() const {
         return _spec;
     }
+
+    void dispose(OperationContext* opCtx, size_t consumerId);
 
 private:
     size_t loadNextBatch();
@@ -103,6 +111,8 @@ private:
 
     const Ordering _ordering;
 
+    const std::vector<FieldPath> _keyPaths;
+
     // Range boundaries. The boundaries are ordered and must cover the whole domain, e.g.
     // [Min, -200, 0, 200, Max] partitions the domain into 4 ranges (i.e. 1 less than number of
     // boundaries). Every range has an assigned consumer that will process documents in that range.
@@ -126,7 +136,7 @@ private:
     const size_t _maxBufferSize;
 
     // An input to the exchange operator
-    DocumentSource* pSource;
+    std::unique_ptr<Pipeline, PipelineDeleter> _pipeline;
 
     // Synchronization.
     stdx::mutex _mutex;
@@ -135,16 +145,21 @@ private:
     // A thread that is currently loading the exchange buffers.
     size_t _loadingThreadId{kInvalidThreadId};
 
+    // A status indicating that the exception was thrown during loadNextBatch(). Once in the failed
+    // state all other producing threads will fail too.
+    Status _errorInLoadNextBatch{Status::OK()};
+
     size_t _roundRobinCounter{0};
+
+    // A rundown counter of consumers disposing of the pipelines. Only the last consumer will
+    // dispose of the 'inner' exchange pipeline.
+    size_t _disposeRunDown{0};
 
     std::vector<std::unique_ptr<ExchangeBuffer>> _consumers;
 };
 
-class DocumentSourceExchange final : public DocumentSource, public NeedsMergerDocumentSource {
+class DocumentSourceExchange final : public DocumentSource {
 public:
-    static boost::intrusive_ptr<DocumentSource> createFromBson(
-        BSONElement spec, const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
-
     DocumentSourceExchange(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                            const boost::intrusive_ptr<Exchange> exchange,
                            size_t consumerId);
@@ -164,21 +179,12 @@ public:
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 
-    boost::intrusive_ptr<DocumentSource> getShardSource() final {
-        return this;
-    }
-    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final {
-        // TODO SERVER-35974 we have to revisit this when we implement consumers.
-        return {this};
-    }
-
     /**
-     * Set the underlying source this source should use to get Documents from. Must not throw
-     * exceptions.
+     * DocumentSourceExchange does not have a direct source (it is reading through the shared
+     * Exchange pipeline).
      */
     void setSource(DocumentSource* source) final {
-        DocumentSource::setSource(source);
-        _exchange->setSource(source);
+        invariant(!source);
     }
 
     GetNextResult getNext(size_t consumerId);
@@ -189,6 +195,14 @@ public:
 
     auto getExchange() const {
         return _exchange;
+    }
+
+    void doDispose() final {
+        _exchange->dispose(pExpCtx->opCtx, _consumerId);
+    }
+
+    auto getConsumerId() const {
+        return _consumerId;
     }
 
 private:

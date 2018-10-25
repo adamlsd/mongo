@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016-2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -41,7 +43,6 @@
 #include "mongo/db/service_entry_point_mongod.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/unittest/temp_dir.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mock_periodic_runner_impl.h"
 
@@ -52,11 +53,17 @@ namespace mongo {
 ServiceContextMongoDTest::ServiceContextMongoDTest()
     : ServiceContextMongoDTest("ephemeralForTest") {}
 
-ServiceContextMongoDTest::ServiceContextMongoDTest(std::string engine) {
+ServiceContextMongoDTest::ServiceContextMongoDTest(std::string engine)
+    : ServiceContextMongoDTest(engine, RepairAction::kNoRepair) {}
+
+ServiceContextMongoDTest::ServiceContextMongoDTest(std::string engine, RepairAction repair)
+    : _tempDir("service_context_d_test_fixture") {
 
     _stashedStorageParams.engine = std::exchange(storageGlobalParams.engine, std::move(engine));
     _stashedStorageParams.engineSetByUser =
         std::exchange(storageGlobalParams.engineSetByUser, true);
+    _stashedStorageParams.repair =
+        std::exchange(storageGlobalParams.repair, (repair == RepairAction::kRepair));
 
     auto const serviceContext = getServiceContext();
     serviceContext->setServiceEntryPoint(std::make_unique<ServiceEntryPointMongod>(serviceContext));
@@ -68,8 +75,7 @@ ServiceContextMongoDTest::ServiceContextMongoDTest(std::string engine) {
     auto runner = std::make_unique<MockPeriodicRunnerImpl>();
     serviceContext->setPeriodicRunner(std::move(runner));
 
-    unittest::TempDir tempDir("service_context_d_test_fixture");
-    storageGlobalParams.dbpath = tempDir.path();
+    storageGlobalParams.dbpath = _tempDir.path();
 
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kNone);
 
@@ -92,6 +98,7 @@ ServiceContextMongoDTest::~ServiceContextMongoDTest() {
     shutdownGlobalStorageEngineCleanly(getGlobalServiceContext());
     std::swap(storageGlobalParams.engine, _stashedStorageParams.engine);
     std::swap(storageGlobalParams.engineSetByUser, _stashedStorageParams.engineSetByUser);
+    std::swap(storageGlobalParams.repair, _stashedStorageParams.repair);
 }
 
 }  // namespace mongo

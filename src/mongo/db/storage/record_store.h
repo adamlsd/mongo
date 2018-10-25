@@ -1,32 +1,34 @@
 // record_store.h
 
+
 /**
-*    Copyright (C) 2013 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #pragma once
 
@@ -35,9 +37,9 @@
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/db/exec/collection_scan_common.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
-#include "mongo/db/storage/record_fetcher.h"
 
 namespace mongo {
 
@@ -46,9 +48,7 @@ class Collection;
 struct CompactOptions;
 struct CompactStats;
 class MAdvise;
-class NamespaceDetails;
 class OperationContext;
-class RecordFetcher;
 
 class RecordStoreCompactAdaptor;
 class RecordStore;
@@ -70,16 +70,6 @@ public:
 protected:
     // Can't delete through base pointer.
     ~DocWriter() = default;
-};
-
-/**
- * @see RecordStore::updateRecord
- */
-class UpdateNotifier {
-public:
-    virtual ~UpdateNotifier() {}
-    virtual Status recordStoreGoingToUpdateInPlace(OperationContext* opCtx,
-                                                   const RecordId& loc) = 0;
 };
 
 /**
@@ -109,12 +99,12 @@ enum ValidateCmdLevel : int {
  * inside that context. Any cursor acquired inside a transaction is invalid outside
  * of that transaction, instead use the save and restore methods to reestablish the cursor.
  *
- * Any method other than invalidate and the save methods may throw WriteConflictException. If
- * that happens, the cursor may not be used again until it has been saved and successfully
- * restored. If next() or restore() throw a WCE the cursor's position will be the same as before
- * the call (strong exception guarantee). All other methods leave the cursor in a valid state
- * but with an unspecified position (basic exception guarantee). If any exception other than
- * WCE is thrown, the cursor must be destroyed, which is guaranteed not to leak any resources.
+ * Any method other than the save method may throw WriteConflictException. If that happens, the
+ * cursor may not be used again until it has been saved and successfully restored. If next() or
+ * restore() throw a WCE the cursor's position will be the same as before the call (strong exception
+ * guarantee). All other methods leave the cursor in a valid state but with an unspecified position
+ * (basic exception guarantee). If any exception other than WCE is thrown, the cursor must be
+ * destroyed, which is guaranteed not to leak any resources.
  *
  * Any returned unowned BSON is only valid until the next call to any method on this
  * interface.
@@ -193,36 +183,6 @@ public:
      * "saved" state, so callers must still call restoreState to use this object.
      */
     virtual void reattachToOperationContext(OperationContext* opCtx) = 0;
-
-    /**
-     * Inform the cursor that this id is being invalidated. Must be called between save and restore.
-     * The opCtx is that of the operation causing the invalidation, not the opCtx using the cursor.
-     *
-     * WARNING: Storage engines other than MMAPv1 should use the default implementation,
-     *          and not depend on this being called.
-     */
-    virtual void invalidate(OperationContext* opCtx, const RecordId& id) {}
-
-    //
-    // RecordFetchers
-    //
-    // Storage engines which do not support document-level locking hold locks at collection or
-    // database granularity. As an optimization, these locks can be yielded when a record needs
-    // to be fetched from secondary storage. If this method returns non-NULL, then it indicates
-    // that the query system layer should yield its locks, following the protocol defined by the
-    // RecordFetcher class, so that a potential page fault is triggered out of the lock.
-    //
-    // Storage engines which support document-level locking need not implement this.
-    //
-    // TODO see if these can be replaced by WriteConflictException.
-    //
-
-    /**
-     * Returns a RecordFetcher if needed for a call to next() or none if unneeded.
-     */
-    virtual std::unique_ptr<RecordFetcher> fetcherForNext() const {
-        return {};
-    }
 };
 
 /**
@@ -257,13 +217,6 @@ public:
     virtual void saveUnpositioned() {
         save();
     }
-
-    /**
-     * Returns a RecordFetcher if needed to fetch the provided Record or none if unneeded.
-     */
-    virtual std::unique_ptr<RecordFetcher> fetcherForId(const RecordId& id) const {
-        return {};
-    }
 };
 
 /**
@@ -295,6 +248,10 @@ public:
 
     virtual const std::string& ns() const {
         return _ns;
+    }
+
+    void setNs(NamespaceString ns) {
+        _ns = ns.ns();
     }
 
     virtual const std::string& getIdent() const = 0;
@@ -419,15 +376,13 @@ public:
     }
 
     /**
-     * @param notifier - Only used by record stores which do not support doc-locking. Called only
-     *                   in the case of an in-place update. Called just before the in-place write
-     *                   occurs.
+     * Updates the record with id 'recordId', replacing its contents with those described by
+     * 'data' and 'len'.
      */
     virtual Status updateRecord(OperationContext* opCtx,
-                                const RecordId& oldLocation,
+                                const RecordId& recordId,
                                 const char* data,
-                                int len,
-                                UpdateNotifier* notifier) = 0;
+                                int len) = 0;
 
     /**
      * @return Returns 'false' if this record store does not implement

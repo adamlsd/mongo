@@ -1,32 +1,34 @@
 // dbhash.cpp
 
+
 /**
-*    Copyright (C) 2013-2014 MongoDB Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
@@ -45,7 +47,7 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/internal_plans.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/md5.hpp"
@@ -115,8 +117,8 @@ public:
         // We lock the entire database in S-mode in order to ensure that the contents will not
         // change for the snapshot.
         auto lockMode = LockMode::MODE_S;
-        auto* session = OperationContextSession::get(opCtx);
-        if (session && session->inMultiDocumentTransaction()) {
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+        if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
             // However, if we are inside a multi-statement transaction, then we only need to lock
             // the database in intent mode to ensure that none of the collections get dropped.
             lockMode = getLockModeForQuery(opCtx);
@@ -218,8 +220,8 @@ private:
             return "";
 
         boost::optional<Lock::CollectionLock> collLock;
-        auto* session = OperationContextSession::get(opCtx);
-        if (session && session->inMultiDocumentTransaction()) {
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+        if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
             // When inside a multi-statement transaction, we are only holding the database lock in
             // intent mode. We need to also acquire the collection lock in intent mode to ensure
             // reading from the consistent snapshot doesn't overlap with any catalog operations on

@@ -98,6 +98,13 @@
                 cleanup.push(workload);
             });
 
+            // Await replication after running the $config.setup() function when stepdowns are
+            // permitted to ensure its effects aren't rolled back.
+            if (cluster.isReplication() &&
+                typeof executionOptions.stepdownPermittedFile === 'string') {
+                cluster.awaitReplication();
+            }
+
             // After the $config.setup() function has been called, it is safe for the stepdown
             // thread to start running. The main thread won't attempt to interact with the cluster
             // until all of the spawned worker threads have finished.
@@ -195,27 +202,33 @@
         sharded: {enabled: false},
     };
 
-    const topology = DiscoverTopology.findConnectedNodes(db.getMongo());
+    // The TestData.discoverTopoloy is false when we only care about connecting to either a
+    // standalone or primary node in a replica set.
+    if (TestData.discoverTopology !== false) {
+        const topology = DiscoverTopology.findConnectedNodes(db.getMongo());
 
-    if (topology.type === Topology.kReplicaSet) {
-        clusterOptions.replication.enabled = true;
-        clusterOptions.replication.numNodes = topology.nodes.length;
-    } else if (topology.type === Topology.kShardedCluster) {
-        clusterOptions.replication.enabled = TestData.usingReplicaSetShards || false;
-        clusterOptions.sharded.enabled = true;
-        clusterOptions.sharded.enableAutoSplit =
-            TestData.hasOwnProperty('runningWithAutoSplit') ? TestData.runningWithAutoSplit : true;
-        clusterOptions.sharded.enableBalancer =
-            TestData.hasOwnProperty('runningWithBalancer') ? TestData.runningWithBalancer : true;
-        clusterOptions.sharded.numMongos = topology.mongos.nodes.length;
-        clusterOptions.sharded.numShards = Object.keys(topology.shards).length;
-        clusterOptions.sharded.stepdownOptions = {};
-        clusterOptions.sharded.stepdownOptions.configStepdown =
-            TestData.runningWithConfigStepdowns || false;
-        clusterOptions.sharded.stepdownOptions.shardStepdown =
-            TestData.runningWithShardStepdowns || false;
-    } else if (topology.type !== Topology.kStandalone) {
-        throw new Error('Unrecognized topology format: ' + tojson(topology));
+        if (topology.type === Topology.kReplicaSet) {
+            clusterOptions.replication.enabled = true;
+            clusterOptions.replication.numNodes = topology.nodes.length;
+        } else if (topology.type === Topology.kShardedCluster) {
+            clusterOptions.replication.enabled = TestData.usingReplicaSetShards || false;
+            clusterOptions.sharded.enabled = true;
+            clusterOptions.sharded.enableAutoSplit = TestData.hasOwnProperty('runningWithAutoSplit')
+                ? TestData.runningWithAutoSplit
+                : true;
+            clusterOptions.sharded.enableBalancer = TestData.hasOwnProperty('runningWithBalancer')
+                ? TestData.runningWithBalancer
+                : true;
+            clusterOptions.sharded.numMongos = topology.mongos.nodes.length;
+            clusterOptions.sharded.numShards = Object.keys(topology.shards).length;
+            clusterOptions.sharded.stepdownOptions = {};
+            clusterOptions.sharded.stepdownOptions.configStepdown =
+                TestData.runningWithConfigStepdowns || false;
+            clusterOptions.sharded.stepdownOptions.shardStepdown =
+                TestData.runningWithShardStepdowns || false;
+        } else if (topology.type !== Topology.kStandalone) {
+            throw new Error('Unrecognized topology format: ' + tojson(topology));
+        }
     }
 
     clusterOptions.sameDB = TestData.sameDB;

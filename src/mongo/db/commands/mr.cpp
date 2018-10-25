@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2012 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -590,7 +592,7 @@ void State::prepTempCollection() {
 
             // Log the createIndex operation.
             _opCtx->getServiceContext()->getOpObserver()->onCreateIndex(
-                _opCtx, _config.tempNamespace, tempColl->uuid(), indexToInsert, false);
+                _opCtx, _config.tempNamespace, *(tempColl->uuid()), indexToInsert, false);
         }
         wuow.commit();
     });
@@ -725,7 +727,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
             curOp->setMessage_inlock(
                 "m/r: merge post processing", "M/R Merge Post Processing Progress", count);
         }
-        unique_ptr<DBClientCursor> cursor = _db.query(_config.tempNamespace.ns(), BSONObj());
+        unique_ptr<DBClientCursor> cursor = _db.query(_config.tempNamespace, BSONObj());
         while (cursor->more()) {
             Lock::DBLock lock(opCtx, _config.outputOptions.finalNamespace.db(), MODE_X);
             BSONObj o = cursor->nextSafe();
@@ -744,7 +746,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
             curOp->setMessage_inlock(
                 "m/r: reduce post processing", "M/R Reduce Post Processing Progress", count);
         }
-        unique_ptr<DBClientCursor> cursor = _db.query(_config.tempNamespace.ns(), BSONObj());
+        unique_ptr<DBClientCursor> cursor = _db.query(_config.tempNamespace, BSONObj());
         while (cursor->more()) {
             // This must be global because we may write across different databases.
             Lock::GlobalWrite lock(opCtx);
@@ -1786,7 +1788,6 @@ public:
         long long inputCount = 0;
         unsigned int index = 0;
         BSONObj query;
-        BSONArrayBuilder chunkSizes;
         BSONList values;
 
         while (true) {
@@ -1796,7 +1797,6 @@ public:
                 b.appendAs(chunk.getMin().firstElement(), "$gte");
                 b.appendAs(chunk.getMax().firstElement(), "$lt");
                 query = BSON("_id" << b.obj());
-                //                        chunkSizes.append(min);
             }
 
             // reduce from each shard for a chunk
@@ -1804,8 +1804,6 @@ public:
             ParallelSortClusteredCursor cursor(
                 servers, inputNS, Query(query).sort(sortKey), QueryOption_NoCursorTimeout);
             cursor.init(opCtx);
-
-            int chunkSize = 0;
 
             while (cursor.more() || !values.empty()) {
                 BSONObj t;
@@ -1825,7 +1823,6 @@ public:
                 }
 
                 BSONObj res = config.reducer->finalReduce(values, config.finalizer.get());
-                chunkSize += res.objsize();
                 if (state.isOnDisk())
                     state.insert(config.tempNamespace, res);
                 else
@@ -1837,20 +1834,12 @@ public:
                     values.push_back(t);
             }
 
-            if (chunks.size() > 0) {
-                const auto& chunk = chunks[index];
-                chunkSizes.append(chunk.getMin());
-                chunkSizes.append(chunkSize);
-            }
-
             if (++index >= chunks.size())
                 break;
         }
 
         // Forget temporary input collection, if output is sharded collection
         ShardConnection::forgetNS(inputNS);
-
-        result.append("chunkSizes", chunkSizes.arr());
 
         long long outputCount = state.postProcessCollection(opCtx, curOp, pm);
         state.appendResults(result);

@@ -595,8 +595,6 @@ static int
 __rec_write_check_complete(
     WT_SESSION_IMPL *session, WT_RECONCILE *r, int tret, bool *lookaside_retryp)
 {
-	WT_UNUSED(session);
-
 	/*
 	 * Tests in this function are lookaside tests and tests to decide if
 	 * rewriting a page in memory is worth doing. In-memory configurations
@@ -1291,7 +1289,7 @@ __rec_txn_read(WT_SESSION_IMPL *session, WT_RECONCILE *r,
 	wt_timestamp_t *timestampp;
 	size_t upd_memsize;
 	uint64_t max_txn, txnid;
-	bool all_visible, skipped_birthmark, uncommitted;
+	bool all_visible, prepared, skipped_birthmark, uncommitted;
 
 #ifdef HAVE_TIMESTAMPS
 	WT_UPDATE *first_ts_upd;
@@ -1306,7 +1304,7 @@ __rec_txn_read(WT_SESSION_IMPL *session, WT_RECONCILE *r,
 	first_txn_upd = NULL;
 	upd_memsize = 0;
 	max_txn = WT_TXN_NONE;
-	skipped_birthmark = uncommitted = false;
+	prepared = skipped_birthmark = uncommitted = false;
 
 	/*
 	 * If called with a WT_INSERT item, use its WT_UPDATE list (which must
@@ -1344,14 +1342,18 @@ __rec_txn_read(WT_SESSION_IMPL *session, WT_RECONCILE *r,
 		 * examining its updates. As prepared transaction id's are
 		 * globally visible, need to check the update state as well.
 		 */
-		if (F_ISSET(r, WT_REC_EVICT) &&
-		    (upd->prepare_state == WT_PREPARE_LOCKED ||
-		    upd->prepare_state == WT_PREPARE_INPROGRESS ||
-		    (F_ISSET(r, WT_REC_VISIBLE_ALL) ?
-		    WT_TXNID_LE(r->last_running, txnid) :
-		    !__txn_visible_id(session, txnid)))) {
-			uncommitted = r->update_uncommitted = true;
-			continue;
+		if (F_ISSET(r, WT_REC_EVICT)) {
+		       if (upd->prepare_state == WT_PREPARE_LOCKED ||
+			   upd->prepare_state == WT_PREPARE_INPROGRESS)
+			       prepared = true;
+
+		       if (F_ISSET(r, WT_REC_VISIBLE_ALL) ?
+			   WT_TXNID_LE(r->last_running, txnid) :
+			   !__txn_visible_id(session, txnid))
+			       uncommitted = r->update_uncommitted = true;
+
+		       if (prepared || uncommitted)
+			       continue;
 		}
 
 #ifdef HAVE_TIMESTAMPS
@@ -1397,7 +1399,7 @@ __rec_txn_read(WT_SESSION_IMPL *session, WT_RECONCILE *r,
 			 * discard an uncommitted update.
 			 */
 			if (F_ISSET(r, WT_REC_UPDATE_RESTORE) &&
-			    *updp != NULL && uncommitted) {
+			    *updp != NULL && (uncommitted || prepared)) {
 				r->leave_dirty = true;
 				return (__wt_set_return(session, EBUSY));
 			}
@@ -1482,7 +1484,7 @@ __rec_txn_read(WT_SESSION_IMPL *session, WT_RECONCILE *r,
 #else
 	timestampp = NULL;
 #endif
-	all_visible = upd == first_txn_upd && !uncommitted &&
+	all_visible = upd == first_txn_upd && !(uncommitted || prepared) &&
 	    (F_ISSET(r, WT_REC_VISIBLE_ALL) ?
 	    __wt_txn_visible_all(session, max_txn, timestampp) :
 	    __wt_txn_visible(session, max_txn, timestampp));
@@ -6238,7 +6240,7 @@ __rec_las_wrapup(WT_SESSION_IMPL *session, WT_RECONCILE *r)
 	for (multi = r->multi, i = 0; i < r->multi_next; ++multi, ++i)
 		if (multi->supd != NULL) {
 			WT_ERR(__wt_las_insert_block(
-			    session, cursor, r->page, multi, key));
+			    cursor, S2BT(session), r->page, multi, key));
 
 			__wt_free(session, multi->supd);
 			multi->supd_entries = 0;
@@ -6269,8 +6271,7 @@ __rec_las_wrapup_err(WT_SESSION_IMPL *session, WT_RECONCILE *r)
 	for (multi = r->multi, i = 0; i < r->multi_next; ++multi, ++i)
 		if (multi->supd != NULL &&
 		    (las_pageid = multi->page_las.las_pageid) != 0)
-			WT_TRET(
-			    __wt_las_remove_block(session, las_pageid, true));
+			WT_TRET(__wt_las_remove_block(session, las_pageid));
 
 	return (ret);
 }

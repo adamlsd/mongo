@@ -1,25 +1,27 @@
 // wiredtiger_recovery_unit.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -313,7 +315,8 @@ Status WiredTigerRecoveryUnit::obtainMajorityCommittedSnapshot() {
 
 boost::optional<Timestamp> WiredTigerRecoveryUnit::getPointInTimeReadTimestamp() const {
     if (_timestampReadSource == ReadSource::kProvided ||
-        _timestampReadSource == ReadSource::kLastAppliedSnapshot) {
+        _timestampReadSource == ReadSource::kLastAppliedSnapshot ||
+        _timestampReadSource == ReadSource::kAllCommittedSnapshot) {
         invariant(!_readAtTimestamp.isNull());
         return _readAtTimestamp;
     }
@@ -358,7 +361,8 @@ void WiredTigerRecoveryUnit::_txnOpen() {
             // We reset _majorityCommittedSnapshot to the actual read timestamp used when the
             // transaction was started.
             _majorityCommittedSnapshot =
-                _sessionCache->snapshotManager().beginTransactionOnCommittedSnapshot(session);
+                _sessionCache->snapshotManager().beginTransactionOnCommittedSnapshot(
+                    session, _ignorePrepared);
             break;
         }
         case ReadSource::kLastApplied: {
@@ -369,6 +373,13 @@ void WiredTigerRecoveryUnit::_txnOpen() {
                 WiredTigerBeginTxnBlock(session, _ignorePrepared).done();
             }
             break;
+        }
+        case ReadSource::kAllCommittedSnapshot: {
+            if (_readAtTimestamp.isNull()) {
+                _readAtTimestamp = _beginTransactionAtAllCommittedTimestamp(session);
+                break;
+            }
+            // Intentionally continue to the next case to read at the _readAtTimestamp.
         }
         case ReadSource::kLastAppliedSnapshot: {
             // Only ever read the last applied timestamp once, and continue reusing it for
@@ -399,6 +410,24 @@ void WiredTigerRecoveryUnit::_txnOpen() {
     _active = true;
 }
 
+Timestamp WiredTigerRecoveryUnit::_beginTransactionAtAllCommittedTimestamp(WT_SESSION* session) {
+    WiredTigerBeginTxnBlock txnOpen(session, _ignorePrepared);
+    Timestamp txnTimestamp = Timestamp(_oplogManager->fetchAllCommittedValue(session->connection));
+    auto status =
+        txnOpen.setTimestamp(txnTimestamp, WiredTigerBeginTxnBlock::RoundToOldest::kRound);
+    fassert(50948, status);
+
+    // Since this is not in a critical section, we might have rounded to oldest between
+    // calling getAllCommitted and setTimestamp.  We need to get the actual read timestamp we
+    // used.
+    char buf[(2 * 8 /*bytes in hex*/) + 1 /*nul terminator*/];
+    auto wtstatus = session->query_timestamp(session, buf, "get=read");
+    invariantWTOK(wtstatus);
+    uint64_t read_timestamp;
+    fassert(50949, parseNumberFromStringWithBase(buf, 16, &read_timestamp));
+    txnOpen.done();
+    return Timestamp(read_timestamp);
+}
 
 Status WiredTigerRecoveryUnit::setTimestamp(Timestamp timestamp) {
     _ensureSession();
@@ -519,32 +548,5 @@ void WiredTigerRecoveryUnit::beginIdle() {
     if (_session) {
         _session->closeAllCursors("");
     }
-}
-
-// ---------------------
-
-WiredTigerCursor::WiredTigerCursor(const std::string& uri,
-                                   uint64_t tableId,
-                                   bool forRecordStore,
-                                   OperationContext* opCtx) {
-    _tableID = tableId;
-    _ru = WiredTigerRecoveryUnit::get(opCtx);
-    _session = _ru->getSession();
-    _cursor = _session->getCursor(uri, tableId, forRecordStore);
-    if (!_cursor) {
-        // It could be an index file or a data file here.
-        error() << "Failed to get the cursor for uri: " << uri;
-        error() << "This may be due to missing data files. " << kWTRepairMsg;
-        fassertFailedNoTrace(50883);
-    }
-}
-
-WiredTigerCursor::~WiredTigerCursor() {
-    _session->releaseCursor(_tableID, _cursor);
-    _cursor = NULL;
-}
-
-void WiredTigerCursor::reset() {
-    invariantWTOK(_cursor->reset(_cursor));
 }
 }

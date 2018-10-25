@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
@@ -35,14 +37,14 @@
 #include <list>
 #include <vector>
 
-#include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
-#include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/ops/write_ops_exec.h"
@@ -51,6 +53,7 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/migration_util.h"
 #include "mongo/db/s/move_timing_helper.h"
+#include "mongo/db/s/sharding_statistics.h"
 #include "mongo/db/s/start_chunk_clone_request.h"
 #include "mongo/db/service_context.h"
 #include "mongo/s/catalog/type_chunk.h"
@@ -288,6 +291,7 @@ void MigrationDestinationManager::report(BSONObjBuilder& b,
 
     b.append("ns", _nss.ns());
     b.append("from", _fromShardConnString.toString());
+    b.append("fromShardId", _fromShard.toString());
     b.append("min", _min);
     b.append("max", _max);
     b.append("shardKeyPattern", _shardKeyPattern);
@@ -364,6 +368,7 @@ Status MigrationDestinationManager::start(OperationContext* opCtx,
 
     _sessionMigration =
         stdx::make_unique<SessionCatalogMigrationDestination>(_fromShard, *_sessionId);
+    ShardingStatistics::get(opCtx).countRecipientMoveChunkStarted.addAndFetch(1);
 
     _migrateThreadHandle = stdx::thread([this]() { _migrateThread(); });
 
@@ -630,7 +635,8 @@ void MigrationDestinationManager::cloneCollectionIndexesAndOptions(OperationCont
             collection = db->getCollection(opCtx, nss);
         }
 
-        MultiIndexBlock indexer(opCtx, collection);
+        auto indexerPtr = collection->createMultiIndexBlock(opCtx);
+        MultiIndexBlock& indexer(*indexerPtr);
         indexer.removeExistingIndexes(&donorIndexSpecs);
 
         if (!donorIndexSpecs.empty()) {
@@ -654,8 +660,11 @@ void MigrationDestinationManager::cloneCollectionIndexesAndOptions(OperationCont
 
             for (auto&& infoObj : indexInfoObjs.getValue()) {
                 // make sure to create index on secondaries as well
-                serviceContext->getOpObserver()->onCreateIndex(
-                    opCtx, collection->ns(), collection->uuid(), infoObj, true /* fromMigrate */);
+                serviceContext->getOpObserver()->onCreateIndex(opCtx,
+                                                               collection->ns(),
+                                                               *(collection->uuid()),
+                                                               infoObj,
+                                                               true /* fromMigrate */);
             }
 
             wunit.commit();
@@ -790,6 +799,8 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx) {
             {
                 stdx::lock_guard<stdx::mutex> statsLock(_mutex);
                 _numCloned += batchNumCloned;
+                ShardingStatistics::get(opCtx).countDocsClonedOnRecipient.addAndFetch(
+                    batchNumCloned);
                 _clonedBytes += batchClonedBytes;
             }
             if (_writeConcern.shouldWaitForOtherNodes()) {

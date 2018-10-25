@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -73,12 +75,12 @@
 #include "mongo/db/s/chunk_splitter.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/periodic_balancer_config_refresher.h"
-#include "mongo/db/s/sharding_state.h"
+#include "mongo/db/s/sharding_initialization_mongod.h"
 #include "mongo/db/s/sharding_state_recovery.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/system_index.h"
 #include "mongo/executor/network_connection_hook.h"
@@ -95,7 +97,6 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/service_entry_point.h"
-#include "mongo/transport/session.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/exit.h"
@@ -382,10 +383,15 @@ void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* opCtx) 
     _oplogApplierTaskExecutor->shutdown();
 
     _oplogApplierTaskExecutor->join();
-    _taskExecutor->join();
     lk.unlock();
 
     // Perform additional shutdown steps below that must be done outside _threadMutex.
+
+    // We must wait for _taskExecutor outside of _threadMutex, since _taskExecutor is used to run
+    // the dropPendingCollectionReaper, which takes database locks. It is safe to access
+    // _taskExecutor outside of _threadMutex because once _startedThreads is set to true, the
+    // _taskExecutor pointer never changes.
+    _taskExecutor->join();
 
     if (_replicationProcess->getConsistencyMarkers()->getOplogTruncateAfterPoint(opCtx).isNull() &&
         loadLastOpTime(opCtx) ==
@@ -430,7 +436,7 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
                                // retries and they will succeed.  Unfortunately, initial sync will
                                // fail if it finds its sync source has an empty oplog.  Thus, we
                                // need to wait here until the seed document is visible in our oplog.
-                               waitForAllEarlierOplogWritesToBeVisible(opCtx);
+                               _storageInterface->waitForAllEarlierOplogWritesToBeVisible(opCtx);
                            });
 
         // Update unique index format version for all non-replicated collections. It is possible
@@ -461,21 +467,6 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
         return ex.toStatus();
     }
     return Status::OK();
-}
-
-void ReplicationCoordinatorExternalStateImpl::waitForAllEarlierOplogWritesToBeVisible(
-    OperationContext* opCtx) {
-    Collection* oplog;
-    {
-        // We don't want to be holding the collection lock while blocking, to avoid deadlocks.
-        // It is safe to store and access the oplog's Collection object after dropping the lock
-        // because the oplog is special and cannot be deleted on a running process.
-        // TODO(spencer): It should be possible to get the pointer to the oplog Collection object
-        // without ever having to take the collection lock.
-        AutoGetCollection oplogLock(opCtx, NamespaceString::kRsOplogNamespace, MODE_IS);
-        oplog = oplogLock.getCollection();
-    }
-    oplog->getRecordStore()->waitForAllEarlierOplogWritesToBeVisible(opCtx);
 }
 
 void ReplicationCoordinatorExternalStateImpl::onDrainComplete(OperationContext* opCtx) {
@@ -636,6 +627,11 @@ void ReplicationCoordinatorExternalStateImpl::setGlobalTimestamp(ServiceContext*
     setNewTimestamp(ctx, newTime);
 }
 
+bool ReplicationCoordinatorExternalStateImpl::oplogExists(OperationContext* opCtx) {
+    AutoGetCollection oplog(opCtx, NamespaceString::kRsOplogNamespace, MODE_IS);
+    return oplog.getCollection() != nullptr;
+}
+
 StatusWith<OpTime> ReplicationCoordinatorExternalStateImpl::loadLastOpTime(
     OperationContext* opCtx) {
     // TODO: handle WriteConflictExceptions below
@@ -692,21 +688,10 @@ void ReplicationCoordinatorExternalStateImpl::closeConnections() {
     _service->getServiceEntryPoint()->endAllSessions(transport::Session::kKeepOpen);
 }
 
-void ReplicationCoordinatorExternalStateImpl::killAllUserOperations(OperationContext* opCtx) {
-    ServiceContext* environment = opCtx->getServiceContext();
-    environment->killAllUserOperations(opCtx, ErrorCodes::InterruptedDueToStepDown);
-
-    // Destroy all stashed transaction resources, in order to release locks.
-    SessionKiller::Matcher matcherAllSessions(
-        KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx)});
-    killSessionsLocalKillTransactions(opCtx, matcherAllSessions);
-}
-
 void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         Balancer::get(_service)->interruptBalancer();
     } else if (ShardingState::get(_service)->enabled()) {
-        invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
         ChunkSplitter::get(_service).onStepDown();
         CatalogCacheLoader::get(_service).onStepDown();
         PeriodicBalancerConfigRefresher::get(_service).onStepDown();
@@ -726,24 +711,16 @@ void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
 
 void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook(
     OperationContext* opCtx) {
-    auto status = ShardingStateRecovery::recover(opCtx);
-
-    if (ErrorCodes::isShutdownError(status.code())) {
-        // Note: callers of this method don't expect exceptions, so throw only unexpected fatal
-        // errors.
-        return;
-    }
-
-    fassert(40107, status);
-
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        status = ShardingCatalogManager::get(opCtx)->initializeConfigDatabaseIfNeeded(opCtx);
+        Status status = ShardingCatalogManager::get(opCtx)->initializeConfigDatabaseIfNeeded(opCtx);
         if (!status.isOK() && status != ErrorCodes::AlreadyInitialized) {
-            if (ErrorCodes::isShutdownError(status.code())) {
-                // Don't fassert if we're mid-shutdown, let the shutdown happen gracefully.
+            // If the node is shutting down or it lost quorum just as it was becoming primary, don't
+            // run the sharding onStepUp machinery. The onStepDown counterpart to these methods is
+            // already idempotent, so the machinery will remain in the stepped down state.
+            if (ErrorCodes::isShutdownError(status.code()) ||
+                ErrorCodes::isNotMasterError(status.code())) {
                 return;
             }
-
             fassertFailedWithStatus(
                 40184,
                 status.withContext("Failed to initialize config database on config server's "
@@ -755,17 +732,16 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
             // readConcern in drain mode because the global lock prevents replication. This is
             // safe, since if the clusterId write is rolled back, any writes that depend on it will
             // also be rolled back.
-            // Since we *just* wrote the cluster ID to the config.version document (via
-            // ShardingCatalogManager::initializeConfigDatabaseIfNeeded), this should always
-            // succeed.
+            //
+            // Since we *just* wrote the cluster ID to the config.version document (via the call to
+            // ShardingCatalogManager::initializeConfigDatabaseIfNeeded above), this read can only
+            // meaningfully fail if the node is shutting down.
             status = ClusterIdentityLoader::get(opCtx)->loadClusterId(
                 opCtx, repl::ReadConcernLevel::kLocalReadConcern);
 
             if (ErrorCodes::isShutdownError(status.code())) {
-                // Don't fassert if we're mid-shutdown, let the shutdown happen gracefully.
                 return;
             }
-
             fassert(40217, status);
         }
 
@@ -780,12 +756,21 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
             validator->enableKeyGenerator(opCtx, true);
         }
     } else if (ShardingState::get(opCtx)->enabled()) {
-        invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
+        Status status = ShardingStateRecovery::recover(opCtx);
+
+        // If the node is shutting down or it lost quorum just as it was becoming primary, don't run
+        // the sharding onStepUp machinery. The onStepDown counterpart to these methods is already
+        // idempotent, so the machinery will remain in the stepped down state.
+        if (ErrorCodes::isShutdownError(status.code()) ||
+            ErrorCodes::isNotMasterError(status.code())) {
+            return;
+        }
+        fassert(40107, status);
 
         const auto configsvrConnStr =
             Grid::get(opCtx)->shardRegistry()->getConfigShard()->getConnString();
-        auto status = ShardingState::get(opCtx)->updateShardIdentityConfigString(
-            opCtx, configsvrConnStr.toString());
+        status = ShardingInitializationMongoD::get(opCtx)->updateShardIdentityConfigString(
+            opCtx, configsvrConnStr);
         if (!status.isOK()) {
             warning() << "error encountered while trying to update config connection string to "
                       << configsvrConnStr << causedBy(status);
@@ -800,7 +785,7 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
         }
     }
 
-    SessionCatalog::get(_service)->onStepUp(opCtx);
+    MongoDSessionCatalog::onStepUp(opCtx);
 
     notifyFreeMonitoringOnTransitionToPrimary();
 }
@@ -913,7 +898,7 @@ bool ReplicationCoordinatorExternalStateImpl::isReadCommittedSupportedByStorageE
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
     // This should never be called if the storage engine has not been initialized.
     invariant(storageEngine);
-    return storageEngine->getSnapshotManager();
+    return storageEngine->supportsReadConcernMajority();
 }
 
 bool ReplicationCoordinatorExternalStateImpl::isReadConcernSnapshotSupportedByStorageEngine(

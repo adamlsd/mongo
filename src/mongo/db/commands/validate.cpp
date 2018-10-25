@@ -1,25 +1,27 @@
 // validate.cpp
 
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -133,31 +135,6 @@ public:
             uasserted(ErrorCodes::NamespaceNotFound, "ns not found");
         }
 
-        // Omit background validation logic until it is fully implemented and vetted.
-        const bool background = false;
-        /*
-        bool isInRecordIdOrder = collection->getRecordStore()->isInRecordIdOrder();
-        if (isInRecordIdOrder && !full) {
-            background = true;
-        }
-
-        if (cmdObj.hasElement("background")) {
-            background = cmdObj["background"].trueValue();
-        }
-
-        if (!isInRecordIdOrder && background) {
-            uasserted(ErrorCodes::CommandFailed,
-                      "This storage engine does not support the background option, use "
-                      "background:false");
-            return false;
-        }
-
-        if (full && background) {
-            uasserted(ErrorCodes::CommandFailed,
-                      "A full validate cannot run in the background, use full:false");
-        }
-        */
-
         result.append("ns", nss.ns());
 
         // Only one validation per collection can be in progress, the rest wait in order.
@@ -183,6 +160,9 @@ public:
             _validationsInProgress.erase(nss.ns());
             _validationNotifier.notify_all();
         });
+
+        // TODO SERVER-30357: Add support for background validation.
+        const bool background = false;
 
         ValidateResults results;
         Status status =

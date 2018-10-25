@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -38,6 +40,7 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/chunk_split_state_driver.h"
+#include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/split_chunk.h"
 #include "mongo/db/s/split_vector.h"
@@ -167,7 +170,7 @@ BSONObj findExtremeKeyForShard(OperationContext* opCtx,
         // Splitting close to the lower bound means that the split point will be the
         // upper bound. Chunk range upper bounds are exclusive so skip a document to
         // make the lower half of the split end up with a single document.
-        std::unique_ptr<DBClientCursor> cursor = client.query(nss.ns(),
+        std::unique_ptr<DBClientCursor> cursor = client.query(nss,
                                                               q,
                                                               1, /* nToReturn */
                                                               1 /* nToSkip */);
@@ -244,8 +247,7 @@ void ChunkSplitter::onStepUp() {
     }
     _isPrimary = true;
 
-    // log() << "The ChunkSplitter has started and will accept autosplit tasks.";
-    // TODO: Re-enable this log line when auto split is actively running on shards.
+    log() << "The ChunkSplitter has started and will accept autosplit tasks.";
 }
 
 void ChunkSplitter::onStepDown() {
@@ -255,12 +257,15 @@ void ChunkSplitter::onStepDown() {
     }
     _isPrimary = false;
 
-    // log() << "The ChunkSplitter has stopped and will no longer run new autosplit tasks. Any "
-    //       << "autosplit tasks that have already started will be allowed to finish.";
-    // TODO: Re-enable this log when auto split is actively running on shards.
+    log() << "The ChunkSplitter has stopped and will no longer run new autosplit tasks. Any "
+          << "autosplit tasks that have already started will be allowed to finish.";
 }
 
-void ChunkSplitter::trySplitting(ChunkSplitStateDriver chunkSplitStateDriver,
+void ChunkSplitter::waitForIdle() {
+    _threadPool.waitForIdle();
+}
+
+void ChunkSplitter::trySplitting(std::shared_ptr<ChunkSplitStateDriver> chunkSplitStateDriver,
                                  const NamespaceString& nss,
                                  const BSONObj& min,
                                  const BSONObj& max,
@@ -269,12 +274,12 @@ void ChunkSplitter::trySplitting(ChunkSplitStateDriver chunkSplitStateDriver,
         return;
     }
     uassertStatusOK(_threadPool.schedule(
-        [ this, &chunkSplitStateDriver, nss, min, max, dataWritten ]() noexcept {
-            _runAutosplit(std::move(chunkSplitStateDriver), nss, min, max, dataWritten);
+        [ this, csd = std::move(chunkSplitStateDriver), nss, min, max, dataWritten ]() noexcept {
+            _runAutosplit(csd, nss, min, max, dataWritten);
         }));
 }
 
-void ChunkSplitter::_runAutosplit(ChunkSplitStateDriver chunkSplitStateDriver,
+void ChunkSplitter::_runAutosplit(std::shared_ptr<ChunkSplitStateDriver> chunkSplitStateDriver,
                                   const NamespaceString& nss,
                                   const BSONObj& min,
                                   const BSONObj& max,
@@ -310,7 +315,7 @@ void ChunkSplitter::_runAutosplit(ChunkSplitStateDriver chunkSplitStateDriver,
                << " dataWritten since last check: " << dataWritten
                << " maxChunkSizeBytes: " << maxChunkSizeBytes;
 
-        chunkSplitStateDriver.prepareSplit();
+        chunkSplitStateDriver->prepareSplit();
         auto splitPoints = uassertStatusOK(splitVector(opCtx.get(),
                                                        nss,
                                                        shardKeyPattern.toBSON(),
@@ -323,6 +328,12 @@ void ChunkSplitter::_runAutosplit(ChunkSplitStateDriver chunkSplitStateDriver,
                                                        maxChunkSizeBytes));
 
         if (splitPoints.size() <= 1) {
+            LOG(1)
+                << "ChunkSplitter attempted split but not enough split points were found for chunk "
+                << redact(chunk.toString());
+            // Reset our size estimate that we had prior to splitVector to 0, while still counting
+            // the bytes that have been written in parallel to this split task
+            chunkSplitStateDriver->abandonPrepare();
             // No split points means there isn't enough data to split on; 1 split point means we
             // have between half the chunk size to full chunk size so there is no need to split yet
             return;
@@ -364,7 +375,7 @@ void ChunkSplitter::_runAutosplit(ChunkSplitStateDriver chunkSplitStateDriver,
                                                    cm->getVersion(),
                                                    ChunkRange(min, max),
                                                    splitPoints));
-        chunkSplitStateDriver.commitSplit();
+        chunkSplitStateDriver->commitSplit();
 
         const bool shouldBalance = isAutoBalanceEnabled(opCtx.get(), nss, balancerConfig);
 
@@ -373,6 +384,13 @@ void ChunkSplitter::_runAutosplit(ChunkSplitStateDriver chunkSplitStateDriver,
               << ")"
               << (topChunkMinKey.isEmpty() ? "" : " (top chunk migration suggested" +
                           (std::string)(shouldBalance ? ")" : ", but no migrations allowed)"));
+
+        // Because the ShardServerOpObserver uses the metadata from the CSS for tracking incoming
+        // writes, if we split a chunk but do not force a CSS refresh, subsequent inserts will see
+        // stale metadata and so will not trigger a chunk split. If we force metadata refresh here,
+        // we can limit the amount of time that the op observer is tracking writes on the parent
+        // chunk rather than on its child chunks.
+        forceShardFilteringMetadataRefresh(opCtx.get(), nss, false);
 
         // Balance the resulting chunks if the autobalance option is enabled and if we split at the
         // first or last chunk on the collection as part of top chunk optimization.

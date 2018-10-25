@@ -1,39 +1,42 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
 
 #include <memory>
 
-#include "mongo/stdx/functional.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/util/functional.h"
 #include "mongo/util/future.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/waitable.h"
 
 namespace mongo {
 
@@ -55,7 +58,7 @@ class ReactorTimer;
  * context switches, as well as improving the readability of stack traces by grounding async
  * execution on top of a regular client call stack.
  */
-class Baton {
+class Baton : public Waitable {
 public:
     virtual ~Baton() = default;
 
@@ -82,7 +85,7 @@ public:
     /**
      * Executes a callback on the baton.
      */
-    virtual void schedule(stdx::function<void()> func) = 0;
+    virtual void schedule(unique_function<void()> func) = 0;
 
     /**
      * Adds a session, returning a future which activates on read/write-ability of the session.
@@ -92,11 +95,6 @@ public:
         Out,
     };
     virtual Future<void> addSession(Session& session, Type type) = 0;
-
-    /**
-     * Adds a timer, returning a future which activates after a duration.
-     */
-    virtual Future<void> waitFor(const ReactorTimer& timer, Milliseconds timeout) = 0;
 
     /**
      * Adds a timer, returning a future which activates after a deadline.
@@ -116,14 +114,6 @@ public:
      * Returns true if the timer was in the baton to be cancelled.
      */
     virtual bool cancelTimer(const ReactorTimer& timer) = 0;
-
-    /**
-     * Runs the baton.  This blocks, waiting for networking events or timeouts, and fulfills
-     * promises and executes scheduled work.
-     *
-     * Returns false if the optional deadline has passed
-     */
-    virtual bool run(OperationContext* opCtx, boost::optional<Date_t> deadline) = 0;
 };
 
 using BatonHandle = std::shared_ptr<Baton>;

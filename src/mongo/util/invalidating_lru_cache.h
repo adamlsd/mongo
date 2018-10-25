@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects for
- * all of the code used other than as permitted herein. If you modify file(s)
- * with this exception, you may extend this exception to your version of the
- * file(s), but you are not obligated to do so. If you do not wish to do so,
- * delete this exception statement from your version. If you delete this
- * exception statement from all source files in the program, then also delete
- * it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -66,8 +68,8 @@ public:
      * the Key was already in the cache and was active at the time it was updated.
      */
     void insertOrAssign(const Key& key, std::unique_ptr<Value> value) {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
-        _invalidateWithLock(lk, key);
+        UniqueLockWithPtrGuard lk(this);
+        _invalidateKey(lk, key);
         _cache.add(key, std::move(value));
     }
 
@@ -76,12 +78,13 @@ public:
      * returning a shared_ptr to value to the caller.
      */
     std::shared_ptr<Value> insertOrAssignAndGet(const Key& key, std::unique_ptr<Value> value) {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
-        _invalidateWithLock(lk, key);
+        UniqueLockWithPtrGuard lk(this);
+        _invalidateKey(lk, key);
         auto ret = std::shared_ptr<Value>(value.release(), _makeDeleterWithLock(key, _generation));
         bool inserted;
         std::tie(std::ignore, inserted) = _active.emplace(key, ret);
         fassert(50902, inserted);
+
         return ret;
     }
 
@@ -90,8 +93,8 @@ public:
      * will not be invalidated.
      */
     void invalidate(const Key& key) {
-        stdx::unique_lock<stdx::mutex> lk(_mutex);
-        return _invalidateWithLock(lk, key);
+        UniqueLockWithPtrGuard lk(this);
+        _invalidateKey(lk, key);
     }
 
     /*
@@ -100,8 +103,10 @@ public:
      */
     template <typename Pred>
     void invalidateIf(Pred predicate) {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        UniqueLockWithPtrGuard lk(this);
 
+        // Remove any matching values from the cache (of inactive items). Do not bump the
+        // generation - that only happens if any active items are invalidated.
         for (auto it = _cache.begin(); it != _cache.end();) {
             if (predicate(it->first, it->second.get())) {
                 auto toErase = it++;
@@ -114,15 +119,20 @@ public:
         auto it = _active.begin();
         while (it != _active.end()) {
             auto& kv = *it;
-            auto value = kv.second.lock();
+            auto value = lk.lockWeakPtr(kv.second);
+
+            // If the value is a valid ptr (they're still checked out), and the key/value
+            // doesn't match the predicate, then just skip this one.
             if (value && !predicate(kv.first, value.get())) {
                 it++;
                 continue;
             }
 
-            _generation++;
-            _invalidator(value.get());
-            it = _active.erase(it);
+            // If the weak_ptr is expired (about to be returned to the cache), or the predicate
+            // returned true, then invalidate the item.
+            //
+            // After this the iterator will point to the next item to check or _active.end().
+            it = _invalidateActiveIterator(lk, it, std::move(value));
         }
     }
 
@@ -213,27 +223,95 @@ private:
         static constexpr bool value = std::is_same<decltype(test<T>(0)), yes>::value;
     };
 
+    /*
+     * When locking weak_ptr's from the _activeMap, the newly locked shared_ptrs must be destroyed
+     * while not holding the _mutex to prevent a deadlock. This is a guard type that ensures
+     * locked weak_ptrs get cleaned up without the _mutex being locked. Holding this is the same
+     * as holding a stdx::unique_ptr<>(_mutex), and this type must be held if you create temporary
+     * shared_ptr's from the _active map (e.g. when you're doing invalidation).
+     */
+    class UniqueLockWithPtrGuard {
+    public:
+        UniqueLockWithPtrGuard(InvalidatingLRUCache<Key, Value, Invalidator>* cache)
+            : _cache(cache), _lk(_cache->_mutex) {}
+
+        ~UniqueLockWithPtrGuard() {
+            // Move the active ptrs to destroy vector into a local variable so it gets destroyed
+            // after the lock is released.
+            auto toCleanup = std::move(_activePtrsToDestroy);
+            _lk.unlock();
+        }
+
+        // Call this method to lock a weak_ptr from the _active map, its lifetime will be extended
+        // to the destructor of this guard type.
+        auto lockWeakPtr(std::weak_ptr<Value>& ptr) -> auto {
+            auto value = ptr.lock();
+            if (value) {
+                _activePtrsToDestroy.push_back(value);
+            }
+            return value;
+        }
+
+    private:
+        InvalidatingLRUCache<Key, Value, Invalidator>* _cache;
+        stdx::unique_lock<stdx::mutex> _lk;
+        std::vector<std::shared_ptr<Value>> _activePtrsToDestroy;
+    };
+
+    using ActiveMap = stdx::unordered_map<Key, std::weak_ptr<Value>>;
+    using ActiveIterator = typename ActiveMap::iterator;
+
     static_assert(hasIsValidMethod<Value>::value,
                   "Value type must have a method matching bool isValid()");
 
-    void _invalidateWithLock(WithLock, const Key& key) {
+    /*
+     * Invalidates an item in the cache and active map by key.
+     */
+    void _invalidateKey(UniqueLockWithPtrGuard& lk, const Key& key) {
         // Erase any cached user (one that hasn't been given out yet).
         _cache.erase(key);
 
         // Then invalidate any user we've already given out.
-        auto it = _active.find(key);
+
+        _invalidateActiveIterator(lk, _active.find(key), nullptr);
+    }
+
+
+    /*
+     * Invalidates an item in the active map pointed to by an iterator, and returns the next
+     * iterator in the map or the end() iterator.
+     *
+     * If the active item's weak_ptr has already been locked, it should be moved into value,
+     * otherwise pass nullptr and this function will lock/check the weak_ptr itself.
+     */
+    ActiveIterator _invalidateActiveIterator(UniqueLockWithPtrGuard& guard,
+                                             const ActiveIterator& it,
+                                             std::shared_ptr<Value>&& value) {
+        // If the iterator is past-the-end, then just return the iterator
         if (it == _active.end()) {
-            return;
+            return it;
+        }
+        // Bump the generation count so that any now-invalid shared_ptr<Values> returned
+        // from get() and insertOrAssignAndGet() don't get returned to the cache. Since
+        // the key for it was in the _active list, we know we want to invalidate it, but
+        // calling _invalidator is only for items still checked out from the cache.
+        _generation++;
+
+        // It's valid to pass in a nullptr here, so if value is a nullptr, then try to lock
+        // the weak_ptr in the active map.
+        if (!value) {
+            value = guard.lockWeakPtr(it->second);
         }
 
-        _generation++;
-        auto value = it->second.lock();
-        _active.erase(it);
+        // We only call the invalidator if the value is a valid ptr, otherwise it's about to
+        // be returned to the cache and the generation bump should invalidate it.
         if (value) {
             _invalidator(value.get());
         }
 
-        return;
+        // Erase the iterator from the _active map and return the next iterator (so this
+        // can be called in a loop).
+        return _active.erase(it);
     }
 
     /*
@@ -272,7 +350,7 @@ private:
     uint64_t _generation = 0;
 
     // Items that have been checked out of the cache
-    stdx::unordered_map<Key, std::weak_ptr<Value>> _active;
+    ActiveMap _active;
 
     // Items that are inactive but valid
     LRUCache<Key, std::unique_ptr<Value>> _cache;

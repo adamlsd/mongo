@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2013 MongoDB Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
 
@@ -340,9 +342,11 @@ void CursorManager::appendAllActiveSessions(OperationContext* opCtx, LogicalSess
     globalCursorIdCache->visitAllCursorManagers(opCtx, &visitor);
 }
 
-std::vector<GenericCursor> CursorManager::getAllCursors(OperationContext* opCtx) {
+std::vector<GenericCursor> CursorManager::getIdleCursors(
+    OperationContext* opCtx, MongoProcessInterface::CurrentOpUserMode userMode) {
     std::vector<GenericCursor> cursors;
-    auto visitor = [&](CursorManager& mgr) { mgr.appendActiveCursors(&cursors); };
+    AuthorizationSession* ctxAuth = AuthorizationSession::get(opCtx->getClient());
+    auto visitor = [&](CursorManager& mgr) { mgr.appendIdleCursors(ctxAuth, userMode, &cursors); };
     globalCursorIdCache->visitAllCursorManagers(opCtx, &visitor);
 
     return cursors;
@@ -484,33 +488,6 @@ void CursorManager::invalidateAll(OperationContext* opCtx,
     }
 }
 
-void CursorManager::invalidateDocument(OperationContext* opCtx,
-                                       const RecordId& dl,
-                                       InvalidationType type) {
-    dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
-    invariant(!isGlobalManager());  // The global cursor manager should never receive invalidations.
-    if (supportsDocLocking()) {
-        // If a storage engine supports doc locking, then we do not need to invalidate.
-        // The transactional boundaries of the operation protect us.
-        return;
-    }
-
-    auto allExecPartitions = _registeredPlanExecutors.lockAllPartitions();
-    for (auto&& partition : allExecPartitions) {
-        for (auto&& exec : partition) {
-            exec->invalidate(opCtx, dl, type);
-        }
-    }
-
-    auto allPartitions = _cursorMap->lockAllPartitions();
-    for (auto&& partition : allPartitions) {
-        for (auto&& entry : partition) {
-            auto exec = entry.second->getExecutor();
-            exec->invalidate(opCtx, dl, type);
-        }
-    }
-}
-
 bool CursorManager::cursorShouldTimeout_inlock(const ClientCursor* cursor, Date_t now) {
     if (cursor->isNoTimeout() || cursor->_operationUsingCursor) {
         return false;
@@ -536,6 +513,8 @@ std::size_t CursorManager::timeoutCursors(OperationContext* opCtx, Date_t now) {
 
     // Be careful not to dispose of cursors while holding the partition lock.
     for (auto&& cursor : toDisposeWithoutMutex) {
+        log() << "Cursor id " << cursor->cursorid() << " timed out, idle since "
+              << cursor->getLastUseDate();
         cursor->dispose(opCtx);
     }
     return toDisposeWithoutMutex.size();
@@ -590,7 +569,7 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(OperationContext* opCtx,
 
     cursor->_operationUsingCursor = opCtx;
 
-    // We use pinning of a cursor as a proxy for active, user-initiated use of a cursor.  Therefor,
+    // We use pinning of a cursor as a proxy for active, user-initiated use of a cursor.  Therefore,
     // we pass down to the logical session cache and vivify the record (updating last use).
     if (cursor->getSessionId()) {
         auto vivifyCursorStatus =
@@ -647,16 +626,25 @@ void CursorManager::appendActiveSessions(LogicalSessionIdSet* lsids) const {
     }
 }
 
-void CursorManager::appendActiveCursors(std::vector<GenericCursor>* cursors) const {
+void CursorManager::appendIdleCursors(AuthorizationSession* ctxAuth,
+                                      MongoProcessInterface::CurrentOpUserMode userMode,
+                                      std::vector<GenericCursor>* cursors) const {
     auto allPartitions = _cursorMap->lockAllPartitions();
     for (auto&& partition : allPartitions) {
         for (auto&& entry : partition) {
             auto cursor = entry.second;
-            cursors->emplace_back();
-            auto& gc = cursors->back();
-            gc.setId(cursor->_cursorid);
-            gc.setNs(cursor->nss());
-            gc.setLsid(cursor->getSessionId());
+
+            // Exclude cursors that this user does not own if auth is enabled.
+            if (ctxAuth->getAuthorizationManager().isAuthEnabled() &&
+                userMode == MongoProcessInterface::CurrentOpUserMode::kExcludeOthers &&
+                !ctxAuth->isCoauthorizedWith(cursor->getAuthenticatedUsers())) {
+                continue;
+            }
+            // Exclude pinned cursors.
+            if (cursor->_operationUsingCursor) {
+                continue;
+            }
+            cursors->emplace_back(cursor->toGenericCursor());
         }
     }
 }

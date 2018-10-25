@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -90,10 +92,10 @@ public:
                     KVPrefix prefix,
                     bool readOnly);
 
-    virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& id,
-                          bool dupsAllowed);
+    virtual StatusWith<SpecialFormatInserted> insert(OperationContext* opCtx,
+                                                     const BSONObj& key,
+                                                     const RecordId& id,
+                                                     bool dupsAllowed);
 
     virtual void unindex(OperationContext* opCtx,
                          const BSONObj& key,
@@ -148,6 +150,10 @@ public:
         return _indexName;
     }
 
+    const BSONObj& keyPattern() const {
+        return _keyPattern;
+    }
+
     bool isIdIndex() const {
         return _isIdIndex;
     }
@@ -155,14 +161,12 @@ public:
     virtual bool unique() const = 0;
     virtual bool isTimestampSafeUniqueIdx() const = 0;
 
-    Status dupKeyError(const BSONObj& key);
-
 protected:
-    virtual Status _insert(OperationContext* opCtx,
-                           WT_CURSOR* c,
-                           const BSONObj& key,
-                           const RecordId& id,
-                           bool dupsAllowed) = 0;
+    virtual StatusWith<SpecialFormatInserted> _insert(OperationContext* opCtx,
+                                                      WT_CURSOR* c,
+                                                      const BSONObj& key,
+                                                      const RecordId& id,
+                                                      bool dupsAllowed) = 0;
 
     virtual void _unindex(OperationContext* opCtx,
                           WT_CURSOR* c,
@@ -184,8 +188,9 @@ protected:
     int _dataFormatVersion;
     std::string _uri;
     uint64_t _tableId;
-    std::string _collectionNamespace;
-    std::string _indexName;
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
     KVPrefix _prefix;
     bool _isIdIndex;
 };
@@ -214,23 +219,23 @@ public:
                const BSONObj& key,
                const RecordId& id) override;
 
-    Status _insert(OperationContext* opCtx,
-                   WT_CURSOR* c,
-                   const BSONObj& key,
-                   const RecordId& id,
-                   bool dupsAllowed) override;
+    StatusWith<SpecialFormatInserted> _insert(OperationContext* opCtx,
+                                              WT_CURSOR* c,
+                                              const BSONObj& key,
+                                              const RecordId& id,
+                                              bool dupsAllowed) override;
 
-    Status _insertTimestampUnsafe(OperationContext* opCtx,
-                                  WT_CURSOR* c,
-                                  const BSONObj& key,
-                                  const RecordId& id,
-                                  bool dupsAllowed);
+    StatusWith<SpecialFormatInserted> _insertTimestampUnsafe(OperationContext* opCtx,
+                                                             WT_CURSOR* c,
+                                                             const BSONObj& key,
+                                                             const RecordId& id,
+                                                             bool dupsAllowed);
 
-    Status _insertTimestampSafe(OperationContext* opCtx,
-                                WT_CURSOR* c,
-                                const BSONObj& key,
-                                const RecordId& id,
-                                bool dupsAllowed);
+    StatusWith<SpecialFormatInserted> _insertTimestampSafe(OperationContext* opCtx,
+                                                           WT_CURSOR* c,
+                                                           const BSONObj& key,
+                                                           const RecordId& id,
+                                                           bool dupsAllowed);
 
     void _unindex(OperationContext* opCtx,
                   WT_CURSOR* c,
@@ -275,11 +280,11 @@ public:
         return false;
     }
 
-    Status _insert(OperationContext* opCtx,
-                   WT_CURSOR* c,
-                   const BSONObj& key,
-                   const RecordId& id,
-                   bool dupsAllowed) override;
+    StatusWith<SpecialFormatInserted> _insert(OperationContext* opCtx,
+                                              WT_CURSOR* c,
+                                              const BSONObj& key,
+                                              const RecordId& id,
+                                              bool dupsAllowed) override;
 
     void _unindex(OperationContext* opCtx,
                   WT_CURSOR* c,

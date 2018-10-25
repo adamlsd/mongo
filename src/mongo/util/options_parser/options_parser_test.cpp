@@ -1,28 +1,31 @@
-/* Copyright 2013 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include <array>
@@ -1973,6 +1976,23 @@ TEST(ConfigFromFilesystem, Empty) {
 
     moe::Value value;
     ASSERT_OK(parser.run(testOpts, argv, env_map, &environment));
+}
+
+TEST(ConfigFromFilesystem, Directory) {
+    moe::OptionsParser parser;
+    moe::Environment environment;
+
+    moe::OptionSection testOpts;
+    testOpts.addOptionChaining("config", "config", moe::String, "Config file to parse");
+
+    std::vector<std::string> argv;
+    argv.push_back("binaryname");
+    argv.push_back("--config");
+    argv.push_back(TEST_CONFIG_PATH(""));
+    std::map<std::string, std::string> env_map;
+
+    moe::Value value;
+    ASSERT_NOT_OK(parser.run(testOpts, argv, env_map, &environment));
 }
 
 TEST(ConfigFromFilesystem, NullByte) {
@@ -4624,6 +4644,67 @@ TEST(NumericalBaseParsing, YAMLConfigFile) {
     ASSERT_EQUALS(unsignedVal, 0x10U);
 }
 
+TEST(YAMLConfigFile, OutputConfig) {
+    moe::OptionSection options;
+    options.addOptionChaining("cacheSize", "cacheSize", moe::Long, "");
+    options.addOptionChaining("command", "command", moe::StringVector, "");
+    options.addOptionChaining("config", "config", moe::String, "");
+    options.addOptionChaining("math.pi", "pi", moe::Double, "");
+    options.addOptionChaining("net.port", "port", moe::Int, "");
+    options.addOptionChaining("net.bindIp", "bind_ip", moe::String, "");
+    options.addOptionChaining("net.bindIpAll", "bind_ip_all", moe::Switch, "");
+    options.addOptionChaining("security.javascriptEnabled", "javascriptEnabled", moe::Bool, "");
+    options.addOptionChaining("setParameter", "setParameter", moe::StringMap, "");
+    options.addOptionChaining("systemLog.path", "logPath", moe::String, "");
+
+    OptionsParserTester parser;
+    parser.setConfig("config.yaml",
+                     "systemLog: { path: /tmp/mongod.log }\n"
+                     "command: [ mongo, mongod, mongos ]");
+
+    const std::vector<std::string> argv = {
+        "binaryname",
+        "--port",
+        "31337",
+        "--bind_ip",
+        "127.0.0.1,::1",
+        "--bind_ip_all",
+        "--setParameter",
+        "scramSHAIterationCount=12345",
+        "--javascriptEnabled",
+        "false",
+        "--cacheSize",
+        "12345",
+        "--pi",
+        "3.14159265",
+        "--config",
+        "config.yaml",
+    };
+
+    std::map<std::string, std::string> env_map;
+    moe::Environment env;
+    ASSERT_OK(parser.run(options, argv, env_map, &env));
+    ASSERT_EQ(env.toYAML(),
+              "cacheSize: 12345\n"
+              "command:\n"
+              "  - mongo\n"
+              "  - mongod\n"
+              "  - mongos\n"
+              "config: config.yaml\n"
+              "math:\n"
+              "  pi: 3.14159265\n"
+              "net:\n"
+              "  bindIp: 127.0.0.1,::1\n"
+              "  bindIpAll: true\n"
+              "  port: 31337\n"
+              "security:\n"
+              "  javascriptEnabled: false\n"
+              "setParameter:\n"
+              "  scramSHAIterationCount: 12345\n"
+              "systemLog:\n"
+              "  path: /tmp/mongod.log");
+}
+
 void TestFile(std::vector<unsigned char> contents, bool valid) {
     mongo::unittest::TempDir tempdir("options_testpath");
     boost::filesystem::path p(tempdir.path());
@@ -4658,6 +4739,32 @@ void TestFile(std::vector<unsigned char> contents, bool valid) {
     } else {
         ASSERT_NOT_OK(parser.run(testOpts, argv, env_map, &environment));
     }
+}
+
+TEST(YAMLConfigFile, canonicalize) {
+    moe::OptionSection opts;
+    opts.addOptionChaining("net.bindIpAll", "bind_ip_all", moe::Switch, "Bind all addresses")
+        .incompatibleWith("net.bindIp")
+        .canonicalize([](moe::Environment* env) {
+            auto status = env->remove("net.bindIpAll");
+            if (!status.isOK()) {
+                return status;
+            }
+            return env->set("net.bindIp", moe::Value("0.0.0.0"));
+        });
+    opts.addOptionChaining("net.bindIp", "bind_ip", moe::String, "Bind specific addresses")
+        .incompatibleWith("net.bindIpAll");
+
+    moe::OptionsParser parser;
+    moe::Environment env;
+    std::vector<std::string> argv = {
+        "binary", "--bind_ip_all",
+    };
+    std::map<std::string, std::string> env_map;
+    ASSERT_OK(parser.run(opts, argv, env_map, &env));
+    ASSERT_TRUE(env.count("net.bindIp"));
+    ASSERT_FALSE(env.count("net.bindIpAll"));
+    ASSERT_EQ(env["net.bindIp"].as<std::string>(), "0.0.0.0");
 }
 
 #if defined(_WIN32)

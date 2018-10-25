@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -52,7 +54,7 @@
 #include "mongo/platform/overflow_arithmetic.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/async_results_merger.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
@@ -61,6 +63,7 @@
 #include "mongo/s/query/establish_cursors.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/stale_exception.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -80,6 +83,8 @@ static const BSONObj kGeoNearDistanceMetaProjection = BSON("$meta"
 // for the field name's null terminator + 1 byte per digit in the array index. The index can be no
 // more than 8 decimal digits since the response is at most 16MB, and 16 * 1024 * 1024 < 1 * 10^8.
 static const int kPerDocumentOverheadBytesUpperBound = 10;
+
+const char kFindCmdName[] = "find";
 
 /**
  * Given the QueryRequest 'qr' being executed by mongos, returns a copy of the query which is
@@ -177,16 +182,9 @@ std::vector<std::pair<ShardId, BSONObj>> constructRequestsForShards(
     const CachedCollectionRoutingInfo& routingInfo,
     const std::set<ShardId>& shardIds,
     const CanonicalQuery& query,
-    bool appendGeoNearDistanceProjection,
-    boost::optional<LogicalTime> atClusterTime) {
+    bool appendGeoNearDistanceProjection) {
     const auto qrToForward = uassertStatusOK(
         transformQueryForShards(query.getQueryRequest(), appendGeoNearDistanceProjection));
-
-    if (atClusterTime) {
-        auto readConcernAtClusterTime =
-            appendAtClusterTimeToReadConcern(qrToForward->getReadConcern(), *atClusterTime);
-        qrToForward->setReadConcern(readConcernAtClusterTime);
-    }
 
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
     std::vector<std::pair<ShardId, BSONObj>> requests;
@@ -224,16 +222,15 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
                                               query.getQueryRequest().getFilter(),
                                               query.getQueryRequest().getCollation());
 
-    // Determine atClusterTime for snapshot reads. This will be a null time for requests with any
-    // other readConcern.
-    auto atClusterTime = computeAtClusterTime(opCtx,
-                                              false,
-                                              shardIds,
-                                              query.nss(),
-                                              query.getQueryRequest().getFilter(),
-                                              query.getQueryRequest().getCollation());
+    if (auto txnRouter = TransactionRouter::get(opCtx)) {
+        txnRouter->computeAtClusterTime(opCtx,
+                                        false,
+                                        shardIds,
+                                        query.nss(),
+                                        query.getQueryRequest().getFilter(),
+                                        query.getQueryRequest().getCollation());
+    }
 
-    invariant(!atClusterTime || *atClusterTime != LogicalTime::kUninitialized);
     // Construct the query and parameters.
 
     ClusterClientCursorParams params(query.nss(), readPref);
@@ -245,6 +242,10 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
     params.isAllowPartialResults = query.getQueryRequest().isAllowPartialResults();
     params.lsid = opCtx->getLogicalSessionId();
     params.txnNumber = opCtx->getTxnNumber();
+
+    if (TransactionRouter::get(opCtx)) {
+        params.isAutoCommit = false;
+    }
 
     // This is the batchSize passed to each subsequent getMore command issued by the cursor. We
     // usually use the batchSize associated with the initial find, but as it is illegal to send a
@@ -279,7 +280,7 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
     // attaching the shardVersion and txnNumber, if necessary.
 
     auto requests = constructRequestsForShards(
-        opCtx, routingInfo, shardIds, query, appendGeoNearDistanceProjection, atClusterTime);
+        opCtx, routingInfo, shardIds, query, appendGeoNearDistanceProjection);
 
     // Establish the cursors with a consistent shardVersion across shards.
 
@@ -362,6 +363,7 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         ? ClusterCursorManager::CursorLifetime::Immortal
         : ClusterCursorManager::CursorLifetime::Mortal;
     auto authUsers = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames();
+    ccc->incNBatches();
 
     auto cursorId = uassertStatusOK(cursorManager->registerCursor(
         opCtx, ccc.releaseCursor(), query.nss(), cursorType, cursorLifetime, authUsers));
@@ -426,7 +428,7 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
     // Re-target and re-send the initial find command to the shards until we have established the
     // shard version.
     for (size_t retries = 1; retries <= kMaxRetries; ++retries) {
-        auto routingInfoStatus = catalogCache->getCollectionRoutingInfo(opCtx, query.nss());
+        auto routingInfoStatus = getCollectionRoutingInfoForTxnCmd(opCtx, query.nss());
         if (routingInfoStatus == ErrorCodes::NamespaceNotFound) {
             // If the database doesn't exist, we successfully return an empty result set without
             // creating a cursor.
@@ -445,11 +447,10 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
                                             << " retries");
                 throw;
             } else if (!ErrorCodes::isStaleShardVersionError(ex.code()) &&
-                       !ErrorCodes::isSnapshotError(ex.code()) &&
                        ex.code() != ErrorCodes::ShardNotFound) {
-                // Errors other than stale metadata, snapshot unavailable, or from trying to reach a
-                // non existent shard are fatal to the operation. Network errors and replication
-                // retries happen at the level of the AsyncResultsMerger.
+                // Errors other than stale metadata or from trying to reach a non existent shard are
+                // fatal to the operation. Network errors and replication retries happen at the
+                // level of the AsyncResultsMerger.
                 ex.addContext("Encountered non-retryable error during query");
                 throw;
             }
@@ -457,12 +458,12 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
             LOG(1) << "Received error status for query " << redact(query.toStringShort())
                    << " on attempt " << retries << " of " << kMaxRetries << ": " << redact(ex);
 
-            // Note: there is no need to refresh metadata on snapshot errors since the request
-            // failed because atClusterTime was too low, not because the wrong shards were targeted,
-            // and subsequent attempts will choose a later atClusterTime.
-            if (ErrorCodes::isStaleShardVersionError(ex.code()) ||
-                ex.code() == ErrorCodes::ShardNotFound) {
-                catalogCache->onStaleShardVersion(std::move(routingInfo));
+            catalogCache->onStaleShardVersion(std::move(routingInfo));
+
+            if (auto txnRouter = TransactionRouter::get(opCtx)) {
+                // A transaction can always continue on a stale version error during find because
+                // the operation must be idempotent.
+                txnRouter->onStaleShardOrDbError(kFindCmdName);
             }
         }
     }
@@ -577,6 +578,7 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         stdx::lock_guard<Client> lk(*opCtx->getClient());
         CurOp::get(opCtx)->setOriginatingCommand_inlock(
             pinnedCursor.getValue().getOriginatingCommand());
+        CurOp::get(opCtx)->setGenericCursor_inlock(pinnedCursor.getValue().toGenericCursor());
     }
 
     // If the 'waitAfterPinningCursorBeforeGetMoreBatch' fail point is enabled, set the 'msg'
@@ -647,6 +649,7 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
     }
 
     pinnedCursor.getValue().setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
+    pinnedCursor.getValue().incNBatches();
     // Upon successful completion, transfer ownership of the cursor back to the cursor manager. If
     // the cursor has been exhausted, the cursor manager will clean it up for us.
     pinnedCursor.getValue().returnCursor(cursorState);

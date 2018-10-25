@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -32,6 +34,7 @@
 
 #include "mongo/embedded/replication_coordinator_embedded.h"
 
+#include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/embedded/not_implemented.h"
 
@@ -208,7 +211,16 @@ OpTime ReplicationCoordinatorEmbedded::getMyLastDurableOpTime() const {
 }
 
 Status ReplicationCoordinatorEmbedded::waitUntilOpTimeForRead(OperationContext*,
-                                                              const ReadConcernArgs&) {
+                                                              const ReadConcernArgs& readConcern) {
+    // nothing to wait for
+    auto level = readConcern.getLevel();
+    if ((level == ReadConcernLevel::kLocalReadConcern ||
+         level == ReadConcernLevel::kAvailableReadConcern) &&
+        (!readConcern.getArgsAfterClusterTime() && !readConcern.getArgsOpTime() &&
+         !readConcern.getArgsAtClusterTime())) {
+        return Status::OK();
+    }
+
     UASSERT_NOT_IMPLEMENTED;
 }
 
@@ -223,10 +235,10 @@ ReplicationCoordinator::StatusAndDuration ReplicationCoordinatorEmbedded::awaitR
     UASSERT_NOT_IMPLEMENTED;
 }
 
-Status ReplicationCoordinatorEmbedded::stepDown(OperationContext*,
-                                                const bool,
-                                                const Milliseconds&,
-                                                const Milliseconds&) {
+void ReplicationCoordinatorEmbedded::stepDown(OperationContext*,
+                                              const bool,
+                                              const Milliseconds&,
+                                              const Milliseconds&) {
     UASSERT_NOT_IMPLEMENTED;
 }
 
@@ -398,7 +410,7 @@ void ReplicationCoordinatorEmbedded::dropAllSnapshots() {
     UASSERT_NOT_IMPLEMENTED;
 }
 
-Status ReplicationCoordinatorEmbedded::stepUpIfEligible() {
+Status ReplicationCoordinatorEmbedded::stepUpIfEligible(bool skipDryRun) {
     UASSERT_NOT_IMPLEMENTED;
 }
 
@@ -412,6 +424,10 @@ void ReplicationCoordinatorEmbedded::setIndexPrefetchConfig(
 }
 
 void ReplicationCoordinatorEmbedded::signalDropPendingCollectionsRemovedFromStorage() {
+    UASSERT_NOT_IMPLEMENTED;
+}
+
+boost::optional<Timestamp> ReplicationCoordinatorEmbedded::getRecoveryTimestamp() {
     UASSERT_NOT_IMPLEMENTED;
 }
 

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -48,7 +50,7 @@
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/shard_collection_gen.h"
@@ -287,7 +289,7 @@ public:
 
             invariant(inputRoutingInfo.db().primary());
 
-            ShardConnection conn(inputRoutingInfo.db().primary()->getConnString(), "");
+            ShardConnection conn(opCtx, inputRoutingInfo.db().primary()->getConnString(), "");
 
             BSONObj res;
             bool ok = conn->runCommand(
@@ -449,7 +451,7 @@ public:
             const auto outputShard =
                 uassertStatusOK(shardRegistry->getShard(opCtx, outputDbInfo.primaryId()));
 
-            ShardConnection conn(outputShard->getConnString(), outputCollNss.ns());
+            ShardConnection conn(opCtx, outputShard->getConnString(), outputCollNss.ns());
             ok = conn->runCommand(
                 outDB, appendAllowImplicitCreate(finalCmd.obj(), true), singleResult);
 
@@ -543,7 +545,6 @@ public:
                 shardedOutputCollUUID->appendToBuilder(&finalCmd, "shardedOutputCollUUID");
             }
 
-            auto chunkSizes = SimpleBSONObjComparator::kInstance.makeBSONObjIndexedMap<int>();
             {
                 // Take distributed lock to prevent split / migration.
                 auto scopedDistLock = catalogClient->getDistLockManager()->lock(
@@ -599,20 +600,6 @@ public:
                     reduceCount += counts.getIntField("reduce");
                     outputCount += counts.getIntField("output");
                     postCountsB.append(server, counts);
-
-                    // get the size inserted for each chunk
-                    // split cannot be called here since we already have the distributed lock
-                    if (singleResult.hasField("chunkSizes")) {
-                        std::vector<BSONElement> sizes =
-                            singleResult.getField("chunkSizes").Array();
-                        for (unsigned int i = 0; i < sizes.size(); i += 2) {
-                            BSONObj key = sizes[i].Obj().getOwned();
-                            const long long size = sizes[i + 1].numberLong();
-
-                            invariant(size < std::numeric_limits<int>::max());
-                            chunkSizes[key] = static_cast<int>(size);
-                        }
-                    }
                 }
             }
 
@@ -624,18 +611,6 @@ public:
                     str::stream() << "Failed to write mapreduce output to " << outputCollNss.ns()
                                   << "; expected that collection to be sharded, but it was not",
                     outputRoutingInfo.cm());
-
-            const auto outputCM = outputRoutingInfo.cm();
-
-            for (const auto& chunkSize : chunkSizes) {
-                BSONObj key = chunkSize.first;
-                const int size = chunkSize.second;
-                invariant(size < std::numeric_limits<int>::max());
-
-                // Key reported should be the chunk's minimum
-                auto chunkWritten = outputCM->findIntersectingChunkWithSimpleCollation(key);
-                updateChunkWriteStatsAndSplitIfNeeded(opCtx, outputCM.get(), chunkWritten, size);
-            }
         }
 
         cleanUp(servers, dbname, shardResultCollection);

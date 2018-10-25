@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2009-2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -237,6 +239,11 @@ struct CommandHelpers {
                                           const Command* command,
                                           const OpMsgRequest& request);
 
+    /**
+     * Returns OK if command is allowed to run under a transaction in the given database.
+     */
+    static Status canUseTransactions(StringData dbName, StringData cmdName);
+
     static constexpr StringData kHelpFieldName = "help"_sd;
 };
 
@@ -341,13 +348,23 @@ public:
     /**
      * Redacts "cmdObj" in-place to a form suitable for writing to logs.
      *
-     * The default implementation does nothing.
+     * The default implementation removes the field returned by sensitiveFieldName.
      *
      * This is NOT used to implement user-configurable redaction of PII. Instead, that is
      * implemented via the set of redact() free functions, which are no-ops when log redaction is
      * disabled. All PII must pass through one of the redact() overloads before being logged.
      */
-    virtual void redactForLogging(mutablebson::Document* cmdObj) const {}
+    virtual void snipForLogging(mutablebson::Document* cmdObj) const;
+
+    /**
+     * Marks a field name in a cmdObj as sensitive.
+     *
+     * The default snipForLogging shall remove these field names. Auditing shall not
+     * include these fields in audit outputs.
+     */
+    virtual StringData sensitiveFieldName() const {
+        return StringData{};
+    }
 
     /**
      * Return true if a replica set secondary should go into "recovering"

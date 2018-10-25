@@ -1,48 +1,36 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include "mongo/db/storage/biggie/biggie_sorted_impl.h"
-#include "mongo/bson/bsonobj.h"
-#include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/catalog/index_catalog_entry.h"
-#include "mongo/db/storage/biggie/biggie_recovery_unit.h"
-#include "mongo/db/storage/biggie/store.h"
-#include "mongo/db/storage/index_entry_comparison.h"
-#include "mongo/db/storage/key_string.h"
 #include "mongo/platform/basic.h"
-#include "mongo/stdx/memory.h"
-#include "mongo/util/bufreader.h"
-#include "mongo/util/hex.h"
-#include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
-#include "mongo/util/shared_buffer.h"
 
 #include <cstring>
 #include <iomanip>
@@ -51,19 +39,38 @@
 #include <sstream>
 #include <utility>
 
+#include "mongo/bson/bsonobj.h"
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/catalog/index_catalog_entry.h"
+#include "mongo/db/storage/biggie/biggie_recovery_unit.h"
+#include "mongo/db/storage/biggie/biggie_sorted_impl.h"
+#include "mongo/db/storage/biggie/store.h"
+#include "mongo/db/storage/index_entry_comparison.h"
+#include "mongo/db/storage/key_string.h"
+#include "mongo/stdx/memory.h"
+#include "mongo/util/bufreader.h"
+#include "mongo/util/hex.h"
+#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/shared_buffer.h"
+
 namespace mongo {
 namespace biggie {
 namespace {
 
-const int TempKeyMaxSize = 1024;  // this goes away with SERVER-3372
+const Ordering allAscending = Ordering::make(BSONObj());
 
 // This function is the same as the one in record store--basically, using the git analogy, create
 // a working branch if one does not exist.
 StringStore* getRecoveryUnitBranch_forking(OperationContext* opCtx) {
-    RecoveryUnit* biggieRCU = checked_cast<RecoveryUnit*>(opCtx->recoveryUnit());
+    biggie::RecoveryUnit* biggieRCU = checked_cast<biggie::RecoveryUnit*>(opCtx->recoveryUnit());
     invariant(biggieRCU);
     biggieRCU->forkIfNeeded();
     return biggieRCU->getWorkingCopy();
+}
+
+void dirtyRecoveryUnit(OperationContext* opCtx) {
+    biggie::RecoveryUnit* biggieRCU = checked_cast<biggie::RecoveryUnit*>(opCtx->recoveryUnit());
+    biggieRCU->makeDirty();
 }
 
 // This just checks to see if the field names are empty or not.
@@ -83,13 +90,6 @@ BSONObj stripFieldNames(const BSONObj& obj) {
         bob.appendAs(it.next(), "");
     }
     return bob.obj();
-}
-
-Status dupKeyError(const BSONObj& key) {
-    StringBuilder sb;
-    sb << "E11000 duplicate key error ";
-    sb << "dup key: " << key;
-    return Status(ErrorCodes::DuplicateKey, sb.str());
 }
 
 // This function converts a key and an ordering to a KeyString.
@@ -116,7 +116,6 @@ std::string combineKeyAndRIDWithReset(const BSONObj& key,
     b.append("", prefixToUse);                                  // prefix
     b.append("", std::string(ks->getBuffer(), ks->getSize()));  // key
 
-    Ordering allAscending = Ordering::make(BSONObj());
     std::unique_ptr<KeyString> retKs =
         std::make_unique<KeyString>(version, b.obj(), allAscending, loc);
     return std::string(retKs->getBuffer(), retKs->getSize());
@@ -131,7 +130,6 @@ std::unique_ptr<KeyString> combineKeyAndRIDKS(const BSONObj& key,
     BSONObjBuilder b;
     b.append("", prefixToUse);                                // prefix
     b.append("", std::string(ks.getBuffer(), ks.getSize()));  // key
-    Ordering allAscending = Ordering::make(BSONObj());
     return std::make_unique<KeyString>(version, b.obj(), allAscending, loc);
 }
 
@@ -150,7 +148,6 @@ std::string combineKeyAndRID(const BSONObj& key,
     BSONObjBuilder b;
     b.append("", prefixToUse);                                // prefix
     b.append("", std::string(ks.getBuffer(), ks.getSize()));  // key
-    Ordering allAscending = Ordering::make(BSONObj());
     std::unique_ptr<KeyString> retKs =
         std::make_unique<KeyString>(version, b.obj(), allAscending, loc);
     return std::string(retKs->getBuffer(), retKs->getSize());
@@ -170,34 +167,21 @@ IndexKeyEntry keyStringToIndexKeyEntry(std::string keyString,
     BufReader brTbInternal(typeBitsString.c_str(), typeBitsString.length());
     tbInternal.resetFromBuffer(&brTbInternal);
 
-    Ordering allAscending = Ordering::make(BSONObj());
-
     BSONObj bsonObj =
         KeyString::toBsonSafe(keyString.c_str(), keyString.length(), allAscending, tbOuter);
 
-    // First we get the BSONObj key.
     SharedBuffer sb;
-    int counter = 0;
-    for (auto&& elem : bsonObj) {
-        // The key is the second field.
-        if (counter == 1) {
-            const char* valStart = elem.valuestr();
-            int valSize = elem.valuestrsize();
-            KeyString ks(version);
-            ks.resetFromBuffer(valStart, valSize);
+    auto it = BSONObjIterator(bsonObj);
+    ++it;  // We want the second part
+    KeyString ks(version);
+    ks.resetFromBuffer((*it).valuestr(), (*it).valuestrsize());
 
-            BSONObj originalKey =
-                KeyString::toBsonSafe(ks.getBuffer(), ks.getSize(), order, tbInternal);
+    BSONObj originalKey = KeyString::toBsonSafe(ks.getBuffer(), ks.getSize(), order, tbInternal);
 
-            sb = SharedBuffer::allocate(originalKey.objsize());
-            std::memcpy(sb.get(), originalKey.objdata(), originalKey.objsize());
-            break;
-        }
-        counter++;
-    }
+    sb = SharedBuffer::allocate(originalKey.objsize());
+    std::memcpy(sb.get(), originalKey.objdata(), originalKey.objsize());
     RecordId rid = KeyString::decodeRecordIdAtEnd(keyString.c_str(), keyString.length());
-    ConstSharedBuffer csb(sb);
-    BSONObj key(csb);
+    BSONObj key(ConstSharedBuffer{sb});
 
     return IndexKeyEntry(key, rid);
 }
@@ -222,29 +206,33 @@ int compareTwoKeys(
 SortedDataBuilderInterface::SortedDataBuilderInterface(OperationContext* opCtx,
                                                        bool dupsAllowed,
                                                        Ordering order,
-                                                       std::string prefix,
-                                                       std::string identEnd)
+                                                       const std::string& prefix,
+                                                       const std::string& identEnd,
+                                                       const std::string& collectionNamespace,
+                                                       const std::string& indexName,
+                                                       const BSONObj& keyPattern)
     : _opCtx(opCtx),
       _dupsAllowed(dupsAllowed),
       _order(order),
       _prefix(prefix),
       _identEnd(identEnd),
+      _collectionNamespace(collectionNamespace),
+      _indexName(indexName),
+      _keyPattern(keyPattern),
       _hasLast(false),
       _lastKeyToString(""),
       _lastRID(-1) {}
 
-void SortedDataBuilderInterface::commit(bool mayInterrupt) {
+SpecialFormatInserted SortedDataBuilderInterface::commit(bool mayInterrupt) {
     biggie::RecoveryUnit* ru = checked_cast<biggie::RecoveryUnit*>(_opCtx->recoveryUnit());
     ru->forkIfNeeded();
     ru->commitUnitOfWork();
+    return SpecialFormatInserted::NoSpecialFormatInserted;
 }
 
-Status SortedDataBuilderInterface::addKey(const BSONObj& key, const RecordId& loc) {
+StatusWith<SpecialFormatInserted> SortedDataBuilderInterface::addKey(const BSONObj& key,
+                                                                     const RecordId& loc) {
     StringStore* workingCopy = getRecoveryUnitBranch_forking(_opCtx);
-
-    if (key.objsize() >= TempKeyMaxSize) {
-        return Status(ErrorCodes::KeyTooLong, "key too big");
-    }
 
     invariant(loc.isNormal());
     invariant(!hasFieldNames(key));
@@ -265,16 +253,14 @@ Status SortedDataBuilderInterface::addKey(const BSONObj& key, const RecordId& lo
                       "expected ascending (key, RecordId) order in bulk builder");
     }
     if (!_dupsAllowed && twoKeyCmp == 0 && twoRIDCmp != 0) {
-        return dupKeyError(key);
+        return buildDupKeyErrorStatus(key, _collectionNamespace, _indexName, _keyPattern);
     }
 
     std::string workingCopyInsertKey = combineKeyAndRID(key, loc, _prefix, _order);
-    std::unique_ptr<KeyString> workingCopyInternalKs = keyToKeyString(key, _order);
     std::unique_ptr<KeyString> workingCopyOuterKs = combineKeyAndRIDKS(key, loc, _prefix, _order);
 
-    std::string internalTbString(
-        reinterpret_cast<const char*>(workingCopyInternalKs->getTypeBits().getBuffer()),
-        workingCopyInternalKs->getTypeBits().getSize());
+    std::string internalTbString(reinterpret_cast<const char*>(newKS->getTypeBits().getBuffer()),
+                                 newKS->getTypeBits().getSize());
 
     workingCopy->insert(StringStore::value_type(workingCopyInsertKey, internalTbString));
 
@@ -282,12 +268,20 @@ Status SortedDataBuilderInterface::addKey(const BSONObj& key, const RecordId& lo
     _lastKeyToString = newKSToString;
     _lastRID = loc.repr();
 
-    return Status::OK();
+    dirtyRecoveryUnit(_opCtx);
+    return StatusWith<SpecialFormatInserted>(SpecialFormatInserted::NoSpecialFormatInserted);
 }
 
 SortedDataBuilderInterface* SortedDataInterface::getBulkBuilder(OperationContext* opCtx,
                                                                 bool dupsAllowed) {
-    return new SortedDataBuilderInterface(opCtx, dupsAllowed, _order, _prefix, _identEnd);
+    return new SortedDataBuilderInterface(opCtx,
+                                          dupsAllowed,
+                                          _order,
+                                          _prefix,
+                                          _identEnd,
+                                          _collectionNamespace,
+                                          _indexName,
+                                          _keyPattern);
 }
 
 // We append \1 to all idents we get, and therefore the KeyString with ident + \0 will only be
@@ -309,10 +303,10 @@ SortedDataInterface::SortedDataInterface(const Ordering& ordering, bool isUnique
     _KSForIdentEnd = combineKeyAndRID(BSONObj(), RecordId::min(), _identEnd, ordering);
 }
 
-Status SortedDataInterface::insert(OperationContext* opCtx,
-                                   const BSONObj& key,
-                                   const RecordId& loc,
-                                   bool dupsAllowed) {
+StatusWith<SpecialFormatInserted> SortedDataInterface::insert(OperationContext* opCtx,
+                                                              const BSONObj& key,
+                                                              const RecordId& loc,
+                                                              bool dupsAllowed) {
     // The KeyString representation of the key.
     std::unique_ptr<KeyString> workingCopyInternalKs = keyToKeyString(key, _order);
     // The KeyString of prefix (which is ident + \1), key, loc.
@@ -322,12 +316,8 @@ Status SortedDataInterface::insert(OperationContext* opCtx,
 
     StringStore* workingCopy = getRecoveryUnitBranch_forking(opCtx);
 
-    if (key.objsize() >= TempKeyMaxSize) {
-        return Status(ErrorCodes::KeyTooLong, "Error: key too long");
-    }
-
     if (workingCopy->find(workingCopyInsertKey) != workingCopy->end()) {
-        return Status::OK();
+        return StatusWith<SpecialFormatInserted>(SpecialFormatInserted::NoSpecialFormatInserted);
     }
 
     // If dups are not allowed, then we need to check that we are not inserting something with an
@@ -336,7 +326,8 @@ Status SortedDataInterface::insert(OperationContext* opCtx,
     if (!dupsAllowed) {
         std::string workingCopyLowerBound = combineKeyAndRID(key, RecordId::min(), _prefix, _order);
         std::string workingCopyUpperBound = combineKeyAndRID(key, RecordId::max(), _prefix, _order);
-        StringStore::iterator lowerBoundIterator = workingCopy->lower_bound(workingCopyLowerBound);
+        StringStore::const_iterator lowerBoundIterator =
+            workingCopy->lower_bound(workingCopyLowerBound);
 
         if (lowerBoundIterator != workingCopy->end() &&
             lowerBoundIterator->first.compare(_KSForIdentEnd) < 0) {
@@ -347,7 +338,7 @@ Status SortedDataInterface::insert(OperationContext* opCtx,
             auto ks1 = keyToKeyString(ike.key, _order);
             auto ks2 = keyToKeyString(key, _order);
             if (ks1->compare(*ks2) == 0 && ike.loc.repr() != loc.repr()) {
-                return dupKeyError(key);
+                return buildDupKeyErrorStatus(key, _collectionNamespace, _indexName, _keyPattern);
             }
         }
     }
@@ -359,7 +350,8 @@ Status SortedDataInterface::insert(OperationContext* opCtx,
         std::string(reinterpret_cast<const char*>(workingCopyInternalKs->getTypeBits().getBuffer()),
                     workingCopyInternalKs->getTypeBits().getSize());
     workingCopy->insert(StringStore::value_type(workingCopyInsertKey, internalTbString));
-    return Status::OK();
+    dirtyRecoveryUnit(opCtx);
+    return StatusWith<SpecialFormatInserted>(SpecialFormatInserted::NoSpecialFormatInserted);
 }
 
 void SortedDataInterface::unindex(OperationContext* opCtx,
@@ -369,15 +361,24 @@ void SortedDataInterface::unindex(OperationContext* opCtx,
     std::string workingCopyInsertKey = combineKeyAndRID(key, loc, _prefix, _order);
     StringStore* workingCopy = getRecoveryUnitBranch_forking(opCtx);
     workingCopy->erase(workingCopyInsertKey);
+    dirtyRecoveryUnit(opCtx);
 }
 
 // This function is, as of now, not in the interface, but there exists a server ticket to add
 // truncate to the list of commands able to be used.
 Status SortedDataInterface::truncate(OperationContext* opCtx) {
     StringStore* workingCopy = getRecoveryUnitBranch_forking(opCtx);
-    auto workingCopyLowerBound = workingCopy->lower_bound(_KSForIdentStart);
-    auto workingCopyUpperBound = workingCopy->upper_bound(_KSForIdentEnd);
-    workingCopy->erase(workingCopyLowerBound, workingCopyUpperBound);
+    std::vector<std::string> toDelete;
+    auto end = workingCopy->upper_bound(_KSForIdentEnd);
+    for (auto it = workingCopy->lower_bound(_KSForIdentStart); it != end; ++it) {
+        toDelete.push_back(it->first);
+    }
+    if (!toDelete.empty()) {
+        ON_BLOCK_EXIT([opCtx]() { dirtyRecoveryUnit(opCtx); });
+        for (const auto& key : toDelete) {
+            workingCopy->erase(key);
+        }
+    }
     return Status::OK();
 }
 
@@ -401,7 +402,7 @@ Status SortedDataInterface::dupKeyCheck(OperationContext* opCtx,
         lowerBoundIterator->first.compare(_KSForIdentEnd) < 0 &&
         lowerBoundIterator->first.compare(
             combineKeyAndRID(key, RecordId::max(), _prefix, _order)) <= 0) {
-        return dupKeyError(key);
+        return buildDupKeyErrorStatus(key, _collectionNamespace, _indexName, _keyPattern);
     }
     return Status::OK();
 }
@@ -428,8 +429,8 @@ bool SortedDataInterface::appendCustomStats(OperationContext* opCtx,
 long long SortedDataInterface::getSpaceUsedBytes(OperationContext* opCtx) const {
     StringStore* str = getRecoveryUnitBranch_forking(opCtx);
     size_t totalSize = 0;
-    StringStore::iterator it = str->lower_bound(_KSForIdentStart);
-    StringStore::iterator end = str->upper_bound(_KSForIdentEnd);
+    StringStore::const_iterator it = str->lower_bound(_KSForIdentStart);
+    StringStore::const_iterator end = str->upper_bound(_KSForIdentEnd);
     int64_t numElements = str->distance(it, end);
     for (int i = 0; i < numElements; i++) {
         totalSize += it->first.length();
@@ -547,7 +548,8 @@ void SortedDataInterface::Cursor::setEndPosition(const BSONObj& key, bool inclus
         // Reverse iterators work with upper bound since upper bound will return the first element
         // past the argument, so when it becomes a reverse iterator, it goes backwards one,
         // (according to the C++ standard) and we end up in the right place.
-        _endPosReverse = StringStore::reverse_iterator(workingCopy->upper_bound(_endPosBound));
+        _endPosReverse =
+            StringStore::const_reverse_iterator(workingCopy->upper_bound(_endPosBound));
     }
 }
 
@@ -614,8 +616,8 @@ boost::optional<IndexKeyEntry> SortedDataInterface::Cursor::seekAfterProcessing(
                 // Reverse iterators work with upper bound since upper bound will return the first
                 // element past the argument, so when it becomes a reverse iterator, it goes
                 // backwards one, (according to the C++ standard) and we end up in the right place.
-                _reverseIt =
-                    StringStore::reverse_iterator(_workingCopy->upper_bound(workingCopyBound));
+                _reverseIt = StringStore::const_reverse_iterator(
+                    _workingCopy->upper_bound(workingCopyBound));
             }
             // Here, we check to make sure the iterator doesn't fall off the data structure and is
             // in the ident. We also check to make sure it is on the correct side of the end
@@ -633,7 +635,8 @@ boost::optional<IndexKeyEntry> SortedDataInterface::Cursor::seekAfterProcessing(
             // Reverse iterators work with upper bound since upper bound will return the first
             // element past the argument, so when it becomes a reverse iterator, it goes
             // backwards one, (according to the C++ standard) and we end up in the right place.
-            _reverseIt = StringStore::reverse_iterator(_workingCopy->upper_bound(workingCopyBound));
+            _reverseIt =
+                StringStore::const_reverse_iterator(_workingCopy->upper_bound(workingCopyBound));
         }
         // Once again, we check to make sure the iterator didn't fall off the data structure and
         // still is in the ident.
@@ -725,7 +728,7 @@ void SortedDataInterface::Cursor::restore() {
         if (_saveKey.length() == 0) {
             _reverseIt = workingCopy->rend();
         } else {
-            _reverseIt = StringStore::reverse_iterator(workingCopy->upper_bound(_saveKey));
+            _reverseIt = StringStore::const_reverse_iterator(workingCopy->upper_bound(_saveKey));
         }
         if (!checkCursorValid()) {
             _atEOF = true;

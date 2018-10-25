@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -291,7 +293,25 @@ LockResult LockerImpl::lockGlobal(OperationContext* opCtx, LockMode mode) {
 
 void LockerImpl::reacquireTicket(OperationContext* opCtx) {
     invariant(_modeForTicket != MODE_NONE);
+    auto clientState = _clientState.load();
+    const bool reader = isSharedLockMode(_modeForTicket);
+
+    // Ensure that either we don't have a ticket, or the current ticket mode matches the lock mode.
+    invariant(clientState == kInactive || (clientState == kActiveReader && reader) ||
+              (clientState == kActiveWriter && !reader));
+
+    // If we already have a ticket, there's nothing to do.
+    if (clientState != kInactive)
+        return;
+
     auto acquireTicketResult = _acquireTicket(opCtx, _modeForTicket, Date_t::max());
+    uassert(ErrorCodes::LockTimeout,
+            str::stream() << "Unable to acquire ticket with mode '" << _modeForTicket
+                          << "' within a max lock request timeout of '"
+                          << _maxLockTimeout.get()
+                          << "' milliseconds.",
+            acquireTicketResult == LOCK_OK || !_maxLockTimeout);
+    // If no deadline is specified we should always get a ticket.
     invariant(acquireTicketResult == LOCK_OK);
 }
 
@@ -301,11 +321,17 @@ LockResult LockerImpl::_acquireTicket(OperationContext* opCtx, LockMode mode, Da
     if (holder) {
         _clientState.store(reader ? kQueuedReader : kQueuedWriter);
 
+        if (_maxLockTimeout && !_uninterruptibleLocksRequested) {
+            deadline = std::min(deadline, Date_t::now() + _maxLockTimeout.get());
+        }
+
         // If the ticket wait is interrupted, restore the state of the client.
         auto restoreStateOnErrorGuard = MakeGuard([&] { _clientState.store(kInactive); });
+
+        OperationContext* interruptible = _uninterruptibleLocksRequested ? nullptr : opCtx;
         if (deadline == Date_t::max()) {
-            holder->waitForTicket(opCtx);
-        } else if (!holder->waitForTicketUntil(opCtx, deadline)) {
+            holder->waitForTicket(interruptible);
+        } else if (!holder->waitForTicketUntil(interruptible, deadline)) {
             return LOCK_TIMEOUT;
         }
         restoreStateOnErrorGuard.Dismiss();
@@ -514,7 +540,8 @@ ResourceId LockerImpl::getWaitingResource() const {
     return ResourceId();
 }
 
-void LockerImpl::getLockerInfo(LockerInfo* lockerInfo) const {
+void LockerImpl::getLockerInfo(LockerInfo* lockerInfo,
+                               const boost::optional<SingleThreadedLockStats> lockStatsBase) const {
     invariant(lockerInfo);
 
     // Zero-out the contents
@@ -538,11 +565,19 @@ void LockerImpl::getLockerInfo(LockerInfo* lockerInfo) const {
 
     lockerInfo->waitingResource = getWaitingResource();
     lockerInfo->stats.append(_stats);
+
+    // lockStatsBase is a snapshot of lock stats taken when the sub-operation starts. Only
+    // sub-operations have lockStatsBase.
+    if (lockStatsBase)
+        // Adjust the lock stats by subtracting the lockStatsBase. No mutex is needed because
+        // lockStatsBase is immutable.
+        lockerInfo->stats.subtract(*lockStatsBase);
 }
 
-boost::optional<Locker::LockerInfo> LockerImpl::getLockerInfo() const {
+boost::optional<Locker::LockerInfo> LockerImpl::getLockerInfo(
+    const boost::optional<SingleThreadedLockStats> lockStatsBase) const {
     Locker::LockerInfo lockerInfo;
-    getLockerInfo(&lockerInfo);
+    getLockerInfo(&lockerInfo, lockStatsBase);
     return std::move(lockerInfo);
 }
 

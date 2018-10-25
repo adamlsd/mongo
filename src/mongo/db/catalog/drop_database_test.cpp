@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -67,12 +69,14 @@ public:
     void onDropDatabase(OperationContext* opCtx, const std::string& dbName) override;
     repl::OpTime onDropCollection(OperationContext* opCtx,
                                   const NamespaceString& collectionName,
-                                  OptionalCollectionUUID uuid) override;
+                                  OptionalCollectionUUID uuid,
+                                  CollectionDropType dropType) override;
 
     std::set<std::string> droppedDatabaseNames;
     std::set<NamespaceString> droppedCollectionNames;
     Database* db = nullptr;
     bool onDropCollectionThrowsException = false;
+    const repl::OpTime dropOpTime = {Timestamp(Seconds(100), 1U), 1LL};
 };
 
 void OpObserverMock::onDropDatabase(OperationContext* opCtx, const std::string& dbName) {
@@ -84,9 +88,11 @@ void OpObserverMock::onDropDatabase(OperationContext* opCtx, const std::string& 
 
 repl::OpTime OpObserverMock::onDropCollection(OperationContext* opCtx,
                                               const NamespaceString& collectionName,
-                                              OptionalCollectionUUID uuid) {
+                                              OptionalCollectionUUID uuid,
+                                              const CollectionDropType dropType) {
     ASSERT_TRUE(opCtx->lockState()->inAWriteUnitOfWork());
-    auto opTime = OpObserverNoop::onDropCollection(opCtx, collectionName, uuid);
+    auto opTime = OpObserverNoop::onDropCollection(opCtx, collectionName, uuid, dropType);
+    invariant(opTime.isNull());
     // Do not update 'droppedCollectionNames' if OpObserverNoop::onDropCollection() throws.
     droppedCollectionNames.insert(collectionName);
 
@@ -98,7 +104,7 @@ repl::OpTime OpObserverMock::onDropCollection(OperationContext* opCtx,
     uassert(
         ErrorCodes::OperationFailed, "onDropCollection() failed", !onDropCollectionThrowsException);
 
-    OpObserver::Times::get(opCtx).reservedOpTimes.push_back(opTime);
+    OpObserver::Times::get(opCtx).reservedOpTimes.push_back(dropOpTime);
     return {};
 }
 
@@ -285,16 +291,6 @@ TEST_F(DropDatabaseTest, DropDatabasePassedThroughAwaitReplicationErrorForDropPe
     ASSERT_EQUALS(ErrorCodes::WriteConcernFailed, dropDatabase(_opCtx.get(), _nss.db().toString()));
 }
 
-TEST_F(DropDatabaseTest, DropDatabaseSkipsSystemDotIndexesCollectionWhenDroppingCollections) {
-    NamespaceString systemDotIndexesNss(_nss.getSystemIndexesCollection());
-    _testDropDatabase(_opCtx.get(), _opObserver, systemDotIndexesNss, false);
-}
-
-TEST_F(DropDatabaseTest, DropDatabaseSkipsSystemNamespacesCollectionWhenDroppingCollections) {
-    NamespaceString systemNamespacesNss(_nss.getSisterNS("system.namespaces"));
-    _testDropDatabase(_opCtx.get(), _opObserver, systemNamespacesNss, false);
-}
-
 TEST_F(DropDatabaseTest, DropDatabaseSkipsSystemProfileCollectionWhenDroppingCollections) {
     repl::OpTime dropOpTime(Timestamp(Seconds(100), 0), 1LL);
     NamespaceString profileNss(_nss.getSisterNS("system.profile"));
@@ -311,7 +307,7 @@ TEST_F(DropDatabaseTest, DropDatabaseResetsDropPendingStateOnException) {
     auto db = autoDb.getDb();
     ASSERT_TRUE(db);
 
-    ASSERT_THROWS_CODE_AND_WHAT(dropDatabase(_opCtx.get(), _nss.db().toString()).ignore(),
+    ASSERT_THROWS_CODE_AND_WHAT(dropDatabase(_opCtx.get(), _nss.db().toString()),
                                 AssertionException,
                                 ErrorCodes::OperationFailed,
                                 "onDropCollection() failed");
@@ -465,7 +461,7 @@ TEST_F(DropDatabaseTest,
 TEST_F(DropDatabaseTest, DropDatabaseFailsToDropAdmin) {
     NamespaceString adminNSS(NamespaceString::kAdminDb, "foo");
     _createCollection(_opCtx.get(), adminNSS);
-    ASSERT_THROWS_CODE_AND_WHAT(dropDatabase(_opCtx.get(), adminNSS.db().toString()).ignore(),
+    ASSERT_THROWS_CODE_AND_WHAT(dropDatabase(_opCtx.get(), adminNSS.db().toString()),
                                 AssertionException,
                                 ErrorCodes::IllegalOperation,
                                 "Dropping the 'admin' database is prohibited.");

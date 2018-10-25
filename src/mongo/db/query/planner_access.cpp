@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -45,6 +47,7 @@
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/index_tag.h"
 #include "mongo/db/query/indexability.h"
+#include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_knobs.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
@@ -56,6 +59,7 @@ namespace {
 
 using namespace mongo;
 
+namespace wcp = ::mongo::wildcard_planning;
 namespace dps = ::mongo::dotted_path_support;
 
 /**
@@ -577,29 +581,37 @@ void QueryPlannerAccess::finishLeafNode(QuerySolutionNode* node, const IndexEntr
     const StageType type = node->getType();
 
     if (STAGE_TEXT == type) {
-        finishTextNode(node, index);
-        return;
+        return finishTextNode(node, index);
     }
 
-    IndexBounds* bounds = NULL;
+    IndexEntry* nodeIndex = nullptr;
+    IndexBounds* bounds = nullptr;
 
     if (STAGE_GEO_NEAR_2D == type) {
         GeoNear2DNode* gnode = static_cast<GeoNear2DNode*>(node);
         bounds = &gnode->baseBounds;
+        nodeIndex = &gnode->index;
     } else if (STAGE_GEO_NEAR_2DSPHERE == type) {
         GeoNear2DSphereNode* gnode = static_cast<GeoNear2DSphereNode*>(node);
         bounds = &gnode->baseBounds;
+        nodeIndex = &gnode->index;
     } else {
         verify(type == STAGE_IXSCAN);
         IndexScanNode* scan = static_cast<IndexScanNode*>(node);
+        nodeIndex = &scan->index;
         bounds = &scan->bounds;
+
+        // If this is a $** index, update and populate the keyPattern, bounds, and multikeyPaths.
+        if (index.type == IndexType::INDEX_WILDCARD) {
+            wcp::finalizeWildcardIndexScanConfiguration(scan);
+        }
     }
 
     // Find the first field in the scan's bounds that was not filled out.
     // TODO: could cache this.
     size_t firstEmptyField = 0;
     for (firstEmptyField = 0; firstEmptyField < bounds->fields.size(); ++firstEmptyField) {
-        if ("" == bounds->fields[firstEmptyField].name) {
+        if (bounds->fields[firstEmptyField].name.empty()) {
             verify(bounds->fields[firstEmptyField].intervals.empty());
             break;
         }
@@ -607,12 +619,11 @@ void QueryPlannerAccess::finishLeafNode(QuerySolutionNode* node, const IndexEntr
 
     // All fields are filled out with bounds, nothing to do.
     if (firstEmptyField == bounds->fields.size()) {
-        IndexBoundsBuilder::alignBounds(bounds, index.keyPattern);
-        return;
+        return IndexBoundsBuilder::alignBounds(bounds, nodeIndex->keyPattern);
     }
 
     // Skip ahead to the firstEmptyField-th element, where we begin filling in bounds.
-    BSONObjIterator it(index.keyPattern);
+    BSONObjIterator it(nodeIndex->keyPattern);
     for (size_t i = 0; i < firstEmptyField; ++i) {
         verify(it.more());
         it.next();
@@ -621,13 +632,10 @@ void QueryPlannerAccess::finishLeafNode(QuerySolutionNode* node, const IndexEntr
     // For each field in the key...
     while (it.more()) {
         BSONElement kpElt = it.next();
-        // There may be filled-in fields to the right of the firstEmptyField.
-        // Example:
-        // The index {loc:"2dsphere", x:1}
-        // With a predicate over x and a near search over loc.
-        if ("" == bounds->fields[firstEmptyField].name) {
+        // There may be filled-in fields to the right of the firstEmptyField; for instance, the
+        // index {loc:"2dsphere", x:1} with a predicate over x and a near search over loc.
+        if (bounds->fields[firstEmptyField].name.empty()) {
             verify(bounds->fields[firstEmptyField].intervals.empty());
-            // ...build the "all values" interval.
             IndexBoundsBuilder::allValuesForField(kpElt, &bounds->fields[firstEmptyField]);
         }
         ++firstEmptyField;
@@ -638,7 +646,7 @@ void QueryPlannerAccess::finishLeafNode(QuerySolutionNode* node, const IndexEntr
 
     // We create bounds assuming a forward direction but can easily reverse bounds to align
     // according to our desired direction.
-    IndexBoundsBuilder::alignBounds(bounds, index.keyPattern);
+    IndexBoundsBuilder::alignBounds(bounds, nodeIndex->keyPattern);
 }
 
 void QueryPlannerAccess::findElemMatchChildren(const MatchExpression* node,
@@ -986,6 +994,16 @@ std::unique_ptr<QuerySolutionNode> QueryPlannerAccess::buildIndexedAnd(
     if (ixscanNodes.size() == 1) {
         andResult = std::move(ixscanNodes[0]);
     } else {
+        // $** indexes are prohibited from participating in either AND_SORTED or AND_HASH.
+        const bool wildcardIndexInvolvedInIntersection =
+            std::any_of(ixscanNodes.begin(), ixscanNodes.end(), [](const auto& ixScan) {
+                return ixScan->getType() == StageType::STAGE_IXSCAN &&
+                    static_cast<IndexScanNode*>(ixScan.get())->index.type == INDEX_WILDCARD;
+            });
+        if (wildcardIndexInvolvedInIntersection) {
+            return nullptr;
+        }
+
         // Figure out if we want AndHashNode or AndSortedNode.
         bool allSortedByDiskLoc = true;
         for (size_t i = 0; i < ixscanNodes.size(); ++i) {

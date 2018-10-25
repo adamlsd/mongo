@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -36,15 +38,16 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/s/async_requests_sender.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/multi_statement_transaction_requests_sender.h"
 #include "mongo/s/stale_exception.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/s/write_ops/cluster_write.h"
 #include "mongo/util/timer.h"
 
@@ -166,8 +169,7 @@ public:
         // that the parsing be pulled into this function.
         uassertStatusOK(createShardDatabase(opCtx, nss.db()));
 
-        const auto routingInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
+        const auto routingInfo = uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
         if (!routingInfo.cm()) {
             _runCommand(opCtx,
                         routingInfo.db().primaryId(),
@@ -191,8 +193,6 @@ public:
                     nss,
                     cmdObj,
                     &result);
-        updateChunkWriteStatsAndSplitIfNeeded(
-            opCtx, chunkMgr.get(), chunk, cmdObj.getObjectField("update").objsize());
 
         return true;
     }
@@ -211,13 +211,14 @@ private:
                 appendShardVersion(CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
                                    shardVersion));
 
-            AsyncRequestsSender ars(opCtx,
-                                    Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
-                                    nss.db().toString(),
-                                    requests,
-                                    kPrimaryOnlyReadPreference,
-                                    opCtx->getTxnNumber() ? Shard::RetryPolicy::kIdempotent
-                                                          : Shard::RetryPolicy::kNoRetry);
+            MultiStatementTransactionRequestsSender ars(
+                opCtx,
+                Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
+                nss.db().toString(),
+                requests,
+                kPrimaryOnlyReadPreference,
+                opCtx->getTxnNumber() ? Shard::RetryPolicy::kIdempotent
+                                      : Shard::RetryPolicy::kNoRetry);
 
             auto response = ars.next();
             invariant(ars.done());
@@ -228,7 +229,8 @@ private:
         uassertStatusOK(response.status);
 
         const auto responseStatus = getStatusFromCommandResult(response.data);
-        if (ErrorCodes::isNeedRetargettingError(responseStatus.code())) {
+        if (ErrorCodes::isNeedRetargettingError(responseStatus.code()) ||
+            ErrorCodes::isSnapshotError(responseStatus.code())) {
             // Command code traps this exception and re-runs
             uassertStatusOK(responseStatus.withContext("findAndModify"));
         }

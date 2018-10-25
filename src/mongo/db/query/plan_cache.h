@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -50,22 +52,6 @@ struct QuerySolution;
 struct QuerySolutionNode;
 
 /**
- * When the CachedPlanStage runs a cached query, it can provide feedback to the cache.  This
- * feedback is available to anyone who retrieves that query in the future.
- */
-struct PlanCacheEntryFeedback {
-    // How well did the cached plan perform?
-    std::unique_ptr<PlanStageStats> stats;
-
-    // The "goodness" score produced by the plan ranker
-    // corresponding to 'stats'.
-    double score;
-};
-
-// TODO: Replace with opaque type.
-typedef std::string PlanID;
-
-/**
  * A PlanCacheIndexTree is the meaty component of the data
  * stored in SolutionCacheData. It is a tree structure with
  * index tags that indicates to the access planner which indices
@@ -93,7 +79,7 @@ struct PlanCacheIndexTree {
      * or satisfy the first field in the index.
      */
     struct OrPushdown {
-        std::string indexName;
+        IndexEntry::Identifier indexEntryId;
         size_t position;
         bool canCombineBounds;
         std::deque<size_t> route;
@@ -283,9 +269,8 @@ public:
     // the other plans lost.
     std::unique_ptr<PlanRankingDecision> decision;
 
-    // Annotations from cached runs.  The CachedPlanStage provides these stats about its
-    // runs when they complete.
-    std::vector<PlanCacheEntryFeedback*> feedback;
+    // Scores from uses of this cache entry.
+    std::vector<double> feedback;
 
     // Whether or not the cache entry is active. Inactive cache entries should not be used for
     // planning.
@@ -407,10 +392,9 @@ public:
 
     /**
      * When the CachedPlanStage runs a plan out of the cache, we want to record data about the
-     * plan's performance.  The CachedPlanStage calls feedback(...) after executing the cached
-     * plan for a trial period in order to do this.
-     *
-     * Cache takes ownership of 'feedback'.
+     * plan's performance. The CachedPlanStage calls feedback(...) after executing the cached
+     * plan for a trial period in order to do this. Currently, the only feedback metric recorded is
+     * the score associated with the cached plan trial period.
      *
      * If the entry corresponding to 'cq' isn't in the cache anymore, the feedback is ignored
      * and an error Status is returned.
@@ -418,7 +402,7 @@ public:
      * If the entry corresponding to 'cq' still exists, 'feedback' is added to the run
      * statistics about the plan.  Status::OK() is returned.
      */
-    Status feedback(const CanonicalQuery& cq, PlanCacheEntryFeedback* feedback);
+    Status feedback(const CanonicalQuery& cq, double score);
 
     /**
      * Remove the entry corresponding to 'ck' from the cache.  Returns Status::OK() if the plan
@@ -475,6 +459,18 @@ public:
      * Callers must hold the collection lock in exclusive mode when calling this method.
      */
     void notifyOfIndexEntries(const std::vector<IndexEntry>& indexEntries);
+
+    /**
+     * Iterates over the plan cache. For each entry, serializes the PlanCacheEntry according to
+     * 'serializationFunc'. Returns a vector of all serialized entries which match 'filterFunc'.
+     */
+    std::vector<BSONObj> getMatchingStats(
+        const std::function<BSONObj(const PlanCacheEntry&)>& serializationFunc,
+        const std::function<bool(const BSONObj&)>& filterFunc) const;
+
+    void setNs(NamespaceString ns) {
+        _ns = ns.toString();
+    }
 
 private:
     struct NewEntryState {

@@ -1,29 +1,31 @@
+
 /**
- *    Copyright 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -108,8 +110,8 @@ const char kNaturalSortField[] = "$natural";
 const char QueryRequest::kFindCommandName[] = "find";
 const char QueryRequest::kShardVersionField[] = "shardVersion";
 
-QueryRequest::QueryRequest(NamespaceString nss) : _nss(std::move(nss)) {}
-QueryRequest::QueryRequest(CollectionUUID uuid) : _uuid(std::move(uuid)) {}
+QueryRequest::QueryRequest(NamespaceStringOrUUID nssOrUuid)
+    : _nss(nssOrUuid.nss() ? *nssOrUuid.nss() : NamespaceString()), _uuid(nssOrUuid.uuid()) {}
 
 void QueryRequest::refreshNSS(OperationContext* opCtx) {
     if (_uuid) {
@@ -394,7 +396,7 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::makeFromFindCommand(Namespace
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
         auto uuid = uassertStatusOK(UUID::parse(first));
-        auto qr = stdx::make_unique<QueryRequest>(uuid);
+        auto qr = stdx::make_unique<QueryRequest>(NamespaceStringOrUUID(nss.db().toString(), uuid));
         return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
     } else {
         auto qr = stdx::make_unique<QueryRequest>(nss);
@@ -408,9 +410,24 @@ BSONObj QueryRequest::asFindCommand() const {
     return bob.obj();
 }
 
+BSONObj QueryRequest::asFindCommandWithUuid() const {
+    BSONObjBuilder bob;
+    asFindCommandWithUuid(&bob);
+    return bob.obj();
+}
+
 void QueryRequest::asFindCommand(BSONObjBuilder* cmdBuilder) const {
     cmdBuilder->append(kFindCommandName, _nss.coll());
+    asFindCommandInternal(cmdBuilder);
+}
 
+void QueryRequest::asFindCommandWithUuid(BSONObjBuilder* cmdBuilder) const {
+    invariant(_uuid);
+    _uuid->appendToBuilder(cmdBuilder, kFindCommandName);
+    asFindCommandInternal(cmdBuilder);
+}
+
+void QueryRequest::asFindCommandInternal(BSONObjBuilder* cmdBuilder) const {
     if (!_filter.isEmpty()) {
         cmdBuilder->append(kFilterField, _filter);
     }
@@ -710,13 +727,13 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQueryMessage(const 
     return std::move(qr);
 }
 
-StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQuery(NamespaceString nss,
+StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQuery(NamespaceStringOrUUID nsOrUuid,
                                                                    const BSONObj& queryObj,
                                                                    const BSONObj& proj,
                                                                    int ntoskip,
                                                                    int ntoreturn,
                                                                    int queryOptions) {
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = stdx::make_unique<QueryRequest>(nsOrUuid);
 
     Status status = qr->init(ntoskip, ntoreturn, queryOptions, queryObj, proj, true);
     if (!status.isOK()) {

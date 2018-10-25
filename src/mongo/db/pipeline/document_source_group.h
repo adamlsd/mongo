@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -34,22 +36,71 @@
 #include "mongo/db/pipeline/accumulation_statement.h"
 #include "mongo/db/pipeline/accumulator.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/transformer_interface.h"
 #include "mongo/db/sorter/sorter.h"
 
 namespace mongo {
+
+/**
+ * GroupFromFirstTransformation consists of a list of (field name, expression pairs). It returns a
+ * document synthesized by assigning each field name in the output document to the result of
+ * evaluating the corresponding expression. If the expression evaluates to missing, we assign a
+ * value of BSONNULL. This is necessary to match the semantics of $first for missing fields.
+ */
+class GroupFromFirstDocumentTransformation final : public TransformerInterface {
+public:
+    GroupFromFirstDocumentTransformation(
+        const std::string& groupId,
+        std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>> accumulatorExprs)
+        : _accumulatorExprs(std::move(accumulatorExprs)), _groupId(groupId) {}
+
+    TransformerType getType() const final {
+        return TransformerType::kGroupFromFirstDocument;
+    }
+
+    /**
+     * The path of the field that we are grouping on: i.e., the field in the input document that we
+     * will use to create the _id field of the ouptut document.
+     */
+    const std::string& groupId() const {
+        return _groupId;
+    }
+
+    Document applyTransformation(const Document& input) final;
+
+    void optimize() final;
+
+    Document serializeTransformation(
+        boost::optional<ExplainOptions::Verbosity> explain) const final;
+
+    DepsTracker::State addDependencies(DepsTracker* deps) const final;
+
+    DocumentSource::GetModPathsReturn getModifiedPaths() const final;
+
+    static std::unique_ptr<GroupFromFirstDocumentTransformation> create(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        const std::string& groupId,
+        std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>> accumulatorExprs);
+
+private:
+    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>> _accumulatorExprs;
+    std::string _groupId;
+};
 
 class DocumentSourceGroup final : public DocumentSource, public NeedsMergerDocumentSource {
 public:
     using Accumulators = std::vector<boost::intrusive_ptr<Accumulator>>;
     using GroupsMap = ValueUnorderedMap<Accumulators>;
 
-    // Virtuals from DocumentSource.
+    static constexpr StringData kStageName = "$group"_sd;
+
     boost::intrusive_ptr<DocumentSource> optimize() final;
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
     GetNextResult getNext() final;
     const char* getSourceName() const final;
     BSONObjSet getOutputSorts() final;
+    GetModPathsReturn getModifiedPaths() const final;
 
     /**
      * Convenience method for creating a new $group stage. If maxMemoryUsageBytes is boost::none,
@@ -88,6 +139,14 @@ public:
     void setIdExpression(const boost::intrusive_ptr<Expression> idExpression);
 
     /**
+     * Returns true if this $group stage represents a 'global' $group which is merging together
+     * results from earlier partial groups.
+     */
+    bool doingMerge() const {
+        return _doingMerge;
+    }
+
+    /**
      * Tell this source if it is doing a merge from shards. Defaults to false.
      */
     void setDoingMerge(bool doingMerge) {
@@ -98,14 +157,28 @@ public:
         return _streaming;
     }
 
-    // Virtuals for NeedsMergerDocumentSource.
-    boost::intrusive_ptr<DocumentSource> getShardSource() final;
-    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final;
-
     /**
      * Returns true if this $group stage used disk during execution and false otherwise.
      */
     bool usedDisk() final;
+
+    // Virtuals for NeedsMergerDocumentSource.
+    boost::intrusive_ptr<DocumentSource> getShardSource() final;
+    MergingLogic mergingLogic() final;
+    bool canRunInParallelBeforeOut(
+        const std::set<std::string>& nameOfShardKeyFieldsUponEntryToStage) const final;
+
+    /**
+     * When possible, creates a document transformer that transforms the first document in a group
+     * into one of the output documents of the $group stage. This is possible when we are grouping
+     * on a single field and all accumulators are $first (or there are no accumluators).
+     *
+     * It is sometimes possible to use a DISTINCT_SCAN to scan the first document of each group,
+     * in which case this transformation can replace the actual $group stage in the pipeline
+     * (SERVER-9507).
+     */
+    std::unique_ptr<GroupFromFirstDocumentTransformation> rewriteGroupAsTransformOnFirstDocument()
+        const;
 
 protected:
     void doDispose() final;
@@ -161,9 +234,14 @@ private:
      */
     Value expandId(const Value& val);
 
-    bool _usedDisk;  // Keeps track of whether this $group spilled to disk.
+    /**
+     * Returns true if 'dottedPath' is one of the group keys present in '_idExpressions'.
+     */
+    bool pathIncludedInGroupKeys(const std::string& dottedPath) const;
+
     std::vector<AccumulationStatement> _accumulatedFields;
 
+    bool _usedDisk;  // Keeps track of whether this $group spilled to disk.
     bool _doingMerge;
     size_t _memoryUsageBytes = 0;
     size_t _maxMemoryUsageBytes;

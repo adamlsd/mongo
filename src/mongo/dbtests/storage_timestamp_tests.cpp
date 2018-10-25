@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2017 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -37,7 +39,7 @@
 #include "mongo/db/catalog/drop_database.h"
 #include "mongo/db/catalog/drop_indexes.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -49,8 +51,8 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/multi_key_path_tracker.h"
-#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_registry.h"
+#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/repl/apply_ops.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/multiapplier.h"
@@ -69,10 +71,12 @@
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/repl/sync_tail.h"
 #include "mongo/db/repl/timestamp_block.h"
+#include "mongo/db/s/op_observer_sharding_impl.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/storage/kv/kv_storage_engine.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/stdx/future.h"
 #include "mongo/unittest/unittest.h"
@@ -172,7 +176,7 @@ public:
 
         auto registry = stdx::make_unique<OpObserverRegistry>();
         registry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
-        registry->addObserver(stdx::make_unique<OpObserverImpl>());
+        registry->addObserver(stdx::make_unique<OpObserverShardingImpl>());
         _opCtx->getServiceContext()->setOpObserver(std::move(registry));
 
         repl::setOplogCollectionName(getGlobalServiceContext());
@@ -227,7 +231,8 @@ public:
     void createIndex(Collection* coll, std::string indexName, const BSONObj& indexKey) {
 
         // Build an index.
-        MultiIndexBlock indexer(_opCtx, coll);
+        auto indexerPtr = coll->createMultiIndexBlock(_opCtx);
+        MultiIndexBlock& indexer(*indexerPtr);
         BSONObj indexInfoObj;
         {
             auto swIndexInfoObj = indexer.init({BSON(
@@ -245,7 +250,7 @@ public:
             // The op observer is not called from the index builder, but rather the
             // `createIndexes` command.
             _opCtx->getServiceContext()->getOpObserver()->onCreateIndex(
-                _opCtx, coll->ns(), coll->uuid(), indexInfoObj, false);
+                _opCtx, coll->ns(), *(coll->uuid()), indexInfoObj, false);
             wuow.commit();
         }
     }
@@ -636,7 +641,7 @@ public:
                                    << BSON("_id" << idx))
                          << BSON("ts" << firstInsertTime.addTicks(idx).asTimestamp() << "t" << 1LL
                                       << "h"
-                                      << 1
+                                      << 1LL
                                       << "op"
                                       << "c"
                                       << "ns"
@@ -661,7 +666,7 @@ public:
 class SecondaryArrayInsertTimes : public StorageTimestampTest {
 public:
     void run() {
-        // In order for applyOps to assign timestamps, we must be in non-replicated mode.
+        // In order for oplog application to assign timestamps, we must be in non-replicated mode.
         repl::UnreplicatedWritesBlock uwb(_opCtx);
 
         // Create a new collection.
@@ -672,56 +677,37 @@ public:
 
         const std::uint32_t docsToInsert = 10;
         const LogicalTime firstInsertTime = _clock->reserveTicks(docsToInsert);
-        BSONObjBuilder fullCommand;
-        BSONArrayBuilder applyOpsB(fullCommand.subarrayStart("applyOps"));
 
-        BSONObjBuilder applyOpsElem1Builder;
+        BSONObjBuilder oplogEntryBuilder;
 
         // Populate the "ts" field with an array of all the grouped inserts' timestamps.
-        BSONArrayBuilder tsArrayBuilder(applyOpsElem1Builder.subarrayStart("ts"));
+        BSONArrayBuilder tsArrayBuilder(oplogEntryBuilder.subarrayStart("ts"));
         for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
             tsArrayBuilder.append(firstInsertTime.addTicks(idx).asTimestamp());
         }
         tsArrayBuilder.done();
 
         // Populate the "t" (term) field with an array of all the grouped inserts' terms.
-        BSONArrayBuilder tArrayBuilder(applyOpsElem1Builder.subarrayStart("t"));
+        BSONArrayBuilder tArrayBuilder(oplogEntryBuilder.subarrayStart("t"));
         for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
             tArrayBuilder.append(1LL);
         }
         tArrayBuilder.done();
 
         // Populate the "o" field with an array of all the grouped inserts.
-        BSONArrayBuilder oArrayBuilder(applyOpsElem1Builder.subarrayStart("o"));
+        BSONArrayBuilder oArrayBuilder(oplogEntryBuilder.subarrayStart("o"));
         for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
             oArrayBuilder.append(BSON("_id" << idx));
         }
         oArrayBuilder.done();
 
-        applyOpsElem1Builder << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                             << "i"
-                             << "ns" << nss.ns() << "ui" << autoColl.getCollection()->uuid().get();
+        oplogEntryBuilder << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
+                          << "i"
+                          << "ns" << nss.ns() << "ui" << autoColl.getCollection()->uuid().get();
 
-        applyOpsB.append(applyOpsElem1Builder.done());
-
-        BSONObjBuilder applyOpsElem2Builder;
-        applyOpsElem2Builder << "ts" << firstInsertTime.addTicks(docsToInsert).asTimestamp() << "t"
-                             << 1LL << "h" << 1 << "op"
-                             << "c"
-                             << "ns"
-                             << "test.$cmd"
-                             << "o" << BSON("applyOps" << BSONArrayBuilder().obj());
-
-        applyOpsB.append(applyOpsElem2Builder.done());
-        applyOpsB.done();
-        // Apply the group of inserts.
-        BSONObjBuilder result;
-        ASSERT_OK(applyOps(_opCtx,
-                           nss.db().toString(),
-                           fullCommand.done(),
-                           repl::OplogApplication::Mode::kApplyOpsCmd,
-                           &result));
-
+        auto oplogEntry = oplogEntryBuilder.done();
+        ASSERT_OK(repl::SyncTail::syncApply(
+            _opCtx, oplogEntry, repl::OplogApplication::Mode::kSecondary));
 
         for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
@@ -1250,7 +1236,7 @@ public:
         // The next logOp() call will get 'futureTs', which will be the timestamp at which we do
         // the write. Thus we expect the write to appear at 'futureTs' and not before.
         ASSERT_EQ(op.getTimestamp(), futureTs) << op.toBSON();
-        ASSERT_EQ(op.getNamespace().ns(), nss.getCommandNS().ns()) << op.toBSON();
+        ASSERT_EQ(op.getNss().ns(), nss.getCommandNS().ns()) << op.toBSON();
         ASSERT_BSONOBJ_EQ(op.getObject(), BSON("create" << nss.coll()));
 
         assertNamespaceInIdents(nss, pastTs, false);
@@ -1813,7 +1799,8 @@ public:
         std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
 
         // Build an index on `{a: 1}`. This index will be multikey.
-        MultiIndexBlock indexer(_opCtx, autoColl.getCollection());
+        auto indexerPtr = autoColl.getCollection()->createMultiIndexBlock(_opCtx);
+        MultiIndexBlock& indexer(*indexerPtr);
         const LogicalTime beforeIndexBuild = _clock->reserveTicks(2);
         BSONObj indexInfoObj;
         {
@@ -1855,7 +1842,7 @@ public:
                 // The op observer is not called from the index builder, but rather the
                 // `createIndexes` command.
                 _opCtx->getServiceContext()->getOpObserver()->onCreateIndex(
-                    _opCtx, nss, autoColl.getCollection()->uuid(), indexInfoObj, false);
+                    _opCtx, nss, *(autoColl.getCollection()->uuid()), indexInfoObj, false);
             } else {
                 ASSERT_OK(
                     _opCtx->recoveryUnit()->setTimestamp(_clock->getClusterTime().asTimestamp()));
@@ -2427,7 +2414,8 @@ class CreateCollectionWithSystemIndex : public StorageTimestampTest {
 public:
     void run() {
         // Only run on 'wiredTiger'. No other storage engines to-date support timestamp writes.
-        if (mongo::storageGlobalParams.engine != "wiredTiger") {
+        if (!(mongo::storageGlobalParams.engine == "wiredTiger" &&
+              mongo::serverGlobalParams.enableMajorityReadConcern)) {
             return;
         }
 
@@ -2491,7 +2479,7 @@ public:
         auto service = _opCtx->getServiceContext();
         auto sessionCatalog = SessionCatalog::get(service);
         sessionCatalog->reset_forTest();
-        sessionCatalog->onStepUp(_opCtx);
+        MongoDSessionCatalog::onStepUp(_opCtx);
 
         reset(nss);
         UUID ui = UUID::gen();
@@ -2509,22 +2497,22 @@ public:
 
         const auto sessionId = makeLogicalSessionIdForTest();
         _opCtx->setLogicalSessionId(sessionId);
+        _opCtx->setTxnNumber(26);
 
-        ocs = std::make_unique<OperationContextSession>(
-            _opCtx, true, boost::none, boost::none, dbName, "insert");
-        auto session = OperationContextSession::get(_opCtx);
-        ASSERT(session);
+        OperationSessionInfoFromClient sessionInfo;
+        sessionInfo.setAutocommit(false);
+        sessionInfo.setStartTransaction(true);
+        ocs = std::make_unique<OperationContextSessionMongod>(_opCtx, true, sessionInfo);
 
-        const TxnNumber txnNum = 26;
-        _opCtx->setTxnNumber(txnNum);
-        session->beginOrContinueTxn(_opCtx, txnNum, false, true, dbName, "insert");
+        auto txnParticipant = TransactionParticipant::get(_opCtx);
+        ASSERT(txnParticipant);
 
-        session->unstashTransactionResources(_opCtx, "insert");
+        txnParticipant->unstashTransactionResources(_opCtx, "insert");
         {
             AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX, LockMode::MODE_IX);
             insertDocument(autoColl.getCollection(), InsertStatement(doc));
         }
-        session->stashTransactionResources(_opCtx);
+        txnParticipant->stashTransactionResources(_opCtx);
 
         {
             AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS, LockMode::MODE_IS);
@@ -2553,7 +2541,7 @@ protected:
     Timestamp presentTs;
     Timestamp beforeTxnTs;
     Timestamp commitEntryTs;
-    std::unique_ptr<OperationContextSession> ocs;
+    std::unique_ptr<OperationContextSessionMongod> ocs;
 };
 
 class MultiDocumentTransaction : public MultiDocumentTransactionTest {
@@ -2561,15 +2549,15 @@ public:
     MultiDocumentTransaction() : MultiDocumentTransactionTest("multiDocumentTransaction") {}
 
     void run() {
-        auto session = OperationContextSession::get(_opCtx);
-        ASSERT(session);
+        auto txnParticipant = TransactionParticipant::get(_opCtx);
+        ASSERT(txnParticipant);
         logTimestamps();
 
-        session->unstashTransactionResources(_opCtx, "insert");
+        txnParticipant->unstashTransactionResources(_opCtx, "insert");
 
-        session->commitUnpreparedTransaction(_opCtx);
+        txnParticipant->commitUnpreparedTransaction(_opCtx);
 
-        session->stashTransactionResources(_opCtx);
+        txnParticipant->stashTransactionResources(_opCtx);
         {
             AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_IX);
             auto coll = autoColl.getCollection();
@@ -2593,8 +2581,8 @@ public:
         : MultiDocumentTransactionTest("preparedMultiDocumentTransaction") {}
 
     void run() {
-        auto session = OperationContextSession::get(_opCtx);
-        ASSERT(session);
+        auto txnParticipant = TransactionParticipant::get(_opCtx);
+        ASSERT(txnParticipant);
 
         const auto currentTime = _clock->getClusterTime();
         const auto prepareTs = currentTime.addTicks(1).asTimestamp();
@@ -2602,7 +2590,7 @@ public:
         unittest::log() << "Prepare TS: " << prepareTs;
         logTimestamps();
 
-        auto commitTimestamp = Timestamp(99999, 99999);
+        auto commitTimestamp = commitEntryTs;
 
         {
             AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS, LockMode::MODE_IS);
@@ -2624,11 +2612,11 @@ public:
             assertOplogDocumentExistsAtTimestamp(commitFilter, commitEntryTs, false);
             assertOplogDocumentExistsAtTimestamp(commitFilter, commitTimestamp, false);
         }
-        session->unstashTransactionResources(_opCtx, "insert");
+        txnParticipant->unstashTransactionResources(_opCtx, "insert");
 
-        session->prepareTransaction(_opCtx);
+        txnParticipant->prepareTransaction(_opCtx, {});
 
-        session->stashTransactionResources(_opCtx);
+        txnParticipant->stashTransactionResources(_opCtx);
         {
             const auto prepareFilter = BSON("ts" << prepareTs);
             assertOplogDocumentExistsAtTimestamp(prepareFilter, presentTs, false);
@@ -2646,18 +2634,18 @@ public:
             assertOplogDocumentExistsAtTimestamp(commitFilter, commitTimestamp, false);
             assertOplogDocumentExistsAtTimestamp(commitFilter, nullTs, false);
         }
-        session->unstashTransactionResources(_opCtx, "insert");
+        txnParticipant->unstashTransactionResources(_opCtx, "commitTransaction");
 
-        session->commitPreparedTransaction(_opCtx, commitTimestamp);
+        txnParticipant->commitPreparedTransaction(_opCtx, commitTimestamp);
 
-        session->stashTransactionResources(_opCtx);
+        txnParticipant->stashTransactionResources(_opCtx);
         {
             AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_IX);
             auto coll = autoColl.getCollection();
             assertDocumentAtTimestamp(coll, presentTs, BSONObj());
             assertDocumentAtTimestamp(coll, beforeTxnTs, BSONObj());
             assertDocumentAtTimestamp(coll, prepareTs, BSONObj());
-            assertDocumentAtTimestamp(coll, commitEntryTs, BSONObj());
+            assertDocumentAtTimestamp(coll, commitEntryTs, doc);
             assertDocumentAtTimestamp(coll, commitTimestamp, doc);
             assertDocumentAtTimestamp(coll, nullTs, doc);
 
@@ -2686,7 +2674,8 @@ public:
     void setupTests() {
         // Only run on storage engines that support snapshot reads.
         auto storageEngine = cc().getServiceContext()->getStorageEngine();
-        if (!storageEngine->supportsReadConcernSnapshot()) {
+        if (!storageEngine->supportsReadConcernSnapshot() ||
+            !mongo::serverGlobalParams.enableMajorityReadConcern) {
             unittest::log() << "Skipping this test suite because storage engine "
                             << storageGlobalParams.engine << " does not support timestamp writes.";
             return;

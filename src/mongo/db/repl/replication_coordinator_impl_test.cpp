@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -1253,7 +1255,7 @@ TEST_F(ReplCoordTest, NodeReturnsNotMasterWhenSteppingDownBeforeSatisfyingAWrite
     awaiter.start();
     ASSERT_OK(getReplCoord()->setLastAppliedOptime_forTest(2, 1, time1));
     ASSERT_OK(getReplCoord()->setLastAppliedOptime_forTest(2, 2, time1));
-    ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000)));
+    getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
     ReplicationCoordinator::StatusAndDuration statusAndDur = awaiter.getResult();
     ASSERT_EQUALS(ErrorCodes::PrimarySteppedDown, statusAndDur.status);
     awaiter.reset();
@@ -1322,7 +1324,12 @@ protected:
             [=](PromisedClientAndOperation operationPromise) -> boost::optional<Status> {
                 auto result = SharedClientAndOperation::make(getServiceContext());
                 operationPromise.set_value(result);
-                return getReplCoord()->stepDown(result.opCtx.get(), force, waitTime, stepDownTime);
+                try {
+                    getReplCoord()->stepDown(result.opCtx.get(), force, waitTime, stepDownTime);
+                    return Status::OK();
+                } catch (const DBException& e) {
+                    return e.toStatus();
+                }
             });
         auto result = task.get_future();
         PromisedClientAndOperation operationPromise;
@@ -1444,9 +1451,8 @@ TEST_F(ReplCoordTest, ElectionIdTracksTermInPV1) {
     }
 
     const auto opCtx = makeOperationContext();
-    auto status = getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
+    getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
 
-    ASSERT_OK(status);
     ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
 
     simulateSuccessfulV1ElectionWithoutExitingDrainMode(
@@ -1668,6 +1674,67 @@ TEST_F(StepDownTest, StepDownCanCompleteBasedOnReplSetUpdatePositionAlone) {
     ASSERT_TRUE(repl->getMemberState().secondary());
 }
 
+TEST_F(StepDownTest, StepDownFailureRestoresDrainState) {
+    const auto repl = getReplCoord();
+
+    OpTimeWithTermOne opTime1(100, 1);
+    OpTimeWithTermOne opTime2(200, 1);
+
+    repl->setMyLastAppliedOpTime(opTime2);
+    repl->setMyLastDurableOpTime(opTime2);
+
+    // Secondaries not caught up yet.
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 1, opTime1));
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 2, opTime1));
+
+    auto electionTimeoutWhen = getReplCoord()->getElectionTimeout_forTest();
+    simulateSuccessfulV1ElectionWithoutExitingDrainMode(electionTimeoutWhen);
+    ASSERT_TRUE(repl->getMemberState().primary());
+    ASSERT(repl->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
+
+    {
+        // We can't take writes yet since we're still in drain mode.
+        const auto opCtx = makeOperationContext();
+        Lock::GlobalLock lock(opCtx.get(), MODE_IX);
+        ASSERT_FALSE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
+    }
+
+    // Step down where the secondary actually has to catch up before the stepDown can succeed.
+    auto result = stepDown_nonBlocking(false, Seconds(10), Seconds(60));
+
+    // Interrupt the ongoing stepdown command so that the stepdown attempt will fail.
+    {
+        stdx::lock_guard<Client> lk(*result.first.client.get());
+        result.first.opCtx->markKilled(ErrorCodes::Interrupted);
+    }
+
+    // Ensure that the stepdown command failed.
+    auto stepDownStatus = *result.second.get();
+    ASSERT_NOT_OK(stepDownStatus);
+    // Which code is returned is racy.
+    ASSERT(stepDownStatus == ErrorCodes::PrimarySteppedDown ||
+           stepDownStatus == ErrorCodes::Interrupted);
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+    ASSERT(repl->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
+
+    // Ensure that the failed stepdown attempt didn't make us able to take writes since we're still
+    // in drain mode.
+    {
+        const auto opCtx = makeOperationContext();
+        Lock::GlobalLock lock(opCtx.get(), MODE_IX);
+        ASSERT_FALSE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
+    }
+
+    // Now complete drain mode and ensure that we become capable of taking writes.
+    auto opCtx = makeOperationContext();
+    signalDrainComplete(opCtx.get());
+    ASSERT(repl->getApplierState() == ReplicationCoordinator::ApplierState::Stopped);
+
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+    Lock::GlobalLock lock(opCtx.get(), MODE_IX);
+    ASSERT_TRUE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
+}
+
 class StepDownTestWithUnelectableNode : public StepDownTest {
 private:
     void setUp() override {
@@ -1790,8 +1857,10 @@ TEST_F(StepDownTest, NodeReturnsNotMasterWhenAskedToStepDownAsANonPrimaryNode) {
     ASSERT_OK(getReplCoord()->setLastAppliedOptime_forTest(1, 1, optime1));
     ASSERT_OK(getReplCoord()->setLastAppliedOptime_forTest(1, 2, optime1));
 
-    Status status = getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(0));
-    ASSERT_EQUALS(ErrorCodes::NotMaster, status);
+    ASSERT_THROWS_CODE(
+        getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(0)),
+        AssertionException,
+        ErrorCodes::NotMaster);
     ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
 }
 
@@ -1818,10 +1887,14 @@ TEST_F(StepDownTest,
     ASSERT_TRUE(opCtx->lockState()->isW());
     auto locker = opCtx.get()->swapLockState(stdx::make_unique<LockerImpl>());
 
-    Status status =
-        getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000));
-    ASSERT_EQUALS(ErrorCodes::ExceededTimeLimit, status);
+    ASSERT_THROWS_CODE(
+        getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000)),
+        AssertionException,
+        ErrorCodes::ExceededTimeLimit);
     ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    ASSERT_TRUE(locker->isW());
+    ASSERT_FALSE(opCtx->lockState()->isLocked());
 
     opCtx.get()->swapLockState(std::move(locker));
 }
@@ -1923,8 +1996,10 @@ TEST_F(StepDownTestFiveNode,
     const auto opCtx = makeOperationContext();
 
     ASSERT_TRUE(getReplCoord()->getMemberState().primary());
-    auto status = getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000));
-    ASSERT_EQUALS(ErrorCodes::ExceededTimeLimit, status);
+    ASSERT_THROWS_CODE(
+        getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000)),
+        AssertionException,
+        ErrorCodes::ExceededTimeLimit);
     ASSERT_TRUE(getReplCoord()->getMemberState().primary());
 }
 
@@ -1958,7 +2033,7 @@ TEST_F(
     const auto opCtx = makeOperationContext();
 
     ASSERT_TRUE(getReplCoord()->getMemberState().primary());
-    ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000)));
+    getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000));
     enterNetwork();  // So we can safely inspect the topology coordinator
     ASSERT_EQUALS(getNet()->now() + Seconds(1), getTopoCoord().getStepDownTime());
     ASSERT_TRUE(getTopoCoord().getMemberState().secondary());
@@ -1989,7 +2064,7 @@ TEST_F(ReplCoordTest, SingleNodeReplSetStepDownTimeoutAndElectionTimeoutExpiresA
 
     // Stepdown command with "force=true" resets the election timer to election timeout (10 seconds
     // later) and allows the node to resume primary after stepdown timeout (also 10 seconds).
-    ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000)));
+    getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
     getNet()->enterNetwork();
     ASSERT_TRUE(getTopoCoord().getMemberState().secondary());
     ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
@@ -2067,7 +2142,7 @@ TEST_F(ReplCoordTest, NodeBecomesPrimaryAgainWhenStepDownTimeoutExpiresInASingle
     auto opCtx = makeOperationContext();
     runSingleNodeElection(opCtx.get());
 
-    ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000)));
+    getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
     getNet()->enterNetwork();  // Must do this before inspecting the topocoord
     Date_t stepdownUntil = getNet()->now() + Seconds(1);
     ASSERT_EQUALS(stepdownUntil, getTopoCoord().getStepDownTime());
@@ -2099,7 +2174,7 @@ TEST_F(
     const auto opCtx = makeOperationContext();
     runSingleNodeElection(opCtx.get());
 
-    ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000)));
+    getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
     getNet()->enterNetwork();  // Must do this before inspecting the topocoord
     Date_t stepdownUntil = getNet()->now() + Seconds(1);
     ASSERT_EQUALS(stepdownUntil, getTopoCoord().getStepDownTime());
@@ -2138,8 +2213,10 @@ TEST_F(StepDownTest,
     const auto opCtx = makeOperationContext();
 
     // Try to stepDown but time out because no secondaries are caught up.
-    auto status = repl->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000));
-    ASSERT_EQUALS(ErrorCodes::ExceededTimeLimit, status);
+    ASSERT_THROWS_CODE(
+        getReplCoord()->stepDown(opCtx.get(), false, Milliseconds(0), Milliseconds(1000)),
+        AssertionException,
+        ErrorCodes::ExceededTimeLimit);
     ASSERT_TRUE(repl->getMemberState().primary());
 
     // Now use "force" to force it to step down even though no one is caught up
@@ -2153,8 +2230,7 @@ TEST_F(StepDownTest,
     }
     getNet()->exitNetwork();
     ASSERT_TRUE(repl->getMemberState().primary());
-    status = repl->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
-    ASSERT_OK(status);
+    repl->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000));
     ASSERT_TRUE(repl->getMemberState().secondary());
 }
 
@@ -2275,8 +2351,9 @@ TEST_F(StepDownTest, OnlyOneStepDownCmdIsAllowedAtATime) {
     // Now while the first stepdown request is waiting for secondaries to catch up, attempt
     // another stepdown request and ensure it fails.
     const auto opCtx = makeOperationContext();
-    auto status = getReplCoord()->stepDown(opCtx.get(), false, Seconds(10), Seconds(60));
-    ASSERT_EQUALS(ErrorCodes::ConflictingOperationInProgress, status);
+    ASSERT_THROWS_CODE(getReplCoord()->stepDown(opCtx.get(), false, Seconds(10), Seconds(60)),
+                       AssertionException,
+                       ErrorCodes::ConflictingOperationInProgress);
 
     // Now ensure that the original stepdown command can still succeed.
     catchUpSecondaries(optime2);
@@ -2984,6 +3061,35 @@ TEST_F(ReplCoordTest, IsMasterWithCommittedSnapshot) {
     ASSERT_EQUALS(majorityOpTime, response.getLastMajorityWriteOpTime());
     ASSERT_EQUALS(majorityWriteDate, response.getLastMajorityWriteDate());
 }
+
+TEST_F(ReplCoordTest, IsMasterInShutdown) {
+    init("mySet");
+
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 1
+                            << "members"
+                            << BSON_ARRAY(BSON("_id" << 0 << "host"
+                                                     << "test1:1234"))),
+                       HostAndPort("test1", 1234));
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
+
+    IsMasterResponse responseBeforeShutdown;
+    getReplCoord()->fillIsMasterForReplSet(&responseBeforeShutdown);
+    ASSERT_TRUE(responseBeforeShutdown.isMaster());
+    ASSERT_FALSE(responseBeforeShutdown.isSecondary());
+
+    shutdown(opCtx.get());
+
+    // Must not report ourselves as master while we're in shutdown.
+    IsMasterResponse responseAfterShutdown;
+    getReplCoord()->fillIsMasterForReplSet(&responseAfterShutdown);
+    ASSERT_FALSE(responseAfterShutdown.isMaster());
+    ASSERT_FALSE(responseBeforeShutdown.isSecondary());
+}
+
 
 TEST_F(ReplCoordTest, LogAMessageWhenShutDownBeforeReplicationStartUpFinished) {
     init();

@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
@@ -36,6 +38,7 @@
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/logical_clock.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/migration_chunk_cloner_source_legacy.h"
@@ -76,7 +79,7 @@ const char kMigratedChunkVersionField[] = "migratedChunkVersion";
 const char kWriteConcernField[] = "writeConcern";
 const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
                                                 WriteConcernOptions::SyncMode::UNSET,
-                                                Seconds(15));
+                                                WriteConcernOptions::kWriteConcernTimeoutMigration);
 
 /**
  * Best-effort attempt to ensure the recipient shard has refreshed its routing table to
@@ -222,17 +225,18 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
     auto scopedGuard = MakeGuard([&] { cleanupOnError(opCtx); });
     _stats.countDonorMoveChunkStarted.addAndFetch(1);
 
-    Grid::get(opCtx)
-        ->catalogClient()
-        ->logChange(opCtx,
-                    "moveChunk.start",
-                    getNss().ns(),
-                    BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
-                               << _args.getFromShardId()
-                               << "to"
-                               << _args.getToShardId()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    const Status logStatus = Grid::get(opCtx)->catalogClient()->logChangeChecked(
+        opCtx,
+        "moveChunk.start",
+        getNss().ns(),
+        BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
+                   << _args.getFromShardId()
+                   << "to"
+                   << _args.getToShardId()),
+        ShardingCatalogClient::kMajorityWriteConcern);
+    if (logStatus != Status::OK()) {
+        return logStatus;
+    }
 
     _cloneAndCommitTimer.reset();
 
@@ -442,7 +446,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                  "against the config server to obtain its latest optime"
               << causedBy(redact(migrationCommitStatus));
 
-        Status status = Grid::get(opCtx)->catalogClient()->logChange(
+        Status status = Grid::get(opCtx)->catalogClient()->logChangeChecked(
             opCtx,
             "moveChunk.validating",
             getNss().ns(),
@@ -470,7 +474,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
             UninterruptibleLockGuard noInterrupt(opCtx->lockState());
             AutoGetCollection autoColl(opCtx, getNss(), MODE_IX, MODE_X);
             if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, getNss())) {
-                CollectionShardingRuntime::get(opCtx, getNss())->refreshMetadata(opCtx, nullptr);
+                CollectionShardingRuntime::get(opCtx, getNss())->clearFilteringMetadata();
                 uassertStatusOK(status.withContext(
                     str::stream() << "Unable to verify migration commit for chunk: "
                                   << redact(_args.toString())
@@ -506,7 +510,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
         UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetCollection autoColl(opCtx, getNss(), MODE_IX, MODE_X);
 
-        CollectionShardingRuntime::get(opCtx, getNss())->refreshMetadata(opCtx, nullptr);
+        CollectionShardingRuntime::get(opCtx, getNss())->clearFilteringMetadata();
 
         log() << "Failed to refresh metadata after a "
               << (migrationCommitStatus.isOK() ? "failed commit attempt" : "successful commit")
@@ -570,19 +574,17 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
     // scheduling orphan cleanup.
     _cleanup(opCtx);
 
-    Grid::get(opCtx)
-        ->catalogClient()
-        ->logChange(opCtx,
-                    "moveChunk.commit",
-                    getNss().ns(),
-                    BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
-                               << _args.getFromShardId()
-                               << "to"
-                               << _args.getToShardId()
-                               << "counts"
-                               << _recipientCloneCounts),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    Grid::get(opCtx)->catalogClient()->logChange(
+        opCtx,
+        "moveChunk.commit",
+        getNss().ns(),
+        BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
+                   << _args.getFromShardId()
+                   << "to"
+                   << _args.getToShardId()
+                   << "counts"
+                   << _recipientCloneCounts),
+        ShardingCatalogClient::kMajorityWriteConcern);
 
     const ChunkRange range(_args.getMinKey(), _args.getMaxKey());
 
@@ -635,17 +637,15 @@ void MigrationSourceManager::cleanupOnError(OperationContext* opCtx) {
         return;
     }
 
-    Grid::get(opCtx)
-        ->catalogClient()
-        ->logChange(opCtx,
-                    "moveChunk.error",
-                    getNss().ns(),
-                    BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
-                               << _args.getFromShardId()
-                               << "to"
-                               << _args.getToShardId()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    Grid::get(opCtx)->catalogClient()->logChange(
+        opCtx,
+        "moveChunk.error",
+        getNss().ns(),
+        BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
+                   << _args.getFromShardId()
+                   << "to"
+                   << _args.getToShardId()),
+        ShardingCatalogClient::kMajorityWriteConcern);
 
     try {
         _cleanup(opCtx);

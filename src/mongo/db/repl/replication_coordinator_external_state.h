@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -115,13 +117,6 @@ public:
     virtual Status initializeReplSetStorage(OperationContext* opCtx, const BSONObj& config) = 0;
 
     /**
-     * Waits for all committed writes to be visible in the oplog.  Committed writes will be hidden
-     * if there are uncommitted writes ahead of them, and some operations require that all committed
-     * writes are visible before proceeding.
-     */
-    virtual void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) = 0;
-
-    /**
      * Called when a node on way to becoming a primary is ready to leave drain mode. It is called
      * outside of the global X lock and the replication coordinator mutex.
      *
@@ -181,6 +176,11 @@ public:
     virtual void setGlobalTimestamp(ServiceContext* service, const Timestamp& newTime) = 0;
 
     /**
+     * Checks if the oplog exists.
+     */
+    virtual bool oplogExists(OperationContext* opCtx) = 0;
+
+    /**
      * Gets the last optime of an operation performed on this host, from stable
      * storage.
      */
@@ -198,12 +198,6 @@ public:
      * This is used during stepdown, and transition out of primary.
      */
     virtual void closeConnections() = 0;
-
-    /**
-     * Kills all operations that have a Client that is associated with an incoming user
-     * connection. Also kills stashed transaction resources. Used during stepdown.
-     */
-    virtual void killAllUserOperations(OperationContext* opCtx) = 0;
 
     /**
      * Resets any active sharding metadata on this server and stops any sharding-related threads

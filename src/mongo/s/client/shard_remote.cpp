@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
@@ -190,42 +192,40 @@ StatusWith<Shard::CommandResponse> ShardRemote::_runCommand(OperationContext* op
                                                             const string& dbName,
                                                             Milliseconds maxTimeMSOverride,
                                                             const BSONObj& cmdObj) {
-
-    ReadPreferenceSetting readPrefWithMinOpTime(readPref);
-    if (isConfig()) {
-        readPrefWithMinOpTime.minOpTime = Grid::get(opCtx)->configOpTime();
-    }
-    const auto swHost = _targeter->findHost(opCtx, readPrefWithMinOpTime);
-    if (!swHost.isOK()) {
-        return swHost.getStatus();
-    }
-    const auto host = std::move(swHost.getValue());
-
-    const Milliseconds requestTimeout =
-        std::min(opCtx->getRemainingMaxTimeMillis(), maxTimeMSOverride);
-
-    const RemoteCommandRequest request(
-        host,
-        dbName,
-        appendMaxTimeToCmdObj(requestTimeout, cmdObj),
-        _appendMetadataForCommand(opCtx, readPrefWithMinOpTime),
-        opCtx,
-        requestTimeout < Milliseconds::max() ? requestTimeout : RemoteCommandRequest::kNoTimeout);
-
     RemoteCommandResponse response =
         Status(ErrorCodes::InternalError,
-               str::stream() << "Failed to run remote command request " << request.toString());
+               str::stream() << "Failed to run remote command request cmd: " << cmdObj);
 
-    TaskExecutor* executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
-    auto swCallbackHandle = executor->scheduleRemoteCommand(
-        request, [&response](const RemoteCommandCallbackArgs& args) { response = args.response; });
-    if (!swCallbackHandle.isOK()) {
-        return swCallbackHandle.getStatus();
+    auto asyncStatus = _scheduleCommand(
+        opCtx,
+        readPref,
+        dbName,
+        maxTimeMSOverride,
+        cmdObj,
+        [&response](const RemoteCommandCallbackArgs& args) { response = args.response; });
+
+    if (!asyncStatus.isOK()) {
+        return asyncStatus.getStatus();
     }
 
-    // Block until the command is carried out
-    executor->wait(swCallbackHandle.getValue());
+    auto asyncHandle = asyncStatus.getValue();
 
+    // Block until the command is carried out
+    auto executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
+    try {
+        executor->wait(asyncHandle.handle, opCtx);
+    } catch (const DBException& e) {
+        // If waiting for the response is interrupted, then we still have a callback out and
+        // registered with the TaskExecutor to run when the response finally does come back.
+        // Since the callback references local state, it would be invalid for the callback to run
+        // after leaving the scope of this method.  Therefore we cancel the callback and wait
+        // uninterruptably for the callback to be run.
+        executor->cancel(asyncHandle.handle);
+        executor->wait(asyncHandle.handle);
+        return e.toStatus();
+    }
+
+    const auto& host = asyncHandle.hostTargetted;
     updateReplSetMonitor(host, response.status);
 
     if (!response.status.isOK()) {
@@ -388,6 +388,63 @@ Status ShardRemote::createIndexOnConfig(OperationContext* opCtx,
                                         const BSONObj& keys,
                                         bool unique) {
     MONGO_UNREACHABLE;
+}
+
+void ShardRemote::runFireAndForgetCommand(OperationContext* opCtx,
+                                          const ReadPreferenceSetting& readPref,
+                                          const std::string& dbName,
+                                          const BSONObj& cmdObj) {
+    _scheduleCommand(opCtx,
+                     readPref,
+                     dbName,
+                     Milliseconds::max(),
+                     cmdObj,
+                     [](const RemoteCommandCallbackArgs&) {})
+        .getStatus()
+        .ignore();
+}
+
+StatusWith<ShardRemote::AsyncCmdHandle> ShardRemote::_scheduleCommand(
+    OperationContext* opCtx,
+    const ReadPreferenceSetting& readPref,
+    const std::string& dbName,
+    Milliseconds maxTimeMSOverride,
+    const BSONObj& cmdObj,
+    const TaskExecutor::RemoteCommandCallbackFn& cb) {
+    ReadPreferenceSetting readPrefWithMinOpTime(readPref);
+
+    if (isConfig()) {
+        readPrefWithMinOpTime.minOpTime = Grid::get(opCtx)->configOpTime();
+    }
+
+    const auto swHost = _targeter->findHost(opCtx, readPrefWithMinOpTime);
+    if (!swHost.isOK()) {
+        return swHost.getStatus();
+    }
+
+    AsyncCmdHandle asyncHandle;
+    asyncHandle.hostTargetted = std::move(swHost.getValue());
+
+    const Milliseconds requestTimeout =
+        std::min(opCtx->getRemainingMaxTimeMillis(), maxTimeMSOverride);
+
+    const RemoteCommandRequest request(
+        asyncHandle.hostTargetted,
+        dbName,
+        appendMaxTimeToCmdObj(requestTimeout, cmdObj),
+        _appendMetadataForCommand(opCtx, readPrefWithMinOpTime),
+        opCtx,
+        requestTimeout < Milliseconds::max() ? requestTimeout : RemoteCommandRequest::kNoTimeout);
+
+    auto executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
+    auto swHandle = executor->scheduleRemoteCommand(request, cb);
+
+    if (!swHandle.isOK()) {
+        return swHandle.getStatus();
+    }
+
+    asyncHandle.handle = std::move(swHandle.getValue());
+    return asyncHandle;
 }
 
 }  // namespace mongo

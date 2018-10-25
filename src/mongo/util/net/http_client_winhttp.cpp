@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #ifndef _WIN32
@@ -50,16 +52,12 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/http_client.h"
+#include "mongo/util/scopeguard.h"
 #include "mongo/util/text.h"
 #include "mongo/util/winutil.h"
 
 namespace mongo {
 namespace {
-
-const DWORD kResolveTimeout = 60 * 1000;
-const DWORD kConnectTimeout = 60 * 1000;
-const DWORD kSendTimeout = 120 * 1000;
-const DWORD kReceiveTimeout = 120 * 1000;
 
 const LPCWSTR kAcceptTypes[] = {
     L"application/octet-stream", nullptr,
@@ -151,6 +149,14 @@ public:
         _headers = toNativeString(header.c_str());
     }
 
+    void setConnectTimeout(Seconds timeout) final {
+        _connectTimeout = timeout;
+    }
+
+    void setTimeout(Seconds timeout) final {
+        _timeout = timeout;
+    }
+
     DataBuilder post(StringData url, ConstDataRange cdr) const final {
         return doRequest(
             L"POST", url, const_cast<void*>(static_cast<const void*>(cdr.data())), cdr.length());
@@ -206,10 +212,11 @@ private:
             "Failed setting HTTP session option",
             WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY, &setting, settingLength));
 
-        uassertWithErrno(
-            "Failed setting HTTP timeout",
-            WinHttpSetTimeouts(
-                session, kResolveTimeout, kConnectTimeout, kSendTimeout, kReceiveTimeout));
+        DWORD connectTimeout = durationCount<Milliseconds>(_connectTimeout);
+        DWORD totalTimeout = durationCount<Milliseconds>(_timeout);
+        uassertWithErrno("Failed setting HTTP timeout",
+                         WinHttpSetTimeouts(
+                             session, connectTimeout, connectTimeout, totalTimeout, totalTimeout));
 
         connect = WinHttpConnect(session, url.hostname.c_str(), url.port, 0);
         uassertWithErrno("Failed connecting to remote host", connect);
@@ -237,8 +244,18 @@ private:
             "Failed sending HTTP request",
             WinHttpSendRequest(request, _headers.c_str(), -1L, data, data_len, data_len, 0));
 
-        uassertWithErrno("Failed receiving response from server",
-                         WinHttpReceiveResponse(request, nullptr));
+        if (!WinHttpReceiveResponse(request, nullptr)) {
+            // Carve out timeout which doesn't translate well.
+            const auto err = GetLastError();
+            if (err == ERROR_WINHTTP_TIMEOUT) {
+                uasserted(ErrorCodes::OperationFailed, "Timeout was reached");
+            }
+            const auto msg = errnoWithDescription(err);
+            uasserted(ErrorCodes::OperationFailed,
+                      str::stream() << "Failed receiving response from server"
+                                    << ": "
+                                    << msg);
+        }
 
         DWORD statusCode = 0;
         DWORD statusCodeLength = sizeof(statusCode);
@@ -279,6 +296,8 @@ private:
 private:
     bool _allowInsecureHTTP = false;
     std::wstring _headers;
+    Seconds _connectTimeout = kConnectionTimeout;
+    Seconds _timeout = kTotalRequestTimeout;
 };
 
 }  // namespace

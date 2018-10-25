@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
@@ -68,16 +70,21 @@ constexpr auto checkValueType = &DocumentSourceChangeStream::checkValueType;
 }  // namespace
 
 boost::intrusive_ptr<DocumentSourceChangeStreamTransform>
-DocumentSourceChangeStreamTransform::create(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                            BSONObj changeStreamSpec) {
-    return new DocumentSourceChangeStreamTransform(expCtx, changeStreamSpec);
+DocumentSourceChangeStreamTransform::create(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    const ServerGlobalParams::FeatureCompatibility::Version& fcv,
+    BSONObj changeStreamSpec) {
+    return new DocumentSourceChangeStreamTransform(expCtx, fcv, changeStreamSpec);
 }
 
 DocumentSourceChangeStreamTransform::DocumentSourceChangeStreamTransform(
-    const boost::intrusive_ptr<ExpressionContext>& expCtx, BSONObj changeStreamSpec)
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    const ServerGlobalParams::FeatureCompatibility::Version& fcv,
+    BSONObj changeStreamSpec)
     : DocumentSource(expCtx),
       _changeStreamSpec(changeStreamSpec.getOwned()),
-      _isIndependentOfAnyCollection(expCtx->ns.isCollectionlessAggregateNS()) {
+      _isIndependentOfAnyCollection(expCtx->ns.isCollectionlessAggregateNS()),
+      _fcv(fcv) {
 
     _nsRegex.emplace(DocumentSourceChangeStream::getNsRegexForChangeStream(expCtx->ns));
 
@@ -112,7 +119,7 @@ DocumentSourceChangeStreamTransform::DocumentSourceChangeStreamTransform(
     }
 }
 
-DocumentSource::StageConstraints DocumentSourceChangeStreamTransform::constraints(
+StageConstraints DocumentSourceChangeStreamTransform::constraints(
     Pipeline::SplitState pipeState) const {
     StageConstraints constraints(StreamType::kStreaming,
                                  PositionRequirement::kNone,
@@ -174,6 +181,10 @@ ResumeTokenData DocumentSourceChangeStreamTransform::getResumeToken(Value ts,
     if (!uuid.missing())
         resumeTokenData.uuid = uuid.getUuid();
 
+    if (_fcv < ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
+        resumeTokenData.version = 0;
+    }
+
     return resumeTokenData;
 }
 
@@ -202,14 +213,15 @@ Document DocumentSourceChangeStreamTransform::applyTransformation(const Document
                    BSONType::String);
     string op = input[repl::OplogEntry::kOpTypeFieldName].getString();
     Value ts = input[repl::OplogEntry::kTimestampFieldName];
-    Value ns = input[repl::OplogEntry::kNamespaceFieldName];
-    checkValueType(ns, repl::OplogEntry::kNamespaceFieldName, BSONType::String);
+    Value ns = input[repl::OplogEntry::kNssFieldName];
+    checkValueType(ns, repl::OplogEntry::kNssFieldName, BSONType::String);
     Value uuid = input[repl::OplogEntry::kUuidFieldName];
     std::vector<FieldPath> documentKeyFields;
 
     // Deal with CRUD operations and commands.
     auto opType = repl::OpType_parse(IDLParserErrorContext("ChangeStreamEntry.op"), op);
 
+    NamespaceString nss(ns.getString());
     // Ignore commands in the oplog when looking up the document key fields since a command implies
     // that the change stream is about to be invalidated (e.g. collection drop).
     if (!uuid.missing() && opType != repl::OpTypeEnum::kCommand) {
@@ -220,7 +232,7 @@ Document DocumentSourceChangeStreamTransform::applyTransformation(const Document
         auto it = _documentKeyCache.find(uuid.getUuid());
         if (it == _documentKeyCache.end() || !it->second.isFinal) {
             auto docKeyFields = pExpCtx->mongoProcessInterface->collectDocumentKeyFields(
-                pExpCtx->opCtx, uuid.getUuid());
+                pExpCtx->opCtx, NamespaceStringOrUUID(nss.db().toString(), uuid.getUuid()));
             if (it == _documentKeyCache.end() || docKeyFields.second) {
                 _documentKeyCache[uuid.getUuid()] = DocumentKeyCacheEntry(docKeyFields);
             }
@@ -228,7 +240,6 @@ Document DocumentSourceChangeStreamTransform::applyTransformation(const Document
 
         documentKeyFields = _documentKeyCache.find(uuid.getUuid())->second.documentKeyFields;
     }
-    NamespaceString nss(ns.getString());
     Value id = input.getNestedField("o._id");
     // Non-replace updates have the _id in field "o2".
     StringData operationType;
@@ -408,7 +419,7 @@ Value DocumentSourceChangeStreamTransform::serialize(
 DepsTracker::State DocumentSourceChangeStreamTransform::getDependencies(DepsTracker* deps) const {
     deps->fields.insert(repl::OplogEntry::kOpTypeFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kTimestampFieldName.toString());
-    deps->fields.insert(repl::OplogEntry::kNamespaceFieldName.toString());
+    deps->fields.insert(repl::OplogEntry::kNssFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kUuidFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kObjectFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kObject2FieldName.toString());

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -133,7 +135,7 @@ SockAddr::SockAddr(StringData target, int port, sa_family_t familyHint)
         _hostOrIp = "127.0.0.1";
     }
 
-    if (mongoutils::str::contains(_hostOrIp, '/')) {
+    if (mongoutils::str::contains(_hostOrIp, '/') || familyHint == AF_UNIX) {
         initUnixDomainSocket(_hostOrIp, port);
         return;
     }
@@ -156,7 +158,7 @@ SockAddr::SockAddr(StringData target, int port, sa_family_t familyHint)
     // This throws away all but the first address.
     // Use SockAddr::createAll() to get all addresses.
     const auto* addrs = addrErr.second.get();
-    fassert(16501, addrs->ai_addrlen <= sizeof(sa));
+    fassert(16501, static_cast<size_t>(addrs->ai_addrlen) <= sizeof(sa));
     memcpy(&sa, addrs->ai_addr, addrs->ai_addrlen);
     addressSize = addrs->ai_addrlen;
     _isValid = true;
@@ -183,7 +185,7 @@ std::vector<SockAddr> SockAddr::createAll(StringData target, int port, sa_family
     struct sockaddr_storage storage;
     memset(&storage, 0, sizeof(storage));
     for (const auto* addrs = addrErr.second.get(); addrs; addrs = addrs->ai_next) {
-        fassert(40594, addrs->ai_addrlen <= sizeof(struct sockaddr_storage));
+        fassert(40594, static_cast<size_t>(addrs->ai_addrlen) <= sizeof(struct sockaddr_storage));
         // Make a temp copy in a local sockaddr_storage so that the
         // SockAddr constructor below can copy the entire buffer
         // without over-running addrinfo's storage

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -109,7 +111,7 @@ public:
     /**
      * Returns true if all of the remote cursors are exhausted.
      */
-    bool remotesExhausted();
+    bool remotesExhausted() const;
 
     /**
      * Sets the maxTimeMS value that the ARM should forward with any internally issued getMore
@@ -165,12 +167,6 @@ public:
      * result requires scheduling remote work).
      */
     StatusWith<ClusterQueryResult> nextReady();
-
-    /**
-     * Blocks until the next result is ready, all remote cursors are exhausted, or there is an
-     * error.
-     */
-    StatusWith<ClusterQueryResult> blockingNext();
 
     /**
      * Schedules remote work as required in order to make further results available. If there is an
@@ -238,11 +234,6 @@ public:
      */
     executor::TaskExecutor::EventHandle kill(OperationContext* opCtx);
 
-    /**
-     * A blocking version of kill() that will not return until this is safe to destroy.
-     */
-    void blockingKill(OperationContext*);
-
 private:
     /**
      * We instantiate one of these per remote host. It contains the buffer of results we've
@@ -287,6 +278,9 @@ private:
 
         // The exact host in the shard on which the cursor resides.
         HostAndPort shardHostAndPort;
+
+        // The identity of the shard which the cursor belongs to.
+        ShardId shardId;
 
         // The buffer of results that have been retrieved but not yet returned to the caller.
         std::queue<ClusterQueryResult> docBuffer;
@@ -346,7 +340,7 @@ private:
     /**
      * Checks whether or not the remote cursors are all exhausted.
      */
-    bool _remotesExhausted(WithLock);
+    bool _remotesExhausted(WithLock) const;
 
     //
     // Helpers for ready().
@@ -433,7 +427,7 @@ private:
     AsyncResultsMergerParams _params;
 
     // Must be acquired before accessing any data members (other than _params, which is read-only).
-    stdx::mutex _mutex;
+    mutable stdx::mutex _mutex;
 
     // Data tracking the state of our communication with each of the remote nodes.
     std::vector<RemoteCursorData> _remotes;

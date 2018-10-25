@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2009 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 // CHECK_LOG_REDACTION
 
@@ -38,6 +40,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/mutable/document.h"
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status_metric.h"
@@ -47,6 +50,7 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
+#include "mongo/rpc/metadata/impersonated_user_metadata.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/socket_utils.h"
@@ -228,6 +232,8 @@ void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
     invariant(client);
     OperationContext* clientOpCtx = client->getOperationContext();
 
+    infoBuilder->append("type", "op");
+
     const std::string hostName = getHostNameCachedAndPort();
     infoBuilder->append("host", hostName);
 
@@ -249,6 +255,32 @@ void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
     infoBuilder->append("currentOpTime",
                         opCtx->getServiceContext()->getPreciseClockSource()->now().toString());
 
+    auto authSession = AuthorizationSession::get(client);
+    // Depending on whether we're impersonating or not, this might be "effectiveUsers" or
+    // "userImpersonators".
+    const auto serializeAuthenticatedUsers = [&](StringData name) {
+        if (authSession->isAuthenticated()) {
+            BSONArrayBuilder users(infoBuilder->subarrayStart(name));
+            for (auto userIt = authSession->getAuthenticatedUserNames(); userIt.more();
+                 userIt.next()) {
+                userIt->serializeToBSON(&users);
+            }
+        }
+    };
+
+    auto maybeImpersonationData = rpc::getImpersonatedUserMetadata(clientOpCtx);
+    if (maybeImpersonationData) {
+        BSONArrayBuilder users(infoBuilder->subarrayStart("effectiveUsers"));
+        for (const auto& user : maybeImpersonationData->getUsers()) {
+            user.serializeToBSON(&users);
+        }
+
+        users.doneFast();
+        serializeAuthenticatedUsers("userImpersonators"_sd);
+    } else {
+        serializeAuthenticatedUsers("effectiveUsers"_sd);
+    }
+
     if (clientOpCtx) {
         infoBuilder->append("opid", clientOpCtx->getOpID());
         if (clientOpCtx->isKillPending()) {
@@ -264,7 +296,16 @@ void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
     }
 }
 
-CurOp::CurOp(OperationContext* opCtx) : CurOp(opCtx, &_curopStack(opCtx)) {}
+void CurOp::setGenericCursor_inlock(GenericCursor gc) {
+    _genericCursor = std::move(gc);
+}
+
+CurOp::CurOp(OperationContext* opCtx) : CurOp(opCtx, &_curopStack(opCtx)) {
+    // If this is a sub-operation, we store the snapshot of lock stats as the base lock stats of the
+    // current operation.
+    if (_parent != nullptr)
+        _lockStatsBase = opCtx->lockState()->getLockerInfo(boost::none)->stats;
+}
 
 CurOp::CurOp(OperationContext* opCtx, CurOpStack* stack) : _stack(stack) {
     if (opCtx) {
@@ -364,7 +405,7 @@ bool CurOp::completeAndLogOperation(OperationContext* opCtx,
         client->getPrng().nextCanonicalDouble() < serverGlobalParams.sampleRate;
 
     if (shouldLogOp || (shouldSample && _debug.executionTimeMicros > slowMs * 1000LL)) {
-        const auto lockerInfo = opCtx->lockState()->getLockerInfo();
+        auto lockerInfo = opCtx->lockState()->getLockerInfo(_lockStatsBase);
         log(component) << _debug.report(client, *this, (lockerInfo ? &lockerInfo->stats : nullptr));
     }
 
@@ -450,12 +491,28 @@ void CurOp::reportState(BSONObjBuilder* builder, bool truncateOps) {
 
     appendAsObjOrString("command", _opDescription, maxQuerySize, builder);
 
-    if (!_originatingCommand.isEmpty()) {
-        appendAsObjOrString("originatingCommand", _originatingCommand, maxQuerySize, builder);
-    }
-
     if (!_planSummary.empty()) {
         builder->append("planSummary", _planSummary);
+    }
+
+    if (_genericCursor) {
+        // This creates a new builder to truncate the object that will go into the curOp output. In
+        // order to make sure the object is not too large but not truncate the comment, we only
+        // truncate the originatingCommand and not the entire cursor.
+        BSONObjBuilder tempObj;
+        appendAsObjOrString(
+            "truncatedObj", _genericCursor->getOriginatingCommand().get(), maxQuerySize, &tempObj);
+        auto originatingCommand = tempObj.done().getObjectField("truncatedObj");
+        _genericCursor->setOriginatingCommand(originatingCommand.getOwned());
+        // lsid and ns exist in the top level curop object, so they need to be temporarily
+        // removed from the cursor object to avoid duplicating information.
+        auto lsid = _genericCursor->getLsid();
+        auto ns = _genericCursor->getNs();
+        _genericCursor->setLsid(boost::none);
+        _genericCursor->setNs(boost::none);
+        builder->append("cursor", _genericCursor->toBSON());
+        _genericCursor->setLsid(lsid);
+        _genericCursor->setNs(ns);
     }
 
     if (!_message.empty()) {
@@ -522,7 +579,7 @@ string OpDebug::report(Client* client,
             const Command* curCommand = curop.getCommand();
             if (curCommand) {
                 mutablebson::Document cmdToLog(query, mutablebson::Document::kInPlaceDisabled);
-                curCommand->redactForLogging(&cmdToLog);
+                curCommand->snipForLogging(&cmdToLog);
                 s << curCommand->getName() << " ";
                 s << redact(cmdToLog.getObject());
             } else {
@@ -543,7 +600,7 @@ string OpDebug::report(Client* client,
     }
 
     if (!curop.getPlanSummary().empty()) {
-        s << " planSummary: " << redact(curop.getPlanSummary().toString());
+        s << " planSummary: " << curop.getPlanSummary().toString();
     }
 
     OPDEBUG_TOSTRING_HELP(nShards);

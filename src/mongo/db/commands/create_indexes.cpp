@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2013-2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -36,8 +38,8 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/client.h"
 #include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
@@ -206,6 +208,32 @@ StatusWith<std::vector<BSONObj>> resolveCollectionDefaultProperties(
     return indexSpecsWithDefaults;
 }
 
+/**
+ * Returns a vector of index specs with the filled in collection default options and removes any
+ * indexes that already exist on the collection. If the returned vector is empty after returning, no
+ * new indexes need to be built. Throws on error.
+ */
+std::vector<BSONObj> resolveDefaultsAndRemoveExistingIndexes(OperationContext* opCtx,
+                                                             const Collection* collection,
+                                                             std::vector<BSONObj> validatedSpecs) {
+    auto swDefaults =
+        resolveCollectionDefaultProperties(opCtx, collection, std::move(validatedSpecs));
+    uassertStatusOK(swDefaults.getStatus());
+
+    auto specs = std::move(swDefaults.getValue());
+    for (size_t i = 0; i < specs.size(); i++) {
+        Status status =
+            collection->getIndexCatalog()->prepareSpecForCreate(opCtx, specs.at(i)).getStatus();
+        if (status.code() == ErrorCodes::IndexAlreadyExists) {
+            specs.erase(specs.begin() + i);
+            i--;
+            continue;
+        }
+        uassertStatusOK(status);
+    }
+    return specs;
+}
+
 }  // namespace
 
 /**
@@ -254,13 +282,39 @@ public:
         uassertStatusOK(specsWithStatus.getStatus());
         auto specs = std::move(specsWithStatus.getValue());
 
-        // now we know we have to create index(es)
-        // Do not use AutoGetOrCreateDb because we may relock the DbLock in mode IX.
-        Lock::DBLock dbLock(opCtx, ns.db(), MODE_X);
+        // Do not use AutoGetOrCreateDb because we may relock the database in mode X.
+        Lock::DBLock dbLock(opCtx, ns.db(), MODE_IX);
         if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
             uasserted(ErrorCodes::NotMaster,
                       str::stream() << "Not primary while creating indexes in " << ns.ns());
         }
+
+        const auto indexesAlreadyExist = [&result](int numIndexes) {
+            result.append("numIndexesBefore", numIndexes);
+            result.append("numIndexesAfter", numIndexes);
+            result.append("note", "all indexes already exist");
+            return true;
+        };
+
+        // Before potentially taking an exclusive database lock, check if all indexes already exist
+        // while holding an intent lock. Only continue if new indexes need to be built and the
+        // database should be re-locked in exclusive mode.
+        {
+            AutoGetCollection autoColl(opCtx, ns, MODE_IX);
+            if (auto collection = autoColl.getCollection()) {
+                auto specsCopy = resolveDefaultsAndRemoveExistingIndexes(opCtx, collection, specs);
+                if (specsCopy.size() == 0) {
+                    return indexesAlreadyExist(
+                        collection->getIndexCatalog()->numIndexesTotal(opCtx));
+                }
+            }
+        }
+
+        // Relocking temporarily releases the Database lock while holding a Global IX lock. This
+        // prevents the replication state from changing, but requires abandoning the current
+        // snapshot in case indexes change during the period of time where no database lock is held.
+        opCtx->recoveryUnit()->abandonSnapshot();
+        dbLock.relockWithMode(MODE_X);
 
         // Allow the strong lock acquisition above to be interrupted, but from this point forward do
         // not allow locks or re-locks to be interrupted.
@@ -298,26 +352,21 @@ public:
         const boost::optional<int> dbProfilingLevel = boost::none;
         statsTracker.emplace(opCtx, ns, Top::LockType::WriteLocked, dbProfilingLevel);
 
-        auto indexSpecsWithDefaults =
-            resolveCollectionDefaultProperties(opCtx, collection, std::move(specs));
-        uassertStatusOK(indexSpecsWithDefaults.getStatus());
-        specs = std::move(indexSpecsWithDefaults.getValue());
 
-        const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(opCtx);
-        result.append("numIndexesBefore", numIndexesBefore);
-
-        MultiIndexBlock indexer(opCtx, collection);
+        auto indexerPtr = collection->createMultiIndexBlock(opCtx);
+        MultiIndexBlock& indexer(*indexerPtr);
         indexer.allowBackgroundBuilding();
         indexer.allowInterruption();
 
         const size_t origSpecsSize = specs.size();
-        indexer.removeExistingIndexes(&specs);
+        specs = resolveDefaultsAndRemoveExistingIndexes(opCtx, collection, std::move(specs));
 
+        const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(opCtx);
         if (specs.size() == 0) {
-            result.append("numIndexesAfter", numIndexesBefore);
-            result.append("note", "all indexes already exist");
-            return true;
+            return indexesAlreadyExist(numIndexesBefore);
         }
+
+        result.append("numIndexesBefore", numIndexesBefore);
 
         if (specs.size() != origSpecsSize) {
             result.append("note", "index already exists");
@@ -341,11 +390,6 @@ public:
         if (indexer.getBuildInBackground()) {
             opCtx->recoveryUnit()->abandonSnapshot();
             dbLock.relockWithMode(MODE_IX);
-            if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
-                uasserted(ErrorCodes::NotMaster,
-                          str::stream() << "Not primary while creating background indexes in "
-                                        << ns.ns());
-            }
         }
 
         try {
@@ -364,12 +408,6 @@ public:
                 } catch (...) {
                     std::terminate();
                 }
-                uassert(ErrorCodes::NotMaster,
-                        str::stream() << "Not primary while creating background indexes in "
-                                      << ns.ns()
-                                      << ": cleaning up index build failure due to "
-                                      << e.toString(),
-                        repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns));
             }
             throw;
         }
@@ -377,9 +415,6 @@ public:
         if (indexer.getBuildInBackground()) {
             opCtx->recoveryUnit()->abandonSnapshot();
             dbLock.relockWithMode(MODE_X);
-            uassert(ErrorCodes::NotMaster,
-                    str::stream() << "Not primary while completing index build in " << dbname,
-                    repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns));
 
             Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, ns.db());
             if (db) {
@@ -395,7 +430,7 @@ public:
 
             indexer.commit([opCtx, &ns, collection](const BSONObj& spec) {
                 opCtx->getServiceContext()->getOpObserver()->onCreateIndex(
-                    opCtx, ns, collection->uuid(), spec, false);
+                    opCtx, ns, *(collection->uuid()), spec, false);
             });
 
             wunit.commit();

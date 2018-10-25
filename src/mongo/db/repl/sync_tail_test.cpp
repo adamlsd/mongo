@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2015 (C) MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -60,9 +62,9 @@
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/sync_tail.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
@@ -232,9 +234,8 @@ auto parseFromOplogEntryArray(const BSONObj& obj, int elem) {
 TEST_F(SyncTailTest, SyncApplyNoNamespaceBadOp) {
     const BSONObj op = BSON("op"
                             << "x");
-    ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync).ignore(),
-        ExceptionFor<ErrorCodes::BadValue>);
+    ASSERT_THROWS(SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync),
+                  ExceptionFor<ErrorCodes::BadValue>);
 }
 
 TEST_F(SyncTailTest, SyncApplyNoNamespaceNoOp) {
@@ -249,16 +250,15 @@ TEST_F(SyncTailTest, SyncApplyBadOp) {
                             << "x"
                             << "ns"
                             << "test.t");
-    ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync).ignore(),
-        ExceptionFor<ErrorCodes::BadValue>);
+    ASSERT_THROWS(SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync),
+                  ExceptionFor<ErrorCodes::BadValue>);
 }
 
 TEST_F(SyncTailTest, SyncApplyInsertDocumentDatabaseMissing) {
     NamespaceString nss("test.t");
     auto op = makeOplogEntry(OpTypeEnum::kInsert, nss, {});
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary),
         ExceptionFor<ErrorCodes::NamespaceNotFound>);
 }
 
@@ -272,9 +272,9 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLookupByUUIDFails) {
     const NamespaceString nss("test.t");
     createDatabase(_opCtx.get(), nss.db());
     NamespaceString otherNss(nss.getSisterNS("othername"));
-    auto op = makeOplogEntry(OpTypeEnum::kInsert, otherNss, UUID::gen());
+    auto op = makeOplogEntry(OpTypeEnum::kInsert, otherNss, kUuid);
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary),
         ExceptionFor<ErrorCodes::NamespaceNotFound>);
 }
 
@@ -282,7 +282,7 @@ TEST_F(SyncTailTest, SyncApplyDeleteDocumentCollectionLookupByUUIDFails) {
     const NamespaceString nss("test.t");
     createDatabase(_opCtx.get(), nss.db());
     NamespaceString otherNss(nss.getSisterNS("othername"));
-    auto op = makeOplogEntry(OpTypeEnum::kDelete, otherNss, UUID::gen());
+    auto op = makeOplogEntry(OpTypeEnum::kDelete, otherNss, kUuid);
     _testSyncApplyCrudOperation(ErrorCodes::OK, op.toBSON(), false);
 }
 
@@ -294,7 +294,7 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionMissing) {
     // implicitly create the collection and lock the database in MODE_X.
     auto op = makeOplogEntry(OpTypeEnum::kInsert, nss, {});
     ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary).ignore(),
+        SyncTail::syncApply(_opCtx.get(), op.toBSON(), OplogApplication::Mode::kSecondary),
         ExceptionFor<ErrorCodes::NamespaceNotFound>);
     ASSERT_FALSE(collectionExists(_opCtx.get(), nss));
 }
@@ -336,7 +336,7 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLockedByUUID) {
 TEST_F(SyncTailTest, SyncApplyDeleteDocumentCollectionLockedByUUID) {
     const NamespaceString nss("test.t");
     CollectionOptions options;
-    options.uuid = UUID::gen();
+    options.uuid = kUuid;
     createCollection(_opCtx.get(), nss, options);
 
     // Test that the collection to lock is determined by the UUID and not the 'ns' field.
@@ -352,7 +352,11 @@ TEST_F(SyncTailTest, SyncApplyCommand) {
                    << "ns"
                    << nss.getCommandNS().ns()
                    << "o"
-                   << BSON("create" << nss.coll()));
+                   << BSON("create" << nss.coll())
+                   << "ts"
+                   << Timestamp(1, 1)
+                   << "h"
+                   << 0LL);
     bool applyCmdCalled = false;
     _opObserver->onCreateCollectionFn = [&](OperationContext* opCtx,
                                             Collection*,
@@ -380,11 +384,14 @@ TEST_F(SyncTailTest, SyncApplyCommandThrowsException) {
                             << 12345
                             << "o"
                             << BSON("create"
-                                    << "t"));
-    // This test relies on the namespace type check in applyCommand_inlock().
-    ASSERT_THROWS(
-        SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync).ignore(),
-        ExceptionFor<ErrorCodes::InvalidNamespace>);
+                                    << "t")
+                            << "ts"
+                            << Timestamp(1, 1)
+                            << "h"
+                            << 0LL);
+    // This test relies on the namespace type check of IDL.
+    ASSERT_THROWS(SyncTail::syncApply(_opCtx.get(), op, OplogApplication::Mode::kInitialSync),
+                  ExceptionFor<ErrorCodes::TypeMismatch>);
 }
 
 DEATH_TEST_F(SyncTailTest, MultiApplyAbortsWhenNoOperationsAreGiven, "!ops.empty()") {
@@ -544,17 +551,16 @@ TEST_F(SyncTailTest, MultiSyncApplyAddsWorkerMultikeyPathInfoOnInsert) {
     NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
 
     {
-        auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+        auto op = makeCreateCollectionOplogEntry(
+            {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("uuid" << kUuid));
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
-
     {
         auto keyPattern = BSON("a" << 1);
-        auto op =
-            makeCreateIndexOplogEntry({Timestamp(Seconds(2), 0), 1LL}, nss, "a_1", keyPattern);
+        auto op = makeCreateIndexOplogEntry(
+            {Timestamp(Seconds(2), 0), 1LL}, nss, "a_1", keyPattern, kUuid);
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
-
     {
         auto doc = BSON("_id" << 1 << "a" << BSON_ARRAY(4 << 5));
         auto op = makeInsertDocumentOplogEntry({Timestamp(Seconds(3), 0), 1LL}, nss, doc);
@@ -566,21 +572,22 @@ TEST_F(SyncTailTest, MultiSyncApplyAddsMultipleWorkerMultikeyPathInfo) {
     NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
 
     {
-        auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+        auto op = makeCreateCollectionOplogEntry(
+            {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("uuid" << kUuid));
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
 
     {
         auto keyPattern = BSON("a" << 1);
-        auto op =
-            makeCreateIndexOplogEntry({Timestamp(Seconds(2), 0), 1LL}, nss, "a_1", keyPattern);
+        auto op = makeCreateIndexOplogEntry(
+            {Timestamp(Seconds(2), 0), 1LL}, nss, "a_1", keyPattern, kUuid);
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
 
     {
         auto keyPattern = BSON("b" << 1);
-        auto op =
-            makeCreateIndexOplogEntry({Timestamp(Seconds(3), 0), 1LL}, nss, "b_1", keyPattern);
+        auto op = makeCreateIndexOplogEntry(
+            {Timestamp(Seconds(3), 0), 1LL}, nss, "b_1", keyPattern, kUuid);
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
 
@@ -601,7 +608,8 @@ TEST_F(SyncTailTest, MultiSyncApplyDoesNotAddWorkerMultikeyPathInfoOnCreateIndex
     NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
 
     {
-        auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+        auto op = makeCreateCollectionOplogEntry(
+            {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("uuid" << kUuid));
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
 
@@ -613,8 +621,8 @@ TEST_F(SyncTailTest, MultiSyncApplyDoesNotAddWorkerMultikeyPathInfoOnCreateIndex
 
     {
         auto keyPattern = BSON("a" << 1);
-        auto op =
-            makeCreateIndexOplogEntry({Timestamp(Seconds(3), 0), 1LL}, nss, "a_1", keyPattern);
+        auto op = makeCreateIndexOplogEntry(
+            {Timestamp(Seconds(3), 0), 1LL}, nss, "a_1", keyPattern, kUuid);
         testWorkerMultikeyPaths(_opCtx.get(), op, 0UL);
     }
 
@@ -916,7 +924,7 @@ TEST_F(SyncTailTest, MultiSyncApplyAppliesInsertOpsIndividuallyWhenUnableToCreat
                                                   makeOp(NamespaceString(testNs + "_3"))};
 
     for (const auto& oplogEntry : operationsToApply) {
-        createCollectionWithUuid(_opCtx.get(), oplogEntry.getNamespace());
+        createCollectionWithUuid(_opCtx.get(), oplogEntry.getNss());
     }
 
     // Each element in 'docsInserted' is a grouped insert operation.
@@ -1050,10 +1058,11 @@ TEST_F(SyncTailTest, MultiSyncApplySkipsIndexCreationOnNamespaceNotFoundDuringIn
     auto doc1 = BSON("_id" << 1);
     auto keyPattern = BSON("a" << 1);
     auto doc3 = BSON("_id" << 3);
-    auto op0 = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+    auto op0 =
+        makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss, BSON("uuid" << kUuid));
     auto op1 = makeInsertDocumentOplogEntry({Timestamp(Seconds(2), 0), 1LL}, nss, doc1);
-    auto op2 =
-        makeCreateIndexOplogEntry({Timestamp(Seconds(3), 0), 1LL}, badNss, "a_1", keyPattern);
+    auto op2 = makeCreateIndexOplogEntry(
+        {Timestamp(Seconds(3), 0), 1LL}, badNss, "a_1", keyPattern, kUuid);
     auto op3 = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, doc3);
     MultiApplier::OperationPtrs ops = {&op0, &op1, &op2, &op3};
     WorkerMultikeyPathInfo pathInfo;
@@ -1139,10 +1148,11 @@ DEATH_TEST_F(SyncTailTest,
 TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnUpdate) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     auto insertOp = insert(fromjson("{_id: 1, loc: 'hi'}"));
     auto updateOp = update(1, fromjson("{$set: {loc: [1, 2]}}"));
-    auto indexOp = buildIndex(fromjson("{loc: '2dsphere'}"), BSON("2dsphereIndexVersion" << 3));
+    auto indexOp =
+        buildIndex(fromjson("{loc: '2dsphere'}"), BSON("2dsphereIndexVersion" << 3), kUuid);
 
     auto ops = {insertOp, updateOp, indexOp};
     testOpsAreIdempotent(ops);
@@ -1155,8 +1165,9 @@ TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnUpdate) {
 TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnIndexing) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    auto indexOp = buildIndex(fromjson("{loc: '2dsphere'}"), BSON("2dsphereIndexVersion" << 3));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
+    auto indexOp =
+        buildIndex(fromjson("{loc: '2dsphere'}"), BSON("2dsphereIndexVersion" << 3), kUuid);
     auto dropIndexOp = dropIndex("loc_index");
     auto insertOp = insert(fromjson("{_id: 1, loc: 'hi'}"));
 
@@ -1171,10 +1182,10 @@ TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnIndexing) {
 TEST_F(IdempotencyTest, Geo2dIndex) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     auto insertOp = insert(fromjson("{_id: 1, loc: [1]}"));
     auto updateOp = update(1, fromjson("{$set: {loc: [1, 2]}}"));
-    auto indexOp = buildIndex(fromjson("{loc: '2d'}"));
+    auto indexOp = buildIndex(fromjson("{loc: '2d'}"), BSONObj(), kUuid);
 
     auto ops = {insertOp, updateOp, indexOp};
     testOpsAreIdempotent(ops);
@@ -1187,11 +1198,11 @@ TEST_F(IdempotencyTest, Geo2dIndex) {
 TEST_F(IdempotencyTest, UniqueKeyIndex) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     auto insertOp = insert(fromjson("{_id: 1, x: 5}"));
     auto updateOp = update(1, fromjson("{$set: {x: 6}}"));
     auto insertOp2 = insert(fromjson("{_id: 2, x: 5}"));
-    auto indexOp = buildIndex(fromjson("{x: 1}"), fromjson("{unique: true}"));
+    auto indexOp = buildIndex(fromjson("{x: 1}"), fromjson("{unique: true}"), kUuid);
 
     auto ops = {insertOp, updateOp, insertOp2, indexOp};
     testOpsAreIdempotent(ops);
@@ -1205,13 +1216,13 @@ TEST_F(IdempotencyTest, ParallelArrayError) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1}"))));
 
     auto updateOp1 = update(1, fromjson("{$set: {x: [1, 2]}}"));
     auto updateOp2 = update(1, fromjson("{$set: {x: 1}}"));
     auto updateOp3 = update(1, fromjson("{$set: {y: [3, 4]}}"));
-    auto indexOp = buildIndex(fromjson("{x: 1, y: 1}"));
+    auto indexOp = buildIndex(fromjson("{x: 1, y: 1}"), BSONObj(), kUuid);
 
     auto ops = {updateOp1, updateOp2, updateOp3, indexOp};
     testOpsAreIdempotent(ops);
@@ -1221,39 +1232,18 @@ TEST_F(IdempotencyTest, ParallelArrayError) {
     ASSERT_EQ(status.code(), ErrorCodes::CannotIndexParallelArrays);
 }
 
-TEST_F(IdempotencyTest, IndexKeyTooLongError) {
-    ASSERT_OK(
-        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1}"))));
-
-    // Key size limit is 1024 for ephemeral storage engine, so two 800 byte fields cannot
-    // co-exist.
-    std::string longStr(800, 'a');
-    auto updateOp1 = update(1, BSON("$set" << BSON("x" << longStr)));
-    auto updateOp2 = update(1, fromjson("{$set: {x: 1}}"));
-    auto updateOp3 = update(1, BSON("$set" << BSON("y" << longStr)));
-    auto indexOp = buildIndex(fromjson("{x: 1, y: 1}"));
-
-    auto ops = {updateOp1, updateOp2, updateOp3, indexOp};
-    testOpsAreIdempotent(ops);
-
-    ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOpsInitialSync(ops);
-    ASSERT_EQ(status.code(), ErrorCodes::KeyTooLong);
-}
-
 TEST_F(IdempotencyTest, IndexWithDifferentOptions) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1, x: 'hi'}"))));
 
-    auto indexOp1 = buildIndex(fromjson("{x: 'text'}"), fromjson("{default_language: 'spanish'}"));
+    auto indexOp1 =
+        buildIndex(fromjson("{x: 'text'}"), fromjson("{default_language: 'spanish'}"), kUuid);
     auto dropIndexOp = dropIndex("x_index");
-    auto indexOp2 = buildIndex(fromjson("{x: 'text'}"), fromjson("{default_language: 'english'}"));
+    auto indexOp2 =
+        buildIndex(fromjson("{x: 'text'}"), fromjson("{default_language: 'english'}"), kUuid);
 
     auto ops = {indexOp1, dropIndexOp, indexOp2};
     testOpsAreIdempotent(ops);
@@ -1267,10 +1257,10 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasNonStringLanguageField) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', language: 1}"));
     auto updateOp = update(1, fromjson("{$unset: {language: 1}}"));
-    auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj());
+    auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj(), kUuid);
 
     auto ops = {insertOp, updateOp, indexOp};
     testOpsAreIdempotent(ops);
@@ -1284,8 +1274,8 @@ TEST_F(IdempotencyTest, InsertDocumentWithNonStringLanguageFieldWhenTextIndexExi
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj());
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
+    auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj(), kUuid);
     auto dropIndexOp = dropIndex("x_index");
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', language: 1}"));
 
@@ -1301,10 +1291,10 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasNonStringLanguageOverrideField) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', y: 1}"));
     auto updateOp = update(1, fromjson("{$unset: {y: 1}}"));
-    auto indexOp = buildIndex(fromjson("{x: 'text'}"), fromjson("{language_override: 'y'}"));
+    auto indexOp = buildIndex(fromjson("{x: 'text'}"), fromjson("{language_override: 'y'}"), kUuid);
 
     auto ops = {insertOp, updateOp, indexOp};
     testOpsAreIdempotent(ops);
@@ -1318,8 +1308,8 @@ TEST_F(IdempotencyTest, InsertDocumentWithNonStringLanguageOverrideFieldWhenText
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    auto indexOp = buildIndex(fromjson("{x: 'text'}"), fromjson("{language_override: 'y'}"));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
+    auto indexOp = buildIndex(fromjson("{x: 'text'}"), fromjson("{language_override: 'y'}"), kUuid);
     auto dropIndexOp = dropIndex("x_index");
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', y: 1}"));
 
@@ -1335,10 +1325,10 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasUnknownLanguage) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', language: 'bad'}"));
     auto updateOp = update(1, fromjson("{$unset: {language: 1}}"));
-    auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj());
+    auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj(), kUuid);
 
     auto ops = {insertOp, updateOp, indexOp};
     testOpsAreIdempotent(ops);
@@ -1351,7 +1341,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasUnknownLanguage) {
 TEST_F(IdempotencyTest, CreateCollectionWithValidation) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    const BSONObj uuidObj = UUID::gen().toBSON();
+    const BSONObj uuidObj = kUuid.toBSON();
 
     auto runOpsAndValidate = [this, uuidObj]() {
         auto options1 = fromjson("{'validator' : {'phone' : {'$type' : 'string' } } }");
@@ -1425,7 +1415,7 @@ TEST_F(IdempotencyTest, CreateCollectionWithCollation) {
 TEST_F(IdempotencyTest, CreateCollectionWithIdIndex) {
     ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
                   ->setFollowerMode(MemberState::RS_RECOVERING));
-    CollectionUUID uuid = UUID::gen();
+    CollectionUUID uuid = kUuid;
 
     auto options1 = BSON("idIndex" << BSON("key" << fromjson("{_id: 1}") << "name"
                                                  << "_id_"
@@ -1459,7 +1449,7 @@ TEST_F(IdempotencyTest, CreateCollectionWithView) {
     ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
                   ->setFollowerMode(MemberState::RS_RECOVERING));
     CollectionOptions options;
-    options.uuid = UUID::gen();
+    options.uuid = kUuid;
 
     // Create data collection
     ASSERT_OK(runOpInitialSync(createCollection()));
@@ -1482,9 +1472,9 @@ TEST_F(IdempotencyTest, CollModNamespaceNotFound) {
     ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
                   ->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    ASSERT_OK(
-        runOpInitialSync(buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600))));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
+    ASSERT_OK(runOpInitialSync(
+        buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600), kUuid)));
 
     auto indexChange = fromjson("{keyPattern: {createdAt:1}, expireAfterSeconds:4000}}");
     auto collModCmd = BSON("collMod" << nss.coll() << "index" << indexChange);
@@ -1499,9 +1489,9 @@ TEST_F(IdempotencyTest, CollModIndexNotFound) {
     ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
                   ->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    ASSERT_OK(
-        runOpInitialSync(buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600))));
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
+    ASSERT_OK(runOpInitialSync(
+        buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600), kUuid)));
 
     auto indexChange = fromjson("{keyPattern: {createdAt:1}, expireAfterSeconds:4000}}");
     auto collModCmd = BSON("collMod" << nss.coll() << "index" << indexChange);
@@ -1573,7 +1563,7 @@ public:
     void setUp() override {
         SyncTailTest::setUp();
 
-        SessionCatalog::get(_opCtx->getServiceContext())->onStepUp(_opCtx.get());
+        MongoDSessionCatalog::onStepUp(_opCtx.get());
 
         DBDirectClient client(_opCtx.get());
         BSONObj result;

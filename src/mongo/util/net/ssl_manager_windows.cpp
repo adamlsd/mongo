@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -42,6 +44,7 @@
 #include "mongo/base/init.h"
 #include "mongo/base/initializer_context.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/util/builder.h"
 #include "mongo/config.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -53,6 +56,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/private/ssl_expiration.h"
+#include "mongo/util/net/sockaddr.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl.hpp"
 #include "mongo/util/net/ssl_options.h"
@@ -272,10 +276,11 @@ public:
     SSLConnectionInterface* accept(Socket* socket, const char* initialBytes, int len) final;
 
     SSLPeerInfo parseAndValidatePeerCertificateDeprecated(const SSLConnectionInterface* conn,
-                                                          const std::string& remoteHost) final;
+                                                          const std::string& remoteHost,
+                                                          const HostAndPort& hostForLogging) final;
 
     StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
-        PCtxtHandle ssl, const std::string& remoteHost) final;
+        PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) final;
 
 
     const SSLConfiguration& getSSLConfiguration() const final {
@@ -297,7 +302,15 @@ private:
                                 SSLX509Name* subjectName,
                                 Date_t* serverCertificateExpirationDate);
 
-    Status _initChainEngines(bool hasCAFile);
+    struct CAEngine {
+        CERT_CHAIN_ENGINE_CONFIG machineConfig;
+        UniqueCertChainEngine machine;
+        CERT_CHAIN_ENGINE_CONFIG userConfig;
+        UniqueCertChainEngine user;
+        UniqueCertStore CAstore;
+    };
+
+    Status _initChainEngines(CAEngine* engine);
 
 private:
     bool _weakValidation;
@@ -314,17 +327,21 @@ private:
     std::array<PCCERT_CONTEXT, 1> _clientCertificates;
     std::array<PCCERT_CONTEXT, 1> _serverCertificates;
 
+    /* _clientEngine represents the CA to use when acting as a client
+     * and validating remotes during outbound connections.
+     * This comes from, in order, --tlsCAFile, or the system CA.
+     */
+    CAEngine _clientEngine;
+
+    /* _serverEngine represents the CA to use when acting as a server
+     * and validating remotes during inbound connections.
+     * This comes from --tlsClusterCAFile, if available,
+     * otherwise it inherits from _clientEngine.
+     */
+    CAEngine _serverEngine;
+
     UniqueCertificate _sslCertificate;
     UniqueCertificate _sslClusterCertificate;
-
-    UniqueCertStore _certStore;
-
-    std::array<HCERTSTORE, 1> _additionalCertStores;
-    CERT_CHAIN_ENGINE_CONFIG _chainEngineConfigMachine;
-    UniqueCertChainEngine _chainEngineMachine;
-
-    CERT_CHAIN_ENGINE_CONFIG _chainEngineConfigUser;
-    UniqueCertChainEngine _chainEngineUser;
 };
 
 MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
@@ -411,7 +428,8 @@ SSLManagerWindows::SSLManagerWindows(const SSLParams& params, bool isServer)
             CertificateExpirationMonitor(_sslConfiguration.serverCertificateExpirationDate);
     }
 
-    uassertStatusOK(_initChainEngines(!params.sslCAFile.empty()));
+    uassertStatusOK(_initChainEngines(&_serverEngine));
+    uassertStatusOK(_initChainEngines(&_clientEngine));
 }
 
 StatusWith<UniqueCertChainEngine> initChainEngine(CERT_CHAIN_ENGINE_CONFIG* chainEngineConfig,
@@ -439,23 +457,23 @@ StatusWith<UniqueCertChainEngine> initChainEngine(CERT_CHAIN_ENGINE_CONFIG* chai
     return {chainEngine};
 }
 
-Status SSLManagerWindows::_initChainEngines(bool hasCAFile) {
-    auto swMachine =
-        initChainEngine(&_chainEngineConfigMachine, _certStore, CERT_CHAIN_USE_LOCAL_MACHINE_STORE);
+Status SSLManagerWindows::_initChainEngines(CAEngine* engine) {
+    auto swMachine = initChainEngine(
+        &engine->machineConfig, engine->CAstore, CERT_CHAIN_USE_LOCAL_MACHINE_STORE);
 
     if (!swMachine.isOK()) {
         return swMachine.getStatus();
     }
 
-    _chainEngineMachine = std::move(swMachine.getValue());
+    engine->machine = std::move(swMachine.getValue());
 
-    auto swUser = initChainEngine(&_chainEngineConfigUser, _certStore, 0);
+    auto swUser = initChainEngine(&engine->userConfig, engine->CAstore, 0);
 
     if (!swUser.isOK()) {
         return swUser.getStatus();
     }
 
-    _chainEngineUser = std::move(swUser.getValue());
+    engine->user = std::move(swUser.getValue());
 
     return Status::OK();
 }
@@ -1180,7 +1198,18 @@ Status SSLManagerWindows::_loadCertificates(const SSLParams& params) {
             return swChain.getStatus();
         }
 
-        _certStore = std::move(swChain.getValue());
+        _clientEngine.CAstore = std::move(swChain.getValue());
+    }
+
+    const auto serverCAFile =
+        params.sslClusterCAFile.empty() ? params.sslCAFile : params.sslClusterCAFile;
+    if (!serverCAFile.empty()) {
+        auto swChain = readCertChains(serverCAFile, params.sslCRLFile);
+        if (!swChain.isOK()) {
+            return swChain.getStatus();
+        }
+
+        _serverEngine.CAstore = std::move(swChain.getValue());
     }
 
     if (hasCertificateSelector(params.sslCertificateSelector)) {
@@ -1228,7 +1257,6 @@ Status SSLManagerWindows::initSSLContext(SCHANNEL_CRED* cred,
     cred->dwVersion = SCHANNEL_CRED_VERSION;
     cred->dwFlags = SCH_USE_STRONG_CRYPTO;  // Use strong crypto;
 
-    cred->hRootStore = _certStore;
 
     uint32_t supportedProtocols = 0;
 
@@ -1236,6 +1264,7 @@ Status SSLManagerWindows::initSSLContext(SCHANNEL_CRED* cred,
         supportedProtocols = SP_PROT_TLS1_SERVER | SP_PROT_TLS1_0_SERVER | SP_PROT_TLS1_1_SERVER |
             SP_PROT_TLS1_2_SERVER;
 
+        cred->hRootStore = _serverEngine.CAstore;
         cred->dwFlags = cred->dwFlags          // flags
             | SCH_CRED_REVOCATION_CHECK_CHAIN  // Check certificate revocation
             | SCH_CRED_SNI_CREDENTIAL          // Pass along SNI creds
@@ -1246,6 +1275,7 @@ Status SSLManagerWindows::initSSLContext(SCHANNEL_CRED* cred,
         supportedProtocols = SP_PROT_TLS1_CLIENT | SP_PROT_TLS1_0_CLIENT | SP_PROT_TLS1_1_CLIENT |
             SP_PROT_TLS1_2_CLIENT;
 
+        cred->hRootStore = _clientEngine.CAstore;
         cred->dwFlags = cred->dwFlags           // Flags
             | SCH_CRED_REVOCATION_CHECK_CHAIN   // Check certificate revocation
             | SCH_CRED_NO_SERVERNAME_CHECK      // Do not validate server name against cert
@@ -1276,7 +1306,7 @@ Status SSLManagerWindows::initSSLContext(SCHANNEL_CRED* cred,
     }
 
     if (direction == ConnectionDirection::kOutgoing) {
-        if (_clientCertificates[0]) {
+        if (_clientCertificates[0] && !params.tlsWithholdClientCertificate) {
             cred->cCreds = 1;
             cred->paCred = _clientCertificates.data();
         }
@@ -1457,11 +1487,14 @@ Status SSLManagerWindows::_validateCertificate(PCCERT_CONTEXT cert,
 }
 
 SSLPeerInfo SSLManagerWindows::parseAndValidatePeerCertificateDeprecated(
-    const SSLConnectionInterface* conn, const std::string& remoteHost) {
+    const SSLConnectionInterface* conn,
+    const std::string& remoteHost,
+    const HostAndPort& hostForLogging) {
     auto swPeerSubjectName = parseAndValidatePeerCertificate(
         const_cast<SSLConnectionWindows*>(static_cast<const SSLConnectionWindows*>(conn))
             ->_engine.native_handle(),
-        remoteHost);
+        remoteHost,
+        hostForLogging);
     // We can't use uassertStatusOK here because we need to throw a SocketException.
     if (!swPeerSubjectName.isOK()) {
         throwSocketError(SocketErrorKind::CONNECT_ERROR, swPeerSubjectName.getStatus().reason());
@@ -1492,10 +1525,29 @@ StatusWith<std::vector<std::string>> getSubjectAlternativeNames(PCCERT_CONTEXT c
     CERT_ALT_NAME_INFO* altNames = reinterpret_cast<CERT_ALT_NAME_INFO*>(swBlob.getValue().data());
     for (size_t i = 0; i < altNames->cAltEntry; i++) {
         if (altNames->rgAltEntry[i].dwAltNameChoice == CERT_ALT_NAME_DNS_NAME) {
-            names.push_back(toUtf8String(altNames->rgAltEntry[i].pwszDNSName));
+            auto san = toUtf8String(altNames->rgAltEntry[i].pwszDNSName);
+            names.push_back(san);
+            auto swCIDRSan = CIDR::parse(san);
+            if (swCIDRSan.isOK()) {
+                warning() << "You have an IP Address in the DNS Name field on your "
+                             "certificate. This formulation is depreceated.";
+            }
+        } else if (altNames->rgAltEntry[i].dwAltNameChoice == CERT_ALT_NAME_IP_ADDRESS) {
+            auto ipAddrStruct = altNames->rgAltEntry[i].IPAddress;
+            struct sockaddr_storage ss;
+            memset(&ss, 0, sizeof(ss));
+            if (ipAddrStruct.cbData == 4) {
+                struct sockaddr_in* sa = reinterpret_cast<struct sockaddr_in*>(&ss);
+                sa->sin_family = AF_INET;
+                memcpy(&(sa->sin_addr), ipAddrStruct.pbData, ipAddrStruct.cbData);
+            } else if (ipAddrStruct.cbData == 16) {
+                struct sockaddr_in6* sa = reinterpret_cast<struct sockaddr_in6*>(&ss);
+                sa->sin6_family = AF_INET6;
+                memcpy(&(sa->sin6_addr), ipAddrStruct.pbData, ipAddrStruct.cbData);
+            }
+            names.push_back(SockAddr(ss, sizeof(struct sockaddr_storage)).getAddr());
         }
     }
-
     return names;
 }
 
@@ -1589,11 +1641,24 @@ Status validatePeerCertificate(const std::string& remoteHost,
     // certificates
     if (certChainPolicyStatus.dwError != S_OK &&
         certChainPolicyStatus.dwError != CRYPT_E_NO_REVOCATION_CHECK) {
+        auto swAltNames = getSubjectAlternativeNames(cert);
         if (certChainPolicyStatus.dwError == CERT_E_CN_NO_MATCH || allowInvalidCertificates) {
+            auto swCIDRRemoteHost = CIDR::parse(remoteHost);
+            if (swAltNames.isOK() && swCIDRRemoteHost.isOK()) {
+                auto remoteHostCIDR = swCIDRRemoteHost.getValue();
+                // Parsing the client's hostname
+                for (const auto& name : swAltNames.getValue()) {
+                    auto swCIDRHost = CIDR::parse(name);
+                    // Checking that the client hostname is an IP address
+                    // and it equals a SAN on the server cert
+                    if (swCIDRHost.isOK() && remoteHostCIDR == swCIDRHost.getValue()) {
+                        return Status::OK();
+                    }
+                }
+            }
 
             // Give the user a hint why the certificate validation failed.
             StringBuilder certificateNames;
-            auto swAltNames = getSubjectAlternativeNames(cert);
             if (swAltNames.isOK() && !swAltNames.getValue().empty()) {
                 for (auto& name : swAltNames.getValue()) {
                     certificateNames << name << " ";
@@ -1628,11 +1693,10 @@ Status validatePeerCertificate(const std::string& remoteHost,
             return Status(ErrorCodes::SSLHandshakeFailed, msg);
         }
     }
-
     return Status::OK();
 }
 
-Status recordTLSVersion(PCtxtHandle ssl) {
+StatusWith<TLSVersion> mapTLSVersion(PCtxtHandle ssl) {
     SecPkgContext_ConnectionInfo connInfo;
 
     SECURITY_STATUS ss = QueryContextAttributes(ssl, SECPKG_ATTR_CONNECTION_INFO, &connInfo);
@@ -1643,36 +1707,31 @@ Status recordTLSVersion(PCtxtHandle ssl) {
                                     << ss);
     }
 
-    auto& counts = mongo::TLSVersionCounts::get(getGlobalServiceContext());
     switch (connInfo.dwProtocol) {
         case SP_PROT_TLS1_CLIENT:
         case SP_PROT_TLS1_SERVER:
-            counts.tls10.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS10;
         case SP_PROT_TLS1_1_CLIENT:
         case SP_PROT_TLS1_1_SERVER:
-            counts.tls11.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS11;
         case SP_PROT_TLS1_2_CLIENT:
         case SP_PROT_TLS1_2_SERVER:
-            counts.tls12.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS12;
         default:
-            // Do nothing
-            break;
+            return TLSVersion::kUnknown;
     }
-
-    return Status::OK();
 }
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeerCertificate(
-    PCtxtHandle ssl, const std::string& remoteHost) {
+    PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
     PCCERT_CONTEXT cert;
 
-    auto countStatus = recordTLSVersion(ssl);
-    if (!countStatus.isOK()) {
-        return countStatus;
+    auto tlsVersionStatus = mapTLSVersion(ssl);
+    if (!tlsVersionStatus.isOK()) {
+        return tlsVersionStatus.getStatus();
     }
+
+    recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     if (!_sslConfiguration.hasCA && isSSLServer)
         return {boost::none};
@@ -1702,10 +1761,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     UniqueCertificate certHolder(cert);
     SSLX509Name peerSubjectName;
 
+    auto* engine = remoteHost.empty() ? &_serverEngine : &_clientEngine;
+
     // Validate against the local machine store first since it is easier to manage programmatically.
     Status validateCertMachine = validatePeerCertificate(remoteHost,
                                                          certHolder.get(),
-                                                         _chainEngineMachine,
+                                                         engine->machine,
                                                          _allowInvalidCertificates,
                                                          _allowInvalidHostnames,
                                                          &peerSubjectName);
@@ -1714,7 +1775,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
         // manage.
         Status validateCertUser = validatePeerCertificate(remoteHost,
                                                           certHolder.get(),
-                                                          _chainEngineUser,
+                                                          engine->user,
                                                           _allowInvalidCertificates,
                                                           _allowInvalidHostnames,
                                                           &peerSubjectName);

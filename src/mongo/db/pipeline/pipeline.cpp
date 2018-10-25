@@ -1,29 +1,31 @@
+
 /**
- * Copyright (c) 2011 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects for
- * all of the code used other than as permitted herein. If you modify file(s)
- * with this exception, you may extend this exception to your version of the
- * file(s), but you are not obligated to do so. If you do not wish to do so,
- * delete this exception statement from your version. If you delete this
- * exception statement from all source files in the program, then also delete
- * it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -38,12 +40,10 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/accumulator.h"
-#include "mongo/db/pipeline/cluster_aggregation_planner.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_geo_near.h"
 #include "mongo/db/pipeline/document_source_match.h"
-#include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/db/pipeline/document_source_out.h"
 #include "mongo/db/pipeline/document_source_project.h"
 #include "mongo/db/pipeline/document_source_sort.h"
@@ -70,12 +70,12 @@ using std::vector;
 
 namespace dps = ::mongo::dotted_path_support;
 
-using ChangeStreamRequirement = DocumentSource::StageConstraints::ChangeStreamRequirement;
-using HostTypeRequirement = DocumentSource::StageConstraints::HostTypeRequirement;
-using PositionRequirement = DocumentSource::StageConstraints::PositionRequirement;
-using DiskUseRequirement = DocumentSource::StageConstraints::DiskUseRequirement;
-using FacetRequirement = DocumentSource::StageConstraints::FacetRequirement;
-using StreamType = DocumentSource::StageConstraints::StreamType;
+using ChangeStreamRequirement = StageConstraints::ChangeStreamRequirement;
+using HostTypeRequirement = StageConstraints::HostTypeRequirement;
+using PositionRequirement = StageConstraints::PositionRequirement;
+using DiskUseRequirement = StageConstraints::DiskUseRequirement;
+using FacetRequirement = StageConstraints::FacetRequirement;
+using StreamType = StageConstraints::StreamType;
 
 constexpr MatchExpressionParser::AllowedFeatureSet Pipeline::kAllowedMatcherFeatures;
 constexpr MatchExpressionParser::AllowedFeatureSet Pipeline::kGeoNearMatcherFeatures;
@@ -261,18 +261,23 @@ void Pipeline::optimizePipeline() {
     // We could be swapping around stages during this process, so disconnect the pipeline to prevent
     // us from entering a state with dangling pointers.
     unstitch();
-    while (itr != _sources.end()) {
-        invariant((*itr).get());
-        itr = (*itr).get()->optimizeAt(itr, &_sources);
-    }
-
-    // Once we have reached our final number of stages, optimize each individually.
-    for (auto&& source : _sources) {
-        if (auto out = source->optimize()) {
-            optimizedSources.push_back(out);
+    try {
+        while (itr != _sources.end()) {
+            invariant((*itr).get());
+            itr = (*itr).get()->optimizeAt(itr, &_sources);
         }
+
+        // Once we have reached our final number of stages, optimize each individually.
+        for (auto&& source : _sources) {
+            if (auto out = source->optimize()) {
+                optimizedSources.push_back(out);
+            }
+        }
+        _sources.swap(optimizedSources);
+    } catch (DBException& ex) {
+        ex.addContext("Failed to optimize pipeline");
+        throw;
     }
-    _sources.swap(optimizedSources);
     stitch();
 }
 
@@ -335,25 +340,6 @@ bool Pipeline::usedDisk() {
         _sources.begin(), _sources.end(), [](const auto& stage) { return stage->usedDisk(); });
 }
 
-std::unique_ptr<Pipeline, PipelineDeleter> Pipeline::splitForSharded() {
-    invariant(!isSplitForShards());
-    invariant(!isSplitForMerge());
-
-    // Create and initialize the shard spec we'll return. We start with an empty pipeline on the
-    // shards and all work being done in the merger. Optimizations can move operations between
-    // the pipelines to be more efficient.
-    std::unique_ptr<Pipeline, PipelineDeleter> shardPipeline(new Pipeline(pCtx),
-                                                             PipelineDeleter(pCtx->opCtx));
-
-    cluster_aggregation_planner::performSplitPipelineOptimizations(shardPipeline.get(), this);
-    shardPipeline->_splitState = SplitState::kSplitForShards;
-    _splitState = SplitState::kSplitForMerge;
-
-    stitch();
-
-    return shardPipeline;
-}
-
 BSONObj Pipeline::getInitialQuery() const {
     if (_sources.empty())
         return BSONObj();
@@ -399,12 +385,13 @@ bool Pipeline::canRunOnMongos() const {
 }
 
 bool Pipeline::requiredToRunOnMongos() const {
-    invariant(!isSplitForShards());
+    invariant(_splitState != SplitState::kSplitForShards);
 
     for (auto&& stage : _sources) {
         // If this pipeline is capable of splitting before the mongoS-only stage, then the pipeline
         // as a whole is not required to run on mongoS.
-        if (isUnsplit() && dynamic_cast<NeedsMergerDocumentSource*>(stage.get())) {
+        if (_splitState == SplitState::kUnsplit &&
+            dynamic_cast<NeedsMergerDocumentSource*>(stage.get())) {
             return false;
         }
 
@@ -495,6 +482,48 @@ void Pipeline::addFinalSource(intrusive_ptr<DocumentSource> source) {
         source->setSource(_sources.back().get());
     }
     _sources.push_back(source);
+}
+
+boost::optional<StringMap<std::string>> Pipeline::renamedPaths(
+    SourceContainer::const_reverse_iterator rstart,
+    SourceContainer::const_reverse_iterator rend,
+    std::set<std::string> pathsOfInterest) {
+    // Use a vector to give a path id to each input path. A path's id is its index in the vector.
+    const std::vector<string> inputPaths(pathsOfInterest.begin(), pathsOfInterest.end());
+    std::vector<string> currentPaths(pathsOfInterest.begin(), pathsOfInterest.end());
+
+    // Loop backwards over the stages. We will re-use 'pathsOfInterest', modifying that set each
+    // time to be the current set of field's we're interested in. At the same time, we will maintain
+    // 'currentPaths'. 'pathsOfInterest' is used to compute the renames, while 'currentPaths' is
+    // used to tie a path back to its id.
+    //
+    // Interestingly, 'currentPaths' may contain duplicates. For example, if a stage like
+    // {$addFields: {a: "$b"}} duplicates the value of "a" and both paths are of interest, then
+    // 'currentPaths' may begin as ["a", "b"] representing the paths after the $addFields stage, but
+    // becomes ["a", "a"] via the rename.
+    for (auto it = rstart; it != rend; ++it) {
+        boost::optional<StringMap<string>> renamed = (*it)->renamedPaths(pathsOfInterest);
+        if (!renamed) {
+            return boost::none;
+        }
+        pathsOfInterest.clear();
+        for (std::size_t pathId = 0; pathId < inputPaths.size(); ++pathId) {
+            currentPaths[pathId] = (*renamed)[currentPaths[pathId]];
+            pathsOfInterest.insert(currentPaths[pathId]);
+        }
+    }
+
+    // We got all the way through the pipeline via renames! Construct the mapping from path at the
+    // end of the pipeline to path at the beginning.
+    StringMap<string> renameMap;
+    for (std::size_t pathId = 0; pathId < currentPaths.size(); ++pathId) {
+        renameMap[inputPaths[pathId]] = currentPaths[pathId];
+    }
+    return renameMap;
+}
+
+boost::optional<StringMap<string>> Pipeline::renamedPaths(std::set<string> pathsOfInterest) const {
+    return renamedPaths(_sources.rbegin(), _sources.rend(), std::move(pathsOfInterest));
 }
 
 DepsTracker Pipeline::getDependencies(DepsTracker::MetadataAvailable metadataAvailable) const {
@@ -628,6 +657,10 @@ boost::intrusive_ptr<DocumentSource> Pipeline::popFront() {
     _sources.pop_front();
     stitch();
     return targetStage;
+}
+
+DocumentSource* Pipeline::peekFront() const {
+    return _sources.empty() ? nullptr : _sources.front().get();
 }
 
 boost::intrusive_ptr<DocumentSource> Pipeline::popFrontWithName(StringData targetStageName) {

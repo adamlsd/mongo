@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -72,7 +74,6 @@ namespace repl {
 
 class HeartbeatResponseAction;
 class LastVote;
-class OplogReader;
 class ReplicationProcess;
 class ReplSetRequestVotesArgs;
 class ReplSetConfig;
@@ -119,10 +120,10 @@ public:
     virtual ReplicationCoordinator::StatusAndDuration awaitReplication(
         OperationContext* opCtx, const OpTime& opTime, const WriteConcernOptions& writeConcern);
 
-    virtual Status stepDown(OperationContext* opCtx,
-                            bool force,
-                            const Milliseconds& waitTime,
-                            const Milliseconds& stepdownTime);
+    void stepDown(OperationContext* opCtx,
+                  bool force,
+                  const Milliseconds& waitTime,
+                  const Milliseconds& stepdownTime) override;
 
     virtual bool isMasterForReportingPurposes();
 
@@ -292,11 +293,13 @@ public:
     virtual ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const override;
     virtual void setIndexPrefetchConfig(const ReplSettings::IndexPrefetchConfig cfg) override;
 
-    virtual Status stepUpIfEligible() override;
+    virtual Status stepUpIfEligible(bool skipDryRun) override;
 
     virtual Status abortCatchupIfNeeded() override;
 
     void signalDropPendingCollectionsRemovedFromStorage() final;
+
+    virtual boost::optional<Timestamp> getRecoveryTimestamp() override;
 
     // ================== Test support API ===================
 
@@ -608,6 +611,12 @@ private:
                                     const WriteConcernOptions& writeConcern);
 
     /**
+     * Returns an object with all of the information this node knows about the replica set's
+     * progress.
+     */
+    BSONObj _getReplicationProgress(WithLock wl) const;
+
+    /**
      * Returns true if the given writeConcern is satisfied up to "optime" or is unsatisfiable.
      *
      * If the writeConcern is 'majority', also waits for _currentCommittedSnapshot to be newer than
@@ -787,7 +796,8 @@ private:
      *
      * For V1 (raft) style elections the election path is:
      *      _startElectSelfV1() or _startElectSelfV1_inlock()
-     *      _onDryRunComplete()
+     *      _processDryRunResult() (may skip)
+     *      _startRealElection_inlock()
      *      _writeLastVoteForMyElection()
      *      _startVoteRequester_inlock()
      *      _onVoteRequestComplete()
@@ -801,7 +811,13 @@ private:
      * "originalTerm" was the term during which the dry run began, if the term has since
      * changed, do not run for election.
      */
-    void _onDryRunComplete(long long originalTerm);
+    void _processDryRunResult(long long originalTerm);
+
+    /**
+     * Begins executing a real election. This is called either a successful dry run, or when the
+     * dry run was skipped (which may be specified for a ReplSetStepUp).
+     */
+    void _startRealElection_inlock(long long originalTerm);
 
     /**
      * Writes the last vote in persistent storage after completing dry run successfully.

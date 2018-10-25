@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -112,9 +114,7 @@ const char* DocumentSourceOplogMatch::getSourceName() const {
     return DocumentSourceChangeStream::kStageName.rawData();
 }
 
-DocumentSource::StageConstraints DocumentSourceOplogMatch::constraints(
-    Pipeline::SplitState pipeState) const {
-
+StageConstraints DocumentSourceOplogMatch::constraints(Pipeline::SplitState pipeState) const {
     StageConstraints constraints(StreamType::kStreaming,
                                  PositionRequirement::kFirst,
                                  HostTypeRequirement::kAnyShard,
@@ -386,7 +386,9 @@ list<intrusive_ptr<DocumentSource>> buildPipeline(const intrusive_ptr<Expression
             expCtx));
     }
 
-    stages.push_back(DocumentSourceChangeStreamTransform::create(expCtx, elem.embeddedObject()));
+    const auto fcv = serverGlobalParams.featureCompatibility.getVersion();
+    stages.push_back(
+        DocumentSourceChangeStreamTransform::create(expCtx, fcv, elem.embeddedObject()));
     stages.push_back(DocumentSourceCheckInvalidate::create(expCtx, ignoreFirstInvalidate));
 
     // The resume stage must come after the check invalidate stage to allow the check invalidate
@@ -442,8 +444,8 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
     return stages;
 }
 
-BSONObj DocumentSourceChangeStream::replaceResumeTokenInCommand(const BSONObj originalCmdObj,
-                                                                const BSONObj resumeToken) {
+BSONObj DocumentSourceChangeStream::replaceResumeTokenInCommand(BSONObj originalCmdObj,
+                                                                Document resumeToken) {
     Document originalCmd(originalCmdObj);
     auto pipeline = originalCmd[AggregationRequest::kPipelineName].getArray();
     // A $changeStream must be the first element of the pipeline in order to be able
@@ -454,12 +456,12 @@ BSONObj DocumentSourceChangeStream::replaceResumeTokenInCommand(const BSONObj or
         pipeline[0][DocumentSourceChangeStream::kStageName].getDocument());
     changeStreamStage[DocumentSourceChangeStreamSpec::kResumeAfterFieldName] = Value(resumeToken);
 
-    // If the command was initially specified with a startAtOperationTime, we need to remove it
-    // to use the new resume token.
+    // If the command was initially specified with a startAtOperationTime, we need to remove it to
+    // use the new resume token.
     changeStreamStage[DocumentSourceChangeStreamSpec::kStartAtOperationTimeFieldName] = Value();
     pipeline[0] =
         Value(Document{{DocumentSourceChangeStream::kStageName, changeStreamStage.freeze()}});
-    MutableDocument newCmd(originalCmd);
+    MutableDocument newCmd(std::move(originalCmd));
     newCmd[AggregationRequest::kPipelineName] = Value(pipeline);
     return newCmd.freeze().toBson();
 }

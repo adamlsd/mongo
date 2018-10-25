@@ -1,29 +1,31 @@
+
 /**
- * Copyright (c) 2012-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects for
- * all of the code used other than as permitted herein. If you modify file(s)
- * with this exception, you may extend this exception to your version of the
- * file(s), but you are not obligated to do so. If you do not wish to do so,
- * delete this exception statement from your version. If you delete this
- * exception statement from all source files in the program, then also delete
- * it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
@@ -47,6 +49,8 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/ops/write_ops_exec.h"
+#include "mongo/db/ops/write_ops_gen.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_change_stream.h"
 #include "mongo/db/pipeline/document_source_cursor.h"
@@ -54,7 +58,6 @@
 #include "mongo/db/pipeline/document_source_geo_near_cursor.h"
 #include "mongo/db/pipeline/document_source_group.h"
 #include "mongo/db/pipeline/document_source_match.h"
-#include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/db/pipeline/document_source_sample.h"
 #include "mongo/db/pipeline/document_source_sample_from_random_cursor.h"
 #include "mongo/db/pipeline/document_source_single_document_transformation.h"
@@ -70,11 +73,14 @@
 #include "mongo/db/stats/top.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/query/document_source_merge_cursors.h"
+#include "mongo/s/write_ops/cluster_write.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
@@ -85,6 +91,7 @@ using boost::intrusive_ptr;
 using std::shared_ptr;
 using std::string;
 using std::unique_ptr;
+using write_ops::Insert;
 
 namespace {
 
@@ -142,6 +149,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
     BSONObj queryObj,
     BSONObj projectionObj,
     BSONObj sortObj,
+    boost::optional<std::string> groupIdForDistinctScan,
     const AggregationRequest* aggRequest,
     const size_t plannerOpts,
     const MatchExpressionParser::AllowedFeatureSet& matcherFeatures) {
@@ -178,6 +186,29 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
         // will fail, but will succeed when the corresponding '$meta' projection is passed in
         // another attempt.
         return {cq.getStatus()};
+    }
+
+    if (groupIdForDistinctScan) {
+        // When the pipeline includes a $group that groups by a single field
+        // (groupIdForDistinctScan), we use getExecutorDistinct() to attempt to get an executor that
+        // uses a DISTINCT_SCAN to scan exactly one document for each group. When that's not
+        // possible, we return nullptr, and the caller is responsible for trying again without
+        // passing a 'groupIdForDistinctScan' value.
+        ParsedDistinct parsedDistinct(std::move(cq.getValue()), *groupIdForDistinctScan);
+        auto distinctExecutor =
+            getExecutorDistinct(opCtx,
+                                collection,
+                                plannerOpts | QueryPlannerParams::STRICT_DISTINCT_ONLY,
+                                &parsedDistinct);
+        if (!distinctExecutor.isOK()) {
+            return distinctExecutor.getStatus().withContext(
+                "Unable to use distinct scan to optimize $group stage");
+        } else if (!distinctExecutor.getValue()) {
+            return {ErrorCodes::OperationFailed,
+                    "Unable to use distinct scan to optimize $group stage"};
+        } else {
+            return distinctExecutor;
+        }
     }
 
     return getExecutorFind(opCtx, collection, nss, std::move(cq.getValue()), plannerOpts);
@@ -286,6 +317,45 @@ void PipelineD::prepareCursorSource(Collection* collection,
     }
 }
 
+namespace {
+
+/**
+ * Look for $sort, $group at the beginning of the pipeline, potentially returning either or both.
+ * Returns nullptr for any of the stages that are not found. Note that we are not looking for the
+ * opposite pattern ($group, $sort). In that case, this function will return only the $group stage.
+ *
+ * This function will not return the $group in the case that there is an initial $sort with
+ * intermediate stages that separate it from the $group (e.g.: $sort, $limit, $group). That includes
+ * the case of a $sort with a non-null value for getLimitSrc(), indicating that there was previously
+ * a $limit stage that was optimized away.
+ */
+std::pair<boost::intrusive_ptr<DocumentSourceSort>, boost::intrusive_ptr<DocumentSourceGroup>>
+getSortAndGroupStagesFromPipeline(const Pipeline::SourceContainer& sources) {
+    boost::intrusive_ptr<DocumentSourceSort> sortStage = nullptr;
+    boost::intrusive_ptr<DocumentSourceGroup> groupStage = nullptr;
+
+    auto sourcesIt = sources.begin();
+    if (sourcesIt != sources.end()) {
+        sortStage = dynamic_cast<DocumentSourceSort*>(sourcesIt->get());
+        if (sortStage) {
+            if (!sortStage->getLimitSrc()) {
+                ++sourcesIt;
+            } else {
+                // This $sort stage was previously followed by a $limit stage.
+                sourcesIt = sources.end();
+            }
+        }
+    }
+
+    if (sourcesIt != sources.end()) {
+        groupStage = dynamic_cast<DocumentSourceGroup*>(sourcesIt->get());
+    }
+
+    return std::make_pair(sortStage, groupStage);
+}
+
+}  // namespace
+
 void PipelineD::prepareGenericCursorSource(Collection* collection,
                                            const NamespaceString& nss,
                                            const AggregationRequest* aggRequest,
@@ -318,19 +388,21 @@ void PipelineD::prepareGenericCursorSource(Collection* collection,
 
     BSONObj projForQuery = deps.toProjection();
 
-    // Look for an initial sort; we'll try to add this to the Cursor we create. If we're successful
-    // in doing that, we'll remove the $sort from the pipeline, because the documents will already
-    // come sorted in the specified order as a result of the index scan.
-    intrusive_ptr<DocumentSourceSort> sortStage;
+    boost::intrusive_ptr<DocumentSourceSort> sortStage;
+    boost::intrusive_ptr<DocumentSourceGroup> groupStage;
+    std::tie(sortStage, groupStage) = getSortAndGroupStagesFromPipeline(pipeline->_sources);
+
     BSONObj sortObj;
-    if (!sources.empty()) {
-        sortStage = dynamic_cast<DocumentSourceSort*>(sources.front().get());
-        if (sortStage) {
-            sortObj = sortStage
-                          ->sortKeyPattern(
-                              DocumentSourceSort::SortKeySerialization::kForPipelineSerialization)
-                          .toBson();
-        }
+    if (sortStage) {
+        sortObj = sortStage
+                      ->sortKeyPattern(
+                          DocumentSourceSort::SortKeySerialization::kForPipelineSerialization)
+                      .toBson();
+    }
+
+    std::unique_ptr<GroupFromFirstDocumentTransformation> rewrittenGroupStage;
+    if (groupStage) {
+        rewrittenGroupStage = groupStage->rewriteGroupAsTransformOnFirstDocument();
     }
 
     // Create the PlanExecutor.
@@ -341,6 +413,7 @@ void PipelineD::prepareGenericCursorSource(Collection* collection,
                                                 expCtx,
                                                 oplogReplay,
                                                 sortStage,
+                                                std::move(rewrittenGroupStage),
                                                 deps,
                                                 queryObj,
                                                 aggRequest,
@@ -402,6 +475,7 @@ void PipelineD::prepareGeoNearCursorSource(Collection* collection,
                                                 expCtx,
                                                 false,   /* oplogReplay */
                                                 nullptr, /* sortStage */
+                                                nullptr, /* rewrittenGroupStage */
                                                 deps,
                                                 std::move(fullQuery),
                                                 aggRequest,
@@ -433,7 +507,8 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
     Pipeline* pipeline,
     const intrusive_ptr<ExpressionContext>& expCtx,
     bool oplogReplay,
-    const intrusive_ptr<DocumentSourceSort>& sortStage,
+    const boost::intrusive_ptr<DocumentSourceSort>& sortStage,
+    std::unique_ptr<GroupFromFirstDocumentTransformation> rewrittenGroupStage,
     const DepsTracker& deps,
     const BSONObj& queryObj,
     const AggregationRequest* aggRequest,
@@ -466,6 +541,63 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
         plannerOpts |= QueryPlannerParams::IS_COUNT;
     }
 
+    if (expCtx->needsMerge && expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
+        plannerOpts |= QueryPlannerParams::TRACK_LATEST_OPLOG_TS;
+    }
+
+    if (rewrittenGroupStage) {
+        BSONObj emptySort;
+
+        // See if the query system can handle the $group and $sort stage using a DISTINCT_SCAN
+        // (SERVER-9507). Note that passing the empty projection (as we do for some of the
+        // attemptToGetExecutor() calls below) causes getExecutorDistinct() to ignore some otherwise
+        // valid DISTINCT_SCAN plans, so we pass the projection and exclude the
+        // NO_UNCOVERED_PROJECTIONS planner parameter.
+        auto swExecutorGrouped = attemptToGetExecutor(opCtx,
+                                                      collection,
+                                                      nss,
+                                                      expCtx,
+                                                      oplogReplay,
+                                                      queryObj,
+                                                      *projectionObj,
+                                                      sortObj ? *sortObj : emptySort,
+                                                      rewrittenGroupStage->groupId(),
+                                                      aggRequest,
+                                                      plannerOpts,
+                                                      matcherFeatures);
+
+        if (swExecutorGrouped.isOK()) {
+            // Any $limit stage before the $group stage should make the pipeline ineligible for this
+            // optimization.
+            invariant(!sortStage || !sortStage->getLimitSrc());
+
+            // We remove the $sort and $group stages that begin the pipeline, because the executor
+            // will handle the sort, and the groupTransform (added below) will handle the $group
+            // stage.
+            pipeline->popFrontWithName(DocumentSourceSort::kStageName);
+            pipeline->popFrontWithName(DocumentSourceGroup::kStageName);
+
+            boost::intrusive_ptr<DocumentSource> groupTransform(
+                new DocumentSourceSingleDocumentTransformation(
+                    expCtx,
+                    std::move(rewrittenGroupStage),
+                    "$groupByDistinctScan",
+                    false /* independentOfAnyCollection */));
+            pipeline->addInitialSource(groupTransform);
+
+            return swExecutorGrouped;
+        } else if (swExecutorGrouped == ErrorCodes::QueryPlanKilled) {
+            return {ErrorCodes::OperationFailed,
+                    str::stream() << "Failed to determine whether query system can provide a "
+                                     "DISTINCT_SCAN grouping: "
+                                  << swExecutorGrouped.getStatus().toString()};
+        }
+    }
+
+    const BSONObj emptyProjection;
+    const BSONObj metaSortProjection = BSON("$meta"
+                                            << "sortKey");
+
     // The only way to get meta information (e.g. the text score) is to let the query system handle
     // the projection. In all other cases, unless the query system can do an index-covered
     // projection and avoid going to the raw record at all, it is faster to have ParsedDeps filter
@@ -474,13 +606,6 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
         plannerOpts |= QueryPlannerParams::NO_UNCOVERED_PROJECTIONS;
     }
 
-    if (expCtx->needsMerge && expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
-        plannerOpts |= QueryPlannerParams::TRACK_LATEST_OPLOG_TS;
-    }
-
-    const BSONObj emptyProjection;
-    const BSONObj metaSortProjection = BSON("$meta"
-                                            << "sortKey");
     if (sortStage) {
         // See if the query system can provide a non-blocking sort.
         auto swExecutorSort =
@@ -492,23 +617,26 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
                                  queryObj,
                                  expCtx->needsMerge ? metaSortProjection : emptyProjection,
                                  *sortObj,
+                                 boost::none, /* groupIdForDistinctScan */
                                  aggRequest,
                                  plannerOpts,
                                  matcherFeatures);
 
         if (swExecutorSort.isOK()) {
             // Success! Now see if the query system can also cover the projection.
-            auto swExecutorSortAndProj = attemptToGetExecutor(opCtx,
-                                                              collection,
-                                                              nss,
-                                                              expCtx,
-                                                              oplogReplay,
-                                                              queryObj,
-                                                              *projectionObj,
-                                                              *sortObj,
-                                                              aggRequest,
-                                                              plannerOpts,
-                                                              matcherFeatures);
+            auto swExecutorSortAndProj =
+                attemptToGetExecutor(opCtx,
+                                     collection,
+                                     nss,
+                                     expCtx,
+                                     oplogReplay,
+                                     queryObj,
+                                     *projectionObj,
+                                     *sortObj,
+                                     boost::none, /* groupIdForDistinctScan */
+                                     aggRequest,
+                                     plannerOpts,
+                                     matcherFeatures);
 
             std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec;
             if (swExecutorSortAndProj.isOK()) {
@@ -567,6 +695,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
                                                queryObj,
                                                *projectionObj,
                                                *sortObj,
+                                               boost::none, /* groupIdForDistinctScan */
                                                aggRequest,
                                                plannerOpts,
                                                matcherFeatures);
@@ -591,6 +720,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
                                 queryObj,
                                 *projectionObj,
                                 *sortObj,
+                                boost::none, /* groupIdForDistinctScan */
                                 aggRequest,
                                 plannerOpts,
                                 matcherFeatures);

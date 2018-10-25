@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kControl
@@ -59,6 +61,7 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/executor/network_interface_factory.h"
+#include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/rpc/object_check.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/concurrency/thread_pool.h"
@@ -124,28 +127,25 @@ public:
         auto data = std::make_shared<std::vector<std::uint8_t>>(
             reqObj.objdata(), reqObj.objdata() + reqObj.objsize());
 
-        return _client
-            ->postAsync(
-                _executor.get(), exportedExportedFreeMonEndpointURL.getLocked() + "/register", data)
-            .then([](DataBuilder&& blob) {
+        return post("/register", data).then([](DataBuilder&& blob) {
 
-                if (!blob.size()) {
-                    uasserted(ErrorCodes::FreeMonHttpTemporaryFailure, "Empty response received");
-                }
+            if (!blob.size()) {
+                uasserted(ErrorCodes::FreeMonHttpTemporaryFailure, "Empty response received");
+            }
 
-                auto blobSize = blob.size();
-                auto blobData = blob.release();
-                ConstDataRange cdr(blobData.get(), blobSize);
-                auto swDoc = cdr.read<Validated<BSONObj>>();
-                uassertStatusOK(swDoc.getStatus());
+            auto blobSize = blob.size();
+            auto blobData = blob.release();
+            ConstDataRange cdr(blobData.get(), blobSize);
+            auto swDoc = cdr.read<Validated<BSONObj>>();
+            uassertStatusOK(swDoc.getStatus());
 
-                BSONObj respObj(swDoc.getValue());
+            BSONObj respObj(swDoc.getValue());
 
-                auto resp =
-                    FreeMonRegistrationResponse::parse(IDLParserErrorContext("response"), respObj);
+            auto resp =
+                FreeMonRegistrationResponse::parse(IDLParserErrorContext("response"), respObj);
 
-                return resp;
-            });
+            return resp;
+        });
     }
 
     Future<FreeMonMetricsResponse> sendMetricsAsync(const FreeMonMetricsRequest& req) override {
@@ -153,29 +153,50 @@ public:
         auto data = std::make_shared<std::vector<std::uint8_t>>(
             reqObj.objdata(), reqObj.objdata() + reqObj.objsize());
 
-        return _client
-            ->postAsync(
-                _executor.get(), exportedExportedFreeMonEndpointURL.getLocked() + "/metrics", data)
-            .then([](DataBuilder&& blob) {
+        return post("/metrics", data).then([](DataBuilder&& blob) {
 
-                if (!blob.size()) {
-                    uasserted(ErrorCodes::FreeMonHttpTemporaryFailure, "Empty response received");
-                }
+            if (!blob.size()) {
+                uasserted(ErrorCodes::FreeMonHttpTemporaryFailure, "Empty response received");
+            }
 
-                auto blobSize = blob.size();
-                auto blobData = blob.release();
-                ConstDataRange cdr(blobData.get(), blobSize);
+            auto blobSize = blob.size();
+            auto blobData = blob.release();
+            ConstDataRange cdr(blobData.get(), blobSize);
 
-                auto swDoc = cdr.read<Validated<BSONObj>>();
-                uassertStatusOK(swDoc.getStatus());
+            auto swDoc = cdr.read<Validated<BSONObj>>();
+            uassertStatusOK(swDoc.getStatus());
 
-                BSONObj respObj(swDoc.getValue());
+            BSONObj respObj(swDoc.getValue());
 
-                auto resp =
-                    FreeMonMetricsResponse::parse(IDLParserErrorContext("response"), respObj);
+            auto resp = FreeMonMetricsResponse::parse(IDLParserErrorContext("response"), respObj);
 
-                return resp;
-            });
+            return resp;
+        });
+    }
+
+private:
+    Future<DataBuilder> post(StringData path,
+                             std::shared_ptr<std::vector<std::uint8_t>> data) const {
+        auto pf = makePromiseFuture<DataBuilder>();
+        std::string url(exportedExportedFreeMonEndpointURL.getLocked() + path.toString());
+
+        auto status = _executor->scheduleWork([
+            shared_promise = pf.promise.share(),
+            url = std::move(url),
+            data = std::move(data),
+            this
+        ](const executor::TaskExecutor::CallbackArgs& cbArgs) mutable {
+            ConstDataRange cdr(reinterpret_cast<char*>(data->data()), data->size());
+            try {
+                auto result = this->_client->post(url, cdr);
+                shared_promise.emplaceValue(std::move(result));
+            } catch (...) {
+                shared_promise.setError(exceptionToStatus());
+            }
+        });
+
+        uassertStatusOK(status);
+        return std::move(pf.future);
     }
 
 private:
@@ -386,7 +407,11 @@ void stopFreeMonitoring() {
 }
 
 void notifyFreeMonitoringOnTransitionToPrimary() {
-    FreeMonController::get(getGlobalServiceContext())->notifyOnTransitionToPrimary();
+    auto controller = FreeMonController::get(getGlobalServiceContext());
+
+    if (controller != nullptr) {
+        controller->notifyOnTransitionToPrimary();
+    }
 }
 
 void setupFreeMonitoringOpObserver(OpObserverRegistry* registry) {

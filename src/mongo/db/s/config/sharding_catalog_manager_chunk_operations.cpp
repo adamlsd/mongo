@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -429,7 +431,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
     }
 
     // apply the batch of updates to local metadata.
-    Status applyOpsStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
+    const Status applyOpsStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
         opCtx,
         updates.arr(),
         preCond.arr(),
@@ -454,10 +456,8 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
         appendShortVersion(&logDetail.subobjStart("left"), newChunks[0]);
         appendShortVersion(&logDetail.subobjStart("right"), newChunks[1]);
 
-        Grid::get(opCtx)
-            ->catalogClient()
-            ->logChange(opCtx, "split", nss.ns(), logDetail.obj(), WriteConcernOptions())
-            .transitional_ignore();
+        Grid::get(opCtx)->catalogClient()->logChange(
+            opCtx, "split", nss.ns(), logDetail.obj(), WriteConcernOptions());
     } else {
         BSONObj beforeDetailObj = logDetail.obj();
         BSONObj firstDetailObj = beforeDetailObj.getOwned();
@@ -470,15 +470,12 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
             chunkDetail.append("of", newChunksSize);
             appendShortVersion(&chunkDetail.subobjStart("chunk"), newChunks[i]);
 
-            Grid::get(opCtx)
-                ->catalogClient()
-                ->logChange(
-                    opCtx, "multi-split", nss.ns(), chunkDetail.obj(), WriteConcernOptions())
-                .transitional_ignore();
+            Grid::get(opCtx)->catalogClient()->logChange(
+                opCtx, "multi-split", nss.ns(), chunkDetail.obj(), WriteConcernOptions());
         }
     }
 
-    return applyOpsStatus;
+    return Status::OK();
 }
 
 Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
@@ -563,7 +560,7 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
     auto preCond = buildMergeChunksTransactionPrecond(chunksToMerge, collVersion);
 
     // apply the batch of updates to local metadata
-    Status applyOpsStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
+    const Status applyOpsStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
         opCtx,
         updates,
         preCond,
@@ -586,12 +583,10 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
     collVersion.appendLegacyWithField(&logDetail, "prevShardVersion");
     mergeVersion.appendLegacyWithField(&logDetail, "mergedVersion");
 
-    Grid::get(opCtx)
-        ->catalogClient()
-        ->logChange(opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions())
-        .transitional_ignore();
+    Grid::get(opCtx)->catalogClient()->logChange(
+        opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions());
 
-    return applyOpsStatus;
+    return Status::OK();
 }
 
 StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(

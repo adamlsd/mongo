@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -54,6 +56,23 @@ namespace transport {
  * We implement our networking reactor on top of poll + eventfd for wakeups
  */
 class TransportLayerASIO::BatonASIO : public Baton {
+    /**
+     * We use this internal reactor timer to exit run_until calls (by forcing an early timeout for
+     * ::poll).
+     *
+     * Its methods are all unreachable because we never actually use its timer-ness (we just need
+     * its address for baton book keeping).
+     */
+    class InternalReactorTimer : public ReactorTimer {
+    public:
+        void cancel(const BatonHandle& baton = nullptr) override {
+            MONGO_UNREACHABLE;
+        }
+
+        Future<void> waitUntil(Date_t timeout, const BatonHandle& baton = nullptr) override {
+            MONGO_UNREACHABLE;
+        }
+    };
 
     /**
      * RAII type that wraps up an eventfd and reading/writing to it.  We don't actually need the
@@ -70,6 +89,9 @@ class TransportLayerASIO::BatonASIO : public Baton {
         ~EventFDHolder() {
             ::close(fd);
         }
+
+        EventFDHolder(const EventFDHolder&) = delete;
+        EventFDHolder& operator=(const EventFDHolder&) = delete;
 
         // Writes to the underlying eventfd
         void notify() {
@@ -135,10 +157,6 @@ public:
         return std::move(pf.future);
     }
 
-    Future<void> waitFor(const ReactorTimer& timer, Milliseconds timeout) override {
-        return waitUntil(timer, Date_t::now() + timeout);
-    }
-
     Future<void> waitUntil(const ReactorTimer& timer, Date_t expiration) override {
         auto pf = makePromiseFuture<void>();
         _safeExecute([ timerPtr = &timer, expiration, sp = pf.promise.share(), this ] {
@@ -189,7 +207,7 @@ public:
         return true;
     }
 
-    void schedule(stdx::function<void()> func) override {
+    void schedule(unique_function<void()> func) override {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
 
         _scheduled.push_back(std::move(func));
@@ -199,7 +217,33 @@ public:
         }
     }
 
-    bool run(OperationContext* opCtx, boost::optional<Date_t> deadline) override {
+    void notify() noexcept override {
+        schedule([] {});
+    }
+
+    /**
+     * We synthesize a run_until by creating a synthetic timer which we use to exit run early (we
+     * create a regular waitUntil baton event off the timer, with the passed deadline).
+     */
+    Waitable::TimeoutState run_until(ClockSource* clkSource, Date_t deadline) noexcept override {
+        InternalReactorTimer irt;
+        auto future = waitUntil(irt, deadline);
+
+        run(clkSource);
+
+        // If the future is ready our timer has fired, in which case we timed out
+        if (future.isReady()) {
+            future.get();
+
+            return Waitable::TimeoutState::Timeout;
+        } else {
+            cancelTimer(irt);
+
+            return Waitable::TimeoutState::NoTimeout;
+        }
+    }
+
+    void run(ClockSource* clkSource) noexcept override {
         std::vector<SharedPromise<void>> toFulfill;
 
         // We'll fulfill promises and run jobs on the way out, ensuring we don't hold any locks
@@ -224,44 +268,18 @@ public:
             }
         });
 
-        // Note that it's important to check for interrupt without the lock, because markKilled
-        // calls schedule, which will deadlock if we're holding the lock when calling this.
-        if (opCtx) {
-            opCtx->checkForInterrupt();
-        }
-
         stdx::unique_lock<stdx::mutex> lk(_mutex);
-        if (opCtx) {
-            invariant(opCtx == _opCtx);
-        }
-
-        auto now = Date_t::now();
-
-        // If our deadline has passed, return that we've already failed
-        if (deadline && *deadline <= now) {
-            return false;
-        }
 
         // If anything was scheduled, run it now.  No need to poll
         if (_scheduled.size()) {
-            return true;
+            return;
         }
 
-        boost::optional<Milliseconds> timeout;
+        boost::optional<Date_t> deadline;
 
         // If we have a timer, poll no longer than that
         if (_timers.size()) {
-            timeout = _timers.begin()->expiration - now;
-        }
-
-        if (deadline) {
-            auto deadlineTimeout = *deadline - now;
-
-            // If we didn't have a timer with a deadline, or our deadline is sooner than that
-            // timer
-            if (!timeout || (deadlineTimeout < *timeout)) {
-                timeout = deadlineTimeout;
-            }
+            deadline = _timers.begin()->expiration;
         }
 
         std::vector<decltype(_sessions)::iterator> sessions;
@@ -279,13 +297,22 @@ public:
             sessions.push_back(iter);
         }
 
+        auto now = clkSource->now();
+
         int rval = 0;
         // If we don't have a timeout, or we have a timeout that's unexpired, run poll.
-        if (!timeout || (*timeout > Milliseconds(0))) {
+        if (!deadline || (*deadline > now)) {
+            if (deadline && !clkSource->tracksSystemClock()) {
+                invariant(clkSource->setAlarm(*deadline, [this] { notify(); }));
+
+                deadline.reset();
+            }
+
             _inPoll = true;
             lk.unlock();
-            rval =
-                ::poll(pollSet.data(), pollSet.size(), timeout.value_or(Milliseconds(-1)).count());
+            rval = ::poll(pollSet.data(),
+                          pollSet.size(),
+                          deadline ? Milliseconds(*deadline - now).count() : -1);
 
             const auto pollGuard = MakeGuard([&] {
                 lk.lock();
@@ -297,20 +324,9 @@ public:
                 severe() << "error in poll: " << errnoWithDescription(errno);
                 fassertFailed(50834);
             }
-
-            // Note that it's important to check for interrupt without the lock, because markKilled
-            // calls schedule, which will deadlock if we're holding the lock when calling this.
-            if (opCtx) {
-                opCtx->checkForInterrupt();
-            }
         }
 
-        now = Date_t::now();
-
-        // If our deadline passed while in poll, we've failed
-        if (deadline && now > *deadline) {
-            return false;
-        }
+        now = clkSource->now();
 
         // Fire expired timers
         for (auto iter = _timers.begin(); iter != _timers.end() && iter->expiration < now;) {
@@ -345,7 +361,7 @@ public:
             invariant(remaining == 0);
         }
 
-        return true;
+        return;
     }
 
 private:
@@ -407,7 +423,7 @@ private:
     stdx::unordered_map<const ReactorTimer*, decltype(_timers)::const_iterator> _timersById;
 
     // For tasks that come in via schedule.  Or that were deferred because we were in poll
-    std::vector<std::function<void()>> _scheduled;
+    std::vector<unique_function<void()>> _scheduled;
 };
 
 }  // namespace transport

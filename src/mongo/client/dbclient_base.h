@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2008-2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -67,9 +69,37 @@ std::string nsGetDB(const std::string& ns);
 std::string nsGetCollection(const std::string& ns);
 
 /**
+ * This class pre-declares all the "query()" methods for DBClient so the subclasses can mark
+ * them as "final" or "override" as appropriate.
+ */
+class DBClientQueryInterface {
+    virtual std::unique_ptr<DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
+                                                  Query query,
+                                                  int nToReturn = 0,
+                                                  int nToSkip = 0,
+                                                  const BSONObj* fieldsToReturn = 0,
+                                                  int queryOptions = 0,
+                                                  int batchSize = 0) = 0;
+
+    virtual unsigned long long query(stdx::function<void(const BSONObj&)> f,
+                                     const NamespaceStringOrUUID& nsOrUuid,
+                                     Query query,
+                                     const BSONObj* fieldsToReturn = 0,
+                                     int queryOptions = 0,
+                                     int batchSize = 0) = 0;
+
+    virtual unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+                                     const NamespaceStringOrUUID& nsOrUuid,
+                                     Query query,
+                                     const BSONObj* fieldsToReturn = 0,
+                                     int queryOptions = 0,
+                                     int batchSize = 0) = 0;
+};
+
+/**
  abstract class that implements the core db operations
  */
-class DBClientBase {
+class DBClientBase : public DBClientQueryInterface {
     MONGO_DISALLOW_COPYING(DBClientBase);
 
 public:
@@ -424,31 +454,6 @@ public:
         return res;
     }
 
-    /** Copy database from one server or name to another server or name.
-
-       Generally, you should dropDatabase() first as otherwise the copied information will MERGE
-       into whatever data is already present in this database.
-
-       For security reasons this function only works when you are authorized to access the "admin"
-       db.  However, if you have access to said db, you can copy any database from one place to
-       another.
-       TODO: this needs enhancement to be more flexible in terms of security.
-
-       This method provides a way to "rename" a database by copying it to a new db name and
-       location.  The copy is "repaired" and compacted.
-
-       fromdb   database name from which to copy.
-       todb     database name to copy to.
-       fromhost hostname of the database (and optionally, ":port") from which to
-                copy the data.  copies from self if "".
-
-       returns true if successful
-    */
-    bool copyDatabase(const std::string& fromdb,
-                      const std::string& todb,
-                      const std::string& fromhost = "",
-                      BSONObj* info = 0);
-
     /** validate a collection, checking for errors and reporting back statistics.
         this operation is slow and blocking.
      */
@@ -495,6 +500,13 @@ public:
     }
 
     virtual void createIndexes(StringData ns, const std::vector<const IndexSpec*>& descriptor);
+
+    /**
+     * Creates indexes on the collection 'ns' as described by 'specs'.
+     *
+     * Failure to construct the indexes is reported by throwing an AssertionException.
+     */
+    virtual void createIndexes(StringData ns, const std::vector<BSONObj>& specs);
 
     virtual std::list<BSONObj> getIndexSpecs(const std::string& ns, int options = 0);
 
@@ -571,34 +583,42 @@ public:
      @return    cursor.   0 if error (connection failure)
      @throws AssertionException
     */
-    virtual std::unique_ptr<DBClientCursor> query(const std::string& ns,
-                                                  Query query,
-                                                  int nToReturn = 0,
-                                                  int nToSkip = 0,
-                                                  const BSONObj* fieldsToReturn = 0,
-                                                  int queryOptions = 0,
-                                                  int batchSize = 0);
+    std::unique_ptr<DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
+                                          Query query,
+                                          int nToReturn = 0,
+                                          int nToSkip = 0,
+                                          const BSONObj* fieldsToReturn = 0,
+                                          int queryOptions = 0,
+                                          int batchSize = 0) override;
 
 
-    /** Uses QueryOption_Exhaust, when available.
+    /** Uses QueryOption_Exhaust, when available and specified in 'queryOptions'.
 
         Exhaust mode sends back all data queries as fast as possible, with no back-and-forth for
-        OP_GETMORE.  If you are certain you will exhaust the query, it could be useful.
+        OP_GETMORE.  If you are certain you will exhaust the query, it could be useful.  If
+        exhaust mode is not specified in 'queryOptions' or not available, this call transparently
+        falls back to using ordinary getMores.
 
         Use the DBClientCursorBatchIterator version, below, if you want to do items in large
         blocks, perhaps to avoid granular locking and such.
-     */
-    virtual unsigned long long query(stdx::function<void(const BSONObj&)> f,
-                                     const std::string& ns,
-                                     Query query,
-                                     const BSONObj* fieldsToReturn = 0,
-                                     int queryOptions = 0);
 
-    virtual unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
-                                     const std::string& ns,
-                                     Query query,
-                                     const BSONObj* fieldsToReturn = 0,
-                                     int queryOptions = 0);
+        Note:
+        The version that takes a BSONObj cannot return the namespace queried when the query is
+        is done by UUID.  If this is required, use the DBClientBatchIterator version.
+     */
+    unsigned long long query(stdx::function<void(const BSONObj&)> f,
+                             const NamespaceStringOrUUID& nsOrUuid,
+                             Query query,
+                             const BSONObj* fieldsToReturn = 0,
+                             int queryOptions = QueryOption_Exhaust,
+                             int batchSize = 0) final;
+
+    unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+                             const NamespaceStringOrUUID& nsOrUuid,
+                             Query query,
+                             const BSONObj* fieldsToReturn = 0,
+                             int queryOptions = QueryOption_Exhaust,
+                             int batchSize = 0) override;
 
 
     /** don't use this - called automatically by DBClientCursor for you

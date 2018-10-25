@@ -1,25 +1,27 @@
 // key_string.h
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -66,23 +68,26 @@ public:
      */
     class TypeBits {
     public:
-        // Sufficient bytes to encode extra type information for any BSON key that fits in 1KB.
-        // The encoding format will need to change if we raise this limit.
-        static const uint8_t kMaxBytesNeeded = 127;
+        // See comments in getBuffer() about short/long encoding schemes.
+        static const uint8_t kMaxBytesForShortEncoding = 127;
+        static const uint8_t kPrefixBytes = 5;
+        // TODO SERVER-36385: Remove this 1KB limit.
         static const uint32_t kMaxKeyBytes = 1024;
-        static const uint32_t kMaxTypeBitsPerDecimal = 17;
-        static const uint32_t kBytesForTypeAndEmptyKey = 2;
-        static const uint32_t kMaxDecimalsPerKey =
-            kMaxKeyBytes / (sizeof(Decimal128::Value) + kBytesForTypeAndEmptyKey);
-        MONGO_STATIC_ASSERT_MSG(
-            kMaxTypeBitsPerDecimal* kMaxDecimalsPerKey < kMaxBytesNeeded * 8UL,
-            "encoding needs change to contain all type bits for worst case key");
         static const uint8_t kStoredDecimalExponentBits = 6;
         static const uint32_t kStoredDecimalExponentMask = (1U << kStoredDecimalExponentBits) - 1;
 
         explicit TypeBits(Version version) : version(version) {
             reset();
         }
+
+        TypeBits(const TypeBits& tb)
+            : version(tb.version), _curBit(tb._curBit), _isAllZeros(tb._isAllZeros) {
+            _buf.reset();
+            _buf.appendBuf(tb._buf.buf(), tb._buf.len());
+        }
+        TypeBits& operator=(const TypeBits& tb) = delete;
+        TypeBits(TypeBits&&) = default;
+        TypeBits& operator=(TypeBits&&) = delete;
 
         /**
          * If there are no bytes remaining, assumes AllZeros. Otherwise, reads bytes out of the
@@ -107,40 +112,59 @@ public:
          * instance.
          *
          * Encoded format:
-         * Case 1 (first byte has high bit set to 1):
-         *     Remaining bits of first byte encode number of follow-up bytes that are data
-         *     bytes. Note that _buf is always maintained in this format but these methods may
-         *     return one of the other formats, if possible, by skipping over the first byte.
-         *
-         * Case 2 (first byte is 0x0):
+         * Case 1 (first byte is 0x0):
          *     This encodes the "AllZeros" state which represents an infinite stream of bits set
          *     to 0. Callers may optionally encode this case as an empty buffer if they have
          *     another way to mark the end of the buffer. There are no follow-up bytes.
          *
-         * Case 3 (first byte isn't 0x0 but has high bit set to 0):
+         * Case 2 (first byte isn't 0x0 but has high bit set to 0):
          *     The first byte is the only data byte. This can represent any 7-bit sequence or an
          *     8-bit sequence if the 8th bit is 0, since the 8th bit is the same as the bit that
          *     is 1 if the first byte is the size byte. There are no follow-up bytes.
          *
+         * Case 3 (first byte has high bit set to 1 but it's not 0x80):
+         *     Remaining bits of first byte encode number of follow-up bytes that are data
+         *     bytes.
+         *
+         * Case 4 (first byte is 0x80)
+         *     The first byte is the signal byte indicating that this TypeBits is encoded with long
+         *     encoding scheme: the next four bytes (in little endian order) represent the number of
+         *     data bytes.
+         *
          * Within data bytes (ie everything excluding the size byte if there is one), bits are
          * packed in from low to high.
          */
-        const uint8_t* getBuffer() const {
-            return getSize() == 1 ? _buf + 1 : _buf;
+        const char* getBuffer() const {
+            if (_isAllZeros)
+                return "";  // Case 1: pointer to a zero byte.
+
+            if (getSize() == 1)
+                return getDataBuffer();  // Case 2: all bits in one byte; no size byte.
+
+            // Case 3 & 4: size byte(s) + data bytes.
+            return isLongEncoding() ? _buf.buf() : (getDataBuffer() - 1);
         }
         size_t getSize() const {
-            if (_isAllZeros) {  // Case 2
-                dassert(_buf[1] == 0);
+            if (_isAllZeros) {  // Case 1
+                dassert(getDataBufferLen() == 0 || getDataBuffer()[0] == 0);
                 return 1;
             }
 
-            uint8_t rawSize = getSizeByte();
-            dassert(rawSize >= 1);                    // 0 should be handled as isAllZeros.
-            if (rawSize == 1 && !(_buf[1] & 0x80)) {  // Case 3
+            uint32_t rawSize = getDataBufferLen();
+            dassert(rawSize >= 1);                      // 0 should be handled as isAllZeros.
+            if (rawSize > kMaxBytesForShortEncoding) {  // Case 4
+                return rawSize + kPrefixBytes;
+            }
+            if (rawSize == 1 && !(getDataBuffer()[0] & 0x80)) {  // Case 2
                 return 1;
             }
 
-            return rawSize + 1;  // Case 1
+            return rawSize + 1;  // Case 3
+        }
+
+        bool isLongEncoding() const {
+            // TypeBits with all zeros is in short encoding regardless of the data buffer length.
+            return !_isAllZeros && getDataBufferLen() > kMaxBytesForShortEncoding;
         }
 
         //
@@ -176,8 +200,7 @@ public:
         void reset() {
             _curBit = 0;
             _isAllZeros = true;
-            setSizeByte(0);
-            _buf[1] = 0;
+            _buf.setlen(kPrefixBytes);
         }
 
         void appendString() {
@@ -240,29 +263,32 @@ public:
         const Version version;
 
     private:
-        /**
-         * size only includes data bytes, not the size byte itself.
-         */
-        uint8_t getSizeByte() const {
-            return _buf[0] & 0x7f;
+        static uint32_t readSizeFromBuffer(BufReader* reader);
+
+        void setRawSize(uint32_t size);
+
+        const char* getDataBuffer() const {
+            return _buf.buf() + kPrefixBytes;
         }
-        void setSizeByte(uint8_t size) {
-            // This error can only occur in cases where the key is not only too long, but also
-            // has too many fields requiring type bits.
-            uassert(ErrorCodes::KeyTooLong, "The key is too long", size < kMaxBytesNeeded);
-            _buf[0] = 0x80 | size;
+        char* getDataBuffer() {
+            return _buf.buf() + kPrefixBytes;
+        }
+        uint32_t getDataBufferLen() const {
+            return _buf.len() - kPrefixBytes;
         }
 
         void appendBit(uint8_t oneOrZero);
 
         size_t _curBit;
         bool _isAllZeros;
-
-        // See getBuffer()/getSize() documentation for a description of how data is encoded.
-        // Currently whole buffer is copied in default copy methods. If they ever show up as hot
-        // in profiling, we should add copy operations that only copy the parts of _buf that are
-        // in use.
-        uint8_t _buf[1 /*size*/ + kMaxBytesNeeded];
+        /**
+         * See getBuffer()/getSize() documentation for a description of how data is encoded. When
+         * the TypeBits size is in short encoding range(<=127), the bytes starting from the fifth
+         * byte are the complete TypeBits in short encoding scheme (1 size byte + data bytes).  When
+         * the TypeBits size is in long encoding range(>127), all the bytes are used for the long
+         * encoding format (first byte + 4 size bytes + data bytes).
+         */
+        StackBufBuilder _buf;
     };
 
     enum Discriminator {

@@ -1,32 +1,34 @@
 // repltests.cpp : Unit tests for replication
 //
 
+
 /**
- *    Copyright (C) 2009-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
@@ -43,13 +45,13 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/json.h"
-#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/sync_tail.h"
+#include "mongo/db/s/op_observer_sharding_impl.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/transport/transport_layer_asio.h"
 #include "mongo/util/log.h"
@@ -133,7 +135,7 @@ public:
         // to avoid the invariant in ReplClientInfo::setLastOp that the optime only goes forward.
         repl::ReplClientInfo::forClient(_opCtx.getClient()).clearLastOp_forTest();
 
-        getGlobalServiceContext()->setOpObserver(stdx::make_unique<OpObserverImpl>());
+        getGlobalServiceContext()->setOpObserver(stdx::make_unique<OpObserverShardingImpl>());
 
         setOplogCollectionName(getGlobalServiceContext());
         createOplog(&_opCtx);
@@ -186,7 +188,7 @@ protected:
         check(o, one(o));
     }
     void checkAll(const BSONObj& o) const {
-        unique_ptr<DBClientCursor> c = _client.query(ns(), o);
+        unique_ptr<DBClientCursor> c = _client.query(NamespaceString(ns()), o);
         verify(c->more());
         while (c->more()) {
             check(o, c->next());
@@ -221,19 +223,28 @@ protected:
         return count;
     }
     int opCount() {
-        return DBDirectClient(&_opCtx).query(cllNS(), BSONObj())->itcount();
+        return DBDirectClient(&_opCtx).query(NamespaceString(cllNS()), BSONObj())->itcount();
     }
     void applyAllOperations() {
         Lock::GlobalWrite lk(&_opCtx);
         vector<BSONObj> ops;
         {
             DBDirectClient db(&_opCtx);
-            auto cursor = db.query(cllNS(), BSONObj());
+            auto cursor = db.query(NamespaceString(cllNS()), BSONObj());
             while (cursor->more()) {
                 ops.push_back(cursor->nextSafe());
             }
         }
         {
+            if (!serverGlobalParams.enableMajorityReadConcern) {
+                if (ops.size() > 0) {
+                    if (auto tsElem = ops.front()["ts"]) {
+                        _opCtx.getServiceContext()->getStorageEngine()->setOldestTimestamp(
+                            tsElem.timestamp());
+                    }
+                }
+            }
+
             OldClientContext ctx(&_opCtx, ns());
             for (vector<BSONObj>::iterator i = ops.begin(); i != ops.end(); ++i) {
                 if (0) {
@@ -762,7 +773,8 @@ class MultiInc : public Base {
 public:
     string s() const {
         stringstream ss;
-        unique_ptr<DBClientCursor> cc = _client.query(ns(), Query().sort(BSON("_id" << 1)));
+        unique_ptr<DBClientCursor> cc =
+            _client.query(NamespaceString(ns()), Query().sort(BSON("_id" << 1)));
         bool first = true;
         while (cc->more()) {
             if (first)

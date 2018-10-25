@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -44,6 +46,7 @@
 #include "mongo/db/command_generic_argument.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/sharding_state.h"
@@ -65,6 +68,8 @@ namespace {
 // Causes the server to hang when it attempts to assign UUIDs to the provided database (or all
 // databases if none are provided).
 MONGO_FAIL_POINT_DEFINE(hangBeforeDatabaseUpgrade);
+
+MONGO_FAIL_POINT_DEFINE(assertAfterIndexUpdate);
 
 struct CollModRequest {
     const IndexDescriptor* idx = nullptr;
@@ -397,10 +402,13 @@ Status _collModInternal(OperationContext* opCtx,
             // Notify the index catalog that the definition of this index changed.
             cmr.idx = coll->getIndexCatalog()->refreshEntry(opCtx, cmr.idx);
             result->appendAs(newExpireSecs, "expireAfterSeconds_new");
-            opCtx->recoveryUnit()->onRollback([ opCtx, idx = cmr.idx, coll ]() {
-                coll->getIndexCatalog()->refreshEntry(opCtx, idx);
-            });
+
+            if (MONGO_FAIL_POINT(assertAfterIndexUpdate)) {
+                log() << "collMod - assertAfterIndexUpdate fail point enabled.";
+                uasserted(50970, "trigger rollback after the index update");
+            }
         }
+
 
         // Save previous TTL index expiration.
         ttlInfo = TTLCollModInfo{Seconds(newExpireSecs.safeNumberLong()),
@@ -443,8 +451,10 @@ Status _collModInternal(OperationContext* opCtx,
             // Refresh the in-memory instance of the index.
             desc = coll->getIndexCatalog()->refreshEntry(opCtx, desc);
 
-            opCtx->recoveryUnit()->onRollback(
-                [opCtx, desc, coll]() { coll->getIndexCatalog()->refreshEntry(opCtx, desc); });
+            if (MONGO_FAIL_POINT(assertAfterIndexUpdate)) {
+                log() << "collMod - assertAfterIndexUpdate fail point enabled.";
+                uasserted(50971, "trigger rollback for unique index update");
+            }
         }
     }
 
@@ -474,9 +484,14 @@ Status collMod(OperationContext* opCtx,
 Status collModWithUpgrade(OperationContext* opCtx,
                           const NamespaceString& nss,
                           const BSONObj& cmdObj) {
-    // A cmdObj with an empty collMod, i.e. nFields = 1, implies that it is a Unique Index
-    // upgrade collMod.
-    bool upgradeUniqueIndex = (cmdObj.nFields() == 1);
+    // An empty collMod is used to upgrade unique index during FCV upgrade. If an application
+    // executes the empty collMod when the secondary is upgrading FCV it is fine to upgrade the
+    // unique index becuase the secondary will eventually get the real empty collMod. If the
+    // application issues an empty collMod when FCV is not upgrading or upgraded to 4.2 then the
+    // unique index should not be upgraded due to this collMod on the secondary.
+    bool upgradeUniqueIndex =
+        (cmdObj.nFields() == 1 && serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+         serverGlobalParams.featureCompatibility.isVersionUpgradingOrUpgraded());
 
     // Update all non-replicated unique indexes on upgrade i.e. setFCV=4.2.
     if (upgradeUniqueIndex && nss == NamespaceString::kServerConfigurationNamespace) {
@@ -585,10 +600,14 @@ void updateUniqueIndexesOnUpgrade(OperationContext* opCtx) {
     log() << "Finished updating version of unique indexes for upgrade, waiting for all"
           << " index updates to be committed at optime " << awaitOpTime;
 
-    const WriteConcernOptions writeConcern(WriteConcernOptions::kMajority,
-                                           WriteConcernOptions::SyncMode::UNSET,
-                                           /*timeout*/ INT_MAX);
-    repl::ReplicationCoordinator::get(opCtx)->awaitReplication(opCtx, awaitOpTime, writeConcern);
+    auto timeout = opCtx->getWriteConcern().usedDefault ? WriteConcernOptions::kNoTimeout
+                                                        : opCtx->getWriteConcern().wTimeout;
+    const WriteConcernOptions writeConcern(
+        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, timeout);
+
+    uassertStatusOK(repl::ReplicationCoordinator::get(opCtx)
+                        ->awaitReplication(opCtx, awaitOpTime, writeConcern)
+                        .status);
 }
 
 Status updateNonReplicatedUniqueIndexes(OperationContext* opCtx) {

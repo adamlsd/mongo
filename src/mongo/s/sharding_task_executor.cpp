@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -44,7 +46,7 @@
 #include "mongo/s/cluster_last_error_info.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/is_mongos.h"
-#include "mongo/s/transaction/router_session_runtime_state.h"
+#include "mongo/s/transaction_router.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
@@ -121,57 +123,54 @@ StatusWith<TaskExecutor::CallbackHandle> ShardingTaskExecutor::scheduleRemoteCom
         return _executor->scheduleRemoteCommand(request, cb, baton);
     }
 
-    boost::optional<RemoteCommandRequest> newRequest;
+    boost::optional<RemoteCommandRequest> requestWithFixedLsid = [&] {
+        boost::optional<RemoteCommandRequest> newRequest;
 
-    if (request.opCtx->getLogicalSessionId() && !request.cmdObj.hasField("lsid")) {
-        newRequest.emplace(request);
-
-        BSONObjBuilder bob(std::move(newRequest->cmdObj));
-        {
-            // TODO SERVER-33702.
-            BSONObjBuilder subbob(bob.subobjStart("lsid"));
-            request.opCtx->getLogicalSessionId()->serialize(&subbob);
+        if (!request.opCtx->getLogicalSessionId()) {
+            return newRequest;
         }
 
-        newRequest->cmdObj = bob.obj();
-    }
+        if (request.cmdObj.hasField("lsid")) {
+            auto cmdObjLsid =
+                LogicalSessionFromClient::parse("lsid"_sd, request.cmdObj["lsid"].Obj());
 
-    auto routerSession = RouterSessionRuntimeState::get(request.opCtx);
-    if (routerSession) {
-        auto shard =
-            Grid::get(request.opCtx)->shardRegistry()->getShardForHostNoReload(request.target);
+            if (cmdObjLsid.getUid()) {
+                invariant(*cmdObjLsid.getUid() == request.opCtx->getLogicalSessionId()->getUid());
+                return newRequest;
+            }
 
-        if (!shard) {
-            return {ErrorCodes::ShardNotFound,
-                    str::stream() << "Could not find shard containing host: "
-                                  << request.target.toString()};
+            newRequest.emplace(request);
+            newRequest->cmdObj = newRequest->cmdObj.removeField("lsid");
         }
 
         if (!newRequest) {
             newRequest.emplace(request);
         }
 
-        auto& participant = routerSession->getOrCreateParticipant(shard->getId());
-        newRequest->cmdObj = participant.attachTxnFieldsIfNeeded(newRequest->cmdObj);
-    }
+        BSONObjBuilder bob(std::move(newRequest->cmdObj));
+        {
+            BSONObjBuilder subbob(bob.subobjStart("lsid"));
+            request.opCtx->getLogicalSessionId()->serialize(&subbob);
+            subbob.done();
+        }
+
+        newRequest->cmdObj = bob.obj();
+
+        return newRequest;
+    }();
 
     std::shared_ptr<OperationTimeTracker> timeTracker = OperationTimeTracker::get(request.opCtx);
 
     auto clusterGLE = ClusterLastErrorInfo::get(request.opCtx->getClient());
 
-    auto shardingCb =
-        [ timeTracker, clusterGLE, cb, grid = Grid::get(request.opCtx), routerSession ](
-            const TaskExecutor::RemoteCommandCallbackArgs& args) {
+    auto shardingCb = [ timeTracker, clusterGLE, cb, grid = Grid::get(request.opCtx) ](
+        const TaskExecutor::RemoteCommandCallbackArgs& args) {
         ON_BLOCK_EXIT([&cb, &args]() { cb(args); });
 
         // Update replica set monitor info.
         auto shard = grid->shardRegistry()->getShardForHostNoReload(args.request.target);
         if (!shard) {
             LOG(1) << "Could not find shard containing host: " << args.request.target.toString();
-        } else if (routerSession) {
-            // TODO: SERVER-35707 only mark as sent for non-network error?
-            auto& participant = routerSession->getOrCreateParticipant(shard->getId());
-            participant.markAsCommandSent();
         }
 
         if (!args.response.isOK()) {
@@ -228,15 +227,16 @@ StatusWith<TaskExecutor::CallbackHandle> ShardingTaskExecutor::scheduleRemoteCom
         }
     };
 
-    return _executor->scheduleRemoteCommand(newRequest ? *newRequest : request, shardingCb, baton);
+    return _executor->scheduleRemoteCommand(
+        requestWithFixedLsid ? *requestWithFixedLsid : request, shardingCb, baton);
 }
 
 void ShardingTaskExecutor::cancel(const CallbackHandle& cbHandle) {
     _executor->cancel(cbHandle);
 }
 
-void ShardingTaskExecutor::wait(const CallbackHandle& cbHandle) {
-    _executor->wait(cbHandle);
+void ShardingTaskExecutor::wait(const CallbackHandle& cbHandle, Interruptible* interruptible) {
+    _executor->wait(cbHandle, interruptible);
 }
 
 void ShardingTaskExecutor::appendConnectionStats(ConnectionPoolStats* stats) const {

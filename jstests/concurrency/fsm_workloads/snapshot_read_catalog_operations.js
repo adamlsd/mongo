@@ -8,7 +8,7 @@
  * finished. Additionally, index operations running concurrently with the snapshot read may cause
  * the read to fail with a SnapshotUnavailable error.
  *
- * @tags: [uses_transactions]
+ * @tags: [creates_background_indexes, uses_transactions]
  */
 
 load('jstests/concurrency/fsm_workload_helpers/snapshot_read_utils.js');
@@ -17,7 +17,7 @@ var $config = (function() {
 
     const states = {
         init: function init(db, collName) {
-            this.session = db.getMongo().startSession({causalConsistency: false});
+            this.session = db.getMongo().startSession({causalConsistency: true});
             this.sessionDb = this.session.getDatabase(db.getName());
             this.txnNumber = 0;
             this.stmtId = 0;
@@ -38,9 +38,7 @@ var $config = (function() {
             ];
             const commitTransactionErrorCodes = readErrorCodes;
             doSnapshotFind(sortByAscending, collName, this, readErrorCodes);
-            if (this.cursorId) {
-                doSnapshotGetMore(collName, this, readErrorCodes, commitTransactionErrorCodes);
-            }
+            doSnapshotGetMore(collName, this, readErrorCodes, commitTransactionErrorCodes);
         },
 
         insertDocs: function insertDocs(db, collName) {

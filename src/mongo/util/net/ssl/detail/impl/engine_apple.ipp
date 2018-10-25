@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -124,6 +126,9 @@ engine::engine(context::native_handle_type context, const std::string& remoteHos
         }
         _protoMin = context->protoMin;
         _protoMax = context->protoMax;
+        if (context->allowInvalidHostnames) {
+            _remoteHostName.clear();
+        }
     } else {
         apple::Context def;
         _protoMin = def.protoMin;
@@ -193,6 +198,7 @@ bool engine::_initSSL(stream_base::handshake_type type, asio::error_code& ec) {
 }
 
 engine::want engine::handshake(stream_base::handshake_type type, asio::error_code& ec) {
+    ec = asio::error_code();
     if (!_initSSL(type, ec)) {
         // Error happened, ec has been set.
         return want::want_nothing;
@@ -222,6 +228,7 @@ engine::want engine::handshake(stream_base::handshake_type type, asio::error_cod
 }
 
 engine::want engine::shutdown(asio::error_code& ec) {
+    ec = asio::error_code();
     if (_ssl) {
         const auto status = ::SSLClose(_ssl.get());
         if (status == ::errSSLWouldBlock) {
@@ -268,6 +275,7 @@ const asio::error_code& engine::map_error_code(asio::error_code& ec) const {
 engine::want engine::write(const asio::const_buffer& data,
                            asio::error_code& ec,
                            std::size_t& bytes_transferred) {
+    ec = asio::error_code();
     if (!verifyConnected(_ssl.get(), &ec)) {
         return want::want_nothing;
     }
@@ -302,6 +310,7 @@ asio::mutable_buffer engine::get_output(const asio::mutable_buffer& data) {
 engine::want engine::read(const asio::mutable_buffer& data,
                           asio::error_code& ec,
                           std::size_t& bytes_transferred) {
+    ec = asio::error_code();
     if (!verifyConnected(_ssl.get(), &ec)) {
         return want::want_nothing;
     }

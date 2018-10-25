@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -206,14 +208,24 @@ TEST(ResumeToken, WrongVersionToken) {
     ResumeTokenData resumeTokenDataIn;
     resumeTokenDataIn.clusterTime = ts;
     resumeTokenDataIn.version = 0;
+    resumeTokenDataIn.fromInvalidate = ResumeTokenData::FromInvalidate::kFromInvalidate;
 
-    // This one with version 0 should succeed.
+    // This one with version 0 should succeed. Version 0 cannot encode the fromInvalidate bool, so
+    // we expect it to be set to the default 'kNotFromInvalidate' after serialization.
     auto rtToken = ResumeToken::parse(ResumeToken(resumeTokenDataIn).toDocument().toBson());
     ResumeTokenData tokenData = rtToken.getData();
+    ASSERT_NE(resumeTokenDataIn, tokenData);
+    tokenData.fromInvalidate = ResumeTokenData::FromInvalidate::kFromInvalidate;
     ASSERT_EQ(resumeTokenDataIn, tokenData);
 
-    // With version 1 it should fail.
+    // Version 1 should include the 'fromInvalidate' bool through serialization.
     resumeTokenDataIn.version = 1;
+    rtToken = ResumeToken::parse(ResumeToken(resumeTokenDataIn).toDocument().toBson());
+    tokenData = rtToken.getData();
+    ASSERT_EQ(resumeTokenDataIn, tokenData);
+
+    // With version 2 it should fail - the maximum supported version is 1.
+    resumeTokenDataIn.version = 2;
     rtToken = ResumeToken::parse(ResumeToken(resumeTokenDataIn).toDocument().toBson());
 
     ASSERT_THROWS(rtToken.getData(), AssertionException);

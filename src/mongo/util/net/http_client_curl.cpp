@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -146,16 +148,16 @@ public:
         _handle.reset(curl_easy_init());
         uassert(ErrorCodes::InternalError, "Curl initialization failed", _handle);
 
-        curl_easy_setopt(_handle.get(), CURLOPT_CONNECTTIMEOUT, kConnectionTimeoutSeconds);
+        curl_easy_setopt(_handle.get(), CURLOPT_CONNECTTIMEOUT, longSeconds(kConnectionTimeout));
         curl_easy_setopt(_handle.get(), CURLOPT_FOLLOWLOCATION, 0);
         curl_easy_setopt(_handle.get(), CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
         curl_easy_setopt(_handle.get(), CURLOPT_NOSIGNAL, 1);
         curl_easy_setopt(_handle.get(), CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+        curl_easy_setopt(_handle.get(), CURLOPT_TIMEOUT, longSeconds(kTotalRequestTimeout));
 #if LIBCURL_VERSION_NUM > 0x072200
         // Requires >= 7.34.0
         curl_easy_setopt(_handle.get(), CURLOPT_SSLVERSION, CURL_SSLVERSION_TLSv1_2);
 #endif
-        curl_easy_setopt(_handle.get(), CURLOPT_TIMEOUT, kTotalRequestTimeoutSeconds);
         curl_easy_setopt(_handle.get(), CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 
         // TODO: CURLOPT_EXPECT_100_TIMEOUT_MS?
@@ -178,6 +180,14 @@ public:
         // Can't set on base handle because cURL doesn't deep-dup this field
         // and we don't want it getting overwritten while another thread is using it.
         _headers = headers;
+    }
+
+    void setTimeout(Seconds timeout) final {
+        curl_easy_setopt(_handle.get(), CURLOPT_TIMEOUT, longSeconds(timeout));
+    }
+
+    void setConnectTimeout(Seconds timeout) final {
+        curl_easy_setopt(_handle.get(), CURLOPT_CONNECTTIMEOUT, longSeconds(timeout));
     }
 
     DataBuilder get(StringData url) const final {
@@ -204,6 +214,14 @@ public:
     }
 
 private:
+    /**
+     * Helper for use with curl_easy_setopt which takes a vararg list,
+     * and expects a long, not the long long durationCount() returns.
+     */
+    long longSeconds(Seconds tm) {
+        return static_cast<long>(durationCount<Seconds>(tm));
+    }
+
     DataBuilder doRequest(CURL* handle, StringData url) const {
         const auto urlString = url.toString();
         curl_easy_setopt(handle, CURLOPT_URL, urlString.c_str());

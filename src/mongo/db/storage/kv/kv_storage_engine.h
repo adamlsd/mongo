@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -34,6 +36,7 @@
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/kv/kv_catalog.h"
 #include "mongo/db/storage/kv/kv_database_catalog_entry_base.h"
@@ -121,7 +124,8 @@ public:
 
     virtual void cleanShutdown();
 
-    virtual void setStableTimestamp(Timestamp stableTimestamp) override;
+    virtual void setStableTimestamp(Timestamp stableTimestamp,
+                                    boost::optional<Timestamp> maximumTruncationTimestamp) override;
 
     virtual void setInitialDataTimestamp(Timestamp initialDataTimestamp) override;
 
@@ -135,6 +139,8 @@ public:
 
     virtual bool supportsRecoverToStableTimestamp() const override;
 
+    virtual bool supportsRecoveryTimestamp() const override;
+
     virtual StatusWith<Timestamp> recoverToStableTimestamp(OperationContext* opCtx) override;
 
     virtual boost::optional<Timestamp> getRecoveryTimestamp() const override;
@@ -144,6 +150,8 @@ public:
     virtual Timestamp getAllCommittedTimestamp() const override;
 
     bool supportsReadConcernSnapshot() const final;
+
+    bool supportsReadConcernMajority() const final;
 
     virtual void replicationBatchIsComplete() const override;
 
@@ -194,6 +202,20 @@ private:
                                          std::list<std::string>& toDrop,
                                          CollIter begin,
                                          CollIter end);
+
+    /**
+     * When called in a repair context (_options.forRepair=true), attempts to recover a collection
+     * whose entry is present in the KVCatalog, but missing from the KVEngine. Returns an error
+     * Status if called outside of a repair context or the implementation of
+     * KVEngine::recoverOrphanedIdent returns an error other than DataModifiedByRepair.
+     *
+     * Returns Status::OK if the collection was recovered in the KVEngine and a new record store was
+     * created. Recovery does not make any guarantees about the integrity of the data in the
+     * collection.
+     */
+    Status _recoverOrphanedCollection(OperationContext* opCtx,
+                                      const NamespaceString& collectionName,
+                                      StringData collectionIdent);
 
     void _dumpCatalog(OperationContext* opCtx);
 

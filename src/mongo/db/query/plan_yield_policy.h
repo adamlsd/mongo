@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -36,7 +38,6 @@
 namespace mongo {
 
 class ClockSource;
-class RecordFetcher;
 
 class PlanYieldPolicy {
 public:
@@ -69,23 +70,14 @@ public:
      * plans). The PlanExecutor must *not* be in saved state. Handles calls to save/restore state
      * internally.
      *
-     * If 'fetcher' is non-NULL, then we are yielding because the storage engine told us
-     * that we will page fault on this record. We use 'fetcher' to retrieve the record
-     * after we give up our locks.
-     *
      * Returns Status::OK() if the executor was restored successfully and is still alive. Returns
      * ErrorCodes::QueryPlanKilled if the executor got killed during yield, and
      * ErrorCodes::ExceededTimeLimit if the operation has exceeded the time limit.
+     *
+     * Calls 'whileYieldingFn' after relinquishing locks and before reacquiring the locks that have
+     * been relinquished.
      */
-    virtual Status yieldOrInterrupt(RecordFetcher* fetcher = nullptr);
-
-    /**
-     * More generic version of yieldOrInterrupt() above.  This version calls 'beforeYieldingFn'
-     * immediately before locks are yielded (if they are), and 'whileYieldingFn' before locks are
-     * restored.
-     */
-    virtual Status yieldOrInterrupt(stdx::function<void()> beforeYieldingFn,
-                                    stdx::function<void()> whileYieldingFn);
+    virtual Status yieldOrInterrupt(stdx::function<void()> whileYieldingFn = nullptr);
 
     /**
      * All calls to shouldYieldOrInterrupt() will return true until the next call to
@@ -157,7 +149,7 @@ private:
     bool shouldYield();
 
     // Releases locks or storage engine state.
-    Status yield(stdx::function<void()> beforeYieldingFn, stdx::function<void()> whileYieldingFn);
+    Status yield(stdx::function<void()> whileYieldingFn);
 };
 
 }  // namespace mongo

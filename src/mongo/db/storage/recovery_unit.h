@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -160,6 +162,8 @@ public:
      *  - when using ReadSource::kProvided, the timestamp provided.
      *  - when using ReadSource::kLastAppliedSnapshot, the timestamp chosen using the storage
      * engine's last applied timestamp.
+     *  - when using ReadSource::kAllCommittedSnapshot, the timestamp chosen using the storage
+     * engine's all-committed timestamp.
      *  - when using ReadSource::kLastApplied, the last applied timestamp at which the current
      * storage transaction was opened, if one is open.
      *  - when using ReadSource::kMajorityCommitted, the majority committed timestamp chosen by the
@@ -265,6 +269,11 @@ public:
          */
         kLastAppliedSnapshot,
         /**
+         * Read from the all-committed timestamp. New transactions will always read from the same
+         * timestamp and never advance.
+         */
+        kAllCommittedSnapshot,
+        /**
          * Read from the timestamp provided to setTimestampReadSource.
          */
         kProvided
@@ -284,6 +293,18 @@ public:
 
     virtual ReadSource getTimestampReadSource() const {
         return ReadSource::kUnset;
+    };
+
+    /**
+     * Sets whether this operation intends to perform reads that do not need to keep data in the
+     * storage engine cache. This can be useful for operations that do large, one-time scans of
+     * data, and will attempt to keep higher-priority data from being evicted from the cache. This
+     * may not be called in an active transaction.
+     */
+    virtual void setReadOnce(bool readOnce){};
+
+    virtual bool getReadOnce() const {
+        return false;
     };
 
     /**

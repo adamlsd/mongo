@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -44,7 +46,7 @@
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
 #include "mongo/s/catalog/dist_lock_manager_mock.h"
-#include "mongo/s/catalog/sharding_catalog_client_impl.h"
+#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_database.h"
@@ -762,28 +764,20 @@ TEST_F(ShardingCatalogClientTest, GetCollectionsValidResultsNoDb) {
     configTargeter()->setFindHostReturnValue(HostAndPort("TestHost1"));
 
     CollectionType coll1;
-    coll1.setNs(NamespaceString{"test.system.indexes"});
+    coll1.setNs(NamespaceString{"test.coll1"});
     coll1.setUpdatedAt(network()->now());
-    coll1.setUnique(true);
+    coll1.setUnique(false);
     coll1.setEpoch(OID::gen());
     coll1.setKeyPattern(KeyPattern{BSON("_id" << 1)});
     ASSERT_OK(coll1.validate());
 
     CollectionType coll2;
-    coll2.setNs(NamespaceString{"test.coll1"});
+    coll2.setNs(NamespaceString{"anotherdb.coll1"});
     coll2.setUpdatedAt(network()->now());
     coll2.setUnique(false);
     coll2.setEpoch(OID::gen());
     coll2.setKeyPattern(KeyPattern{BSON("_id" << 1)});
     ASSERT_OK(coll2.validate());
-
-    CollectionType coll3;
-    coll3.setNs(NamespaceString{"anotherdb.coll1"});
-    coll3.setUpdatedAt(network()->now());
-    coll3.setUnique(false);
-    coll3.setEpoch(OID::gen());
-    coll3.setKeyPattern(KeyPattern{BSON("_id" << 1)});
-    ASSERT_OK(coll3.validate());
 
     const OpTime newOpTime(Timestamp(7, 6), 5);
 
@@ -798,49 +792,46 @@ TEST_F(ShardingCatalogClientTest, GetCollectionsValidResultsNoDb) {
         return std::move(collections);
     });
 
-    onFindWithMetadataCommand(
-        [this, coll1, coll2, coll3, newOpTime](const RemoteCommandRequest& request) {
-            ASSERT_BSONOBJ_EQ(getReplSecondaryOkMetadata(),
-                              rpc::TrackingMetadata::removeTrackingData(request.metadata));
+    onFindWithMetadataCommand([this, coll1, coll2, newOpTime](const RemoteCommandRequest& request) {
+        ASSERT_BSONOBJ_EQ(getReplSecondaryOkMetadata(),
+                          rpc::TrackingMetadata::removeTrackingData(request.metadata));
 
-            const NamespaceString nss(request.dbname, request.cmdObj.firstElement().String());
-            ASSERT_EQ(nss, CollectionType::ConfigNS);
+        const NamespaceString nss(request.dbname, request.cmdObj.firstElement().String());
+        ASSERT_EQ(nss, CollectionType::ConfigNS);
 
-            auto query = assertGet(QueryRequest::makeFromFindCommand(nss, request.cmdObj, false));
+        auto query = assertGet(QueryRequest::makeFromFindCommand(nss, request.cmdObj, false));
 
-            ASSERT_EQ(query->nss(), CollectionType::ConfigNS);
-            ASSERT_BSONOBJ_EQ(query->getFilter(), BSONObj());
-            ASSERT_BSONOBJ_EQ(query->getSort(), BSONObj());
+        ASSERT_EQ(query->nss(), CollectionType::ConfigNS);
+        ASSERT_BSONOBJ_EQ(query->getFilter(), BSONObj());
+        ASSERT_BSONOBJ_EQ(query->getSort(), BSONObj());
 
-            checkReadConcern(request.cmdObj, Timestamp(0, 0), repl::OpTime::kUninitializedTerm);
+        checkReadConcern(request.cmdObj, Timestamp(0, 0), repl::OpTime::kUninitializedTerm);
 
-            ReplSetMetadata metadata(10, newOpTime, newOpTime, 100, OID(), 30, -1);
-            BSONObjBuilder builder;
-            metadata.writeToMetadata(&builder).transitional_ignore();
+        ReplSetMetadata metadata(10, newOpTime, newOpTime, 100, OID(), 30, -1);
+        BSONObjBuilder builder;
+        metadata.writeToMetadata(&builder).transitional_ignore();
 
-            return std::make_tuple(vector<BSONObj>{coll1.toBSON(), coll2.toBSON(), coll3.toBSON()},
-                                   builder.obj());
-        });
+        return std::make_tuple(vector<BSONObj>{coll1.toBSON(), coll2.toBSON()}, builder.obj());
+    });
 
     const auto& actualColls = future.timed_get(kFutureTimeout);
-    ASSERT_EQ(3U, actualColls.size());
+    ASSERT_EQ(2U, actualColls.size());
     ASSERT_BSONOBJ_EQ(coll1.toBSON(), actualColls[0].toBSON());
     ASSERT_BSONOBJ_EQ(coll2.toBSON(), actualColls[1].toBSON());
-    ASSERT_BSONOBJ_EQ(coll3.toBSON(), actualColls[2].toBSON());
 }
 
 TEST_F(ShardingCatalogClientTest, GetCollectionsValidResultsWithDb) {
     configTargeter()->setFindHostReturnValue(HostAndPort("TestHost1"));
 
     CollectionType coll1;
-    coll1.setNs(NamespaceString{"test.system.indexes"});
+    coll1.setNs(NamespaceString{"test.coll1"});
     coll1.setUpdatedAt(network()->now());
     coll1.setUnique(true);
     coll1.setEpoch(OID::gen());
     coll1.setKeyPattern(KeyPattern{BSON("_id" << 1)});
 
     CollectionType coll2;
-    coll2.setNs(NamespaceString{"test.coll1"});
+    coll2.setNs(NamespaceString{"test.coll2"});
     coll2.setUpdatedAt(network()->now());
     coll2.setUnique(false);
     coll2.setEpoch(OID::gen());
@@ -890,7 +881,7 @@ TEST_F(ShardingCatalogClientTest, GetCollectionsInvalidCollectionType) {
     });
 
     CollectionType validColl;
-    validColl.setNs(NamespaceString{"test.system.indexes"});
+    validColl.setNs(NamespaceString{"test.coll1"});
     validColl.setUpdatedAt(network()->now());
     validColl.setUnique(true);
     validColl.setEpoch(OID::gen());
@@ -1187,7 +1178,7 @@ TEST_F(ShardingCatalogClientTest, ApplyChunkOpsDeprecatedSuccessful) {
         ASSERT_BSONOBJ_EQ(BSON("w"
                                << "majority"
                                << "wtimeout"
-                               << 15000),
+                               << 60000),
                           request.cmdObj["writeConcern"].Obj());
         ASSERT_BSONOBJ_EQ(BSON(rpc::kReplSetMetadataFieldName << 1),
                           rpc::TrackingMetadata::removeTrackingData(request.metadata));

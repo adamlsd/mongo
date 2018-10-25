@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -33,6 +35,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/s/shard_key_pattern.h"
 
@@ -88,21 +91,39 @@ public:
         const ShardId& databasePrimaryShardId,
         const Timestamp& validAfter,
         const std::vector<BSONObj>& splitPoints,
-        const std::vector<ShardId>& shardIds,
+        const std::vector<ShardId>& allShardIds,
         const int numContiguousChunksPerShard = 1);
 
     /**
-     * Creates and writes to the config server the first chunks for a newly sharded collection.
-     * Returns the created chunks.
+     * Produces the initial chunks that need to be written for a collection which is being
+     * newly-sharded based on the given tags. Chunks that do not correspond to any pre-defined
+     * zones are assigned to available shards in a round-robin fashion.
      */
-    static ShardCollectionConfig writeFirstChunksToConfig(
-        OperationContext* opCtx,
+    static ShardCollectionConfig generateShardCollectionInitialZonedChunks(
         const NamespaceString& nss,
         const ShardKeyPattern& shardKeyPattern,
-        const ShardId& primaryShardId,
-        const std::vector<BSONObj>& splitPoints,
-        const bool distributeInitialChunks,
-        const int numContiguousChunksPerShard = 1);
-};
+        const Timestamp& validAfter,
+        const std::vector<TagsType>& tags,
+        const StringMap<std::vector<ShardId>>& tagToShards,
+        const std::vector<ShardId>& allShardIds);
 
+    /**
+     * Creates the first chunks for a newly sharded collection.
+     * Returns the created chunks.
+     */
+    static ShardCollectionConfig createFirstChunks(OperationContext* opCtx,
+                                                   const NamespaceString& nss,
+                                                   const ShardKeyPattern& shardKeyPattern,
+                                                   const ShardId& primaryShardId,
+                                                   const std::vector<BSONObj>& splitPoints,
+                                                   const std::vector<TagsType>& tags,
+                                                   const bool distributeInitialChunks,
+                                                   const int numContiguousChunksPerShard = 1);
+
+    /**
+     * Writes to the config server the first chunks for a newly sharded collection.
+     */
+    static void writeFirstChunksToConfig(
+        OperationContext* opCtx, const InitialSplitPolicy::ShardCollectionConfig& initialChunks);
+};
 }  // namespace mongo

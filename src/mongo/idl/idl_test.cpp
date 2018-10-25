@@ -1,32 +1,36 @@
+
 /**
- * Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
+
+#include <limits>
 
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobjbuilder.h"
@@ -273,6 +277,31 @@ TEST(IDLOneTypeTests, TestNegativeWrongTypes) {
     TestParsers<One_date, Date>();
     TestParsers<One_timestamp, bsonTimestamp>();
 }
+
+// Negative: document with wrong types for required field
+TEST(IDLOneTypeTests, TestNegativeRequiredNullTypes) {
+    TestParse<One_string, String, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_int, NumberInt, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_long, NumberLong, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_double, NumberDouble, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_bool, Bool, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_objectid, jstOID, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_date, Date, NullLabeler, jstNULL>(BSONNULL);
+    TestParse<One_timestamp, bsonTimestamp, NullLabeler, jstNULL>(BSONNULL);
+}
+
+// Negative: document with wrong types for required field
+TEST(IDLOneTypeTests, TestNegativeRequiredUndefinedTypes) {
+    TestParse<One_string, String, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_int, NumberInt, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_long, NumberLong, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_double, NumberDouble, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_bool, Bool, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_objectid, jstOID, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_date, Date, UndefinedLabeler, Undefined>(BSONUndefined);
+    TestParse<One_timestamp, bsonTimestamp, UndefinedLabeler, Undefined>(BSONUndefined);
+}
+
 
 // Mixed: test a type that accepts multiple bson types
 TEST(IDLOneTypeTests, TestSafeInt32) {
@@ -600,6 +629,19 @@ TEST(IDLFieldTests, TestStrictStructIgnoredField) {
     }
 }
 
+// Negative: check duplicate ignored fields fail
+TEST(IDLFieldTests, TestStrictDuplicateIgnoredFields) {
+    IDLParserErrorContext ctxt("root");
+
+    // Negative: Test duplicate ignored fields fail
+    {
+        auto testDoc =
+            BSON("required_field" << 12 << "ignored_field" << 123 << "ignored_field" << 456);
+        ASSERT_THROWS(IgnoredField::parse(ctxt, testDoc), AssertionException);
+    }
+}
+
+
 // First test: test an empty document and the default value
 // Second test: test a non-empty document and that we do not get the default value
 #define TEST_DEFAULT_VALUES(field_name, default_value, new_value)   \
@@ -683,6 +725,31 @@ TEST(IDLFieldTests, TestOptionalFields) {
         auto testDoc = BSON("field2" << 123);
         ASSERT_BSONOBJ_EQ(testDoc, loopbackDoc);
     }
+}
+
+template <typename TestT>
+void TestWeakType(TestT test_value) {
+    IDLParserErrorContext ctxt("root");
+    auto testDoc =
+        BSON("field1" << test_value << "field2" << test_value << "field3" << test_value << "field4"
+                      << test_value
+                      << "field5"
+                      << test_value);
+    auto testStruct = Optional_field::parse(ctxt, testDoc);
+
+    ASSERT_FALSE(testStruct.getField1().is_initialized());
+    ASSERT_FALSE(testStruct.getField2().is_initialized());
+    ASSERT_FALSE(testStruct.getField3().is_initialized());
+    ASSERT_FALSE(testStruct.getField4().is_initialized());
+    ASSERT_FALSE(testStruct.getField5().is_initialized());
+}
+
+// Positive: struct strict, and optional field works
+TEST(IDLFieldTests, TestOptionalFieldsWithNullAndUndefined) {
+
+    TestWeakType<NullLabeler>(BSONNULL);
+
+    TestWeakType<UndefinedLabeler>(BSONUndefined);
 }
 
 // Positive: Test a nested struct
@@ -2336,6 +2403,214 @@ TEST(IDLChainedStruct, TestInline) {
 
         ASSERT_BSONOBJ_EQ(testDoc, loopbackDoc);
     }
+}
+
+TEST(IDLValidatedField, Int_basic_ranges) {
+    // Explicitly call setters.
+    Int_basic_ranges obj0;
+    obj0.setPositive_int(42);
+    ASSERT_THROWS(obj0.setPositive_int(0), AssertionException);
+    ASSERT_THROWS(obj0.setPositive_int(-42), AssertionException);
+
+    ASSERT_THROWS(obj0.setNegative_int(42), AssertionException);
+    ASSERT_THROWS(obj0.setNegative_int(0), AssertionException);
+    obj0.setNegative_int(-42);
+
+    obj0.setNon_negative_int(42);
+    obj0.setNon_negative_int(0);
+    ASSERT_THROWS(obj0.setNon_negative_int(-42), AssertionException);
+
+    ASSERT_THROWS(obj0.setNon_positive_int(42), AssertionException);
+    obj0.setNon_positive_int(0);
+    obj0.setNon_positive_int(-42);
+
+    ASSERT_THROWS(obj0.setByte_range_int(-1), AssertionException);
+    obj0.setByte_range_int(0);
+    obj0.setByte_range_int(127);
+    obj0.setByte_range_int(128);
+    obj0.setByte_range_int(255);
+    ASSERT_THROWS(obj0.setByte_range_int(256), AssertionException);
+
+    // IDL ints *are* int32_t, so no number we can pass to the func will actually fail.
+    obj0.setRange_int(std::numeric_limits<std::int32_t>::min());
+    obj0.setRange_int(-65536);
+    obj0.setRange_int(0);
+    obj0.setRange_int(65536);
+    obj0.setRange_int(std::numeric_limits<std::int32_t>::max());
+
+    // Positive case parsing.
+    const auto tryPass = [](std::int32_t pos,
+                            std::int32_t neg,
+                            std::int32_t nonneg,
+                            std::int32_t nonpos,
+                            std::int32_t byte_range,
+                            std::int32_t int_range) {
+        IDLParserErrorContext ctxt("root");
+        auto doc =
+            BSON("positive_int" << pos << "negative_int" << neg << "non_negative_int" << nonneg
+                                << "non_positive_int"
+                                << nonpos
+                                << "byte_range_int"
+                                << byte_range
+                                << "range_int"
+                                << int_range);
+        auto obj = Int_basic_ranges::parse(ctxt, doc);
+        ASSERT_EQUALS(obj.getPositive_int(), pos);
+        ASSERT_EQUALS(obj.getNegative_int(), neg);
+        ASSERT_EQUALS(obj.getNon_negative_int(), nonneg);
+        ASSERT_EQUALS(obj.getNon_positive_int(), nonpos);
+        ASSERT_EQUALS(obj.getByte_range_int(), byte_range);
+        ASSERT_EQUALS(obj.getRange_int(), int_range);
+    };
+
+    // Negative case parsing.
+    const auto tryFail = [](std::int32_t pos,
+                            std::int32_t neg,
+                            std::int32_t nonneg,
+                            std::int32_t nonpos,
+                            std::int32_t byte_range,
+                            std::int32_t int_range) {
+        IDLParserErrorContext ctxt("root");
+        auto doc =
+            BSON("positive_int" << pos << "negative_int" << neg << "non_negative_int" << nonneg
+                                << "non_positive_int"
+                                << nonpos
+                                << "byte_range_int"
+                                << byte_range
+                                << "range_int"
+                                << int_range);
+        ASSERT_THROWS(Int_basic_ranges::parse(ctxt, doc), AssertionException);
+    };
+
+    tryPass(1, -1, 0, 0, 128, 65537);
+    tryFail(0, -1, 0, 0, 128, 65537);
+    tryFail(1, 0, 0, 0, 128, 65537);
+    tryFail(1, -1, -1, 0, 128, 65537);
+    tryFail(1, -1, 0, 1, 128, 65537);
+    tryFail(1, -1, 0, 0, 256, 65537);
+    tryFail(0, 0, -1, 1, 257, 0);
+
+    tryPass(1000, -1000, 1, -1, 127, 0x7FFFFFFF);
+}
+
+TEST(IDLValidatedField, Double_basic_ranges) {
+    // Explicitly call setters.
+    Double_basic_ranges obj0;
+    obj0.setPositive_double(42.0);
+    obj0.setPositive_double(0.000000000001);
+    ASSERT_THROWS(obj0.setPositive_double(0.0), AssertionException);
+    ASSERT_THROWS(obj0.setPositive_double(-42.0), AssertionException);
+
+    ASSERT_THROWS(obj0.setNegative_double(42.0), AssertionException);
+    ASSERT_THROWS(obj0.setNegative_double(0.0), AssertionException);
+    obj0.setNegative_double(-0.000000000001);
+    obj0.setNegative_double(-42.0);
+
+    obj0.setNon_negative_double(42.0);
+    obj0.setNon_negative_double(0.0);
+    ASSERT_THROWS(obj0.setNon_negative_double(-42.0), AssertionException);
+
+    ASSERT_THROWS(obj0.setNon_positive_double(42.0), AssertionException);
+    obj0.setNon_positive_double(0.0);
+    obj0.setNon_positive_double(-42.0);
+
+    ASSERT_THROWS(obj0.setRange_double(-12345678901234600000.0), AssertionException);
+    obj0.setRange_double(-12345678901234500000.0);
+    obj0.setRange_double(-3000000000.0);
+    obj0.setRange_double(0);
+    obj0.setRange_double(3000000000);
+    obj0.setRange_double(12345678901234500000.0);
+    ASSERT_THROWS(obj0.setRange_double(12345678901234600000.0), AssertionException);
+
+    // Positive case parsing.
+    const auto tryPass =
+        [](double pos, double neg, double nonneg, double nonpos, double double_range) {
+            IDLParserErrorContext ctxt("root");
+            auto doc =
+                BSON("positive_double" << pos << "negative_double" << neg << "non_negative_double"
+                                       << nonneg
+                                       << "non_positive_double"
+                                       << nonpos
+                                       << "range_double"
+                                       << double_range);
+            auto obj = Double_basic_ranges::parse(ctxt, doc);
+            ASSERT_EQUALS(obj.getPositive_double(), pos);
+            ASSERT_EQUALS(obj.getNegative_double(), neg);
+            ASSERT_EQUALS(obj.getNon_negative_double(), nonneg);
+            ASSERT_EQUALS(obj.getNon_positive_double(), nonpos);
+            ASSERT_EQUALS(obj.getRange_double(), double_range);
+        };
+
+    // Negative case parsing.
+    const auto tryFail =
+        [](double pos, double neg, double nonneg, double nonpos, double double_range) {
+            IDLParserErrorContext ctxt("root");
+            auto doc =
+                BSON("positive_double" << pos << "negative_double" << neg << "non_negative_double"
+                                       << nonneg
+                                       << "non_positive_double"
+                                       << nonpos
+                                       << "range_double"
+                                       << double_range);
+            ASSERT_THROWS(Double_basic_ranges::parse(ctxt, doc), AssertionException);
+        };
+
+    tryPass(1, -1, 0, 0, 123456789012345);
+    tryFail(0, -1, 0, 0, 123456789012345);
+    tryFail(1, 0, 0, 0, 123456789012345);
+    tryFail(1, -1, -1, 0, 123456789012345);
+    tryFail(1, -1, 0, 1, 123456789012345);
+    tryFail(1, -1, 0, -1, 12345678901234600000.0);
+    tryPass(0.00000000001, -0.00000000001, 0.0, 0.0, 1.23456789012345);
+}
+
+TEST(IDLValidatedField, Callback_validators) {
+    // Explicitly call setters.
+    Callback_validators obj0;
+    obj0.setInt_even(42);
+    ASSERT_THROWS(obj0.setInt_even(7), AssertionException);
+    obj0.setInt_even(0);
+    ASSERT_THROWS(obj0.setInt_even(-7), AssertionException);
+    obj0.setInt_even(-42);
+
+    ASSERT_THROWS(obj0.setDouble_nearly_int(3.141592), AssertionException);
+    ASSERT_THROWS(obj0.setDouble_nearly_int(-2.71828), AssertionException);
+    obj0.setDouble_nearly_int(0.0);
+    obj0.setDouble_nearly_int(1.0);
+    obj0.setDouble_nearly_int(1.05);
+    obj0.setDouble_nearly_int(-123456789.01234500000);
+
+    ASSERT_THROWS(obj0.setString_starts_with_x("whiskey"), AssertionException);
+    obj0.setString_starts_with_x("x-ray");
+    ASSERT_THROWS(obj0.setString_starts_with_x("yankee"), AssertionException);
+
+    // Positive case parsing.
+    const auto tryPass =
+        [](std::int32_t int_even, double double_nearly_int, StringData string_starts_with_x) {
+            IDLParserErrorContext ctxt("root");
+            auto doc = BSON("int_even" << int_even << "double_nearly_int" << double_nearly_int
+                                       << "string_starts_with_x"
+                                       << string_starts_with_x);
+            auto obj = Callback_validators::parse(ctxt, doc);
+            ASSERT_EQUALS(obj.getInt_even(), int_even);
+            ASSERT_EQUALS(obj.getDouble_nearly_int(), double_nearly_int);
+            ASSERT_EQUALS(obj.getString_starts_with_x(), string_starts_with_x);
+        };
+
+    // Negative case parsing.
+    const auto tryFail =
+        [](std::int32_t int_even, double double_nearly_int, StringData string_starts_with_x) {
+            IDLParserErrorContext ctxt("root");
+            auto doc = BSON("int_even" << int_even << "double_nearly_int" << double_nearly_int
+                                       << "string_starts_with_x"
+                                       << string_starts_with_x);
+            ASSERT_THROWS(Callback_validators::parse(ctxt, doc), AssertionException);
+        };
+
+    tryPass(42, 123456789.01, "x-ray");
+    tryFail(43, 123456789.01, "x-ray");
+    tryFail(42, 123456789.11, "x-ray");
+    tryFail(42, 123456789.01, "uniform");
 }
 
 // Positive: verify a command a string arg

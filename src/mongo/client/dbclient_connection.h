@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2008-2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -48,6 +50,7 @@
 #include "mongo/rpc/protocol.h"
 #include "mongo/rpc/unique_message.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/stdx/mutex.h"
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"
@@ -63,9 +66,13 @@ class DBClientCursor;
 class DBClientCursorBatchIterator;
 
 /**
-    A basic connection to the database.
-    This is the main entry point for talking to a simple Mongo setup
-*/
+ *  A basic connection to the database.
+ *  This is the main entry point for talking to a simple Mongo setup
+ *
+ *  In general, this type is only allowed to be used from one thread at a time. As a special
+ *  exception, it is legal to call shutdownAndDisallowReconnect() from any thread as a way to
+ *  interrupt the owning thread.
+ */
 class DBClientConnection : public DBClientBase {
 public:
     using DBClientBase::query;
@@ -103,9 +110,7 @@ public:
      * @param errmsg any relevant error message will appended to the string
      * @return false if fails to connect.
      */
-    virtual bool connect(const HostAndPort& server,
-                         StringData applicationName,
-                         std::string& errmsg);
+    bool connect(const HostAndPort& server, StringData applicationName, std::string& errmsg);
 
     /**
      * Semantically equivalent to the previous connect method, but returns a Status
@@ -116,7 +121,7 @@ public:
      * @param a hook to validate the 'isMaster' reply received during connection. If the hook
      * fails, the connection will be terminated and a non-OK status will be returned.
      */
-    Status connect(const HostAndPort& server, StringData applicationName);
+    virtual Status connect(const HostAndPort& server, StringData applicationName);
 
     /**
      * This version of connect does not run 'isMaster' after creating a TCP connection to the
@@ -144,25 +149,26 @@ public:
      * @param info the result object for the logout command (provided for backwards
      *     compatibility with mongo shell)
      */
-    virtual void logout(const std::string& dbname, BSONObj& info);
+    void logout(const std::string& dbname, BSONObj& info) override;
 
-    virtual std::unique_ptr<DBClientCursor> query(const std::string& ns,
-                                                  Query query = Query(),
-                                                  int nToReturn = 0,
-                                                  int nToSkip = 0,
-                                                  const BSONObj* fieldsToReturn = 0,
-                                                  int queryOptions = 0,
-                                                  int batchSize = 0) {
+    std::unique_ptr<DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
+                                          Query query = Query(),
+                                          int nToReturn = 0,
+                                          int nToSkip = 0,
+                                          const BSONObj* fieldsToReturn = 0,
+                                          int queryOptions = 0,
+                                          int batchSize = 0) override {
         checkConnection();
         return DBClientBase::query(
-            ns, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
+            nsOrUuid, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
     }
 
-    virtual unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
-                                     const std::string& ns,
-                                     Query query,
-                                     const BSONObj* fieldsToReturn,
-                                     int queryOptions);
+    unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+                             const NamespaceStringOrUUID& nsOrUuid,
+                             Query query,
+                             const BSONObj* fieldsToReturn,
+                             int queryOptions,
+                             int batchSize = 0) override;
 
     using DBClientBase::runCommandWithTarget;
     std::pair<rpc::UniqueReply, DBClientBase*> runCommandWithTarget(OpMsgRequest request) override;
@@ -176,15 +182,21 @@ public:
        @return true if this connection is currently in a failed state.  When autoreconnect is on,
                a connection will transition back to an ok state after reconnecting.
      */
-    bool isFailed() const {
-        return _failed;
+    bool isFailed() const override {
+        return _failed.load();
     }
 
-    bool isStillConnected();
+    bool isStillConnected() override;
 
     void setTags(transport::Session::TagMask tag);
 
-    void shutdown();
+    /**
+     * Causes an error to be reported the next time the connection is used. Will interrupt
+     * operations if they are currently blocked waiting for the network.
+     *
+     * This is the only method that is allowed to be called from other threads.
+     */
+    void shutdownAndDisallowReconnect();
 
     void setWireVersions(int minWireVersion, int maxWireVersion) {
         _minWireVersion = minWireVersion;
@@ -199,39 +211,42 @@ public:
         return _maxWireVersion;
     }
 
-    std::string toString() const {
+    std::string toString() const override {
         std::stringstream ss;
         ss << _serverAddress;
         if (!_resolvedAddress.empty())
             ss << " (" << _resolvedAddress << ")";
-        if (_failed)
+        if (_failed.load())
             ss << " failed";
         return ss.str();
     }
 
-    std::string getServerAddress() const {
+    std::string getServerAddress() const override {
         return _serverAddress.toString();
     }
     const HostAndPort& getServerHostAndPort() const {
         return _serverAddress;
     }
 
-    virtual void say(Message& toSend, bool isRetry = false, std::string* actualServer = 0);
-    virtual bool recv(Message& m, int lastRequestId);
-    virtual void checkResponse(const std::vector<BSONObj>& batch,
-                               bool networkError,
-                               bool* retry = NULL,
-                               std::string* host = NULL);
-    virtual bool call(Message& toSend, Message& response, bool assertOk, std::string* actualServer);
-    virtual ConnectionString::ConnectionType type() const {
+    void say(Message& toSend, bool isRetry = false, std::string* actualServer = 0) override;
+    bool recv(Message& m, int lastRequestId) override;
+    void checkResponse(const std::vector<BSONObj>& batch,
+                       bool networkError,
+                       bool* retry = NULL,
+                       std::string* host = NULL) override;
+    bool call(Message& toSend,
+              Message& response,
+              bool assertOk,
+              std::string* actualServer) override;
+    ConnectionString::ConnectionType type() const override {
         return ConnectionString::MASTER;
     }
     void setSoTimeout(double timeout);
-    double getSoTimeout() const {
+    double getSoTimeout() const override {
         return _socketTimeout.value_or(Milliseconds{0}).count() / 1000.0;
     }
 
-    virtual bool lazySupported() const {
+    bool lazySupported() const override {
         return true;
     }
 
@@ -253,7 +268,7 @@ public:
 
     // throws a NetworkException if in failed state and not reconnecting or if waiting to reconnect
     void checkConnection() override {
-        if (_failed)
+        if (_failed.load())
             _checkConnection();
     }
 
@@ -271,15 +286,21 @@ protected:
     bool _isReplicaSetMember = false;
     bool _isMongos = false;
 
-    virtual void _auth(const BSONObj& params);
+    void _auth(const BSONObj& params) override;
 
+    // The session mutex must be held to shutdown the _session from a non-owning thread, or to
+    // rebind the handle from the owning thread. The thread that owns this DBClientConnection is
+    // allowed to use the _session without locking the mutex. This mutex also guards writes to
+    // _stayFailed, although reads are allowed outside the mutex.
+    stdx::mutex _sessionMutex;
     transport::SessionHandle _session;
     boost::optional<Milliseconds> _socketTimeout;
     transport::Session::TagMask _tagMask = transport::Session::kEmptyTagMask;
     uint64_t _sessionCreationMicros = INVALID_SOCK_CREATION_TIME;
     Date_t _lastConnectivityCheck;
 
-    bool _failed = false;
+    AtomicBool _stayFailed{false};
+    AtomicBool _failed{false};
     const bool autoReconnect;
     Backoff autoReconnectBackoff;
 

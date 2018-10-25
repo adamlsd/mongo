@@ -1,29 +1,31 @@
+
 /**
- *    Copyright 2018 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -39,9 +41,12 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/type_traits.h"
 #include "mongo/stdx/utility.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/debug_util.h"
+#include "mongo/util/functional.h"
+#include "mongo/util/interruptible.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/scopeguard.h"
 
@@ -74,21 +79,6 @@ struct FakeVoid {};
 template <typename T>
 using VoidToFakeVoid = std::conditional_t<std::is_void<T>::value, FakeVoid, T>;
 
-/**
- * This is a poor-man's implementation of c++17 std::is_invocable. We should replace it with the
- * stdlib one once we can make call() use std::invoke.
- */
-template <typename Func,
-          typename... Args,
-          typename = typename std::result_of<Func && (Args && ...)>::type>
-auto is_invocable_impl(Func&& func, Args&&... args) -> std::true_type;
-auto is_invocable_impl(...) -> std::false_type;
-
-template <typename Func, typename... Args>
-struct is_invocable
-    : public decltype(is_invocable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
-
-
 // call(func, FakeVoid) -> func(Status::OK())
 // This simulates the implicit Status/T overloading you get by taking a StatusWith<T> that doesn't
 // work for Status/void and Status.
@@ -119,8 +109,9 @@ inline auto call(Func&& func) {
 
 template <typename Func>
 inline auto call(Func&& func, FakeVoid) {
-    auto useStatus =
-        std::integral_constant<bool, (!is_invocable<Func>() && is_invocable<Func, Status>())>();
+    auto useStatus = std::integral_constant<bool,
+                                            (!stdx::is_invocable<Func>() &&
+                                             stdx::is_invocable<Func, Status>())>();
     return callVoidOrStatus(func, useStatus);
 }
 
@@ -327,7 +318,7 @@ public:
     virtual ~SharedStateBase() = default;
 
     // Only called by future side.
-    void wait() noexcept {
+    void wait(Interruptible* interruptible) {
         if (state.load(std::memory_order_acquire) == SSBState::kFinished)
             return;
 
@@ -342,7 +333,7 @@ public:
         }
 
         stdx::unique_lock<stdx::mutex> lk(mx);
-        cv->wait(lk, [&] {
+        interruptible->waitForConditionOrInterrupt(*cv, lk, [&] {
             // The mx locking above is insufficient to establish an acquire if state transitions to
             // kFinished before we get here, but we aquire mx before the producer does.
             return state.load(std::memory_order_acquire) == SSBState::kFinished;
@@ -422,7 +413,7 @@ public:
     boost::intrusive_ptr<SharedStateBase> continuation;  // F
 
     // Takes this as argument and usually writes to continuation.
-    std::function<void(SharedStateBase* input)> callback;  // F
+    unique_function<void(SharedStateBase* input)> callback;  // F
 
 
     // These are only used to signal completion to blocking waiters. Benchmarks showed that it was
@@ -522,7 +513,7 @@ public:
 
 
     /**
-     * Breaks this `Promise`, if not fulfilled and not in a moved-from state.
+     * Breaks this `Promise`, if not fulfilled and not in a null state.
      */
     Promise& operator=(Promise&& p) noexcept {
         breakPromiseIfNeeded();
@@ -765,37 +756,86 @@ public:
     }
 
     /**
+     * Returns when the future isReady().
+     *
+     * Throws if the interruptible passed is interrupted (explicitly or via deadline).
+     */
+    void wait(Interruptible* interruptible = Interruptible::notInterruptible()) const {
+        if (_immediate) {
+            return;
+        }
+
+        _shared->wait(interruptible);
+    }
+
+    /**
+     * Returns Status::OK() when the future isReady().
+     *
+     * Returns a non-okay status if the interruptible is interrupted.
+     */
+    Status waitNoThrow(Interruptible* interruptible = Interruptible::notInterruptible()) const
+        noexcept {
+        if (_immediate) {
+            return Status::OK();
+        }
+
+        try {
+            _shared->wait(interruptible);
+        } catch (const DBException& ex) {
+            return ex.toStatus();
+        }
+
+        return Status::OK();
+    }
+
+    /**
      * Gets the value out of this Future, blocking until it is ready.
      *
      * get() methods throw on error, while getNoThrow() returns a !OK status.
      *
      * These methods can be called multiple times, except for the rvalue overloads.
+     *
+     * Note: It is impossible to differentiate interruptible interruption from an error propagating
+     * down the future chain with these methods.  If you need to distinguish the two cases, call
+     * wait() first.
      */
-    T get() && {
-        return std::move(getImpl());
+    T get(Interruptible* interruptible = Interruptible::notInterruptible()) && {
+        return std::move(getImpl(interruptible));
     }
-    T& get() & {
-        return getImpl();
+    T& get(Interruptible* interruptible = Interruptible::notInterruptible()) & {
+        return getImpl(interruptible);
     }
-    const T& get() const& {
-        return const_cast<Future*>(this)->getImpl();
+    const T& get(Interruptible* interruptible = Interruptible::notInterruptible()) const& {
+        return const_cast<Future*>(this)->getImpl(interruptible);
     }
-    StatusWith<T> getNoThrow() && noexcept {
+    StatusWith<T> getNoThrow(Interruptible* interruptible = Interruptible::notInterruptible()) &&
+        noexcept {
         if (_immediate) {
             return std::move(*_immediate);
         }
 
-        _shared->wait();
+        try {
+            _shared->wait(interruptible);
+        } catch (const DBException& ex) {
+            return ex.toStatus();
+        }
+
         if (!_shared->status.isOK())
             return std::move(_shared->status);
         return std::move(*_shared->data);
     }
-    StatusWith<T> getNoThrow() const& noexcept {
+    StatusWith<T> getNoThrow(
+        Interruptible* interruptible = Interruptible::notInterruptible()) const& noexcept {
         if (_immediate) {
             return *_immediate;
         }
 
-        _shared->wait();
+        try {
+            _shared->wait(interruptible);
+        } catch (const DBException& ex) {
+            return ex.toStatus();
+        }
+
         if (!_shared->status.isOK())
             return _shared->status;
         return *_shared->data;
@@ -1104,12 +1144,12 @@ private:
     friend class Future;
     friend class Promise<T>;
 
-    T& getImpl() {
+    T& getImpl(Interruptible* interruptible) {
         if (_immediate) {
             return *_immediate;
         }
 
-        _shared->wait();
+        _shared->wait(interruptible);
         uassertStatusOK(_shared->status);
         return *(_shared->data);
     }
@@ -1256,12 +1296,22 @@ public:
         return _inner.isReady();
     }
 
-    void get() const {
-        _inner.get();
+    void wait(Interruptible* interruptible = Interruptible::notInterruptible()) const {
+        _inner.wait(interruptible);
     }
 
-    Status getNoThrow() const noexcept {
-        return _inner.getNoThrow().getStatus();
+    Status waitNoThrow(Interruptible* interruptible = Interruptible::notInterruptible()) const
+        noexcept {
+        return _inner.waitNoThrow(interruptible);
+    }
+
+    void get(Interruptible* interruptible = Interruptible::notInterruptible()) const {
+        _inner.get(interruptible);
+    }
+
+    Status getNoThrow(Interruptible* interruptible = Interruptible::notInterruptible()) const
+        noexcept {
+        return _inner.getNoThrow(interruptible).getStatus();
     }
 
     template <typename Func>  // Status -> void

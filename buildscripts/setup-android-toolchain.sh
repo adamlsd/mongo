@@ -17,19 +17,19 @@ if [ ! -e  $SDK_ROOT ]; then
     mkdir $SDK_ROOT
     (
         cd $SDK_ROOT
-        SDK_PACKAGE=sdk-tools-linux-3859397.zip
+        SDK_PACKAGE=sdk-tools-linux-4333796.zip
         curl -O https://dl.google.com/android/repository/$SDK_PACKAGE
         unzip $SDK_PACKAGE
-        echo y | ./tools/bin/sdkmanager  \
+        yes | ./tools/bin/sdkmanager --channel=0 \
             "platforms;android-28"  \
             "ndk-bundle"  \
             "emulator"  \
             "patcher;v4"  \
             "platform-tools"  \
             "build-tools;28.0.0" \
-            "system-images;android-24;google_apis;armeabi-v7a"  \
+            "system-images;android-21;google_apis;armeabi-v7a"  \
             "system-images;android-24;google_apis;arm64-v8a"  \
-            "system-images;android-24;google_apis;x86_64"
+            "system-images;android-21;google_apis;x86_64"
     )
 fi
 

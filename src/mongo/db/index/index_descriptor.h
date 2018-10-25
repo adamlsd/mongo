@@ -1,25 +1,27 @@
 // index_descriptor.cpp
 
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -33,7 +35,9 @@
 #include <set>
 #include <string>
 
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/index/multikey_paths.h"
+#include "mongo/db/index_names.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/server_options.h"
 #include "mongo/util/assert_util.h"
@@ -42,7 +46,6 @@
 namespace mongo {
 
 class Collection;
-class IndexCatalog;
 class IndexCatalogEntry;
 class IndexCatalogEntryContainer;
 class OperationContext;
@@ -56,7 +59,7 @@ class OperationContext;
  */
 class IndexDescriptor {
 public:
-    enum class IndexVersion { kV0 = 0, kV1 = 1, kV2 = 2 };
+    enum class IndexVersion { kV1 = 1, kV2 = 2 };
     static constexpr IndexVersion kLatestIndexVersion = IndexVersion::kV2;
 
     static constexpr StringData k2dIndexBitsFieldName = "bits"_sd;
@@ -77,12 +80,18 @@ public:
     static constexpr StringData kLanguageOverrideFieldName = "language_override"_sd;
     static constexpr StringData kNamespaceFieldName = "ns"_sd;
     static constexpr StringData kPartialFilterExprFieldName = "partialFilterExpression"_sd;
-    static constexpr StringData kPathProjectionFieldName = "starPathsTempName"_sd;
+    static constexpr StringData kPathProjectionFieldName = "wildcardProjection"_sd;
     static constexpr StringData kSparseFieldName = "sparse"_sd;
     static constexpr StringData kStorageEngineFieldName = "storageEngine"_sd;
     static constexpr StringData kTextVersionFieldName = "textIndexVersion"_sd;
     static constexpr StringData kUniqueFieldName = "unique"_sd;
     static constexpr StringData kWeightsFieldName = "weights"_sd;
+
+    /**
+     * Given a BSONObj representing an index spec, returns a new owned BSONObj which is identical to
+     * 'spec' after replacing the 'ns' field with the value of 'newNs'.
+     */
+    static BSONObj renameNsInIndexSpec(BSONObj spec, const NamespaceString& newNs);
 
     /**
      * OnDiskIndexData is a pointer to the memory mapped per-index data.
@@ -91,6 +100,7 @@ public:
     IndexDescriptor(Collection* collection, const std::string& accessMethodName, BSONObj infoObj)
         : _collection(collection),
           _accessMethodName(accessMethodName),
+          _indexType(IndexNames::nameToType(accessMethodName)),
           _infoObj(infoObj.getOwned()),
           _numFields(infoObj.getObjectField(IndexDescriptor::kKeyPatternFieldName).nFields()),
           _keyPattern(infoObj.getObjectField(IndexDescriptor::kKeyPatternFieldName).getOwned()),
@@ -104,10 +114,18 @@ public:
           _cachedEntry(NULL) {
         _indexNamespace = makeIndexNamespace(_parentNS, _indexName);
 
-        _version = IndexVersion::kV0;
         BSONElement e = _infoObj[IndexDescriptor::kIndexVersionFieldName];
-        if (e.isNumber()) {
-            _version = static_cast<IndexVersion>(e.numberInt());
+        fassert(50942, e.isNumber());
+        _version = static_cast<IndexVersion>(e.numberInt());
+
+        if (BSONElement filterElement = _infoObj[kPartialFilterExprFieldName]) {
+            invariant(filterElement.isABSONObj());
+            _partialFilterExpression = filterElement.Obj().getOwned();
+        }
+
+        if (BSONElement collationElement = _infoObj[kCollationFieldName]) {
+            invariant(collationElement.isABSONObj());
+            _collation = collationElement.Obj().getOwned();
         }
     }
 
@@ -193,6 +211,11 @@ public:
         return _accessMethodName;
     }
 
+    // Returns the type of the index associated with this descriptor.
+    IndexType getIndexType() const {
+        return _indexType;
+    }
+
     //
     // Properties every index has
     //
@@ -226,20 +249,6 @@ public:
         return _isIdIndex;
     }
 
-    //
-    // Properties that are Index-specific.
-    //
-
-    // Allow access to arbitrary fields in the per-index info object.  Some indices stash
-    // index-specific data there.
-    BSONElement getInfoElement(const std::string& name) const {
-        return _infoObj[name];
-    }
-
-    //
-    // "Internals" of accessing the index, used by IndexAccessMethod(s).
-    //
-
     // Return a (rather compact) std::string representation.
     std::string toString() const {
         return _infoObj.toString();
@@ -257,6 +266,16 @@ public:
     const IndexCatalog* getIndexCatalog() const;
 
     bool areIndexOptionsEquivalent(const IndexDescriptor* other) const;
+
+    void setNs(NamespaceString ns);
+
+    const BSONObj& collation() const {
+        return _collation;
+    }
+
+    const BSONObj& partialFilterExpression() const {
+        return _partialFilterExpression;
+    }
 
     static bool isIdIndexPattern(const BSONObj& pattern) {
         BSONObjIterator i(pattern);
@@ -280,8 +299,10 @@ private:
     // What access method should we use for this index?
     std::string _accessMethodName;
 
+    IndexType _indexType;
+
     // The BSONObj describing the index.  Accessed through the various members above.
-    const BSONObj _infoObj;
+    BSONObj _infoObj;
 
     // --- cached data from _infoObj
 
@@ -296,6 +317,8 @@ private:
     bool _unique;
     bool _partial;
     IndexVersion _version;
+    BSONObj _collation;
+    BSONObj _partialFilterExpression;
 
     // only used by IndexCatalogEntryContainer to do caching for perf
     // users not allowed to touch, and not part of API

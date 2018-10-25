@@ -1,30 +1,33 @@
 // dbclient.cpp - connect to a Mongo database as a database, from C++
 
-/*    Copyright 2009 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -560,21 +563,6 @@ bool DBClientBase::createCollection(
     return runCommand(db.c_str(), b.done(), *info);
 }
 
-bool DBClientBase::copyDatabase(const string& fromdb,
-                                const string& todb,
-                                const string& fromhost,
-                                BSONObj* info) {
-    BSONObj o;
-    if (info == 0)
-        info = &o;
-    BSONObjBuilder b;
-    b.append("copydb", 1);
-    b.append("fromhost", fromhost);
-    b.append("fromdb", fromdb);
-    b.append("todb", todb);
-    return runCommand("admin", b.done(), *info);
-}
-
 list<BSONObj> DBClientBase::getCollectionInfos(const string& db, const BSONObj& filter) {
     list<BSONObj> infos;
 
@@ -628,7 +616,7 @@ void DBClientBase::findN(vector<BSONObj>& out,
     out.reserve(nToReturn);
 
     unique_ptr<DBClientCursor> c =
-        this->query(ns, query, nToReturn, nToSkip, fieldsToReturn, queryOptions);
+        this->query(NamespaceString(ns), query, nToReturn, nToSkip, fieldsToReturn, queryOptions);
 
     uassert(10276,
             str::stream() << "DBClientBase::findN: transport error: " << getServerAddress()
@@ -697,7 +685,7 @@ std::pair<BSONObj, NamespaceString> DBClientBase::findOneByUUID(const std::strin
 
 const uint64_t DBClientBase::INVALID_SOCK_CREATION_TIME = std::numeric_limits<uint64_t>::max();
 
-unique_ptr<DBClientCursor> DBClientBase::query(const string& ns,
+unique_ptr<DBClientCursor> DBClientBase::query(const NamespaceStringOrUUID& nsOrUuid,
                                                Query query,
                                                int nToReturn,
                                                int nToSkip,
@@ -705,7 +693,7 @@ unique_ptr<DBClientCursor> DBClientBase::query(const string& ns,
                                                int queryOptions,
                                                int batchSize) {
     unique_ptr<DBClientCursor> c(new DBClientCursor(
-        this, ns, query.obj, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize));
+        this, nsOrUuid, query.obj, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize));
     if (c->init())
         return c;
     return nullptr;
@@ -715,7 +703,8 @@ unique_ptr<DBClientCursor> DBClientBase::getMore(const string& ns,
                                                  long long cursorId,
                                                  int nToReturn,
                                                  int options) {
-    unique_ptr<DBClientCursor> c(new DBClientCursor(this, ns, cursorId, nToReturn, options));
+    unique_ptr<DBClientCursor> c(
+        new DBClientCursor(this, NamespaceString(ns), cursorId, nToReturn, options));
     if (c->init())
         return c;
     return nullptr;
@@ -731,25 +720,28 @@ struct DBClientFunConvertor {
 };
 
 unsigned long long DBClientBase::query(stdx::function<void(const BSONObj&)> f,
-                                       const string& ns,
+                                       const NamespaceStringOrUUID& nsOrUuid,
                                        Query query,
                                        const BSONObj* fieldsToReturn,
-                                       int queryOptions) {
+                                       int queryOptions,
+                                       int batchSize) {
     DBClientFunConvertor fun;
     fun._f = f;
     stdx::function<void(DBClientCursorBatchIterator&)> ptr(fun);
-    return this->query(ptr, ns, query, fieldsToReturn, queryOptions);
+    return this->query(ptr, nsOrUuid, query, fieldsToReturn, queryOptions, batchSize);
 }
 
 unsigned long long DBClientBase::query(stdx::function<void(DBClientCursorBatchIterator&)> f,
-                                       const string& ns,
+                                       const NamespaceStringOrUUID& nsOrUuid,
                                        Query query,
                                        const BSONObj* fieldsToReturn,
-                                       int queryOptions) {
+                                       int queryOptions,
+                                       int batchSize) {
     // mask options
     queryOptions &= (int)(QueryOption_NoCursorTimeout | QueryOption_SlaveOk);
 
-    unique_ptr<DBClientCursor> c(this->query(ns, query, 0, 0, fieldsToReturn, queryOptions));
+    unique_ptr<DBClientCursor> c(
+        this->query(nsOrUuid, query, 0, 0, fieldsToReturn, queryOptions, batchSize));
     uassert(16090, "socket error for mapping query", c.get());
 
     unsigned long long n = 0;
@@ -905,6 +897,25 @@ void DBClientBase::createIndexes(StringData ns, const std::vector<const IndexSpe
         BSONArrayBuilder indexes(command.subarrayStart("indexes"));
         for (const auto& desc : descriptors) {
             indexes.append(desc->toBSON());
+        }
+    }
+    const BSONObj commandObj = command.done();
+
+    BSONObj infoObj;
+    if (!runCommand(nsToDatabase(ns), commandObj, infoObj)) {
+        Status runCommandStatus = getStatusFromCommandResult(infoObj);
+        invariant(!runCommandStatus.isOK());
+        uassertStatusOK(runCommandStatus);
+    }
+}
+
+void DBClientBase::createIndexes(StringData ns, const std::vector<BSONObj>& specs) {
+    BSONObjBuilder command;
+    command.append("createIndexes", nsToCollectionSubstring(ns));
+    {
+        BSONArrayBuilder indexes(command.subarrayStart("indexes"));
+        for (const auto& spec : specs) {
+            indexes.append(spec);
         }
     }
     const BSONObj commandObj = command.done();

@@ -1,30 +1,33 @@
 /** @file dbclient_rs.h Connect to a Replica Set, from C++ */
 
-/*    Copyright 2009 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -78,36 +81,36 @@ public:
      * @param info the result object for the logout command (provided for backwards
      *     compatibility with mongo shell)
      */
-    virtual void logout(const std::string& dbname, BSONObj& info);
+    void logout(const std::string& dbname, BSONObj& info) override;
 
     // ----------- simple functions --------------
 
     /** throws userassertion "no master found" */
-    virtual std::unique_ptr<DBClientCursor> query(const std::string& ns,
-                                                  Query query,
-                                                  int nToReturn = 0,
-                                                  int nToSkip = 0,
-                                                  const BSONObj* fieldsToReturn = 0,
-                                                  int queryOptions = 0,
-                                                  int batchSize = 0);
+    std::unique_ptr<DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
+                                          Query query,
+                                          int nToReturn = 0,
+                                          int nToSkip = 0,
+                                          const BSONObj* fieldsToReturn = 0,
+                                          int queryOptions = 0,
+                                          int batchSize = 0) override;
 
     /** throws userassertion "no master found" */
-    virtual BSONObj findOne(const std::string& ns,
-                            const Query& query,
-                            const BSONObj* fieldsToReturn = 0,
-                            int queryOptions = 0);
+    BSONObj findOne(const std::string& ns,
+                    const Query& query,
+                    const BSONObj* fieldsToReturn = 0,
+                    int queryOptions = 0) override;
 
-    virtual void insert(const std::string& ns, BSONObj obj, int flags = 0);
+    void insert(const std::string& ns, BSONObj obj, int flags = 0) override;
 
     /** insert multiple objects.  Note that single object insert is asynchronous, so this version
         is only nominally faster and not worth a special effort to try to use.  */
-    virtual void insert(const std::string& ns, const std::vector<BSONObj>& v, int flags = 0);
+    void insert(const std::string& ns, const std::vector<BSONObj>& v, int flags = 0) override;
 
-    virtual void remove(const std::string& ns, Query obj, int flags);
+    void remove(const std::string& ns, Query obj, int flags) override;
 
-    virtual void update(const std::string& ns, Query query, BSONObj obj, int flags);
+    void update(const std::string& ns, Query query, BSONObj obj, int flags) override;
 
-    virtual void killCursor(const NamespaceString& ns, long long cursorID);
+    void killCursor(const NamespaceString& ns, long long cursorID) override;
 
     // ---- access raw connections ----
 
@@ -130,12 +133,12 @@ public:
 
     // ---- callback pieces -------
 
-    virtual void say(Message& toSend, bool isRetry = false, std::string* actualServer = 0);
-    virtual bool recv(Message& toRecv, int lastRequestId);
-    virtual void checkResponse(const std::vector<BSONObj>& batch,
-                               bool networkError,
-                               bool* retry = NULL,
-                               std::string* targetHost = NULL);
+    void say(Message& toSend, bool isRetry = false, std::string* actualServer = 0) override;
+    bool recv(Message& toRecv, int lastRequestId) override;
+    void checkResponse(const std::vector<BSONObj>& batch,
+                       bool networkError,
+                       bool* retry = NULL,
+                       std::string* targetHost = NULL) override;
 
     /* this is the callback from our underlying connections to notify us that we got a "not master"
      * error.
@@ -148,10 +151,10 @@ public:
 
     // ----- status ------
 
-    virtual bool isFailed() const {
+    bool isFailed() const override {
         return !_master || _master->isFailed();
     }
-    bool isStillConnected();
+    bool isStillConnected() override;
 
     // ----- informational ----
 
@@ -168,20 +171,20 @@ public:
      */
     HostAndPort getSuspectedPrimaryHostAndPort() const;
 
-    double getSoTimeout() const {
+    double getSoTimeout() const override {
         return _so_timeout;
     }
 
-    std::string toString() const {
+    std::string toString() const override {
         return getServerAddress();
     }
 
-    std::string getServerAddress() const;
+    std::string getServerAddress() const override;
 
-    virtual ConnectionString::ConnectionType type() const {
+    ConnectionString::ConnectionType type() const override {
         return ConnectionString::SET;
     }
-    virtual bool lazySupported() const {
+    bool lazySupported() const override {
         return true;
     }
 
@@ -199,7 +202,10 @@ public:
     int getMaxWireVersion() final;
     // ---- low level ------
 
-    virtual bool call(Message& toSend, Message& response, bool assertOk, std::string* actualServer);
+    bool call(Message& toSend,
+              Message& response,
+              bool assertOk,
+              std::string* actualServer) override;
 
     /**
      * Returns whether a query or command can be sent to secondaries based on the query object
@@ -217,7 +223,7 @@ public:
      * Performs a "soft reset" by clearing all states relating to secondary nodes and
      * returning secondary connections to the pool.
      */
-    virtual void reset();
+    void reset() override;
 
     bool isReplicaSetMember() const override {
         return true;
@@ -236,7 +242,7 @@ public:
 protected:
     /** Authorize.  Authorizes all nodes as needed
     */
-    virtual void _auth(const BSONObj& params);
+    void _auth(const BSONObj& params) override;
 
 private:
     /**

@@ -1,30 +1,33 @@
 // @file bsonobj.h
 
-/*    Copyright 2009 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -95,6 +98,13 @@ class BSONObjStlIterator;
  */
 class BSONObj {
 public:
+    struct DefaultSizeTrait {
+        constexpr static int MaxSize = BSONObjMaxInternalSize;
+    };
+    struct LargeSizeTrait {
+        constexpr static int MaxSize = BufferMaxSize;
+    };
+
     // Declared in bsonobj_comparator_interface.h.
     class ComparatorInterface;
 
@@ -125,8 +135,9 @@ public:
     /** Construct a BSONObj from data in the proper format.
      *  Use this constructor when something else owns bsonData's buffer
     */
-    explicit BSONObj(const char* bsonData) {
-        init(bsonData);
+    template <typename Traits = DefaultSizeTrait>
+    explicit BSONObj(const char* bsonData, Traits t = Traits{}) {
+        init<Traits>(bsonData);
     }
 
     explicit BSONObj(ConstSharedBuffer ownedBuffer)
@@ -254,6 +265,11 @@ public:
                            int pretty = 0,
                            bool isArray = false) const;
 
+    void jsonStringStream(JsonStringFormat format,
+                          int pretty,
+                          bool isArray,
+                          std::stringstream& s) const;
+
     /** note: addFields always adds _id even if not specified */
     int addFields(BSONObj& from, std::set<std::string>& fields); /* returns n added */
 
@@ -374,9 +390,12 @@ public:
     }
 
     /** performs a cursory check on the object's size only. */
+    template <typename Traits = DefaultSizeTrait>
     bool isValid() const {
+        static_assert(Traits::MaxSize > 0 && Traits::MaxSize <= std::numeric_limits<int>::max(),
+                      "BSONObj maximum size must be within possible limits");
         int x = objsize();
-        return x > 0 && x <= BSONObjMaxInternalSize;
+        return x > 0 && x <= Traits::MaxSize;
     }
 
     /**
@@ -559,12 +578,13 @@ public:
     }
 
 private:
-    void _assertInvalid() const;
+    void _assertInvalid(int maxSize) const;
 
+    template <typename Traits = DefaultSizeTrait>
     void init(const char* data) {
         _objdata = data;
-        if (!isValid())
-            _assertInvalid();
+        if (!isValid<Traits>())
+            _assertInvalid(Traits::MaxSize);
     }
 
     const char* _objdata;

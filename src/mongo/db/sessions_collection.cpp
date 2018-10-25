@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -46,6 +48,8 @@
 
 namespace mongo {
 
+constexpr StringData SessionsCollection::kSessionsTTLIndex;
+
 namespace {
 
 // This batch size is chosen to ensure that we don't form requests larger than the 16mb limit.
@@ -58,10 +62,11 @@ constexpr size_t kMaxBatchSize = 1000;
 
 // Used to refresh or remove items from the session collection with write
 // concern majority
-const BSONObj kMajorityWriteConcern = WriteConcernOptions(WriteConcernOptions::kMajority,
-                                                          WriteConcernOptions::SyncMode::UNSET,
-                                                          Seconds(15))
-                                          .toBSON();
+const BSONObj kMajorityWriteConcern =
+    WriteConcernOptions(WriteConcernOptions::kMajority,
+                        WriteConcernOptions::SyncMode::UNSET,
+                        WriteConcernOptions::kWriteConcernTimeoutSystem)
+        .toBSON();
 
 
 BSONObj lsidQuery(const LogicalSessionId& lsid) {
@@ -225,24 +230,6 @@ Status SessionsCollection::doRefresh(const NamespaceString& ns,
     return runBulkCmd("updates", init, add, send, sessions);
 }
 
-Status SessionsCollection::doRefreshExternal(const NamespaceString& ns,
-                                             const LogicalSessionRecordSet& sessions,
-                                             SendBatchFn send) {
-    auto makeT = [] { return std::vector<LogicalSessionRecord>{}; };
-
-    auto add = [](std::vector<LogicalSessionRecord>& batch, const LogicalSessionRecord& record) {
-        batch.push_back(record);
-    };
-
-    auto sendLocal = [&](std::vector<LogicalSessionRecord>& batch) {
-        RefreshSessionsCmdFromClusterMember idl;
-        idl.setRefreshSessionsInternal(batch);
-        return send(idl.toBSON());
-    };
-
-    return runBulkGeneric(makeT, add, sendLocal, sessions);
-}
-
 Status SessionsCollection::doRemove(const NamespaceString& ns,
                                     const LogicalSessionIdSet& sessions,
                                     SendBatchFn send) {
@@ -257,13 +244,6 @@ Status SessionsCollection::doRemove(const NamespaceString& ns,
     };
 
     return runBulkCmd("deletes", init, add, send, sessions);
-}
-
-Status SessionsCollection::doRemoveExternal(const NamespaceString& ns,
-                                            const LogicalSessionIdSet& sessions,
-                                            SendBatchFn send) {
-    // TODO SERVER-28335 Implement endSessions, with internal counterpart.
-    return Status::OK();
 }
 
 StatusWith<LogicalSessionIdSet> SessionsCollection::doFetch(const NamespaceString& ns,
@@ -323,7 +303,7 @@ StatusWith<LogicalSessionIdSet> SessionsCollection::doFetch(const NamespaceStrin
 BSONObj SessionsCollection::generateCreateIndexesCmd() {
     NewIndexSpec index;
     index.setKey(BSON("lastUse" << 1));
-    index.setName("lsidTTLIndex");
+    index.setName(kSessionsTTLIndex);
     index.setExpireAfterSeconds(localLogicalSessionTimeoutMinutes * 60);
 
     std::vector<NewIndexSpec> indexes;

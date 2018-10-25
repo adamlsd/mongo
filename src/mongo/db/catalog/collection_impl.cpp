@@ -1,23 +1,25 @@
-/*-
- *    Copyright (C) 2017 MongoDB Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -45,8 +47,9 @@
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/catalog/index_catalog_impl.h"
 #include "mongo/db/catalog/index_consistency.h"
-#include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/multi_index_block_impl.h"
 #include "mongo/db/catalog/namespace_uuid_cache.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/clientcursor.h"
@@ -64,7 +67,6 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/key_string.h"
-#include "mongo/db/storage/record_fetcher.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/update/update_driver.h"
 
@@ -102,6 +104,11 @@ namespace {
 // Used below to fail during inserts.
 MONGO_FAIL_POINT_DEFINE(failCollectionInserts);
 
+// Used to pause after inserting collection data and calling the opObservers.  Inserts to
+// replicated collections that are not part of a multi-statement transaction will have generated
+// their OpTime and oplog entry.
+MONGO_FAIL_POINT_DEFINE(hangAfterCollectionInserts);
+
 // Uses the collator factory to convert the BSON representation of a collator to a
 // CollatorInterface. Returns null if the BSONObj is empty. We expect the stored collation to be
 // valid, since it gets validated on collection create.
@@ -130,9 +137,9 @@ std::unique_ptr<CollatorInterface> parseCollation(OperationContext* opCtx,
 }
 }  // namespace
 
-using std::unique_ptr;
 using std::endl;
 using std::string;
+using std::unique_ptr;
 using std::vector;
 
 using logger::LogComponent;
@@ -151,7 +158,8 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
       _dbce(dbce),
       _needCappedLock(supportsDocLocking() && _recordStore->isCapped() && _ns.db() != "local"),
       _infoCache(_this_init, _ns),
-      _indexCatalog(_this_init, this->getCatalogEntry()->getMaxAllowedIndexes()),
+      _indexCatalog(std::make_unique<IndexCatalogImpl>(_this_init,
+                                                       getCatalogEntry()->getMaxAllowedIndexes())),
       _collator(parseCollation(opCtx, _ns, _details->getCollectionOptions(opCtx).collation)),
       _validatorDoc(_details->getCollectionOptions(opCtx).validator.getOwned()),
       _validator(uassertStatusOK(
@@ -160,14 +168,14 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
           parseValidationAction(_details->getCollectionOptions(opCtx).validationAction))),
       _validationLevel(uassertStatusOK(
           parseValidationLevel(_details->getCollectionOptions(opCtx).validationLevel))),
-      _cursorManager(_ns),
+      _cursorManager(std::make_unique<CursorManager>(_ns)),
       _cappedNotifier(_recordStore->isCapped() ? stdx::make_unique<CappedInsertNotifier>()
                                                : nullptr),
       _this(_this_init) {}
 
 void CollectionImpl::init(OperationContext* opCtx) {
     _magic = kMagicNumber;
-    _indexCatalog.init(opCtx).transitional_ignore();
+    _indexCatalog->init(opCtx).transitional_ignore();
     if (isCapped())
         _recordStore->setCappedCallback(this);
 
@@ -299,13 +307,13 @@ Status CollectionImpl::insertDocumentsForOplog(OperationContext* opCtx,
                                                const DocWriter* const* docs,
                                                Timestamp* timestamps,
                                                size_t nDocs) {
-    dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
+    dassert(opCtx->lockState()->isWriteLocked());
 
     // Since this is only for the OpLog, we can assume these for simplicity.
     // This also means that we do not need to forward this object to the OpObserver, which is good
     // because it would defeat the purpose of using DocWriter.
     invariant(!_validator);
-    invariant(!_indexCatalog.haveAnyIndexes());
+    invariant(!_indexCatalog->haveAnyIndexes());
 
     Status status = _recordStore->insertRecordsWithDocWriter(opCtx, docs, timestamps, nDocs);
     if (!status.isOK())
@@ -338,7 +346,7 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
     }
 
     // Should really be done in the collection object at creation and updated on index create.
-    const bool hasIdIndex = _indexCatalog.findIdIndex(opCtx);
+    const bool hasIdIndex = _indexCatalog->findIdIndex(opCtx);
 
     for (auto it = begin; it != end; it++) {
         if (hasIdIndex && it->doc["_id"].eoo()) {
@@ -365,6 +373,20 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
 
     opCtx->recoveryUnit()->onCommit(
         [this](boost::optional<Timestamp>) { notifyCappedWaitersIfNeeded(); });
+
+    MONGO_FAIL_POINT_BLOCK(hangAfterCollectionInserts, extraData) {
+        const BSONObj& data = extraData.getData();
+        const auto collElem = data["collectionNS"];
+        // If the failpoint specifies no collection or matches the existing one, hang.
+        if (!collElem || _ns.ns() == collElem.str()) {
+            while (MONGO_FAIL_POINT(hangAfterCollectionInserts)) {
+                log() << "hangAfterCollectionInserts fail point enabled for " << _ns.toString()
+                      << ". Blocking until fail point is disabled.";
+                mongo::sleepsecs(1);
+                opCtx->checkForInterrupt();
+            }
+        }
+    }
 
     return Status::OK();
 }
@@ -444,7 +466,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
 
     const size_t count = std::distance(begin, end);
-    if (isCapped() && _indexCatalog.haveAnyIndexes() && count > 1) {
+    if (isCapped() && _indexCatalog->haveAnyIndexes() && count > 1) {
         // We require that inserts to indexed capped collections be done one-at-a-time to avoid the
         // possibility that a later document causes an earlier document to be deleted before it can
         // be indexed.
@@ -489,7 +511,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
     }
 
     int64_t keysInserted;
-    status = _indexCatalog.indexRecords(opCtx, bsonRecords, &keysInserted);
+    status = _indexCatalog->indexRecords(opCtx, bsonRecords, &keysInserted);
     if (opDebug) {
         opDebug->additiveMetrics.incrementKeysInserted(keysInserted);
     }
@@ -513,12 +535,9 @@ void CollectionImpl::notifyCappedWaitersIfNeeded() {
 Status CollectionImpl::aboutToDeleteCapped(OperationContext* opCtx,
                                            const RecordId& loc,
                                            RecordData data) {
-    /* check if any cursors point to us.  if so, advance them. */
-    _cursorManager.invalidateDocument(opCtx, loc, INVALIDATION_DELETION);
-
     BSONObj doc = data.releaseToBson();
     int64_t* const nullKeysDeleted = nullptr;
-    _indexCatalog.unindexRecord(opCtx, doc, loc, false, nullKeysDeleted);
+    _indexCatalog->unindexRecord(opCtx, doc, loc, false, nullKeysDeleted);
 
     // We are not capturing and reporting to OpDebug the 'keysDeleted' by unindexRecord(). It is
     // questionable whether reporting will add diagnostic value to users and may instead be
@@ -550,11 +569,8 @@ void CollectionImpl::deleteDocument(OperationContext* opCtx,
         deletedDoc.emplace(doc.value().getOwned());
     }
 
-    /* check if any cursors point to us.  if so, advance them. */
-    _cursorManager.invalidateDocument(opCtx, loc, INVALIDATION_DELETION);
-
     int64_t keysDeleted;
-    _indexCatalog.unindexRecord(opCtx, doc.value(), loc, noWarn, &keysDeleted);
+    _indexCatalog->unindexRecord(opCtx, doc.value(), loc, noWarn, &keysDeleted);
     if (opDebug) {
         opDebug->additiveMetrics.incrementKeysDeleted(keysDeleted);
     }
@@ -574,7 +590,7 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
                                         const BSONObj& newDoc,
                                         bool indexesAffected,
                                         OpDebug* opDebug,
-                                        OplogUpdateEntryArgs* args) {
+                                        CollectionUpdateArgs* args) {
     {
         auto status = checkValidation(opCtx, newDoc);
         if (!status.isOK()) {
@@ -629,14 +645,14 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
     // newDoc.
     OwnedPointerMap<IndexDescriptor*, UpdateTicket> updateTickets;
     if (indexesAffected) {
-        IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator(opCtx, true);
+        IndexCatalog::IndexIterator ii = _indexCatalog->getIndexIterator(opCtx, true);
         while (ii.more()) {
             IndexDescriptor* descriptor = ii.next();
             IndexCatalogEntry* entry = ii.catalogEntry(descriptor);
             IndexAccessMethod* iam = ii.accessMethod(descriptor);
 
             InsertDeleteOptions options;
-            IndexCatalog::prepareInsertDeleteOptions(opCtx, descriptor, &options);
+            _indexCatalog->prepareInsertDeleteOptions(opCtx, descriptor, &options);
             UpdateTicket* updateTicket = new UpdateTicket();
             updateTickets.mutableMap()[descriptor] = updateTicket;
             uassertStatusOK(iam->validateUpdate(opCtx,
@@ -652,11 +668,11 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
     args->preImageDoc = oldDoc.value().getOwned();
 
     Status updateStatus =
-        _recordStore->updateRecord(opCtx, oldLocation, newDoc.objdata(), newDoc.objsize(), this);
+        _recordStore->updateRecord(opCtx, oldLocation, newDoc.objdata(), newDoc.objsize());
 
     // Update each index with each respective UpdateTicket.
     if (indexesAffected) {
-        IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator(opCtx, true);
+        IndexCatalog::IndexIterator ii = _indexCatalog->getIndexIterator(opCtx, true);
         while (ii.more()) {
             IndexDescriptor* descriptor = ii.next();
             IndexAccessMethod* iam = ii.accessMethod(descriptor);
@@ -675,18 +691,12 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
     invariant(sid == opCtx->recoveryUnit()->getSnapshotId());
     args->updatedDoc = newDoc;
 
-    getGlobalServiceContext()->getOpObserver()->onUpdate(opCtx, *args);
+    invariant(uuid());
+    OplogUpdateEntryArgs entryArgs(*args, ns(), *uuid());
+    getGlobalServiceContext()->getOpObserver()->onUpdate(opCtx, entryArgs);
 
     return {oldLocation};
 }
-
-Status CollectionImpl::recordStoreGoingToUpdateInPlace(OperationContext* opCtx,
-                                                       const RecordId& loc) {
-    // Broadcast the mutation so that query results stay correct.
-    _cursorManager.invalidateDocument(opCtx, loc, INVALIDATION_MUTATION);
-    return Status::OK();
-}
-
 
 bool CollectionImpl::updateWithDamagesSupported() const {
     if (_validator)
@@ -701,13 +711,10 @@ StatusWith<RecordData> CollectionImpl::updateDocumentWithDamages(
     const Snapshotted<RecordData>& oldRec,
     const char* damageSource,
     const mutablebson::DamageVector& damages,
-    OplogUpdateEntryArgs* args) {
+    CollectionUpdateArgs* args) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
     invariant(oldRec.snapshotId() == opCtx->recoveryUnit()->getSnapshotId());
     invariant(updateWithDamagesSupported());
-
-    // Broadcast the mutation so that query results stay correct.
-    _cursorManager.invalidateDocument(opCtx, loc, INVALIDATION_MUTATION);
 
     auto newRecStatus =
         _recordStore->updateWithDamages(opCtx, loc, oldRec.value(), damageSource, damages);
@@ -715,7 +722,9 @@ StatusWith<RecordData> CollectionImpl::updateDocumentWithDamages(
     if (newRecStatus.isOK()) {
         args->updatedDoc = newRecStatus.getValue().toBson();
 
-        getGlobalServiceContext()->getOpObserver()->onUpdate(opCtx, *args);
+        invariant(uuid());
+        OplogUpdateEntryArgs entryArgs(*args, ns(), *uuid());
+        getGlobalServiceContext()->getOpObserver()->onUpdate(opCtx, entryArgs);
     }
     return newRecStatus;
 }
@@ -769,12 +778,12 @@ uint64_t CollectionImpl::getIndexSize(OperationContext* opCtx, BSONObjBuilder* d
 Status CollectionImpl::truncate(OperationContext* opCtx) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_X));
     BackgroundOperation::assertNoBgOpInProgForNs(ns());
-    invariant(_indexCatalog.numIndexesInProgress(opCtx) == 0);
+    invariant(_indexCatalog->numIndexesInProgress(opCtx) == 0);
 
     // 1) store index specs
     vector<BSONObj> indexSpecs;
     {
-        IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator(opCtx, false);
+        IndexCatalog::IndexIterator ii = _indexCatalog->getIndexIterator(opCtx, false);
         while (ii.more()) {
             const IndexDescriptor* idx = ii.next();
             indexSpecs.push_back(idx->infoObj().getOwned());
@@ -782,8 +791,8 @@ Status CollectionImpl::truncate(OperationContext* opCtx) {
     }
 
     // 2) drop indexes
-    _indexCatalog.dropAllIndexes(opCtx, true);
-    _cursorManager.invalidateAll(opCtx, false, "collection truncated");
+    _indexCatalog->dropAllIndexes(opCtx, true);
+    _cursorManager->invalidateAll(opCtx, false, "collection truncated");
 
     // 3) truncate record store
     auto status = _recordStore->truncate(opCtx);
@@ -792,7 +801,7 @@ Status CollectionImpl::truncate(OperationContext* opCtx) {
 
     // 4) re-create indexes
     for (size_t i = 0; i < indexSpecs.size(); i++) {
-        status = _indexCatalog.createIndexOnEmptyCollection(opCtx, indexSpecs[i]).getStatus();
+        status = _indexCatalog->createIndexOnEmptyCollection(opCtx, indexSpecs[i]).getStatus();
         if (!status.isOK())
             return status;
     }
@@ -804,9 +813,9 @@ void CollectionImpl::cappedTruncateAfter(OperationContext* opCtx, RecordId end, 
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_X));
     invariant(isCapped());
     BackgroundOperation::assertNoBgOpInProgForNs(ns());
-    invariant(_indexCatalog.numIndexesInProgress(opCtx) == 0);
+    invariant(_indexCatalog->numIndexesInProgress(opCtx) == 0);
 
-    _cursorManager.invalidateAll(opCtx, false, "capped collection truncated");
+    _cursorManager->invalidateAll(opCtx, false, "capped collection truncated");
     _recordStore->cappedTruncateAfter(opCtx, end, inclusive);
 }
 
@@ -1192,7 +1201,7 @@ Status CollectionImpl::validate(OperationContext* opCtx,
         IndexConsistency indexConsistency(
             opCtx, _this, ns(), _recordStore, std::move(collLk), background);
         RecordStoreValidateAdaptor indexValidator = RecordStoreValidateAdaptor(
-            opCtx, &indexConsistency, level, &_indexCatalog, &indexNsResultsMap);
+            opCtx, &indexConsistency, level, _indexCatalog.get(), &indexNsResultsMap);
 
         // Validate the record store
         std::string uuidString = str::stream()
@@ -1208,7 +1217,7 @@ Status CollectionImpl::validate(OperationContext* opCtx,
         // Validate indexes and check for mismatches.
         if (results->valid) {
             _validateIndexes(opCtx,
-                             &_indexCatalog,
+                             _indexCatalog.get(),
                              &keysPerIndex,
                              &indexValidator,
                              level,
@@ -1223,12 +1232,12 @@ Status CollectionImpl::validate(OperationContext* opCtx,
         // Validate index key count.
         if (results->valid) {
             _validateIndexKeyCount(
-                opCtx, &_indexCatalog, _recordStore, &indexValidator, &indexNsResultsMap);
+                opCtx, _indexCatalog.get(), _recordStore, &indexValidator, &indexNsResultsMap);
         }
 
         // Report the validation results for the user to see
         _reportValidationResults(
-            opCtx, &_indexCatalog, &indexNsResultsMap, &keysPerIndex, level, results, output);
+            opCtx, _indexCatalog.get(), &indexNsResultsMap, &keysPerIndex, level, results, output);
 
         if (!results->valid) {
             log(LogComponent::kIndex) << "validating collection " << ns().toString() << " failed"
@@ -1263,10 +1272,10 @@ Status CollectionImpl::touch(OperationContext* opCtx,
 
     if (touchIndexes) {
         Timer t;
-        IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator(opCtx, false);
+        IndexCatalog::IndexIterator ii = _indexCatalog->getIndexIterator(opCtx, false);
         while (ii.more()) {
             const IndexDescriptor* desc = ii.next();
-            const IndexAccessMethod* iam = _indexCatalog.getIndex(desc);
+            const IndexAccessMethod* iam = _indexCatalog->getIndex(desc);
             Status status = iam->touch(opCtx);
             if (!status.isOK())
                 return status;
@@ -1274,9 +1283,29 @@ Status CollectionImpl::touch(OperationContext* opCtx,
 
         output->append(
             "indexes",
-            BSON("num" << _indexCatalog.numIndexesTotal(opCtx) << "millis" << t.millis()));
+            BSON("num" << _indexCatalog->numIndexesTotal(opCtx) << "millis" << t.millis()));
     }
 
     return Status::OK();
 }
+
+std::unique_ptr<MultiIndexBlock> CollectionImpl::createMultiIndexBlock(OperationContext* opCtx) {
+    return std::make_unique<MultiIndexBlockImpl>(opCtx, _this);
+}
+
+void CollectionImpl::setNs(NamespaceString nss) {
+    _ns = std::move(nss);
+    _indexCatalog->setNs(_ns);
+    _infoCache.setNs(_ns);
+    _recordStore->setNs(_ns);
+
+    // Until the query layer is prepared for cursors to survive renames, all cursors are killed when
+    // the name of a collection changes. Therefore, the CursorManager should be empty. This means it
+    // is safe to re-establish it with a new namespace by tearing down the old one and allocating a
+    // new manager associated with the new name. This is done in order to ensure that the
+    // 'globalCursorIdCache' maintains the correct mapping from cursor id "prefix" (the high order
+    // bits) to namespace.
+    _cursorManager = std::make_unique<CursorManager>(_ns);
+}
+
 }  // namespace mongo

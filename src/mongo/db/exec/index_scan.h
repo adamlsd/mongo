@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -28,9 +30,8 @@
 
 #pragma once
 
-
 #include "mongo/db/exec/plan_stage.h"
-#include "mongo/db/index/index_access_method.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/query/index_bounds.h"
@@ -41,23 +42,59 @@
 
 namespace mongo {
 
-class IndexAccessMethod;
-class IndexDescriptor;
 class WorkingSet;
 
 struct IndexScanParams {
-    IndexScanParams() : descriptor(NULL), direction(1), doNotDedup(false), addKeyMetadata(false) {}
+    IndexScanParams(const IndexDescriptor& descriptor,
+                    std::string indexName,
+                    BSONObj keyPattern,
+                    MultikeyPaths multikeyPaths,
+                    bool multikey)
+        : accessMethod(descriptor.getIndexCatalog()->getIndex(&descriptor)),
+          name(std::move(indexName)),
+          keyPattern(std::move(keyPattern)),
+          multikeyPaths(std::move(multikeyPaths)),
+          isMultiKey(multikey),
+          isSparse(descriptor.isSparse()),
+          isUnique(descriptor.unique()),
+          isPartial(descriptor.isPartial()),
+          version(descriptor.version()),
+          collation(descriptor.infoObj()
+                        .getObjectField(IndexDescriptor::kCollationFieldName)
+                        .getOwned()) {
+        invariant(accessMethod);
+    }
 
-    const IndexDescriptor* descriptor;
+    IndexScanParams(OperationContext* opCtx, const IndexDescriptor& descriptor)
+        : IndexScanParams(descriptor,
+                          descriptor.indexName(),
+                          descriptor.keyPattern(),
+                          descriptor.getMultikeyPaths(opCtx),
+                          descriptor.isMultikey(opCtx)) {}
 
+    const IndexAccessMethod* accessMethod;
+    std::string name;
+
+    BSONObj keyPattern;
     IndexBounds bounds;
 
-    int direction;
+    MultikeyPaths multikeyPaths;
+    bool isMultiKey;
 
-    bool doNotDedup;
+    bool isSparse;
+    bool isUnique;
+    bool isPartial;
+
+    IndexDescriptor::IndexVersion version;
+
+    BSONObj collation;
+
+    int direction{1};
+
+    bool shouldDedup{false};
 
     // Do we want to add the key as metadata?
-    bool addKeyMetadata;
+    bool addKeyMetadata{false};
 };
 
 /**
@@ -87,7 +124,7 @@ public:
     };
 
     IndexScan(OperationContext* opCtx,
-              const IndexScanParams& params,
+              IndexScanParams params,
               WorkingSet* workingSet,
               const MatchExpression* filter);
 
@@ -97,7 +134,6 @@ public:
     void doRestoreState() final;
     void doDetachFromOperationContext() final;
     void doReattachToOperationContext() final;
-    void doInvalidate(OperationContext* opCtx, const RecordId& dl, InvalidationType type) final;
 
     StageType stageType() const final {
         return STAGE_IXSCAN;
@@ -132,7 +168,6 @@ private:
     const MatchExpression* const _filter;
 
     // Could our index have duplicates?  If so, we use _returned to dedup.
-    bool _shouldDedup;
     stdx::unordered_set<RecordId, RecordId::Hasher> _returned;
 
     const bool _forward;

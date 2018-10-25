@@ -1,42 +1,48 @@
+
 /**
- * Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/pipeline/mongos_process_interface.h"
 
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/query/collation/collation_spec.h"
+#include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/db/s/scoped_collection_metadata.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/s/catalog_cache.h"
-#include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/establish_cursors.h"
@@ -86,6 +92,23 @@ StatusWith<CachedCollectionRoutingInfo> getCollectionRoutingInfo(
         }
     }
     return swRoutingInfo;
+}
+
+bool supportsUniqueKey(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                       const BSONObj& index,
+                       const std::set<FieldPath>& uniqueKeyPaths) {
+    // Retrieve the collation from the index, or default to the simple collation.
+    const auto collation = uassertStatusOK(
+        CollatorFactoryInterface::get(expCtx->opCtx->getServiceContext())
+            ->makeFromBSON(index.hasField(IndexDescriptor::kCollationFieldName)
+                               ? index.getObjectField(IndexDescriptor::kCollationFieldName)
+                               : CollationSpec::kSimpleSpec));
+
+    return index.getBoolField(IndexDescriptor::kUniqueFieldName) &&
+        !index.hasField(IndexDescriptor::kPartialFilterExprFieldName) &&
+        MongoProcessCommon::keyPatternNamesExactPaths(
+               index.getObjectField(IndexDescriptor::kKeyPatternFieldName), uniqueKeyPaths) &&
+        CollatorInterface::collatorsMatch(collation.get(), expCtx->getCollator());
 }
 
 }  // namespace
@@ -185,6 +208,36 @@ boost::optional<Document> MongoSInterface::lookupSingleDocument(
     return (!batch.empty() ? Document(batch.front()) : boost::optional<Document>{});
 }
 
+std::pair<std::vector<FieldPath>, bool> MongoSInterface::collectDocumentKeyFields(
+    OperationContext* opCtx, NamespaceStringOrUUID nssOrUUID) const {
+
+    invariant(!nssOrUUID.uuid(), "Did not expect to use this method with a UUID on mongos");
+    const NamespaceString& nss = *nssOrUUID.nss();
+
+    auto collRoutInfo = Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss);
+    if (collRoutInfo == ErrorCodes::NamespaceNotFound) {
+        return {{"_id"}, false};
+    }
+    uassertStatusOKWithContext(collRoutInfo, "Collection Routing Info is unavailable");
+
+    auto cm = collRoutInfo.getValue().cm();
+    if (!cm)
+        return {{"_id"}, false};
+
+    // Unpack the shard key.
+    std::vector<FieldPath> result;
+    bool gotId = false;
+    for (auto& field : cm->getShardKeyPattern().getKeyPatternFields()) {
+        result.emplace_back(field->dottedField());
+        gotId |= (result.back().fullPath() == "_id");
+    }
+    if (!gotId) {  // If not part of the shard key, "_id" comes last.
+        result.emplace_back("_id");
+    }
+    // Collection is sharded so the document key fields will never change, mark as final.
+    return {result, true};
+}
+
 BSONObj MongoSInterface::_reportCurrentOpForClient(OperationContext* opCtx,
                                                    Client* client,
                                                    CurrentOpTruncateMode truncateOps) const {
@@ -196,12 +249,46 @@ BSONObj MongoSInterface::_reportCurrentOpForClient(OperationContext* opCtx,
     return builder.obj();
 }
 
-std::vector<GenericCursor> MongoSInterface::getCursors(
-    const intrusive_ptr<ExpressionContext>& expCtx) const {
+std::vector<GenericCursor> MongoSInterface::getIdleCursors(
+    const intrusive_ptr<ExpressionContext>& expCtx, CurrentOpUserMode userMode) const {
     invariant(hasGlobalServiceContext());
     auto cursorManager = Grid::get(expCtx->opCtx->getServiceContext())->getCursorManager();
     invariant(cursorManager);
-    return cursorManager->getAllCursors();
+    return cursorManager->getIdleCursors(expCtx->opCtx, userMode);
+}
+
+bool MongoSInterface::isSharded(OperationContext* opCtx, const NamespaceString& nss) {
+    auto routingInfo = Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss);
+    return routingInfo.isOK() && routingInfo.getValue().cm();
+}
+
+bool MongoSInterface::uniqueKeyIsSupportedByIndex(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    const NamespaceString& nss,
+    const std::set<FieldPath>& uniqueKeyPaths) const {
+    const auto opCtx = expCtx->opCtx;
+    const auto routingInfo =
+        uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
+
+    // Run an exhaustive listIndexes against the primary shard only.
+    auto response = routingInfo.db().primary()->runExhaustiveCursorCommand(
+        opCtx,
+        ReadPreferenceSetting::get(opCtx),
+        nss.db().toString(),
+        BSON("listIndexes" << nss.coll()),
+        opCtx->hasDeadline() ? opCtx->getRemainingMaxTimeMillis() : Milliseconds(-1));
+
+    // If the namespace does not exist, then the unique key *must* be _id only.
+    if (response.getStatus() == ErrorCodes::NamespaceNotFound) {
+        return uniqueKeyPaths == std::set<FieldPath>{"_id"};
+    }
+    uassertStatusOK(response);
+
+    const auto& indexes = response.getValue().docs;
+    return std::any_of(
+        indexes.begin(), indexes.end(), [&expCtx, &uniqueKeyPaths](const auto& index) {
+            return supportsUniqueKey(expCtx, index, uniqueKeyPaths);
+        });
 }
 
 }  // namespace mongo

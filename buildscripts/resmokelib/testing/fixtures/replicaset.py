@@ -222,6 +222,7 @@ class ReplicaSetFixture(interface.ReplFixture):  # pylint: disable=too-many-inst
         self._await_primary()
         self._await_secondaries()
         self._await_stable_recovery_timestamp()
+        self._setup_sessions_collection()
 
     def _await_primary(self):
         # Wait for the primary to be elected.
@@ -285,21 +286,13 @@ class ReplicaSetFixture(interface.ReplFixture):  # pylint: disable=too-many-inst
         primary_client = self.nodes[0].mongo_client()
         self.auth(primary_client, self.auth_options)
 
-        # Algorithm precondition: All nodes must be in primary/secondary state.
-        #
-        # 1) Perform a majority write. This will guarantee the primary updates its commit point
-        #    to the value of this write.
-        #
-        # 2) Perform a second write. This will guarantee that all nodes will update their commit
-        #    point to a time that is >= the previous write. That will trigger a stable checkpoint
-        #    on all persisted storage engine nodes.
-        # TODO(SERVER-33248): Remove this block. We should not need to prod the replica set to
-        # advance the commit point if the commit point being lagged is sufficient to choose a
-        # sync source.
+        # All nodes must be in primary/secondary state prior to this point. Perform a majority
+        # write to ensure there is a committed operation on the set. The commit point will
+        # propagate to all members and trigger a stable checkpoint on all persisted storage engines
+        # nodes.
         admin = primary_client.get_database(
             "admin", write_concern=pymongo.write_concern.WriteConcern(w="majority"))
         admin.command("appendOplogNote", data={"await_stable_recovery_timestamp": 1})
-        admin.command("appendOplogNote", data={"await_stable_recovery_timestamp": 2})
 
         for node in self.nodes:
             self.logger.info("Waiting for node on port %d to have a stable recovery timestamp.",
@@ -328,6 +321,11 @@ class ReplicaSetFixture(interface.ReplFixture):  # pylint: disable=too-many-inst
                         node.port, last_stable_recovery_timestamp)
                     break
                 time.sleep(0.1)  # Wait a little bit before trying again.
+
+    def _setup_sessions_collection(self):
+        """Set up the sessions collection so that it will not attempt to set up during a test."""
+        primary = self.nodes[0]
+        primary.mongo_client().admin.command({"refreshLogicalSessionCacheNow": 1})
 
     def _do_teardown(self):
         self.logger.info("Stopping all members of the replica set...")

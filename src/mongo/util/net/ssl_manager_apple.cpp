@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -46,6 +48,7 @@
 #include "mongo/util/base64.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/cidr.h"
 #include "mongo/util/net/private/ssl_expiration.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl/apple.hpp"
@@ -486,11 +489,20 @@ StatusWith<std::vector<std::string>> extractSubjectAlternateNames(::CFDictionary
         if (!swLabel.isOK()) {
             return swLabel.getStatus();
         }
-        if (::CFStringCompare(swLabel.getValue(), CFSTR("DNS Name"), ::kCFCompareCaseInsensitive) !=
+
+        enum SANType { kDNS, kIP };
+        SANType san;
+        if (::CFStringCompare(swLabel.getValue(), CFSTR("DNS Name"), ::kCFCompareCaseInsensitive) ==
             ::kCFCompareEqualTo) {
-            // Skip other elements, e.g. 'Critical'
+            san = kDNS;
+        } else if (::CFStringCompare(swLabel.getValue(),
+                                     CFSTR("IP Address"),
+                                     ::kCFCompareCaseInsensitive) == ::kCFCompareEqualTo) {
+            san = kIP;
+        } else {
             continue;
         }
+
         auto swName = extractDictionaryValue<::CFStringRef>(elem, ::kSecPropertyKeyValue);
         if (!swName.isOK()) {
             return swName.getStatus();
@@ -498,6 +510,16 @@ StatusWith<std::vector<std::string>> extractSubjectAlternateNames(::CFDictionary
         auto swNameStr = toString(swName.getValue());
         if (!swNameStr.isOK()) {
             return swNameStr.getStatus();
+        }
+        // Incase there is an IP Address in the DNS field of a certificate's SAN, we want
+        // to round trip the value through CIDR.
+        auto swCIDRValue = CIDR::parse(swNameStr.getValue());
+        if (swCIDRValue.isOK()) {
+            swNameStr = swCIDRValue.getValue().toString();
+            if (san == kDNS) {
+                warning() << "You have an IP Address in the DNS Name field on your "
+                             "certificate. This formulation is depreceated.";
+            }
         }
         ret.push_back(swNameStr.getValue());
     }
@@ -1076,10 +1098,13 @@ public:
     SSLConnectionInterface* accept(Socket* socket, const char* initialBytes, int len) final;
 
     SSLPeerInfo parseAndValidatePeerCertificateDeprecated(const SSLConnectionInterface* conn,
-                                                          const std::string& remoteHost) final;
+                                                          const std::string& remoteHost,
+                                                          const HostAndPort& hostForLogging) final;
 
     StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
-        ::SSLContextRef conn, const std::string& remoteHost) final;
+        ::SSLContextRef conn,
+        const std::string& remoteHost,
+        const HostAndPort& hostForLogging) final;
 
     const SSLConfiguration& getSSLConfiguration() const final {
         return _sslConfiguration;
@@ -1096,7 +1121,20 @@ private:
     bool _suppressNoCertificateWarning;
     asio::ssl::apple::Context _clientCtx;
     asio::ssl::apple::Context _serverCtx;
-    CFUniquePtr<::CFArrayRef> _ca;
+
+    /* _clientCA represents the CA to use when acting as a client
+     * and validating remotes during outbound connections.
+     * This comes from, in order, --tlsCAFile, or the system CA.
+     */
+    CFUniquePtr<::CFArrayRef> _clientCA;
+
+    /* _serverCA represents the CA to use when acting as a server
+     * and validating remotes during inbound connections.
+     * This comes from --tlsClusterCAFile, if available,
+     * otherwise it inherits from _clientCA.
+     */
+    CFUniquePtr<::CFArrayRef> _serverCA;
+
     SSLConfiguration _sslConfiguration;
 };
 
@@ -1124,8 +1162,8 @@ SSLManagerApple::SSLManagerApple(const SSLParams& params, bool isServer)
 
     if (!params.sslCAFile.empty()) {
         auto ca = uassertStatusOK(loadPEM(params.sslCAFile, "", kLoadPEMStripKeys));
-        _ca = std::move(ca);
-        _sslConfiguration.hasCA = _ca && ::CFArrayGetCount(_ca.get());
+        _clientCA = std::move(ca);
+        _sslConfiguration.hasCA = _clientCA && ::CFArrayGetCount(_clientCA.get());
     }
 
     if (!params.sslCertificateSelector.empty() || !params.sslClusterCertificateSelector.empty()) {
@@ -1133,12 +1171,22 @@ SSLManagerApple::SSLManagerApple(const SSLParams& params, bool isServer)
         _sslConfiguration.hasCA = true;
     }
 
-    if (!_ca) {
+    if (!_clientCA) {
         // No explicit CA was specified, use the Keychain CA explicitly on client connects,
         // even though we're going to pretend it doesn't exist on server.
         ::CFArrayRef certs = nullptr;
         uassertOSStatusOK(SecTrustCopyAnchorCertificates(&certs));
-        _ca.reset(certs);
+        _clientCA.reset(certs);
+    }
+
+    if (!params.sslClusterCAFile.empty()) {
+        auto ca = uassertStatusOK(loadPEM(params.sslClusterCAFile, "", kLoadPEMStripKeys));
+        _serverCA = std::move(ca);
+    } else {
+        // No inbound CA specified, share a reference with outbound CA.
+        auto ca = _clientCA.get();
+        ::CFRetain(ca);
+        _serverCA.reset(ca);
     }
 }
 
@@ -1152,6 +1200,9 @@ StatusWith<std::pair<::SSLProtocol, ::SSLProtocol>> parseProtocolRange(const SSL
             tls11 = false;
         } else if (protocol == SSLParams::Protocols::TLS1_2) {
             tls12 = false;
+        } else if (protocol == SSLParams::Protocols::TLS1_3) {
+            // By ignoring this value, we are disabling support until we have access to the
+            // modern library.
         } else {
             return {ErrorCodes::InvalidSSLConfiguration, "Unknown disabled TLS protocol version"};
         }
@@ -1174,6 +1225,9 @@ StatusWith<std::pair<::SSLProtocol, ::SSLProtocol>> parseProtocolRange(const SSL
 Status SSLManagerApple::initSSLContext(asio::ssl::apple::Context* context,
                                        const SSLParams& params,
                                        ConnectionDirection direction) {
+    // Options.
+    context->allowInvalidHostnames = _allowInvalidHostnames;
+
     // Protocol Version.
     const auto swProto = parseProtocolRange(params);
     if (!swProto.isOK()) {
@@ -1208,6 +1262,10 @@ Status SSLManagerApple::initSSLContext(asio::ssl::apple::Context* context,
     };
 
     if (direction == ConnectionDirection::kOutgoing) {
+        if (params.tlsWithholdClientCertificate) {
+            return Status::OK();
+        }
+
         const auto status = selectCertificate(
             params.sslClusterCertificateSelector, params.sslClusterFile, params.sslClusterPassword);
         if (context->certs || !status.isOK()) {
@@ -1233,10 +1291,12 @@ SSLConnectionInterface* SSLManagerApple::accept(Socket* socket, const char* init
 }
 
 SSLPeerInfo SSLManagerApple::parseAndValidatePeerCertificateDeprecated(
-    const SSLConnectionInterface* conn, const std::string& remoteHost) {
+    const SSLConnectionInterface* conn,
+    const std::string& remoteHost,
+    const HostAndPort& hostForLogging) {
     auto ssl = checked_cast<const SSLConnectionApple*>(conn)->get();
 
-    auto swPeerSubjectName = parseAndValidatePeerCertificate(ssl, remoteHost);
+    auto swPeerSubjectName = parseAndValidatePeerCertificate(ssl, remoteHost, hostForLogging);
     // We can't use uassertStatusOK here because we need to throw a NetworkException.
     if (!swPeerSubjectName.isOK()) {
         throwSocketError(SocketErrorKind::CONNECT_ERROR, swPeerSubjectName.getStatus().reason());
@@ -1244,43 +1304,34 @@ SSLPeerInfo SSLManagerApple::parseAndValidatePeerCertificateDeprecated(
     return swPeerSubjectName.getValue().get_value_or(SSLPeerInfo());
 }
 
-void recordTLSVersion(::SSLContextRef ssl) {
+StatusWith<TLSVersion> mapTLSVersion(SSLContextRef ssl) {
     ::SSLProtocol protocol;
 
     uassertOSStatusOK(::SSLGetNegotiatedProtocolVersion(ssl, &protocol));
 
-    auto& counts = mongo::TLSVersionCounts::get(getGlobalServiceContext());
     switch (protocol) {
         case kTLSProtocol1:
-            counts.tls10.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS10;
         case kTLSProtocol11:
-            counts.tls11.addAndFetch(1);
-            break;
+            return TLSVersion::kTLS11;
         case kTLSProtocol12:
-            counts.tls12.addAndFetch(1);
-            break;
-        // case kTLSProtocol13:
-        //     counts.tls13.addAndFetch(1);
-        //     break;
-        case kSSLProtocolUnknown:
-        case kSSLProtocol2:
-        case kSSLProtocol3:
-        case kSSLProtocol3Only:
-        case kTLSProtocol1Only:
-        case kSSLProtocolAll:
-        case kDTLSProtocol1:
-            // Do nothing
-            break;
+            return TLSVersion::kTLS12;
+        default:  // Some system headers may define additional protocols, so suppress warnings.
+            return TLSVersion::kUnknown;
     }
 }
 
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCertificate(
-    ::SSLContextRef ssl, const std::string& remoteHost) {
+    ::SSLContextRef ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
 
     // Record TLS version stats
-    recordTLSVersion(ssl);
+    auto tlsVersionStatus = mapTLSVersion(ssl);
+    if (!tlsVersionStatus.isOK()) {
+        return tlsVersionStatus.getStatus();
+    }
+
+    recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     /* While we always have a system CA via the Keychain,
      * we'll pretend not to in terms of validation if the server
@@ -1325,8 +1376,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         }
     }
 
-    if (_ca) {
-        auto status = ::SecTrustSetAnchorCertificates(cftrust.get(), _ca.get());
+    // When remoteHost is empty, it means we're handling an Inbound connection.
+    // In that case, we in a server role, so use the _serverCA,
+    // otherwise we're in a client role, so use that.
+    auto ca = remoteHost.empty() ? _serverCA.get() : _clientCA.get();
+    if (ca) {
+        auto status = ::SecTrustSetAnchorCertificates(cftrust.get(), ca);
         if (status == ::errSecSuccess) {
             status = ::SecTrustSetAnchorCertificatesOnly(cftrust.get(), true);
         }
@@ -1337,12 +1392,25 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         }
     }
 
+    bool ipv6 = false;
+
+    // We want run the hostname through CIDR to standardize the
+    // IP Address notation, making direct comparison possible.
+    auto swCIDRRemoteHost = CIDR::parse(remoteHost);
+    if (swCIDRRemoteHost.isOK() && remoteHost.find(':') != std::string::npos) {
+        ipv6 = true;
+    }
+
     auto result = ::kSecTrustResultInvalid;
     uassertOSStatusOK(::SecTrustEvaluate(cftrust.get(), &result), ErrorCodes::SSLHandshakeFailed);
-    if ((result != ::kSecTrustResultProceed) && (result != ::kSecTrustResultUnspecified)) {
-        const bool proceed = _allowInvalidCertificates ||
-            (_allowInvalidHostnames && (result == ::kSecTrustResultRecoverableTrustFailure));
-        return badCert(explainTrustFailure(cftrust.get(), result), proceed);
+
+    // ipv6 addresses ignore the results of this check because we
+    // cant guarantee the format of the address apple will return from
+    // comparison between the remote host and the certificate, but
+    // we anyways check the addresses again after they are canonicalized.
+    if ((result != ::kSecTrustResultProceed) && (result != ::kSecTrustResultUnspecified) &&
+        (!ipv6)) {
+        return badCert(explainTrustFailure(cftrust.get(), result), _allowInvalidCertificates);
     }
 
     auto cert = ::SecTrustGetCertificateAtIndex(cftrust.get(), 0);
@@ -1402,6 +1470,13 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
     if (!sans.empty()) {
         certErr << "SAN(s): ";
         for (auto& san : sans) {
+            if (swCIDRRemoteHost.isOK()) {
+                auto swCIDRSan = CIDR::parse(san);
+                if (swCIDRSan.isOK() && swCIDRSan.getValue() == swCIDRRemoteHost.getValue()) {
+                    sanMatch = true;
+                    break;
+                }
+            }
             if (hostNameMatchForX509Certificates(remoteHost, san)) {
                 sanMatch = true;
                 break;
@@ -1413,7 +1488,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         auto swCN = peerSubjectName.getOID(kOID_CommonName);
         if (swCN.isOK()) {
             auto commonName = std::move(swCN.getValue());
-            if (hostNameMatchForX509Certificates(remoteHost, commonName)) {
+            auto swCommonName = CIDR::parse(commonName);
+            if (swCommonName.isOK() && swCIDRRemoteHost.isOK()) {
+                if (swCommonName.getValue() == swCIDRRemoteHost.getValue()) {
+                    cnMatch = true;
+                }
+            } else if (hostNameMatchForX509Certificates(remoteHost, commonName)) {
                 cnMatch = true;
             }
             certErr << "CN: " << commonName;

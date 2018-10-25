@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -228,6 +230,55 @@ public:
         return new DocumentSourcePassthrough();
     }
 };
+
+TEST_F(DocumentSourceFacetTest, PassthroughFacetDoesntRequireDiskAndIsOKInaTxn) {
+    auto ctx = getExpCtx();
+    auto passthrough = DocumentSourcePassthrough::create();
+    auto passthroughPipe = uassertStatusOK(Pipeline::createFacetPipeline({passthrough}, ctx));
+
+    std::vector<DocumentSourceFacet::FacetPipeline> facets;
+    facets.emplace_back("passthrough", std::move(passthroughPipe));
+
+    auto facetStage = DocumentSourceFacet::create(std::move(facets), ctx);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).diskRequirement ==
+           DocumentSource::DiskUseRequirement::kNoDiskUse);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).transactionRequirement ==
+           DocumentSource::TransactionRequirement::kAllowed);
+}
+
+/**
+ * A dummy DocumentSource which writes persistent data.
+ */
+class DocumentSourceWritesPersistentData final : public DocumentSourcePassthrough {
+public:
+    StageConstraints constraints(Pipeline::SplitState) const final {
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                HostTypeRequirement::kNone,
+                DiskUseRequirement::kWritesPersistentData,
+                FacetRequirement::kAllowed,
+                TransactionRequirement::kNotAllowed};
+    }
+
+    static boost::intrusive_ptr<DocumentSourceWritesPersistentData> create() {
+        return new DocumentSourceWritesPersistentData();
+    }
+};
+
+TEST_F(DocumentSourceFacetTest, FacetWithChildThatWritesDataAlsoReportsWritingData) {
+    auto ctx = getExpCtx();
+    auto writesDataStage = DocumentSourceWritesPersistentData::create();
+    auto pipeline = uassertStatusOK(Pipeline::createFacetPipeline({writesDataStage}, ctx));
+
+    std::vector<DocumentSourceFacet::FacetPipeline> facets;
+    facets.emplace_back("writes", std::move(pipeline));
+
+    auto facetStage = DocumentSourceFacet::create(std::move(facets), ctx);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).diskRequirement ==
+           DocumentSource::DiskUseRequirement::kWritesPersistentData);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).transactionRequirement ==
+           DocumentSource::TransactionRequirement::kNotAllowed);
+}
 
 TEST_F(DocumentSourceFacetTest, SingleFacetShouldReceiveAllDocuments) {
     auto ctx = getExpCtx();
@@ -697,7 +748,11 @@ TEST_F(DocumentSourceFacetTest, ShouldRequirePrimaryShardIfAnyStageRequiresPrima
     auto facetStage = DocumentSourceFacet::create(std::move(facets), ctx);
 
     ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).hostRequirement ==
-           DocumentSource::StageConstraints::HostTypeRequirement::kPrimaryShard);
+           StageConstraints::HostTypeRequirement::kPrimaryShard);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).diskRequirement ==
+           StageConstraints::DiskUseRequirement::kNoDiskUse);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).transactionRequirement ==
+           StageConstraints::TransactionRequirement::kAllowed);
 }
 
 TEST_F(DocumentSourceFacetTest, ShouldNotRequirePrimaryShardIfNoStagesRequiresPrimaryShard) {
@@ -717,8 +772,55 @@ TEST_F(DocumentSourceFacetTest, ShouldNotRequirePrimaryShardIfNoStagesRequiresPr
     auto facetStage = DocumentSourceFacet::create(std::move(facets), ctx);
 
     ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).hostRequirement ==
-           DocumentSource::StageConstraints::HostTypeRequirement::kNone);
+           StageConstraints::HostTypeRequirement::kNone);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).diskRequirement ==
+           StageConstraints::DiskUseRequirement::kNoDiskUse);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).transactionRequirement ==
+           StageConstraints::TransactionRequirement::kAllowed);
 }
 
+/**
+ * A dummy DocumentSource that must run on the primary shard, can write temporary data and can't be
+ * used in a transaction.
+ */
+class DocumentSourcePrimaryShardTmpDataNoTxn final : public DocumentSourcePassthrough {
+public:
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                HostTypeRequirement::kPrimaryShard,
+                DiskUseRequirement::kWritesTmpData,
+                FacetRequirement::kAllowed,
+                TransactionRequirement::kNotAllowed};
+    }
+
+    static boost::intrusive_ptr<DocumentSourcePrimaryShardTmpDataNoTxn> create() {
+        return new DocumentSourcePrimaryShardTmpDataNoTxn();
+    }
+};
+
+TEST_F(DocumentSourceFacetTest, ShouldSurfaceStrictestRequirementsOfEachConstraint) {
+    auto ctx = getExpCtx();
+
+    auto firstPassthrough = DocumentSourcePassthrough::create();
+    auto firstPipeline =
+        unittest::assertGet(Pipeline::createFacetPipeline({firstPassthrough}, ctx));
+
+    auto secondPassthrough = DocumentSourcePrimaryShardTmpDataNoTxn::create();
+    auto secondPipeline =
+        unittest::assertGet(Pipeline::createFacetPipeline({secondPassthrough}, ctx));
+
+    std::vector<DocumentSourceFacet::FacetPipeline> facets;
+    facets.emplace_back("first", std::move(firstPipeline));
+    facets.emplace_back("second", std::move(secondPipeline));
+    auto facetStage = DocumentSourceFacet::create(std::move(facets), ctx);
+
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).hostRequirement ==
+           StageConstraints::HostTypeRequirement::kPrimaryShard);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).diskRequirement ==
+           StageConstraints::DiskUseRequirement::kWritesTmpData);
+    ASSERT(facetStage->constraints(Pipeline::SplitState::kUnsplit).transactionRequirement ==
+           StageConstraints::TransactionRequirement::kNotAllowed);
+}
 }  // namespace
 }  // namespace mongo

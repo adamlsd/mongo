@@ -34,14 +34,11 @@ selector:
   - jstests/core/geonear_key.js
   - jstests/core/in.js
   - jstests/core/index8.js # No explicit check for failed command.
-  - jstests/core/index_big1.js
-  - jstests/core/index_bigkeys.js
   - jstests/core/index_decimal.js
   - jstests/core/index_multiple_compatibility.js
   - jstests/core/index_partial_write_ops.js
   - jstests/core/indexa.js # No explicit check for failed command.
   - jstests/core/indexes_multiple_commands.js
-  - jstests/core/insert_long_index_key.js
   - jstests/core/js2.js
   - jstests/core/json_schema/json_schema.js
   - jstests/core/mr_bigobject.js
@@ -94,6 +91,7 @@ selector:
   - jstests/core/optimized_match_explain.js
   - jstests/core/sort_array.js
   - jstests/core/views/views_collation.js
+  - jstests/core/wildcard_index_count.js
 
   # $out
   - jstests/core/bypass_doc_validation.js
@@ -166,7 +164,6 @@ selector:
   - jstests/core/dbref1.js
   - jstests/core/dbref2.js
   - jstests/core/ref3.js
-  - jstests/core/repair_database.js
   - jstests/core/update3.js
   - jstests/core/rename3.js
 
@@ -219,7 +216,6 @@ selector:
 
   # Creates sessions explicitly, resulting in txns being run through different sessions
   # using a single txnNumber.
-  - jstests/core/list_all_local_cursors.js
   - jstests/core/json_schema/misc_validation.js
   - jstests/core/views/views_all_commands.js
 

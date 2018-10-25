@@ -44,9 +44,6 @@ DBCollection.prototype.help = function() {
     print(
         "\tdb." + shortName +
         ".estimatedDocumentCount( <optional params> ) - estimate the document count using collection metadata, optional parameters are: maxTimeMS");
-    print(
-        "\tdb." + shortName +
-        ".copyTo(newColl) - duplicates collection by copying all documents to newColl; no indexes are copied.");
     print("\tdb." + shortName + ".convertToCapped(maxBytes) - calls {convertToCapped:'" +
           shortName + "', size:maxBytes}} command");
     print("\tdb." + shortName + ".createIndex(keypattern[,options])");
@@ -641,27 +638,10 @@ DBCollection.prototype.createIndexes = function(keys, options) {
         indexSpecs[i] = this._indexSpec(keys[i], options);
     }
 
-    if (this.getMongo().writeMode() == "commands") {
-        for (var i = 0; i < indexSpecs.length; i++) {
-            delete (indexSpecs[i].ns);  // ns is passed to the first element in the command.
-        }
-        return this._db.runCommand({createIndexes: this.getName(), indexes: indexSpecs});
-    } else if (this.getMongo().writeMode() == "compatibility") {
-        // Use the downconversion machinery of the bulk api to do a safe write, report response as a
-        // command response
-        var result = this._db.getCollection("system.indexes").insert(indexSpecs, 0);
-
-        if (result.hasWriteErrors() || result.hasWriteConcernError()) {
-            // Return the first error
-            var error = result.hasWriteErrors() ? result.getWriteErrors()[0]
-                                                : result.getWriteConcernError();
-            return {ok: 0.0, code: error.code, errmsg: error.errmsg};
-        } else {
-            return {ok: 1.0};
-        }
-    } else {
-        this._db.getCollection("system.indexes").insert(indexSpecs, 0);
+    for (var i = 0; i < indexSpecs.length; i++) {
+        delete (indexSpecs[i].ns);  // ns is passed to the first element in the command.
     }
+    return this._db.runCommand({createIndexes: this.getName(), indexes: indexSpecs});
 };
 
 DBCollection.prototype.ensureIndex = function(keys, options) {
@@ -822,44 +802,19 @@ DBCollection.prototype.getShardVersion = function() {
     return this._db._adminCommand({getShardVersion: this._fullName});
 };
 
-DBCollection.prototype._getIndexesSystemIndexes = function(filter) {
-    var si = this.getDB().getCollection("system.indexes");
-    var query = {ns: this.getFullName()};
-    if (filter)
-        query = Object.extend(query, filter);
-    return si.find(query).toArray();
-};
-
-DBCollection.prototype._getIndexesCommand = function(filter) {
+DBCollection.prototype.getIndexes = function(filter) {
     var res = this.runCommand("listIndexes", filter);
 
     if (!res.ok) {
-        if (res.code == 59) {
-            // command doesn't exist, old mongod
-            return null;
-        }
-
-        if (res.code == 26) {
-            // NamespaceNotFound, for compatability, return []
+        if (res.code == ErrorCodes.NamespaceNotFound) {
+            // For compatibility, return []
             return [];
-        }
-
-        if (res.errmsg && res.errmsg.startsWith("no such cmd")) {
-            return null;
         }
 
         throw _getErrorWithCode(res, "listIndexes failed: " + tojson(res));
     }
 
     return new DBCommandCursor(this._db, res).toArray();
-};
-
-DBCollection.prototype.getIndexes = function(filter) {
-    var res = this._getIndexesCommand(filter);
-    if (res) {
-        return res;
-    }
-    return this._getIndexesSystemIndexes(filter);
 };
 
 DBCollection.prototype.getIndices = DBCollection.prototype.getIndexes;
@@ -881,16 +836,11 @@ DBCollection.prototype.hashAllDocs = function() {
 };
 
 /**
- * <p>Drop a specified index.</p>
+ * Drop a specified index.
  *
- * <p>
- * "index" is the name of the index in the system.indexes name field (run db.system.indexes.find()
- *to
- *  see example data), or an object holding the key(s) used to create the index.
- * For example:
- *  db.collectionName.dropIndex( "myIndexName" );
- *  db.collectionName.dropIndex( { "indexKey" : 1 } );
- * </p>
+ * "index" is the name or key pattern of the index. For example:
+ *    db.collectionName.dropIndex( "myIndexName" );
+ *    db.collectionName.dropIndex( { "indexKey" : 1 } );
  *
  * @param {String} name or key object of index to delete.
  * @return A result object.  result.ok will be true if successful.
@@ -899,24 +849,6 @@ DBCollection.prototype.dropIndex = function(index) {
     assert(index, "need to specify index to dropIndex");
     var res = this._dbCommand("deleteIndexes", {index: index});
     return res;
-};
-
-DBCollection.prototype.copyTo = function(newName) {
-    return this.getDB().eval(function(collName, newName) {
-        var from = db[collName];
-        var to = db[newName];
-        to.ensureIndex({_id: 1});
-        var count = 0;
-
-        var cursor = from.find();
-        while (cursor.hasNext()) {
-            var o = cursor.next();
-            count++;
-            to.save(o);
-        }
-
-        return count;
-    }, this.getName(), newName);
 };
 
 DBCollection.prototype.getCollection = function(subName) {
@@ -1030,10 +962,6 @@ DBCollection.prototype.exists = function() {
         if (!cursor.hasNext())
             return null;
         return cursor.next();
-    }
-
-    if (res.errmsg && res.errmsg.startsWith("no such cmd")) {
-        return this._db.system.namespaces.findOne({name: this._fullName});
     }
 
     throw _getErrorWithCode(res, "listCollections failed: " + tojson(res));
@@ -1556,26 +1484,11 @@ DBCollection.prototype.latencyStats = function(options) {
 
 DBCollection.prototype.watch = function(pipeline, options) {
     pipeline = pipeline || [];
-    options = options || {};
     assert(pipeline instanceof Array, "'pipeline' argument must be an array");
-    assert(options instanceof Object, "'options' argument must be an object");
-
-    let changeStreamStage = {fullDocument: options.fullDocument || "default"};
-    delete options.fullDocument;
-
-    if (options.hasOwnProperty("resumeAfter")) {
-        changeStreamStage.resumeAfter = options.resumeAfter;
-        delete options.resumeAfter;
-    }
-
-    if (options.hasOwnProperty("startAtOperationTime")) {
-        changeStreamStage.startAtOperationTime = options.startAtOperationTime;
-        delete options.startAtOperationTime;
-    }
-
-    pipeline.unshift({$changeStream: changeStreamStage});
-    // Pass options "batchSize", "collation" and "maxAwaitTimeMS" down to aggregate().
-    return this.aggregate(pipeline, options);
+    let changeStreamStage;
+    [changeStreamStage, aggOptions] = this.getMongo()._extractChangeStreamOptions(options);
+    pipeline.unshift(changeStreamStage);
+    return this.aggregate(pipeline, aggOptions);
 };
 
 /**

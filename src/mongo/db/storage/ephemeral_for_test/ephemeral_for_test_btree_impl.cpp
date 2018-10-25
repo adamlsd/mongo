@@ -1,25 +1,27 @@
 // ephemeral_for_test_btree_impl.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -48,7 +50,6 @@ using std::vector;
 
 namespace {
 
-const int TempKeyMaxSize = 1024;  // this goes away with SERVER-3372
 
 bool hasFieldNames(const BSONObj& obj) {
     BSONForEach(e, obj) {
@@ -71,15 +72,6 @@ BSONObj stripFieldNames(const BSONObj& query) {
 
 typedef std::set<IndexKeyEntry, IndexEntryComparison> IndexSet;
 
-// taken from btree_logic.cpp
-Status dupKeyError(const BSONObj& key) {
-    StringBuilder sb;
-    sb << "E11000 duplicate key error ";
-    // sb << "index: " << _indexName << " "; // TODO
-    sb << "dup key: " << key;
-    return Status(ErrorCodes::DuplicateKey, sb.str());
-}
-
 bool isDup(const IndexSet& data, const BSONObj& key, RecordId loc) {
     const IndexSet::const_iterator it = data.find(IndexKeyEntry(key, RecordId()));
     if (it == data.end())
@@ -91,22 +83,26 @@ bool isDup(const IndexSet& data, const BSONObj& key, RecordId loc) {
 
 class EphemeralForTestBtreeBuilderImpl : public SortedDataBuilderInterface {
 public:
-    EphemeralForTestBtreeBuilderImpl(IndexSet* data, long long* currentKeySize, bool dupsAllowed)
+    EphemeralForTestBtreeBuilderImpl(IndexSet* data,
+                                     long long* currentKeySize,
+                                     bool dupsAllowed,
+                                     const std::string& collectionNamespace,
+                                     const std::string& indexName,
+                                     const BSONObj& keyPattern)
         : _data(data),
           _currentKeySize(currentKeySize),
           _dupsAllowed(dupsAllowed),
-          _comparator(_data->key_comp()) {
+          _comparator(_data->key_comp()),
+          _collectionNamespace(collectionNamespace),
+          _indexName(indexName),
+          _keyPattern(keyPattern) {
         invariant(_data->empty());
     }
 
-    Status addKey(const BSONObj& key, const RecordId& loc) {
+    StatusWith<SpecialFormatInserted> addKey(const BSONObj& key, const RecordId& loc) {
         // inserts should be in ascending (key, RecordId) order.
 
-        if (key.objsize() >= TempKeyMaxSize) {
-            return Status(ErrorCodes::KeyTooLong, "key too big");
-        }
-
-        invariant(loc.isNormal());
+        invariant(loc.isValid());
         invariant(!hasFieldNames(key));
 
         if (!_data->empty()) {
@@ -116,7 +112,7 @@ public:
                 return Status(ErrorCodes::InternalError,
                               "expected ascending (key, RecordId) order in bulk builder");
             } else if (!_dupsAllowed && cmp == 0 && loc != _last->loc) {
-                return dupKeyError(key);
+                return buildDupKeyErrorStatus(key, _collectionNamespace, _indexName, _keyPattern);
             }
         }
 
@@ -124,7 +120,7 @@ public:
         _last = _data->insert(_data->end(), IndexKeyEntry(owned, loc));
         *_currentKeySize += key.objsize();
 
-        return Status::OK();
+        return StatusWith<SpecialFormatInserted>(SpecialFormatInserted::NoSpecialFormatInserted);
     }
 
 private:
@@ -134,49 +130,57 @@ private:
 
     IndexEntryComparison _comparator;  // used by the bulk builder to detect duplicate keys
     IndexSet::const_iterator _last;    // or (key, RecordId) ordering violations
+
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
 };
 
 class EphemeralForTestBtreeImpl : public SortedDataInterface {
 public:
-    EphemeralForTestBtreeImpl(IndexSet* data, bool isUnique) : _data(data), _isUnique(isUnique) {
+    EphemeralForTestBtreeImpl(IndexSet* data,
+                              bool isUnique,
+                              const std::string& collectionNamespace,
+                              const std::string& indexName,
+                              const BSONObj& keyPattern)
+        : _data(data),
+          _isUnique(isUnique),
+          _collectionNamespace(collectionNamespace),
+          _indexName(indexName),
+          _keyPattern(keyPattern) {
         _currentKeySize = 0;
     }
 
     virtual SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx, bool dupsAllowed) {
-        return new EphemeralForTestBtreeBuilderImpl(_data, &_currentKeySize, dupsAllowed);
+        return new EphemeralForTestBtreeBuilderImpl(
+            _data, &_currentKeySize, dupsAllowed, _collectionNamespace, _indexName, _keyPattern);
     }
 
-    virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& loc,
-                          bool dupsAllowed) {
-        invariant(loc.isNormal());
+    virtual StatusWith<SpecialFormatInserted> insert(OperationContext* opCtx,
+                                                     const BSONObj& key,
+                                                     const RecordId& loc,
+                                                     bool dupsAllowed) {
+        invariant(loc.isValid());
         invariant(!hasFieldNames(key));
 
-        if (key.objsize() >= TempKeyMaxSize) {
-            string msg = mongoutils::str::stream()
-                << "EphemeralForTestBtree::insert: key too large to index, failing " << ' '
-                << key.objsize() << ' ' << key;
-            return Status(ErrorCodes::KeyTooLong, msg);
-        }
 
         // TODO optimization: save the iterator from the dup-check to speed up insert
         if (!dupsAllowed && isDup(*_data, key, loc))
-            return dupKeyError(key);
+            return buildDupKeyErrorStatus(key, _collectionNamespace, _indexName, _keyPattern);
 
         IndexKeyEntry entry(key.getOwned(), loc);
         if (_data->insert(entry).second) {
             _currentKeySize += key.objsize();
             opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, true));
         }
-        return Status::OK();
+        return StatusWith<SpecialFormatInserted>(SpecialFormatInserted::NoSpecialFormatInserted);
     }
 
     virtual void unindex(OperationContext* opCtx,
                          const BSONObj& key,
                          const RecordId& loc,
                          bool dupsAllowed) {
-        invariant(loc.isNormal());
+        invariant(loc.isValid());
         invariant(!hasFieldNames(key));
 
         IndexKeyEntry entry(key.getOwned(), loc);
@@ -208,7 +212,7 @@ public:
     virtual Status dupKeyCheck(OperationContext* opCtx, const BSONObj& key, const RecordId& loc) {
         invariant(!hasFieldNames(key));
         if (isDup(*_data, key, loc))
-            return dupKeyError(key);
+            return buildDupKeyErrorStatus(key, _collectionNamespace, _indexName, _keyPattern);
         return Status::OK();
     }
 
@@ -503,6 +507,10 @@ private:
     IndexSet* _data;
     long long _currentKeySize;
     const bool _isUnique;
+
+    const std::string _collectionNamespace;
+    const std::string _indexName;
+    const BSONObj _keyPattern;
 };
 }  // namespace
 
@@ -510,12 +518,19 @@ private:
 // factories. We don't actually modify it.
 SortedDataInterface* getEphemeralForTestBtreeImpl(const Ordering& ordering,
                                                   bool isUnique,
+                                                  const std::string& collectionNamespace,
+                                                  const std::string& indexName,
+                                                  const BSONObj& keyPattern,
                                                   std::shared_ptr<void>* dataInOut) {
     invariant(dataInOut);
     if (!*dataInOut) {
         *dataInOut = std::make_shared<IndexSet>(IndexEntryComparison(ordering));
     }
-    return new EphemeralForTestBtreeImpl(static_cast<IndexSet*>(dataInOut->get()), isUnique);
+    return new EphemeralForTestBtreeImpl(static_cast<IndexSet*>(dataInOut->get()),
+                                         isUnique,
+                                         collectionNamespace,
+                                         indexName,
+                                         keyPattern);
 }
 
 }  // namespace mongo

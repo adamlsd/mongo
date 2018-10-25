@@ -1,45 +1,50 @@
+
 /**
- * Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
-#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_noop.h"
 #include "mongo/db/op_observer_registry.h"
+#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/repl/do_txn.h"
 #include "mongo/db/repl/oplog_interface_local.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/storage_interface_impl.h"
+#include "mongo/db/s/op_observer_sharding_impl.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/session_catalog_mongod.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/logger/logger.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/stdx/memory.h"
@@ -56,14 +61,21 @@ public:
     /**
      * Called by doTxn() when ops are ready to commit.
      */
-    void onTransactionCommit(OperationContext* opCtx, bool wasPrepared) override;
+    void onTransactionCommit(OperationContext* opCtx,
+                             boost::optional<OplogSlot> commitOplogEntryOpTime,
+                             boost::optional<Timestamp> commitTimestamp) override;
 
     // If present, holds the applyOps oplog entry written out by the ObObserverImpl
     // onTransactionCommit.
     boost::optional<OplogEntry> applyOpsOplogEntry;
 };
 
-void OpObserverMock::onTransactionCommit(OperationContext* opCtx, bool wasPrepared) {
+void OpObserverMock::onTransactionCommit(OperationContext* opCtx,
+                                         boost::optional<OplogSlot> commitOplogEntryOpTime,
+                                         boost::optional<Timestamp> commitTimestamp) {
+    ASSERT(!commitOplogEntryOpTime) << commitOplogEntryOpTime->opTime;
+    ASSERT(!commitTimestamp) << *commitTimestamp;
+
     OplogInterfaceLocal oplogInterface(opCtx, NamespaceString::kRsOplogNamespace.ns());
     auto oplogIter = oplogInterface.makeIterator();
     auto opEntry = unittest::assertGet(oplogIter->next());
@@ -105,14 +117,14 @@ protected:
     OpObserverMock* _opObserver = nullptr;
     std::unique_ptr<StorageInterface> _storage;
     ServiceContext::UniqueOperationContext _opCtx;
-    boost::optional<OperationContextSession> _ocs;
+    boost::optional<OperationContextSessionMongod> _ocs;
 };
 
 void DoTxnTest::setUp() {
     // Set up mongod.
     ServiceContextMongoDTest::setUp();
 
-    auto service = getServiceContext();
+    const auto service = getServiceContext();
     _opCtx = cc().makeOperationContext();
 
     // Set up ReplicationCoordinator and create oplog.
@@ -125,13 +137,12 @@ void DoTxnTest::setUp() {
     ASSERT_OK(replCoord->setFollowerMode(MemberState::RS_PRIMARY));
 
     // Set up session catalog
-    SessionCatalog::get(service)->reset_forTest();
-    SessionCatalog::get(service)->onStepUp(_opCtx.get());
+    MongoDSessionCatalog::onStepUp(_opCtx.get());
 
     // Need the OpObserverImpl in the registry in order for doTxn to work.
     OpObserverRegistry* opObserverRegistry =
         dynamic_cast<OpObserverRegistry*>(service->getOpObserver());
-    opObserverRegistry->addObserver(stdx::make_unique<OpObserverImpl>());
+    opObserverRegistry->addObserver(stdx::make_unique<OpObserverShardingImpl>());
 
     // Use OpObserverMock to track applyOps calls generated by doTxn().
     auto opObserver = stdx::make_unique<OpObserverMock>();
@@ -145,13 +156,13 @@ void DoTxnTest::setUp() {
     // Set up the transaction and session.
     _opCtx->setLogicalSessionId(makeLogicalSessionIdForTest());
     _opCtx->setTxnNumber(0);  // TxnNumber can always be 0 because we have a new session.
-    _ocs.emplace(_opCtx.get(),
-                 true /* checkOutSession */,
-                 false /* autocommit */,
-                 true /* startTransaction */,
-                 "admin" /* dbName */,
-                 "doTxn" /* cmdName */);
-    OperationContextSession::get(opCtx())->unstashTransactionResources(opCtx(), "doTxn");
+    OperationSessionInfoFromClient sessionInfo;
+    sessionInfo.setAutocommit(false);
+    sessionInfo.setStartTransaction(true);
+    _ocs.emplace(_opCtx.get(), true /* checkOutSession */, sessionInfo);
+
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "doTxn");
 }
 
 void DoTxnTest::tearDown() {
@@ -159,6 +170,8 @@ void DoTxnTest::tearDown() {
     _opCtx = nullptr;
     _storage = {};
     _opObserver = nullptr;
+
+    SessionCatalog::get(getServiceContext())->reset_forTest();
 
     // Reset default log level in case it was changed.
     logger::globalLogDomain()->setMinimumLoggedSeverity(logger::LogComponent::kReplication,

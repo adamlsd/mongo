@@ -33,8 +33,26 @@ if not opts.version:
 if opts.version == "2.4" and opts.edition == "enterprise":
   opts.edition = "subscription"
 
+def isVersionGreaterOrEqual(left, right):
+  l = left.split(".")
+  r = right.split(".")
+  for i in range(len(l)):
+    if l[i] < r[i]:
+      return False
+  return True
+
+if opts.version == "latest" or isVersionGreaterOrEqual(opts.version,"4.1.0"):
+  if opts.target in ('osx-ssl', 'osx'):
+    opts.target = 'macos'
+  if opts.target in ('windows_x86_64-2008plus-ssl', 'windows_x86_64-2008plus'):
+    opts.target = 'windows_x86_64-2012plus'
+
 def isCorrectVersion(version):
-  actual = version["version"].split(".")
+  parts = version["version"].split("-")
+  # always skip '-rcX' versions
+  if len(parts) > 1:
+    return False
+  actual = parts[0].split(".")
   desired = opts.version.split(".")
   for i in range(len(desired)):
     if desired[i] and not actual[i] == desired[i]:

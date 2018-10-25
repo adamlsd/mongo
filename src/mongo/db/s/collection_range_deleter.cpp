@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -50,6 +52,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/collection_sharding_runtime.h"
 #include "mongo/db/s/sharding_state.h"
+#include "mongo/db/s/sharding_statistics.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/write_concern.h"
@@ -75,7 +78,7 @@ using DeleteNotification = CollectionRangeDeleter::DeleteNotification;
 
 const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
                                                 WriteConcernOptions::SyncMode::UNSET,
-                                                Seconds(60));
+                                                WriteConcernOptions::kWriteConcernTimeoutSharding);
 
 boost::optional<DeleteNotification> checkOverlap(std::list<Deletion> const& deletions,
                                                  ChunkRange const& range) {
@@ -123,7 +126,17 @@ boost::optional<Date_t> CollectionRangeDeleter::cleanUpNextRange(
         const auto scopedCollectionMetadata =
             metadataManager->getActiveMetadata(metadataManager, boost::none);
 
-        if (!forTestOnly && (!collection || !scopedCollectionMetadata->isSharded())) {
+        if (!scopedCollectionMetadata) {
+            LOG(0) << "Abandoning any range deletions because the metadata for " << nss.ns()
+                   << " was reset";
+            stdx::lock_guard<stdx::mutex> lk(css->_metadataManager->_managerLock);
+            css->_metadataManager->_clearAllCleanups(lk);
+            return boost::none;
+        }
+
+        const auto& metadata = *scopedCollectionMetadata;
+
+        if (!forTestOnly && (!collection || !metadata->isSharded())) {
             if (!collection) {
                 LOG(0) << "Abandoning any range deletions left over from dropped " << nss.ns();
             } else {
@@ -136,9 +149,9 @@ boost::optional<Date_t> CollectionRangeDeleter::cleanUpNextRange(
             return boost::none;
         }
 
-        if (!forTestOnly && scopedCollectionMetadata->getCollVersion().epoch() != epoch) {
+        if (!forTestOnly && metadata->getCollVersion().epoch() != epoch) {
             LOG(1) << "Range deletion task for " << nss.ns() << " epoch " << epoch << " woke;"
-                   << " (current is " << scopedCollectionMetadata->getCollVersion() << ")";
+                   << " (current is " << metadata->getCollVersion() << ")";
             return boost::none;
         }
 
@@ -209,7 +222,7 @@ boost::optional<Date_t> CollectionRangeDeleter::cleanUpNextRange(
 
         try {
             wrote = self->_doDeletion(
-                opCtx, collection, scopedCollectionMetadata->getKeyPattern(), *range, maxToDelete);
+                opCtx, collection, metadata->getKeyPattern(), *range, maxToDelete);
         } catch (const DBException& e) {
             wrote = e.toStatus();
             warning() << e.what();
@@ -377,6 +390,7 @@ StatusWith<int> CollectionRangeDeleter::_doDeletion(OperationContext* opCtx,
                       << redact(restoreStateStatus);
             break;
         }
+        ShardingStatistics::get(opCtx).countDocsDeletedOnDonor.addAndFetch(1);
 
     } while (++numDeleted < maxToDelete);
 

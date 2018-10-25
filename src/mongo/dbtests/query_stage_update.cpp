@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 /**
@@ -252,10 +254,9 @@ public:
 };
 
 /**
- * Test receipt of an invalidation: case in which the document about to updated
- * is deleted.
+ * Test the case in which the document about to updated is deleted.
  */
-class QueryStageUpdateSkipInvalidatedDoc : public QueryStageUpdateBase {
+class QueryStageUpdateSkipDeletedDoc : public QueryStageUpdateBase {
 public:
     void run() {
         // Run the update.
@@ -327,11 +328,6 @@ public:
 
             // Remove recordIds[targetDocIndex];
             updateStage->saveState();
-            {
-                WriteUnitOfWork wunit(&_opCtx);
-                updateStage->invalidate(&_opCtx, recordIds[targetDocIndex], INVALIDATION_DELETION);
-                wunit.commit();
-            }
             BSONObj targetDoc = coll->docFor(&_opCtx, recordIds[targetDocIndex]).value();
             ASSERT(!targetDoc.isEmpty());
             remove(targetDoc);
@@ -553,70 +549,6 @@ public:
     }
 };
 
-/**
- * Test that an update stage which has not been asked to return any version of the updated document
- * will skip a WorkingSetMember that has been returned from the child in the OWNED_OBJ state. A
- * WorkingSetMember in the OWNED_OBJ state implies there was a conflict during execution, so this
- * WorkingSetMember should be skipped.
- */
-class QueryStageUpdateSkipOwnedObjects : public QueryStageUpdateBase {
-public:
-    void run() {
-        // Various variables we'll need.
-        dbtests::WriteContextForTests ctx(&_opCtx, nss.ns());
-        OpDebug* opDebug = &CurOp::get(_opCtx)->debug();
-        Collection* coll = ctx.getCollection();
-        UpdateLifecycleImpl updateLifecycle(nss);
-        UpdateRequest request(nss);
-        const CollatorInterface* collator = nullptr;
-        UpdateDriver driver(new ExpressionContext(&_opCtx, collator));
-        const BSONObj query = BSONObj();
-        const auto ws = make_unique<WorkingSet>();
-        const unique_ptr<CanonicalQuery> cq(canonicalize(query));
-
-        // Populate the request.
-        request.setQuery(query);
-        request.setUpdates(fromjson("{$set: {x: 0}}"));
-        request.setSort(BSONObj());
-        request.setMulti(false);
-        request.setLifecycle(&updateLifecycle);
-
-        const std::map<StringData, std::unique_ptr<ExpressionWithPlaceholder>> arrayFilters;
-
-        ASSERT_DOES_NOT_THROW(driver.parse(request.getUpdates(), arrayFilters, request.isMulti()));
-
-        // Configure a QueuedDataStage to pass an OWNED_OBJ to the update stage.
-        auto qds = make_unique<QueuedDataStage>(&_opCtx, ws.get());
-        {
-            WorkingSetID id = ws->allocate();
-            WorkingSetMember* member = ws->get(id);
-            member->obj = Snapshotted<BSONObj>(SnapshotId(), fromjson("{x: 1}"));
-            member->transitionToOwnedObj();
-            qds->pushBack(id);
-        }
-
-        // Configure the update.
-        UpdateStageParams updateParams(&request, &driver, opDebug);
-        updateParams.canonicalQuery = cq.get();
-
-        const auto updateStage =
-            make_unique<UpdateStage>(&_opCtx, updateParams, ws.get(), coll, qds.release());
-        const UpdateStats* stats = static_cast<const UpdateStats*>(updateStage->getSpecificStats());
-
-        // Call work, passing the set up member to the update stage.
-        WorkingSetID id = WorkingSet::INVALID_ID;
-        PlanStage::StageState state = updateStage->work(&id);
-
-        // Should return NEED_TIME, not modifying anything.
-        ASSERT_EQUALS(PlanStage::NEED_TIME, state);
-        ASSERT_EQUALS(stats->nModified, 0U);
-
-        id = WorkingSet::INVALID_ID;
-        state = updateStage->work(&id);
-        ASSERT_EQUALS(PlanStage::IS_EOF, state);
-    }
-};
-
 class All : public Suite {
 public:
     All() : Suite("query_stage_update") {}
@@ -624,10 +556,9 @@ public:
     void setupTests() {
         // Stage-specific tests below.
         add<QueryStageUpdateUpsertEmptyColl>();
-        add<QueryStageUpdateSkipInvalidatedDoc>();
+        add<QueryStageUpdateSkipDeletedDoc>();
         add<QueryStageUpdateReturnOldDoc>();
         add<QueryStageUpdateReturnNewDoc>();
-        add<QueryStageUpdateSkipOwnedObjects>();
     }
 };
 

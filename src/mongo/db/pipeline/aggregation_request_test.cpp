@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -59,7 +61,8 @@ TEST(AggregationRequestTest, ShouldParseAllKnownOptions) {
         "{pipeline: [{$match: {a: 'abc'}}], explain: false, allowDiskUse: true, fromMongos: true, "
         "needsMerge: true, bypassDocumentValidation: true, collation: {locale: 'en_US'}, cursor: "
         "{batchSize: 10}, hint: {a: 1}, maxTimeMS: 100, readConcern: {level: 'linearizable'}, "
-        "$queryOptions: {$readPreference: 'nearest'}, comment: 'agg_comment'}}");
+        "$queryOptions: {$readPreference: 'nearest'}, comment: 'agg_comment', exchange: {policy: "
+        "'roundrobin', consumers:NumberInt(2)}}");
     auto request = unittest::assertGet(AggregationRequest::parseFromBSON(nss, inputBson));
     ASSERT_FALSE(request.getExplain());
     ASSERT_TRUE(request.shouldAllowDiskUse());
@@ -79,6 +82,7 @@ TEST(AggregationRequestTest, ShouldParseAllKnownOptions) {
     ASSERT_BSONOBJ_EQ(request.getUnwrappedReadPref(),
                       BSON("$readPreference"
                            << "nearest"));
+    ASSERT_TRUE(request.getExchangeSpec().is_initialized());
 }
 
 TEST(AggregationRequestTest, ShouldParseExplicitExplainTrue) {
@@ -478,6 +482,18 @@ TEST(AggregationRequestTest, ParseFromBSONOverloadsShouldProduceIdenticalRequest
     auto aggReqNSS = unittest::assertGet(AggregationRequest::parseFromBSON(nss, inputBSON));
 
     ASSERT_DOCUMENT_EQ(aggReqDBName.serializeToCommandObj(), aggReqNSS.serializeToCommandObj());
+}
+
+TEST(AggregationRequestTest, ShouldRejectExchangeNotObject) {
+    NamespaceString nss("a.collection");
+    const BSONObj inputBson = fromjson("{pipeline: [], exchage: '42'}");
+    ASSERT_NOT_OK(AggregationRequest::parseFromBSON(nss, inputBson).getStatus());
+}
+
+TEST(AggregationRequestTest, ShouldRejectExchangeInvalidSpec) {
+    NamespaceString nss("a.collection");
+    const BSONObj inputBson = fromjson("{pipeline: [], exchage: {}}");
+    ASSERT_NOT_OK(AggregationRequest::parseFromBSON(nss, inputBson).getStatus());
 }
 
 //

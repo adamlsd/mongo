@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2012-2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -40,7 +42,6 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
-#include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/auth/user_management_commands_parser.h"
@@ -79,7 +80,6 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/read_concern.h"
-#include "mongo/db/repair_database.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -167,29 +167,26 @@ public:
 
 } cmdDropDatabase;
 
+static const char* repairRemovedMessage =
+    "This command has been removed. If you would like to compact your data, use the 'compact' "
+    "command. If you would like to rebuild indexes, use the 'reIndex' command. If you need to "
+    "recover data, please see the documentation for repairing your database offline: "
+    "http://dochub.mongodb.org/core/repair";
+
 class CmdRepairDatabase : public ErrmsgCommandDeprecated {
 public:
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
     virtual bool maintenanceMode() const {
-        return true;
-    }
-    std::string help() const override {
-        return "repair database.  also compacts. note: slow.";
-    }
-
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) const {
-        ActionSet actions;
-        actions.addAction(ActionType::repairDatabase);
-        out->push_back(Privilege(ResourcePattern::forDatabaseName(dbname), actions));
+    std::string help() const override {
+        return repairRemovedMessage;
+    }
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
     }
 
     CmdRepairDatabase() : ErrmsgCommandDeprecated("repairDatabase") {}
@@ -199,70 +196,9 @@ public:
                    const BSONObj& cmdObj,
                    string& errmsg,
                    BSONObjBuilder& result) {
-        BSONElement e = cmdObj.firstElement();
-        if (e.numberInt() != 1) {
-            errmsg = "bad option";
-            return false;
-        }
 
-        // Closing a database requires a global lock.
-        Lock::GlobalWrite lk(opCtx);
-        auto db = DatabaseHolder::getDatabaseHolder().get(opCtx, dbname);
-        if (db) {
-            if (db->isDropPending(opCtx)) {
-                uasserted(ErrorCodes::DatabaseDropPending,
-                          str::stream() << "Cannot repair database " << dbname
-                                        << " since it is pending being dropped.");
-            }
-        } else {
-            // If the name doesn't make an exact match, check for a case insensitive match.
-            std::set<std::string> otherCasing =
-                DatabaseHolder::getDatabaseHolder().getNamesWithConflictingCasing(dbname);
-            if (otherCasing.empty()) {
-                // Database doesn't exist. Treat this as a success (historical behavior).
-                return true;
-            }
-
-            // Database exists with a differing case. Treat this as an error. Report the casing
-            // conflict.
-            errmsg = str::stream() << "Database exists with a different case. Given: `" << dbname
-                                   << "` Found: `" << *otherCasing.begin() << "`";
-            return false;
-        }
-
-        // TODO (Kal): OldClientContext legacy, needs to be removed
-        {
-            CurOp::get(opCtx)->ensureStarted();
-            stdx::lock_guard<Client> lk(*opCtx->getClient());
-            CurOp::get(opCtx)->setNS_inlock(dbname);
-        }
-
-        log() << "repairDatabase " << dbname;
-        BackgroundOperation::assertNoBgOpInProgForDb(dbname);
-
-        uassert(ErrorCodes::BadValue,
-                "preserveClonedFilesOnFailure not supported",
-                !cmdObj.getField("preserveClonedFilesOnFailure").trueValue());
-        uassert(ErrorCodes::BadValue,
-                "backupOriginalFiles not supported",
-                !cmdObj.getField("backupOriginalFiles").trueValue());
-
-        {
-            // Conceal UUIDCatalog changes for the duration of repairDatabase so that calls to
-            // UUIDCatalog::lookupNSSByUUID do not cause spurious NamespaceNotFound errors while
-            // repairDatabase makes updates.
-            ConcealUUIDCatalogChangesBlock cucc(opCtx);
-
-            StorageEngine* engine = getGlobalServiceContext()->getStorageEngine();
-            repl::UnreplicatedWritesBlock uwb(opCtx);
-            Status status = repairDatabase(opCtx, engine, dbname);
-
-            // Open database before returning
-            DatabaseHolder::getDatabaseHolder().openDb(opCtx, dbname);
-            uassertStatusOK(status);
-        }
-
-        return true;
+        uasserted(ErrorCodes::CommandNotFound, repairRemovedMessage);
+        return false;
     }
 } cmdRepairDatabase;
 

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -60,7 +62,6 @@ struct CommonStats {
           works(0),
           yields(0),
           unyields(0),
-          invalidates(0),
           advanced(0),
           needTime(0),
           needYield(0),
@@ -73,7 +74,6 @@ struct CommonStats {
     size_t works;
     size_t yields;
     size_t unyields;
-    size_t invalidates;
 
     // How many times was this state the return value of work(...)?
     size_t advanced;
@@ -138,19 +138,12 @@ private:
 };
 
 struct AndHashStats : public SpecificStats {
-    AndHashStats() : flaggedButPassed(0), flaggedInProgress(0), memUsage(0), memLimit(0) {}
+    AndHashStats() = default;
 
     SpecificStats* clone() const final {
         AndHashStats* specific = new AndHashStats(*this);
         return specific;
     }
-
-    // Invalidation counters.
-    // How many results had the AND fully evaluated but were invalidated?
-    size_t flaggedButPassed;
-
-    // How many results were mid-AND but got flagged?
-    size_t flaggedInProgress;
 
     // How many entries are in the map after each child?
     // child 'i' produced children[i].common.advanced RecordIds, of which mapAfterChild[i] were
@@ -161,14 +154,14 @@ struct AndHashStats : public SpecificStats {
     // commonstats.advanced is how many passed.
 
     // What's our current memory usage?
-    size_t memUsage;
+    size_t memUsage = 0u;
 
     // What's our memory limit?
-    size_t memLimit;
+    size_t memLimit = 0u;
 };
 
 struct AndSortedStats : public SpecificStats {
-    AndSortedStats() : flagged(0) {}
+    AndSortedStats() = default;
 
     SpecificStats* clone() const final {
         AndSortedStats* specific = new AndSortedStats(*this);
@@ -177,9 +170,6 @@ struct AndSortedStats : public SpecificStats {
 
     // How many results from each child did not pass the AND?
     std::vector<size_t> failedAnd;
-
-    // How many results were flagged via invalidation?
-    size_t flagged;
 };
 
 struct CachedPlanStats : public SpecificStats {
@@ -281,17 +271,13 @@ struct CountScanStats : public SpecificStats {
 };
 
 struct DeleteStats : public SpecificStats {
-    DeleteStats() : docsDeleted(0), nInvalidateSkips(0) {}
+    DeleteStats() = default;
 
     SpecificStats* clone() const final {
         return new DeleteStats(*this);
     }
 
-    size_t docsDeleted;
-
-    // Invalidated documents can be force-fetched, causing the now invalid RecordId to
-    // be thrown out. The delete stage skips over any results which do not have a RecordId.
-    size_t nInvalidateSkips;
+    size_t docsDeleted = 0u;
 };
 
 struct DistinctScanStats : public SpecificStats {
@@ -345,7 +331,7 @@ struct EnsureSortedStats : public SpecificStats {
 };
 
 struct FetchStats : public SpecificStats {
-    FetchStats() : alreadyHasObj(0), forcedFetches(0), docsExamined(0) {}
+    FetchStats() = default;
 
     SpecificStats* clone() const final {
         FetchStats* specific = new FetchStats(*this);
@@ -353,13 +339,10 @@ struct FetchStats : public SpecificStats {
     }
 
     // Have we seen anything that already had an object?
-    size_t alreadyHasObj;
-
-    // How many records were we forced to fetch as the result of an invalidation?
-    size_t forcedFetches;
+    size_t alreadyHasObj = 0u;
 
     // The total number of full documents touched by the fetch stage.
-    size_t docsExamined;
+    size_t docsExamined = 0u;
 };
 
 struct GroupStats : public SpecificStats {
@@ -401,7 +384,6 @@ struct IndexScanStats : public SpecificStats {
           isUnique(false),
           dupsTested(0),
           dupsDropped(0),
-          seenInvalidated(0),
           keysExamined(0),
           seeks(0) {}
 
@@ -448,9 +430,6 @@ struct IndexScanStats : public SpecificStats {
     size_t dupsTested;
     size_t dupsDropped;
 
-    size_t seenInvalidated;
-    // TODO: we could track key sizes here.
-
     // Number of entries retrieved from the index during the scan.
     size_t keysExamined;
 
@@ -486,18 +465,15 @@ struct MultiPlanStats : public SpecificStats {
 };
 
 struct OrStats : public SpecificStats {
-    OrStats() : dupsTested(0), dupsDropped(0), recordIdsForgotten(0) {}
+    OrStats() = default;
 
     SpecificStats* clone() const final {
         OrStats* specific = new OrStats(*this);
         return specific;
     }
 
-    size_t dupsTested;
-    size_t dupsDropped;
-
-    // How many calls to invalidate(...) actually removed a RecordId from our deduping map?
-    size_t recordIdsForgotten;
+    size_t dupsTested = 0u;
+    size_t dupsDropped = 0u;
 };
 
 struct ProjectionStats : public SpecificStats {
@@ -513,42 +489,36 @@ struct ProjectionStats : public SpecificStats {
 };
 
 struct SortStats : public SpecificStats {
-    SortStats() : forcedFetches(0), memUsage(0), memLimit(0) {}
+    SortStats() = default;
 
     SpecificStats* clone() const final {
         SortStats* specific = new SortStats(*this);
         return specific;
     }
 
-    // How many records were we forced to fetch as the result of an invalidation?
-    size_t forcedFetches;
-
     // What's our current memory usage?
-    size_t memUsage;
+    size_t memUsage = 0u;
 
     // What's our memory limit?
-    size_t memLimit;
+    size_t memLimit = 0u;
 
     // The number of results to return from the sort.
-    size_t limit;
+    size_t limit = 0u;
 
     // The pattern according to which we are sorting.
     BSONObj sortPattern;
 };
 
 struct MergeSortStats : public SpecificStats {
-    MergeSortStats() : dupsTested(0), dupsDropped(0), forcedFetches(0) {}
+    MergeSortStats() = default;
 
     SpecificStats* clone() const final {
         MergeSortStats* specific = new MergeSortStats(*this);
         return specific;
     }
 
-    size_t dupsTested;
-    size_t dupsDropped;
-
-    // How many records were we forced to fetch as the result of an invalidation?
-    size_t forcedFetches;
+    size_t dupsTested = 0u;
+    size_t dupsDropped = 0u;
 
     // The pattern according to which we are sorting.
     BSONObj sortPattern;
@@ -610,8 +580,7 @@ struct UpdateStats : public SpecificStats {
           nModified(0),
           isDocReplacement(false),
           fastmodinsert(false),
-          inserted(false),
-          nInvalidateSkips(0) {}
+          inserted(false) {}
 
     SpecificStats* clone() const final {
         return new UpdateStats(*this);
@@ -636,11 +605,6 @@ struct UpdateStats : public SpecificStats {
 
     // The object that was inserted. This is an empty document if no insert was performed.
     BSONObj objInserted;
-
-    // Invalidated documents can be force-fetched, causing the now invalid RecordId to
-    // be thrown out. The update stage skips over any results which do not have the
-    // RecordId to update.
-    size_t nInvalidateSkips;
 };
 
 struct TextStats : public SpecificStats {

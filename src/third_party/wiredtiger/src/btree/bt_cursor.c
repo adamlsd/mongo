@@ -471,6 +471,57 @@ __wt_btcur_reset(WT_CURSOR_BTREE *cbt)
 }
 
 /*
+ * __wt_btcur_search_uncommitted --
+ *	Search and return exact matching records only, including uncommitted
+ *	ones.
+ */
+int
+__wt_btcur_search_uncommitted(WT_CURSOR_BTREE *cbt, WT_UPDATE **updp)
+{
+	WT_BTREE *btree;
+	WT_CURSOR *cursor;
+	WT_SESSION_IMPL *session;
+	WT_UPDATE *upd;
+
+	btree = cbt->btree;
+	cursor = &cbt->iface;
+	session = (WT_SESSION_IMPL *)cursor->session;
+	*updp = upd = NULL;				/* -Wuninitialized */
+
+	WT_RET(btree->type == BTREE_ROW ?
+	    __cursor_row_search(session, cbt, NULL, false) :
+	    __cursor_col_search(session, cbt, NULL));
+
+	/*
+	 * Ideally exact match should be found, as this transaction has
+	 * searched for updates done by itself. But, we cannot be sure of
+	 * finding one, as pre processing of this prepared transaction updates
+	 * could have happened as part of resolving earlier transaction
+	 * operations.
+	 */
+	if (cbt->compare != 0)
+		return (0);
+
+	/*
+	 * Get the uncommitted update from the cursor.
+	 * For column store there will be always a insert structure for updates
+	 * irrespective of fixed length or variable length.
+	 */
+	if (cbt->ins != NULL)
+		upd = cbt->ins->upd;
+	else if (cbt->btree->type == BTREE_ROW) {
+		WT_ASSERT(session,
+		    cbt->btree->type == BTREE_ROW &&
+		    cbt->ref->page->modify != NULL &&
+		    cbt->ref->page->modify->mod_row_update != NULL);
+		upd = cbt->ref->page->modify->mod_row_update[cbt->slot];
+	}
+
+	*updp = upd;
+	return (0);
+}
+
+/*
  * __wt_btcur_search --
  *	Search for a matching record in the tree.
  */
@@ -770,8 +821,12 @@ __wt_btcur_insert(WT_CURSOR_BTREE *cbt)
 	 * key, the update doesn't require another search. Cursors configured
 	 * for append aren't included, regardless of whether or not they meet
 	 * all other criteria.
+	 *
+	 * Fixed-length column store can never use a positioned cursor to update
+	 * because the cursor may not be positioned to the correct record in the
+	 * case of implicit records in the append list.
 	 */
-	if (__cursor_page_pinned(cbt) &&
+	if (btree->type != BTREE_COL_FIX && __cursor_page_pinned(cbt) &&
 	    F_ISSET(cursor, WT_CURSTD_OVERWRITE) && !append_key) {
 		WT_ERR(__wt_txn_autocommit_check(session));
 		/*
@@ -823,15 +878,18 @@ retry:	WT_ERR(__cursor_func_init(cbt, true));
 		}
 
 		ret = __cursor_row_modify(session, cbt, WT_UPDATE_STANDARD);
-	} else {
+	} else if (append_key) {
 		/*
 		 * Optionally insert a new record (ignoring the application's
 		 * record number). The real record number is allocated by the
 		 * serialized append operation.
 		 */
-		if (append_key)
-			cbt->iface.recno = WT_RECNO_OOB;
-
+		cbt->iface.recno = WT_RECNO_OOB;
+		cbt->compare = 1;
+		WT_ERR(__cursor_col_search(session, cbt, NULL));
+		WT_ERR(__cursor_col_modify(session, cbt, WT_UPDATE_STANDARD));
+		cursor->recno = cbt->recno;
+	} else {
 		WT_ERR(__cursor_col_search(session, cbt, NULL));
 
 		/*
@@ -850,9 +908,6 @@ retry:	WT_ERR(__cursor_func_init(cbt, true));
 		}
 
 		WT_ERR(__cursor_col_modify(session, cbt, WT_UPDATE_STANDARD));
-
-		if (append_key)
-			cursor->recno = cbt->recno;
 	}
 
 err:	if (ret == WT_RESTART) {
@@ -959,51 +1014,26 @@ err:	if (ret == WT_RESTART) {
  *	Remove a record from the tree.
  */
 int
-__wt_btcur_remove(WT_CURSOR_BTREE *cbt)
+__wt_btcur_remove(WT_CURSOR_BTREE *cbt, bool positioned)
 {
-	enum { NO_POSITION, POSITIONED, SEARCH_POSITION } positioned;
 	WT_BTREE *btree;
 	WT_CURFILE_STATE state;
 	WT_CURSOR *cursor;
 	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
 	uint64_t yield_count, sleep_usecs;
-	bool iterating, valid;
+	bool iterating, searched, valid;
 
 	btree = cbt->btree;
 	cursor = &cbt->iface;
 	session = (WT_SESSION_IMPL *)cursor->session;
 	yield_count = sleep_usecs = 0;
 	iterating = F_ISSET(cbt, WT_CBT_ITERATE_NEXT | WT_CBT_ITERATE_PREV);
+	searched = false;
 
 	WT_STAT_CONN_INCR(session, cursor_remove);
 	WT_STAT_DATA_INCR(session, cursor_remove);
 	WT_STAT_DATA_INCRV(session, cursor_remove_bytes, cursor->key.size);
-
-	/*
-	 * WT_CURSOR.remove has a unique semantic, the cursor stays positioned
-	 * if it starts positioned, otherwise clear the cursor on completion.
-	 *
-	 * However, if we unpin the page (because the page is in WT_REF_LIMBO or
-	 * it was selected for forcible eviction), and every item on the page is
-	 * deleted, eviction can delete the page and our subsequent search will
-	 * re-instantiate an empty page for us, with no key/value pairs. Cursor
-	 * remove will search that page and return not-found, which is OK unless
-	 * cursor-overwrite is configured (which causes cursor remove to return
-	 * success even if there's no item to delete). In that case, we're
-	 * supposed to return a positioned cursor, but there's nothing to which
-	 * we can position, and we'll fail attempting to point the cursor at the
-	 * key on the page to satisfy the positioned requirement.
-	 *
-	 * Do the best we can: If we start with a positioned cursor, and we let
-	 * go of our pinned page, reset our state to use the search position,
-	 * that is, use a successful search to return to a "positioned" state.
-	 * If we start with a positioned cursor, let go of our pinned page, and
-	 * the search fails, leave the cursor's key set so the cursor appears
-	 * positioned to the application.
-	 */
-	positioned =
-	    F_ISSET(cursor, WT_CURSTD_KEY_INT) ? POSITIONED : NO_POSITION;
 
 	/* Save the cursor state. */
 	__cursor_state_save(cursor, &state);
@@ -1026,8 +1056,12 @@ __wt_btcur_remove(WT_CURSOR_BTREE *cbt)
 	 * arguably safe to simply leave the key initialized in the cursor (as
 	 * that's all a positioned cursor implies), but it's probably safer to
 	 * avoid page eviction entirely in the positioned case.
+	 *
+	 * Fixed-length column store can never use a positioned cursor to update
+	 * because the cursor may not be positioned to the correct record in the
+	 * case of implicit records in the append list.
 	 */
-	if (__cursor_page_pinned(cbt)) {
+	if (btree->type != BTREE_COL_FIX && __cursor_page_pinned(cbt)) {
 		WT_ERR(__wt_txn_autocommit_check(session));
 
 		/*
@@ -1044,36 +1078,41 @@ __wt_btcur_remove(WT_CURSOR_BTREE *cbt)
 		goto err;
 	}
 
-	/*
-	 * The pinned page goes away if we do a search, including as a result of
-	 * a restart. Get a local copy of any pinned key and re-save the cursor
-	 * state: we may retry but eventually fail.
-	 *
+retry:	/*
 	 * Note these steps must be repeatable, we'll continue to take this path
 	 * as long as we encounter WT_RESTART.
+	 *
+	 * Any pinned page goes away if we do a search, including as a result of
+	 * a restart. Get a local copy of any pinned key and re-save the cursor
+	 * state: we may retry but eventually fail.
 	 */
-retry:	if (positioned == POSITIONED)
-		positioned = SEARCH_POSITION;
 	WT_ERR(__cursor_localkey(cursor));
 	__cursor_state_save(cursor, &state);
+	searched = true;
 
 	WT_ERR(__cursor_func_init(cbt, true));
 
 	if (btree->type == BTREE_ROW) {
-		WT_ERR(__cursor_row_search(session, cbt, NULL, false));
+		ret = __cursor_row_search(session, cbt, NULL, false);
+		if (ret == WT_NOTFOUND)
+			goto search_notfound;
+		WT_ERR(ret);
 
 		/* Check whether an update would conflict. */
 		WT_ERR(__curfile_update_check(cbt));
 
 		if (cbt->compare != 0)
-			WT_ERR(WT_NOTFOUND);
+			goto search_notfound;
 		WT_ERR(__wt_cursor_valid(cbt, NULL, &valid));
 		if (!valid)
-			WT_ERR(WT_NOTFOUND);
+			goto search_notfound;
 
 		ret = __cursor_row_modify(session, cbt, WT_UPDATE_TOMBSTONE);
 	} else {
-		WT_ERR(__cursor_col_search(session, cbt, NULL));
+		ret = __cursor_col_search(session, cbt, NULL);
+		if (ret == WT_NOTFOUND)
+			goto search_notfound;
+		WT_ERR(ret);
 
 		/*
 		 * If we find a matching record, check whether an update would
@@ -1088,7 +1127,7 @@ retry:	if (positioned == POSITIONED)
 			WT_ERR(__wt_cursor_valid(cbt, NULL, &valid));
 		if (cbt->compare != 0 || !valid) {
 			if (!__cursor_fix_implicit(btree, cbt))
-				WT_ERR(WT_NOTFOUND);
+				goto search_notfound;
 			/*
 			 * Creating a record past the end of the tree in a
 			 * fixed-length column-store implicitly fills the
@@ -1111,58 +1150,57 @@ err:	if (ret == WT_RESTART) {
 	}
 
 	if (ret == 0) {
-done:		switch (positioned) {
-		case NO_POSITION:
-			/*
-			 * Never positioned and we leave it that way, clear any
-			 * key and reset the cursor.
-			 */
+		/*
+		 * If positioned originally, but we had to do a search, acquire
+		 * a position so we can return success.
+		 *
+		 * If not positioned originally, leave it that way, clear any
+		 * key and reset the cursor.
+		 */
+		if (positioned) {
+			if (searched)
+				WT_TRET(__wt_key_return(session, cbt));
+		} else {
 			F_CLR(cursor, WT_CURSTD_KEY_SET);
 			WT_TRET(__cursor_reset(cbt));
-			break;
-		case POSITIONED:
-			/*
-			 * Positioned and we used the pinned page, leave the key
-			 * alone, whatever it is.
-			 */
-			break;
-		case SEARCH_POSITION:
-			/*
-			 * Positioned and we did a search anyway, get a key to
-			 * return.
-			 */
-			WT_TRET(__wt_key_return(session, cbt));
-			break;
 		}
-	}
-
-	if (ret != 0) {
-		WT_TRET(__cursor_reset(cbt));
-		__cursor_state_restore(cursor, &state);
 
 		/*
-		 * If the record isn't found and the cursor is configured for
-		 * overwrite, that is what we want, try to return success.
-		 *
-		 * We set the return to 0 after testing for success, the clause
-		 * above dealing with the cursor position is only correct if we
-		 * were successful. If search failed after positioned is set to
-		 * SEARCH_POSITION, we cannot return a key. The only action to
-		 * take is to set the cursor to its original key, which we just
-		 * did.
-		 *
-		 * Finally, if an iterating or positioned cursor was forced to
-		 * give up its pinned page and then a search failed, we've
-		 * lost our cursor position. Since no subsequent iteration can
-		 * succeed, we cannot return success.
+		 * Check the return status again as we might have encountered an
+		 * error setting the return key or resetting the cursor after an
+		 * otherwise successful remove.
 		 */
-		if (ret == WT_NOTFOUND &&
-		    F_ISSET(cursor, WT_CURSTD_OVERWRITE) &&
-		    !iterating && positioned == NO_POSITION)
-			ret = 0;
+		if (ret != 0) {
+			WT_TRET(__cursor_reset(cbt));
+			__cursor_state_restore(cursor, &state);
+		}
+	} else {
+		/*
+		 * If the cursor is configured for overwrite and search returned
+		 * not-found, that is what we want, try to return success. We
+		 * can do that as long as it's not an iterating or positioned
+		 * cursor. (Iterating or positioned cursors would have been
+		 * forced to give up any pinned page, and when the search failed
+		 * we've lost the cursor position. Since no subsequent iteration
+		 * can succeed, we cannot return success.)
+		 */
+		if (0) {
+search_notfound:	ret = WT_NOTFOUND;
+			if (!iterating && !positioned &&
+			    F_ISSET(cursor, WT_CURSTD_OVERWRITE))
+				ret = 0;
+		}
+
+		/*
+		 * Reset the cursor and restore the original cursor key: done
+		 * after clearing the return value in the clause immediately
+		 * above so we don't lose an error value if cursor reset fails.
+		 */
+		WT_TRET(__cursor_reset(cbt));
+		__cursor_state_restore(cursor, &state);
 	}
 
-	/*
+done:	/*
 	 * Upper level cursor removes don't expect the cursor value to be set
 	 * after a successful remove (and check in diagnostic mode). Error
 	 * handling may have converted failure to a success, do a final check.
@@ -1204,8 +1242,12 @@ __btcur_update(WT_CURSOR_BTREE *cbt, WT_ITEM *value, u_int modify_type)
 	 * another search. We don't care about the "overwrite" configuration
 	 * because regardless of the overwrite setting, any existing record is
 	 * updated, and the record must exist with a positioned cursor.
+	 *
+	 * Fixed-length column store can never use a positioned cursor to update
+	 * because the cursor may not be positioned to the correct record in the
+	 * case of implicit records in the append list.
 	 */
-	if (__cursor_page_pinned(cbt)) {
+	if (btree->type != BTREE_COL_FIX && __cursor_page_pinned(cbt)) {
 		WT_ERR(__wt_txn_autocommit_check(session));
 
 		/*
@@ -1414,10 +1456,6 @@ __wt_btcur_modify(WT_CURSOR_BTREE *cbt, WT_MODIFY *entries, int nentries)
 	/* Save the cursor state. */
 	__cursor_state_save(cursor, &state);
 
-	if (session->txn.isolation == WT_ISO_READ_UNCOMMITTED)
-		WT_ERR_MSG(session, ENOTSUP,
-		    "not supported in read-uncommitted transactions");
-
 	/*
 	 * Get the current value and apply the modification to it, for a few
 	 * reasons: first, we set the updated value so the application can
@@ -1428,7 +1466,23 @@ __wt_btcur_modify(WT_CURSOR_BTREE *cbt, WT_MODIFY *entries, int nentries)
 	 * trouble if we attempt to modify a value that doesn't exist. For the
 	 * fifth reason, verify we're not in a read-uncommitted transaction,
 	 * that implies a value that might disappear out from under us.
+	 *
+	 * Also, an application might read a value outside of a transaction and
+	 * then call modify. For that to work, the read must be part of the
+	 * transaction that performs the update for correctness, otherwise we
+	 * could race with another thread and end up modifying the wrong value.
+	 * A clever application could get this right (imagine threads that only
+	 * updated non-overlapping, fixed-length byte strings), but it's unsafe
+	 * because it will work most of the time and the failure is unlikely to
+	 * be detected. Require explicit transactions for modify operations.
 	 */
+	if (session->txn.isolation == WT_ISO_READ_UNCOMMITTED)
+		WT_ERR_MSG(session, ENOTSUP,
+		    "not supported in read-uncommitted transactions");
+	if (F_ISSET(&session->txn, WT_TXN_AUTOCOMMIT))
+		WT_ERR_MSG(session, ENOTSUP,
+		    "not supported in implicit transactions");
+
 	if (!F_ISSET(cursor, WT_CURSTD_KEY_INT) ||
 	    !F_ISSET(cursor, WT_CURSTD_VALUE_INT))
 		WT_ERR(__wt_btcur_search(cbt));

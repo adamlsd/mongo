@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2017 (C) MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -71,12 +73,13 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
                                 boost::optional<BSONObj> object2 = boost::none,
                                 OperationSessionInfo sessionInfo = {},
                                 boost::optional<Date_t> wallClockTime = boost::none,
-                                boost::optional<StmtId> stmtId = boost::none) {
+                                boost::optional<StmtId> stmtId = boost::none,
+                                boost::optional<UUID> uuid = boost::none) {
     return repl::OplogEntry(opTime,                           // optime
                             1LL,                              // hash
                             opType,                           // opType
                             nss,                              // namespace
-                            boost::none,                      // uuid
+                            uuid,                             // uuid
                             boost::none,                      // fromMigrate
                             repl::OplogEntry::kOplogVersion,  // version
                             object,                           // o
@@ -197,12 +200,21 @@ StringBuilderImpl<SharedBufferAllocator>& operator<<(StringBuilderImpl<SharedBuf
 const auto kCollectionDoesNotExist = CollectionState();
 
 /**
- * Creates a command oplog entry with given optime and namespace.
+ * Creates an oplog entry for 'command' with the given 'optime', 'namespace' and optional 'uuid'.
  */
 OplogEntry makeCommandOplogEntry(OpTime opTime,
                                  const NamespaceString& nss,
-                                 const BSONObj& command) {
-    return makeOplogEntry(opTime, OpTypeEnum::kCommand, nss.getCommandNS(), command);
+                                 const BSONObj& command,
+                                 boost::optional<UUID> uuid) {
+    return makeOplogEntry(opTime,
+                          OpTypeEnum::kCommand,
+                          nss.getCommandNS(),
+                          command,
+                          boost::none /* o2 */,
+                          {} /* sessionInfo */,
+                          boost::none /* wallClockTime*/,
+                          boost::none /* stmtId */,
+                          uuid);
 }
 
 /**
@@ -269,14 +281,14 @@ OplogEntry makeUpdateDocumentOplogEntry(OpTime opTime,
 OplogEntry makeCreateIndexOplogEntry(OpTime opTime,
                                      const NamespaceString& nss,
                                      const std::string& indexName,
-                                     const BSONObj& keyPattern) {
+                                     const BSONObj& keyPattern,
+                                     const UUID& uuid) {
     BSONObjBuilder indexInfoBob;
+    indexInfoBob.append("createIndexes", nss.coll());
     indexInfoBob.append("v", 2);
     indexInfoBob.append("key", keyPattern);
     indexInfoBob.append("name", indexName);
-    indexInfoBob.append("ns", nss.ns());
-    return makeInsertDocumentOplogEntry(
-        opTime, NamespaceString(nss.getSystemIndexesCollection()), indexInfoBob.obj());
+    return makeCommandOplogEntry(opTime, nss, indexInfoBob.obj(), uuid);
 }
 
 /**
@@ -373,14 +385,16 @@ OplogEntry IdempotencyTest::update(IdType _id, const BSONObj& obj) {
     return makeUpdateDocumentOplogEntry(nextOpTime(), nss, BSON("_id" << _id), obj);
 }
 
-OplogEntry IdempotencyTest::buildIndex(const BSONObj& indexSpec, const BSONObj& options) {
+OplogEntry IdempotencyTest::buildIndex(const BSONObj& indexSpec,
+                                       const BSONObj& options,
+                                       UUID uuid) {
     BSONObjBuilder bob;
+    bob.append("createIndexes", nss.coll());
     bob.append("v", 2);
     bob.append("key", indexSpec);
     bob.append("name", std::string(indexSpec.firstElementFieldName()) + "_index");
-    bob.append("ns", nss.ns());
     bob.appendElementsUnique(options);
-    return makeInsertDocumentOplogEntry(nextOpTime(), nssIndex, bob.obj());
+    return makeCommandOplogEntry(nextOpTime(), nss, bob.obj(), uuid);
 }
 
 OplogEntry IdempotencyTest::dropIndex(const std::string& indexName) {

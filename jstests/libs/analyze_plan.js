@@ -58,6 +58,22 @@ function getPlanStage(root, stage) {
 }
 
 /**
+ * Returns the set of rejected plans from the given replset or sharded explain output.
+ */
+function getRejectedPlans(root) {
+    if (root.queryPlanner.winningPlan.hasOwnProperty("shards")) {
+        const rejectedPlans = [];
+        for (let shard of root.queryPlanner.winningPlan.shards) {
+            for (let rejectedPlan of shard.rejectedPlans) {
+                rejectedPlans.push(Object.assign({shardName: shard.shardName}, rejectedPlan));
+            }
+        }
+        return rejectedPlans;
+    }
+    return root.queryPlanner.rejectedPlans;
+}
+
+/**
  * Given the root stage of explain's JSON representation of a query plan ('root'), returns true if
  * the query planner reports at least one rejected alternative plan, and false otherwise.
  */
@@ -100,6 +116,22 @@ function hasRejectedPlans(root) {
 }
 
 /**
+ * Returns an array of execution stages from the given replset or sharded explain output.
+ */
+function getExecutionStages(root) {
+    if (root.executionStats.executionStages.hasOwnProperty("shards")) {
+        const executionStages = [];
+        for (let shard of root.executionStats.executionStages.shards) {
+            executionStages.push(Object.assign(
+                {shardName: shard.shardName, executionSuccess: shard.executionSuccess},
+                shard.executionStages));
+        }
+        return executionStages;
+    }
+    return [root.executionStats.executionStages];
+}
+
+/**
  * Given the root stage of agg explain's JSON representation of a query plan ('root'), returns all
  * subdocuments whose stage is 'stage'. This can either be an agg stage name like "$cursor" or
  * "$sort", or a query stage name like "IXSCAN" or "SORT".
@@ -122,24 +154,32 @@ function getAggPlanStages(root, stage) {
         return results;
     }
 
+    function getStagesFromInsideCursorStage(cursorStage) {
+        let results = [];
+
+        assert(cursorStage.hasOwnProperty("queryPlanner"));
+        assert(cursorStage.queryPlanner.hasOwnProperty("winningPlan"));
+
+        // If execution stats are available, then use the execution stats tree. Otherwise use the
+        // plan info from the "queryPlanner" section.
+        if (cursorStage.hasOwnProperty("executionStats")) {
+            assert(cursorStage.executionStats.hasOwnProperty("executionStages"));
+            results =
+                results.concat(getPlanStages(cursorStage.executionStats.executionStages, stage));
+        } else {
+            results = results.concat(getPlanStages(cursorStage.queryPlanner.winningPlan, stage));
+        }
+
+        return results;
+    }
+
     if (root.hasOwnProperty("stages")) {
         assert(root.stages.constructor === Array);
 
         results = results.concat(getDocumentSources(root.stages));
 
-        assert(root.stages[0].hasOwnProperty("$cursor"));
-        assert(root.stages[0].$cursor.hasOwnProperty("queryPlanner"));
-        assert(root.stages[0].$cursor.queryPlanner.hasOwnProperty("winningPlan"));
-
-        // If execution stats are available, then use the execution stats tree. Otherwise use the
-        // plan info from the "queryPlanner" section.
-        if (root.stages[0].$cursor.hasOwnProperty("executionStats")) {
-            assert(root.stages[0].$cursor.executionStats.hasOwnProperty("executionStages"));
-            results = results.concat(
-                getPlanStages(root.stages[0].$cursor.executionStats.executionStages, stage));
-        } else {
-            results = results.concat(
-                getPlanStages(root.stages[0].$cursor.queryPlanner.winningPlan, stage));
+        if (root.stages[0].hasOwnProperty("$cursor")) {
+            results = results.concat(getStagesFromInsideCursorStage(root.stages[0].$cursor));
         }
     }
 
@@ -150,19 +190,8 @@ function getAggPlanStages(root, stage) {
             results = results.concat(getDocumentSources(root.shards[elem].stages));
 
             const firstStage = root.shards[elem].stages[0];
-            assert(firstStage.hasOwnProperty("$cursor"));
-            assert(firstStage.$cursor.hasOwnProperty("queryPlanner"));
-            assert(firstStage.$cursor.queryPlanner.hasOwnProperty("winningPlan"));
-
-            // If execution stats are available, then use the execution stats tree. Otherwise use
-            // the plan info from the "queryPlanner" section.
-            if (firstStage.$cursor.hasOwnProperty("executionStats")) {
-                assert(firstStage.$cursor.executionStats.hasOwnProperty("executionStages"));
-                results = results.concat(
-                    getPlanStages(firstStage.$cursor.executionStats.executionStages, stage));
-            } else {
-                results = results.concat(
-                    getPlanStages(firstStage.$cursor.queryPlanner.winningPlan, stage));
+            if (firstStage.hasOwnProperty("$cursor")) {
+                results = results.concat(getStagesFromInsideCursorStage(firstStage.$cursor));
             }
         }
     }

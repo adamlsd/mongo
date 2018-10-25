@@ -1,26 +1,27 @@
 // wiredtiger_session_cache.h
 
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -92,9 +93,37 @@ public:
         return _session;
     }
 
-    WT_CURSOR* getCursor(const std::string& uri, uint64_t id, bool forRecordStore);
+    /**
+     * Get a cursor on the table id 'id'. If 'allowOverwrite' is true, insert operations will not
+     * return an error if the record already exists, and update/remove operations will not return
+     * error if the record does not exist.
+     *
+     * This may return a cursor from the cursor cache and these cursors should *always* be released
+     * into the cache by calling releaseCursor().
+     */
+    WT_CURSOR* getCursor(const std::string& uri, uint64_t id, bool allowOverwrite);
 
+    /**
+     * Get a cursor with the 'read_once=true' configuration. This is intended for operations that
+     * will be sequentially scanning large amounts of data. If 'allowOverwrite' is true, insert
+     * operations will not return an error if the record already exists, and update/remove
+     * operations will not return error if the record does not exist.
+     *
+     * This will never return a cursor from the cursor cache, and these cursors should *never* be
+     * released into the cache by calling releaseCursor(). Use closeCursor() instead.
+     */
+    WT_CURSOR* getReadOnceCursor(const std::string& uri, bool allowOverwrite);
+
+    /**
+     * Release a cursor into the cursor cache and close old cursors if the number of cursors in the
+     * cache exceeds kWiredTigerCursorCacheSize.
+     */
     void releaseCursor(uint64_t id, WT_CURSOR* cursor);
+
+    /**
+     * Close a cursor without releasing it into the cursor cache.
+     */
+    void closeCursor(WT_CURSOR* cursor);
 
     void closeCursorsForQueuedDrops(WiredTigerKVEngine* engine);
 
@@ -106,6 +135,10 @@ public:
 
     int cursorsOut() const {
         return _cursorsOut;
+    }
+
+    int cachedCursors() const {
+        return _cursors.size();
     }
 
     bool isDropQueuedIdentsAtSessionEndAllowed() const {

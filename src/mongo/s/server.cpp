@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2008-2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -44,7 +46,6 @@
 #include "mongo/config.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_manager.h"
-#include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/authz_manager_external_state_s.h"
 #include "mongo/db/auth/user_cache_invalidator_job.h"
 #include "mongo/db/client.h"
@@ -408,7 +409,7 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
 
     startMongoSFTDC();
 
-    Status status = AuthorizationManager::get(serviceContext)->initialize(NULL);
+    Status status = AuthorizationManager::get(serviceContext)->initialize(opCtx.get());
     if (!status.isOK()) {
         error() << "Initializing authorization data failed: " << status;
         return EXIT_SHARDING_ERROR;
@@ -443,6 +444,12 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
     status = serviceContext->getServiceExecutor()->start();
     if (!status.isOK()) {
         error() << "Failed to start the service executor: " << redact(status);
+        return EXIT_NET_ERROR;
+    }
+
+    status = serviceContext->getServiceEntryPoint()->start();
+    if (!status.isOK()) {
+        error() << "Failed to start the service entry point: " << redact(status);
         return EXIT_NET_ERROR;
     }
 
@@ -576,7 +583,9 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
         return EXIT_ABRUPT;
     }
 
-    registerShutdownTask([&]() { cleanupTask(getGlobalServiceContext()); });
+    const auto service = getGlobalServiceContext();
+
+    registerShutdownTask([service]() { cleanupTask(service); });
 
     ErrorExtraInfo::invariantHaveAllParsers();
 
@@ -586,12 +595,12 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
     logCommonStartupWarnings(serverGlobalParams);
 
     try {
-        if (!initializeServerGlobalState())
+        if (!initializeServerGlobalState(service))
             return EXIT_ABRUPT;
 
         startSignalProcessingThread();
 
-        return main(getGlobalServiceContext());
+        return main(service);
     } catch (const DBException& e) {
         error() << "uncaught DBException in mongos main: " << redact(e);
         return EXIT_UNCAUGHT;

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -235,7 +237,7 @@ TEST_F(LogicalSessionIdTest, GenWithoutAuthedUser) {
 
 TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_NoSessionIdNoTransactionNumber) {
     addSimpleUser(UserName("simple", "test"));
-    initializeOperationSessionInfo(_opCtx.get(), BSON("TestCmd" << 1), true, true, true, true);
+    initializeOperationSessionInfo(_opCtx.get(), BSON("TestCmd" << 1), true, true, true);
 
     ASSERT(!_opCtx->getLogicalSessionId());
     ASSERT(!_opCtx->getTxnNumber());
@@ -249,7 +251,6 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_SessionIdNoTransacti
     initializeOperationSessionInfo(_opCtx.get(),
                                    BSON("TestCmd" << 1 << "lsid" << lsid.toBSON() << "OtherField"
                                                   << "TestField"),
-                                   true,
                                    true,
                                    true,
                                    true);
@@ -268,7 +269,6 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_MissingSessionIdWith
                                                       << "TestField"),
                                        true,
                                        true,
-                                       true,
                                        true),
         AssertionException,
         ErrorCodes::InvalidOptions);
@@ -283,7 +283,6 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_SessionIdAndTransact
         _opCtx.get(),
         BSON("TestCmd" << 1 << "lsid" << lsid.toBSON() << "txnNumber" << 100LL << "OtherField"
                        << "TestField"),
-        true,
         true,
         true,
         true);
@@ -307,7 +306,6 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_IsReplSetMemberOrMon
                            << "TestField"),
             true,
             false,
-            true,
             true),
         AssertionException,
         ErrorCodes::IllegalOperation);
@@ -325,27 +323,6 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_SupportsDocLockingFa
                            << "TestField"),
             true,
             true,
-            false,
-            true),
-        AssertionException,
-        ErrorCodes::IllegalOperation);
-}
-
-TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_SupportsRecoverToStableTimestampFalse) {
-    addSimpleUser(UserName("simple", "test"));
-    LogicalSessionFromClient lsid;
-    lsid.setId(UUID::gen());
-
-    ASSERT_THROWS_CODE(
-        initializeOperationSessionInfo(
-            _opCtx.get(),
-            BSON("TestCmd" << 1 << "lsid" << lsid.toBSON() << "txnNumber" << 100LL << "OtherField"
-                           << "TestField"
-                           << "autocommit"
-                           << false),
-            true,
-            true,
-            true,
             false),
         AssertionException,
         ErrorCodes::IllegalOperation);
@@ -358,14 +335,17 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_IgnoresInfoIfNoCache
 
     LogicalSessionCache::set(_opCtx->getServiceContext(), nullptr);
 
-    ASSERT_FALSE(initializeOperationSessionInfo(
+    auto sessionInfo = initializeOperationSessionInfo(
         _opCtx.get(),
         BSON("TestCmd" << 1 << "lsid" << lsid.toBSON() << "txnNumber" << 100LL << "OtherField"
                        << "TestField"),
         true,
         true,
-        true,
-        true));
+        true);
+    ASSERT(sessionInfo.getSessionId() == boost::none);
+    ASSERT(sessionInfo.getTxnNumber() == boost::none);
+    ASSERT(sessionInfo.getStartTransaction() == boost::none);
+    ASSERT(sessionInfo.getAutocommit() == boost::none);
 }
 
 TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_SendingInfoFailsInDirectClient) {
@@ -383,10 +363,10 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_SendingInfoFailsInDi
                                              << "foo");
         commandBuilder.appendElements(param);
 
-        ASSERT_THROWS_CODE(initializeOperationSessionInfo(
-                               _opCtx.get(), commandBuilder.obj(), true, true, true, true),
-                           AssertionException,
-                           50891);
+        ASSERT_THROWS_CODE(
+            initializeOperationSessionInfo(_opCtx.get(), commandBuilder.obj(), true, true, true),
+            AssertionException,
+            50891);
     }
 
     _opCtx->getClient()->setInDirectClient(false);

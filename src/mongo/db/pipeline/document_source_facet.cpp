@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -141,6 +143,13 @@ stdx::unordered_set<NamespaceString> DocumentSourceFacet::LiteParsed::getInvolve
     return involvedNamespaces;
 }
 
+bool DocumentSourceFacet::LiteParsed::allowShardedForeignCollection(NamespaceString nss) const {
+    return std::all_of(
+        _liteParsedPipelines.begin(), _liteParsedPipelines.end(), [&nss](auto&& pipeline) {
+            return pipeline.allowShardedForeignCollection(nss);
+        });
+}
+
 REGISTER_DOCUMENT_SOURCE(facet,
                          DocumentSourceFacet::LiteParsed::parse,
                          DocumentSourceFacet::createFromBson);
@@ -227,15 +236,7 @@ void DocumentSourceFacet::reattachToOperationContext(OperationContext* opCtx) {
     }
 }
 
-DocumentSource::StageConstraints DocumentSourceFacet::constraints(
-    Pipeline::SplitState pipeState) const {
-    const bool mayUseDisk = std::any_of(_facets.begin(), _facets.end(), [&](const auto& facet) {
-        const auto sources = facet.pipeline->getSources();
-        return std::any_of(sources.begin(), sources.end(), [&](const auto source) {
-            return source->constraints().diskRequirement == DiskUseRequirement::kWritesTmpData;
-        });
-    });
-
+StageConstraints DocumentSourceFacet::constraints(Pipeline::SplitState) const {
     // Currently we don't split $facet to have a merger part and a shards part (see SERVER-24154).
     // This means that if any stage in any of the $facet pipelines needs to run on the primary shard
     // or on mongoS, then the entire $facet stage must run there.
@@ -259,12 +260,20 @@ DocumentSource::StageConstraints DocumentSourceFacet::constraints(
         }
     }
 
+    // Resolve the disk use and transaction requirement of this $facet by iterating through the
+    // children in its facets.
+    auto diskAndTxnReq = StageConstraints::kDefaultDiskUseAndTransactionRequirement;
+    for (const auto& facet : _facets) {
+        diskAndTxnReq = StageConstraints::resolveDiskUseAndTransactionRequirement(
+            facet.pipeline->getSources(), diskAndTxnReq);
+    }
+
     return {StreamType::kBlocking,
             PositionRequirement::kNone,
             host,
-            mayUseDisk ? DiskUseRequirement::kWritesTmpData : DiskUseRequirement::kNoDiskUse,
+            std::get<StageConstraints::DiskUseRequirement>(diskAndTxnReq),
             FacetRequirement::kNotAllowed,
-            TransactionRequirement::kAllowed};
+            std::get<StageConstraints::TransactionRequirement>(diskAndTxnReq)};
 }
 
 bool DocumentSourceFacet::usedDisk() {

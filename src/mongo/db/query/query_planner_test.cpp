@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -293,6 +295,88 @@ TEST_F(QueryPlannerTest, ExistsFalseSparseIndex) {
 
     assertNumSolutions(1U);
     assertSolutionExists("{cscan: {dir: 1}}");
+}
+
+TEST_F(QueryPlannerTest, NotEqualsNullSparseIndex) {
+    addIndex(BSON("x" << 1),
+             false,  // multikey
+             true    // sparse
+             );
+
+    runQuery(fromjson("{x: {$ne: null}}"));
+
+    assertNumSolutions(2U);
+    assertSolutionExists("{cscan: {dir: 1}}");
+    assertSolutionExists(
+        "{fetch: {node: {ixscan: {pattern: {x: 1}},"
+        "bounds: [['MinKey', undefined, true, false], [null, 'MaxKey', false, true]]}}}");
+}
+
+TEST_F(QueryPlannerTest, NotEqualsNullSparseMultiKeyIndex) {
+    addIndex(BSON("x" << 1),
+             true,  // multikey
+             true   // sparse
+             );
+
+    runQuery(fromjson("{x: {$ne: null}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists("{cscan: {dir: 1}}");
+}
+
+TEST_F(QueryPlannerTest, NotEqualsNullInElemMatchValueSparseMultiKeyIndex) {
+    MultikeyPaths multikeyPaths{{0U}};
+    addIndex(BSON("x" << 1),
+             true,  // multikey
+             true   // sparse
+             );
+
+    runQuery(fromjson("{'x': {$elemMatch: {$ne: null}}}"));
+
+    assertNumSolutions(2U);
+    assertSolutionExists("{cscan: {dir: 1}}");
+    assertSolutionExists(
+        "{fetch: {node: {ixscan: {pattern: {x: 1},"
+        "bounds: {'x': [['MinKey', undefined, true, false], [null, 'MaxKey',false,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerTest, NotEqualsNullInElemMatchObjectSparseMultiKeyAboveElemMatch) {
+    IndexEntry ind(BSON("a.b.c.d" << 1),
+                   true,
+                   true,
+                   false,
+                   IndexEntry::Identifier{"ind"},
+                   NULL,  // filterExpr
+                   BSONObj());
+    ind.multikeyPaths = {{0U, 1U}};
+    addIndex(ind);
+
+    runQuery(fromjson("{'a.b': {$elemMatch: {'c.d': {$ne: null}}}}"));
+
+    assertNumSolutions(2U);
+    assertSolutionExists("{cscan: {dir: 1}}");
+    assertSolutionExists(
+        "{fetch: {node: {ixscan: {pattern: {'a.b.c.d': 1},"
+        "bounds: {'a.b.c.d': [['MinKey', undefined, true, false], [null, 'MaxKey',false,true]]"
+        "}}}}}");
+}
+
+TEST_F(QueryPlannerTest, NotEqualsNullInElemMatchObjectSparseMultiKeyBelowElemMatch) {
+    // "a.b.c" being multikey will prevent us from using the index since $elemMatch doesn't do
+    // implicit array traversal.
+    IndexEntry ind(BSON("a.b.c.d" << 1),
+                   true,
+                   true,
+                   false,
+                   IndexEntry::Identifier{"ind"},
+                   NULL,  // filterExpr
+                   BSONObj());
+    ind.multikeyPaths = {{2U}};
+    addIndex(ind);
+
+    runQuery(fromjson("{'a.b': {$elemMatch: {'c.d.': {$ne: null}}}}"));
+
+    assertHasOnlyCollscan();
 }
 
 TEST_F(QueryPlannerTest, ExistsTrueOnUnindexedField) {
@@ -1388,8 +1472,9 @@ TEST_F(QueryPlannerTest, DottedFieldCovering) {
     assertSolutionExists(
         "{proj: {spec: {_id: 0, 'a.b': 1}, node: "
         "{cscan: {dir: 1, filter: {'a.b': 5}}}}}");
-    // SERVER-2104
-    // assertSolutionExists("{proj: {spec: {_id: 0, 'a.b': 1}, node: {'a.b': 1}}}");
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, 'a.b': 1}, node: {ixscan: {filter: null, pattern: {'a.b': 1},"
+        "bounds: {'a.b': [[5,5,true,true]]}}}}}");
 }
 
 TEST_F(QueryPlannerTest, IdCovering) {
@@ -2525,6 +2610,67 @@ TEST_F(QueryPlannerTest, ExprEqCanUseSparseIndexForEqualityToNull) {
     assertSolutionExists(
         "{fetch: {filter: {a: {$_internalExprEq: null}}, node: {ixscan: {filter: null, pattern: "
         "{a: 1}, bounds: {a: [[undefined,undefined,true,true], [null,null,true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerTest, NegationCannotUseSparseIndex) {
+    // Sparse indexes can't support negation queries because they are sparse, and {a: {$ne: 5}}
+    // will match documents which don't have an "a" field.
+    addIndex(fromjson("{a: 1}"),
+             false,  // multikey
+             true    // sparse
+             );
+    runQuery(fromjson("{a: {$ne: 5}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$not: {$gt: 3, $lt: 5}}}"));
+    assertHasOnlyCollscan();
+}
+
+TEST_F(QueryPlannerTest, NegationInElemMatchDoesNotUseSparseIndex) {
+    // Logically, there's no reason a sparse index could not support a negation inside a
+    // "$elemMatch value", but it is not something we've implemented.
+    addIndex(fromjson("{a: 1}"),
+             true,  // multikey
+             true   // sparse
+             );
+    runQuery(fromjson("{a: {$elemMatch: {$ne: 5}}}"));
+    assertHasOnlyCollscan();
+
+    runQuery(fromjson("{a: {$elemMatch: {$not: {$gt: 3, $lt: 5}}}}"));
+    assertHasOnlyCollscan();
+}
+
+TEST_F(QueryPlannerTest, SparseIndexCannotSupportEqualsNull) {
+    addIndex(BSON("i" << 1),
+             false,  // multikey
+             true    // sparse
+             );
+
+    runQuery(fromjson("{i: {$eq: null}}"));
+    assertHasOnlyCollscan();
+}
+
+// TODO: SERVER-37164: The semantics of {$gte: null} and {$lte: null} are inconsistent with and
+// without a sparse index. It is unclear whether or not a sparse index _should_ be able to support
+// these operations.
+TEST_F(QueryPlannerTest, SparseIndexCanSupportGTEOrLTENull) {
+    params.options &= ~QueryPlannerParams::INCLUDE_COLLSCAN;
+    addIndex(BSON("i" << 1),
+             false,  // multikey
+             true    // sparse
+             );
+
+    runQuery(fromjson("{i: {$gte: null}}"));
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: {i: {$gte: null}}, node: {ixscan: {pattern: "
+        "{i: 1}, bounds: {i: [[null,null,true,true]]}}}}}");
+
+    runQuery(fromjson("{i: {$lte: null}}"));
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: {i: {$lte: null}}, node: {ixscan: {pattern: "
+        "{i: 1}, bounds: {i: [[null,null,true,true]]}}}}}");
 }
 
 //
@@ -4296,7 +4442,7 @@ TEST_F(QueryPlannerTest, TagAccordingToCacheFailsOnBadInput) {
     std::unique_ptr<PlanCacheIndexTree> indexTree(new PlanCacheIndexTree());
     indexTree->setIndexEntry(IndexEntry(BSON("a" << 1), "a_1"));
 
-    std::map<StringData, size_t> indexMap;
+    std::map<IndexEntry::Identifier, size_t> indexMap;
 
     // Null filter.
     Status s = QueryPlanner::tagAccordingToCache(NULL, indexTree.get(), indexMap);
@@ -4311,7 +4457,7 @@ TEST_F(QueryPlannerTest, TagAccordingToCacheFailsOnBadInput) {
     ASSERT_NOT_OK(s);
 
     // Index found once added to the map.
-    indexMap["a_1"_sd] = 0;
+    indexMap[IndexEntry::Identifier{"a_1"}] = 0;
     s = QueryPlanner::tagAccordingToCache(scopedCq->root(), indexTree.get(), indexMap);
     ASSERT_OK(s);
 
@@ -5128,7 +5274,8 @@ TEST_F(QueryPlannerTest, ContainedOrPathLevelMultikeyCombineLeadingFields) {
     assertNumSolutions(3);
     assertSolutionExists(
         "{fetch: {filter: {a: {$gte: 0}}, node: {or: {nodes: ["
-        "{ixscan: {pattern: {a: 1, c: 1}, bounds: {a: [[0, 10, true, true]]}}},"
+        "{ixscan: {pattern: {a: 1, c: 1}, bounds: {a: [[0, 10, true, true]], c: [['MinKey', "
+        "'MaxKey', true, true]]}}},"
         "{ixscan: {pattern: {b: 1}, bounds: {b: [[6, 6, true, true]]}}}"
         "]}}}}");
     assertSolutionExists(
@@ -5358,6 +5505,27 @@ TEST_F(QueryPlannerTest, ContainedOrPathLevelMultikeyCannotCompoundTrailingField
         "true]]}}}}},"
         "{ixscan: {pattern: {e: 1}, bounds: {e: [[8, 8, true, true]]}}}"
         "]}}}}");
+    assertSolutionExists("{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, ContainedOrPushdownIndexedExpr) {
+    addIndex(BSON("a" << 1 << "b" << 1));
+
+    runQuery(
+        fromjson("{$expr: {$and: [{$eq: ['$d', 'd']}, {$eq: ['$a', 'a']}]},"
+                 "$or: [{b: 'b'}, {b: 'c'}]}"));
+    assertNumSolutions(3);
+    // When we have path-level multikey info, we ensure that predicates are assigned in order of
+    // index position.
+    assertSolutionExists(
+        "{fetch: {node: {or: {nodes: ["
+        "{ixscan: {pattern: {a: 1, b: 1}, filter: null, bounds: {a: [['a', 'a', true, true]], b: "
+        "[['b', 'b', true, true]]}}},"
+        "{ixscan: {pattern: {a: 1, b: 1}, filter: null, bounds: {a: [['a', 'a', true, true]], b: "
+        "[['c', 'c', true, true]]}}}]}}}}");
+    assertSolutionExists(
+        "{fetch: {node: {ixscan: {pattern: {a: 1, b: 1}, filter: null,"
+        "bounds: {a: [['a', 'a', true, true]], b: [['MinKey', 'MaxKey', true, true]]}}}}}");
     assertSolutionExists("{cscan: {dir: 1}}}}");
 }
 

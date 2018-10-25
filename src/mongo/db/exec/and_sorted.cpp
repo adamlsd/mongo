@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -224,35 +226,6 @@ PlanStage::StageState AndSortedStage::moveTowardTargetRecordId(WorkingSetID* out
         }
 
         return state;
-    }
-}
-
-
-// TODO SERVER-16857: Delete this method, as the invalidation mechanism was only needed for the
-// MMAPv1 storage engine.
-void AndSortedStage::doInvalidate(OperationContext* opCtx,
-                                  const RecordId& dl,
-                                  InvalidationType type) {
-    // TODO remove this since calling isEOF is illegal inside of doInvalidate().
-    if (isEOF()) {
-        return;
-    }
-
-    if (dl == _targetRecordId) {
-        // We're in the middle of moving children forward until they hit _targetRecordId, which is
-        // no
-        // longer a valid target.  If it's a deletion we can't AND it with anything, if it's a
-        // mutation the predicates implied by the AND may no longer be true.  So no matter what,
-        // fetch it, flag for review, and find another _targetRecordId.
-        ++_specificStats.flagged;
-
-        // The RecordId could still be a valid result so flag it and save it for later.
-        WorkingSetCommon::fetchAndInvalidateRecordId(opCtx, _ws->get(_targetId), _collection);
-
-        _targetId = WorkingSet::INVALID_ID;
-        _targetNode = numeric_limits<size_t>::max();
-        _targetRecordId = RecordId();
-        _workingTowardRep = std::queue<size_t>();
     }
 }
 

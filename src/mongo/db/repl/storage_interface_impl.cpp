@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -49,7 +51,6 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/index_create.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -66,6 +67,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete_request.h"
 #include "mongo/db/ops/parsed_update.h"
+#include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/internal_plans.h"
@@ -879,8 +881,10 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
         // We can create an UpdateRequest now that the collection's namespace has been resolved, in
         // the event it was specified as a UUID.
         UpdateRequest request(collection->ns());
+        UpdateLifecycleImpl lifeCycle(collection->ns());
         request.setQuery(query);
         request.setUpdates(update);
+        request.setLifecycle(&lifeCycle);
         request.setUpsert(true);
         invariant(!request.isMulti());  // This follows from using an exact _id query.
         invariant(!request.shouldReturnAnyDocs());
@@ -919,8 +923,10 @@ Status StorageInterfaceImpl::putSingleton(OperationContext* opCtx,
                                           const NamespaceString& nss,
                                           const TimestampedBSONObj& update) {
     UpdateRequest request(nss);
+    UpdateLifecycleImpl lifeCycle(nss);
     request.setQuery({});
     request.setUpdates(update.obj);
+    request.setLifecycle(&lifeCycle);
     request.setUpsert(true);
     return _updateWithQuery(opCtx, request, update.timestamp);
 }
@@ -930,8 +936,10 @@ Status StorageInterfaceImpl::updateSingleton(OperationContext* opCtx,
                                              const BSONObj& query,
                                              const TimestampedBSONObj& update) {
     UpdateRequest request(nss);
+    UpdateLifecycleImpl lifeCycle(nss);
     request.setQuery(query);
     request.setUpdates(update.obj);
+    request.setLifecycle(&lifeCycle);
     invariant(!request.isUpsert());
     return _updateWithQuery(opCtx, request, update.timestamp);
 }
@@ -1046,7 +1054,7 @@ Status StorageInterfaceImpl::upgradeNonReplicatedUniqueIndexes(OperationContext*
 }
 
 void StorageInterfaceImpl::setStableTimestamp(ServiceContext* serviceCtx, Timestamp snapshotName) {
-    serviceCtx->getStorageEngine()->setStableTimestamp(snapshotName);
+    serviceCtx->getStorageEngine()->setStableTimestamp(snapshotName, boost::none);
 }
 
 void StorageInterfaceImpl::setInitialDataTimestamp(ServiceContext* serviceCtx,
@@ -1060,6 +1068,10 @@ StatusWith<Timestamp> StorageInterfaceImpl::recoverToStableTimestamp(OperationCo
 
 bool StorageInterfaceImpl::supportsRecoverToStableTimestamp(ServiceContext* serviceCtx) const {
     return serviceCtx->getStorageEngine()->supportsRecoverToStableTimestamp();
+}
+
+bool StorageInterfaceImpl::supportsRecoveryTimestamp(ServiceContext* serviceCtx) const {
+    return serviceCtx->getStorageEngine()->supportsRecoveryTimestamp();
 }
 
 boost::optional<Timestamp> StorageInterfaceImpl::getRecoveryTimestamp(
@@ -1125,16 +1137,18 @@ Status StorageInterfaceImpl::isAdminDbValid(OperationContext* opCtx) {
 }
 
 void StorageInterfaceImpl::waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) {
+    Lock::GlobalLock lk(opCtx, MODE_IS);
     Collection* oplog;
     {
         // We don't want to be holding the collection lock while blocking, to avoid deadlocks.
-        // It is safe to store and access the oplog's Collection object after dropping the lock
-        // because the oplog is special and cannot be deleted on a running process.
+        // It is safe to store and access the oplog's Collection object with just the global IS
+        // lock because of the special concurrency rules for the oplog.
         // TODO(spencer): It should be possible to get the pointer to the oplog Collection object
         // without ever having to take the collection lock.
         AutoGetCollection oplogLock(opCtx, NamespaceString::kRsOplogNamespace, MODE_IS);
         oplog = oplogLock.getCollection();
     }
+    uassert(ErrorCodes::NotYetInitialized, "The oplog does not exist", oplog);
     oplog->getRecordStore()->waitForAllEarlierOplogWritesToBeVisible(opCtx);
 }
 

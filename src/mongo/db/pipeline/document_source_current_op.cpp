@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -40,6 +42,7 @@ const StringData kIdleConnectionsFieldName = "idleConnections"_sd;
 const StringData kIdleSessionsFieldName = "idleSessions"_sd;
 const StringData kLocalOpsFieldName = "localOps"_sd;
 const StringData kTruncateOpsFieldName = "truncateOps"_sd;
+const StringData kIdleCursorsFieldName = "idleCursors"_sd;
 
 const StringData kOpIdFieldName = "opid"_sd;
 const StringData kClientFieldName = "client"_sd;
@@ -109,11 +112,12 @@ DocumentSource::GetNextResult DocumentSourceCurrentOp::getNext() {
     pExpCtx->checkForInterrupt();
 
     if (_ops.empty()) {
-        _ops = pExpCtx->mongoProcessInterface->getCurrentOps(pExpCtx->opCtx,
+        _ops = pExpCtx->mongoProcessInterface->getCurrentOps(pExpCtx,
                                                              _includeIdleConnections,
                                                              _includeIdleSessions,
                                                              _includeOpsFromAllUsers,
-                                                             _truncateOps);
+                                                             _truncateOps,
+                                                             _idleCursors);
 
         _opsIter = _ops.begin();
 
@@ -188,6 +192,7 @@ intrusive_ptr<DocumentSource> DocumentSourceCurrentOp::createFromBson(
     UserMode includeOpsFromAllUsers = UserMode::kExcludeOthers;
     LocalOpsMode showLocalOpsOnMongoS = LocalOpsMode::kRemoteShardOps;
     TruncationMode truncateOps = TruncationMode::kNoTruncation;
+    CursorMode idleCursors = CursorMode::kExcludeCursors;
 
     for (auto&& elem : spec.embeddedObject()) {
         const auto fieldName = elem.fieldNameStringData();
@@ -233,6 +238,14 @@ intrusive_ptr<DocumentSource> DocumentSourceCurrentOp::createFromBson(
                     elem.type() == BSONType::Bool);
             truncateOps =
                 (elem.boolean() ? TruncationMode::kTruncateOps : TruncationMode::kNoTruncation);
+        } else if (fieldName == kIdleCursorsFieldName) {
+            uassert(ErrorCodes::FailedToParse,
+                    str::stream() << "The 'idleCursors' parameter of the $currentOp stage must be "
+                                     "a boolean value, but found: "
+                                  << typeName(elem.type()),
+                    elem.type() == BSONType::Bool);
+            idleCursors =
+                (elem.boolean() ? CursorMode::kIncludeCursors : CursorMode::kExcludeCursors);
         } else {
             uasserted(ErrorCodes::FailedToParse,
                       str::stream() << "Unrecognized option '" << fieldName
@@ -245,7 +258,8 @@ intrusive_ptr<DocumentSource> DocumentSourceCurrentOp::createFromBson(
                                        includeIdleSessions,
                                        includeOpsFromAllUsers,
                                        showLocalOpsOnMongoS,
-                                       truncateOps);
+                                       truncateOps,
+                                       idleCursors);
 }
 
 intrusive_ptr<DocumentSourceCurrentOp> DocumentSourceCurrentOp::create(
@@ -254,13 +268,15 @@ intrusive_ptr<DocumentSourceCurrentOp> DocumentSourceCurrentOp::create(
     SessionMode includeIdleSessions,
     UserMode includeOpsFromAllUsers,
     LocalOpsMode showLocalOpsOnMongoS,
-    TruncationMode truncateOps) {
+    TruncationMode truncateOps,
+    CursorMode idleCursors) {
     return new DocumentSourceCurrentOp(pExpCtx,
                                        includeIdleConnections,
                                        includeIdleSessions,
                                        includeOpsFromAllUsers,
                                        showLocalOpsOnMongoS,
-                                       truncateOps);
+                                       truncateOps,
+                                       idleCursors);
 }
 
 Value DocumentSourceCurrentOp::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
@@ -275,6 +291,8 @@ Value DocumentSourceCurrentOp::serialize(boost::optional<ExplainOptions::Verbosi
                   {kLocalOpsFieldName,
                    _showLocalOpsOnMongoS == LocalOpsMode::kLocalMongosOps ? Value(true) : Value()},
                   {kTruncateOpsFieldName,
-                   _truncateOps == TruncationMode::kTruncateOps ? Value(true) : Value()}}}});
+                   _truncateOps == TruncationMode::kTruncateOps ? Value(true) : Value()},
+                  {kIdleCursorsFieldName,
+                   _idleCursors == CursorMode::kIncludeCursors ? Value(true) : Value()}}}});
 }
 }  // namespace mongo

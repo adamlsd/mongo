@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -164,6 +166,29 @@ public:
      **/
     static std::unique_ptr<PlanStageStats> getWinningPlanTrialStats(PlanExecutor* exec);
 
+    /**
+     * Generates the execution stats section for the stats tree 'stats', adding the resulting BSON
+     * to 'out'.
+     *
+     * The 'totalTimeMillis' value passed here will be added to the top level of the execution stats
+     * section, but will not affect the reporting of timing for individual stages. If
+     * 'totalTimeMillis' is not set, we use the approximate timing information collected by the
+     * stages.
+     *
+     * Stats are generated at the verbosity specified by 'verbosity'.
+     **/
+    static void generateSinglePlanExecutionInfo(const PlanStageStats* stats,
+                                                ExplainOptions::Verbosity verbosity,
+                                                boost::optional<long long> totalTimeMillis,
+                                                BSONObjBuilder* out);
+
+    /**
+     * Serializes a PlanCacheEntry to the provided BSON object builder. The output format is
+     * intended to be human readable, and useful for debugging query performance problems related to
+     * the plan cache.
+     */
+    static void planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* out);
+
 private:
     /**
      * Adds the 'queryPlanner' explain section to the BSON object being built
@@ -205,24 +230,6 @@ private:
                                       Status executePlanStatus,
                                       PlanStageStats* winningPlanTrialStats,
                                       BSONObjBuilder* out);
-
-    /**
-     * Generates the execution stats section for the stats tree 'stats',
-     * adding the resulting BSON to 'out'.
-     *
-     * The 'totalTimeMillis' value passed here will be added to the top level of
-     * the execution stats section, but will not affect the reporting of timing for
-     * individual stages. If 'totalTimeMillis' is not set, we use the approximate timing
-     * information collected by the stages.
-     *
-     * Stats are generated at the verbosity specified by 'verbosity'.
-     *
-     * This is a helper for generating explain BSON. It is used by generateExecutionInfo().
-     */
-    static void generateSinglePlanExecutionInfo(const PlanStageStats* stats,
-                                                ExplainOptions::Verbosity verbosity,
-                                                boost::optional<long long> totalTimeMillis,
-                                                BSONObjBuilder* out);
 
     /**
      * Adds the 'serverInfo' explain section to the BSON object being build

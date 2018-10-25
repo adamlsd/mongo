@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -95,12 +97,13 @@ Status DurableViewCatalogImpl::iterate(OperationContext* opCtx, Callback callbac
         }
 
         const auto viewName = viewDef["_id"].str();
-        const auto collectionNameIsValid = NamespaceString::validCollectionComponent(viewName);
-        valid &= collectionNameIsValid;
+        const auto viewNameIsValid = NamespaceString::validCollectionComponent(viewName) &&
+            NamespaceString::validDBName(nsToDatabaseSubstring(viewName));
+        valid &= viewNameIsValid;
 
         // Only perform validation via NamespaceString if the collection name has been determined to
         // be valid. If not valid then the NamespaceString constructor will uassert.
-        if (collectionNameIsValid) {
+        if (viewNameIsValid) {
             NamespaceString viewNss(viewName);
             valid &= viewNss.isValid() && viewNss.db() == _db->name();
         }
@@ -144,13 +147,12 @@ void DurableViewCatalogImpl::upsert(OperationContext* opCtx,
     RecordId id = Helpers::findOne(opCtx, systemViews, BSON("_id" << name.ns()), requireIndex);
 
     Snapshotted<BSONObj> oldView;
-    if (!id.isNormal() || !systemViews->findDoc(opCtx, id, &oldView)) {
+    if (!id.isValid() || !systemViews->findDoc(opCtx, id, &oldView)) {
         LOG(2) << "insert view " << view << " into " << _db->getSystemViewsName();
         uassertStatusOK(
             systemViews->insertDocument(opCtx, InsertStatement(view), &CurOp::get(opCtx)->debug()));
     } else {
-        OplogUpdateEntryArgs args;
-        args.nss = systemViewsNs;
+        CollectionUpdateArgs args;
         args.update = view;
         args.criteria = BSON("_id" << name.ns());
         args.fromMigrate = false;
@@ -168,7 +170,7 @@ void DurableViewCatalogImpl::remove(OperationContext* opCtx, const NamespaceStri
         return;
     const bool requireIndex = false;
     RecordId id = Helpers::findOne(opCtx, systemViews, BSON("_id" << name.ns()), requireIndex);
-    if (!id.isNormal())
+    if (!id.isValid())
         return;
 
     LOG(2) << "remove view " << name << " from " << _db->getSystemViewsName();

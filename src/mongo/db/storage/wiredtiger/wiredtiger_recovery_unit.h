@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -106,6 +108,16 @@ public:
         _orderedCommit = orderedCommit;
     }
 
+    void setReadOnce(bool readOnce) override {
+        // Do not allow a session to use readOnce and regular cursors at the same time.
+        invariant(!_active || readOnce == _readOnce || getSession()->cursorsOut() == 0);
+        _readOnce = readOnce;
+    };
+
+    bool getReadOnce() const override {
+        return _readOnce;
+    };
+
     // ---- WT STUFF
 
     WiredTigerSession* getSession();
@@ -148,6 +160,12 @@ private:
     void _txnClose(bool commit);
     void _txnOpen();
 
+    /**
+     * Starts a transaction at the current all-committed timestamp.
+     * Returns the timestamp the transaction was started at.
+     */
+    Timestamp _beginTransactionAtAllCommittedTimestamp(WT_SESSION* session);
+
     WiredTigerSessionCache* _sessionCache;  // not owned
     WiredTigerOplogManager* _oplogManager;  // not owned
     UniqueWiredTigerSession _session;
@@ -163,10 +181,13 @@ private:
     // new optime, and thus always call oplogDiskLocRegister() on the record store.
     bool _orderedCommit = true;
 
-    // Ignoring prepared transactions will not return prepare conflicts and allow seeing prepared,
-    // but uncommitted data.
+    // When 'true', data read from disk should not be kept in the storage engine cache.
+    bool _readOnce = false;
+
+    // Ignoring prepared transactions will not return prepare conflicts and will not allow seeing
+    // prepared data.
     WiredTigerBeginTxnBlock::IgnorePrepared _ignorePrepared{
-        WiredTigerBeginTxnBlock::IgnorePrepared::kNoIgnore};
+        WiredTigerBeginTxnBlock::IgnorePrepared::kIgnore};
     Timestamp _commitTimestamp;
     Timestamp _prepareTimestamp;
     boost::optional<Timestamp> _lastTimestampSet;
@@ -177,44 +198,5 @@ private:
     bool _isOplogReader = false;
     typedef std::vector<std::unique_ptr<Change>> Changes;
     Changes _changes;
-};
-
-/**
- * This is a smart pointer that wraps a WT_CURSOR and knows how to obtain and get from pool.
- */
-class WiredTigerCursor {
-public:
-    WiredTigerCursor(const std::string& uri,
-                     uint64_t tableID,
-                     bool forRecordStore,
-                     OperationContext* opCtx);
-
-    ~WiredTigerCursor();
-
-
-    WT_CURSOR* get() const {
-        // TODO(SERVER-16816): assertInActiveTxn();
-        return _cursor;
-    }
-
-    WT_CURSOR* operator->() const {
-        return get();
-    }
-
-    WiredTigerSession* getSession() {
-        return _session;
-    }
-
-    void reset();
-
-    void assertInActiveTxn() const {
-        _ru->assertInActiveTxn();
-    }
-
-private:
-    uint64_t _tableID;
-    WiredTigerRecoveryUnit* _ru;  // not owned
-    WiredTigerSession* _session;
-    WT_CURSOR* _cursor;  // owned, but pulled
 };
 }

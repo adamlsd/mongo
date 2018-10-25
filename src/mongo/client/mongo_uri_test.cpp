@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2009-2015 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -39,6 +41,8 @@
 #include "mongo/unittest/unittest.h"
 
 #include <boost/filesystem/operations.hpp>
+#include <boost/optional.hpp>
+#include <boost/optional/optional_io.hpp>
 
 namespace mongo {
 namespace {
@@ -55,6 +59,11 @@ struct URITestCase {
 
 struct InvalidURITestCase {
     std::string URI;
+    boost::optional<Status> status;
+    InvalidURITestCase(std::string aURI, boost::optional<Status> aStatus = boost::none) {
+        URI = std::move(aURI);
+        status = std::move(aStatus);
+    }
 };
 
 const ConnectionString::ConnectionType kMaster = ConnectionString::MASTER;
@@ -354,6 +363,12 @@ const InvalidURITestCase invalidCases[] = {
     // Host list must actually be comma separated.
     {"mongodb://localhost:27017localhost:27018"},
 
+    // % symbol in password must be escaped.
+    {"mongodb://localhost:pass%word@127.0.0.1:27017",
+     Status(ErrorCodes::FailedToParse,
+            "The characters after the % do not form a hex value. Please escape the % or pass a "
+            "valid hex value. ")},
+
     // Domain sockets have to end in ".sock".
     {"mongodb://%2Fnotareal%2Fdomainsock"},
 
@@ -465,6 +480,9 @@ TEST(MongoURI, InvalidURIs) {
         unittest::log() << "Testing URI: " << testCase.URI << '\n';
         auto cs_status = MongoURI::parse(testCase.URI);
         ASSERT_NOT_OK(cs_status);
+        if (testCase.status) {
+            ASSERT_EQUALS(testCase.status, cs_status.getStatus());
+        }
     }
 }
 
@@ -540,7 +558,7 @@ TEST(MongoURI, specTests) {
 
             if (!valid) {
                 // This uri string is invalid --> parse the uri and ensure it fails
-                const InvalidURITestCase testCase = {uri};
+                const InvalidURITestCase testCase = InvalidURITestCase{uri};
                 unittest::log() << "Testing URI: " << testCase.URI << '\n';
                 auto cs_status = MongoURI::parse(testCase.URI);
                 ASSERT_NOT_OK(cs_status);
@@ -869,6 +887,36 @@ TEST(MongoURI, srvRecordTest) {
             << "Failed on URI: " << test.uri << " Found " << hosts.size() << " hosts, expected "
             << expectedHosts.size() << " data on line: " << test.lineNumber;
     }
+}
+
+/*
+ * Checks that redacting various secret info from URIs produces actually redacted URIs.
+ * Also checks that SRV URI's don't turn into non-SRV URIs after redaction.
+ */
+TEST(MongoURI, Redact) {
+    constexpr auto goodWithDBName = "mongodb://admin@localhost/admin"_sd;
+    constexpr auto goodWithoutDBName = "mongodb://admin@localhost"_sd;
+    constexpr auto goodWithOnlyDBAndHost = "mongodb://localhost/admin"_sd;
+    const std::initializer_list<std::pair<StringData, StringData>> testCases = {
+        {"mongodb://admin:password@localhost/admin"_sd, goodWithDBName},
+        {"mongodb://admin@localhost/admin?secretConnectionOption=foo"_sd, goodWithDBName},
+        {"mongodb://admin:password@localhost/admin?secretConnectionOptions"_sd, goodWithDBName},
+        {"mongodb://admin@localhost/admin"_sd, goodWithDBName},
+        {"mongodb://admin@localhost/admin?secretConnectionOptions", goodWithDBName},
+        {"mongodb://admin:password@localhost"_sd, goodWithoutDBName},
+        {"mongodb://admin@localhost", goodWithoutDBName},
+        {"mongodb://localhost/admin?socketTimeoutMS=5", goodWithOnlyDBAndHost},
+        {"mongodb://localhost/admin", goodWithOnlyDBAndHost},
+    };
+
+    for (const auto& testCase : testCases) {
+        ASSERT_TRUE(MongoURI::isMongoURI(testCase.first));
+        ASSERT_EQ(MongoURI::redact(testCase.first), testCase.second);
+    }
+
+    const auto toRedactSRV = "mongodb+srv://admin:password@localhost/admin?secret=foo"_sd;
+    const auto redactedSRV = "mongodb+srv://admin@localhost/admin"_sd;
+    ASSERT_EQ(MongoURI::redact(toRedactSRV), redactedSRV);
 }
 
 }  // namespace

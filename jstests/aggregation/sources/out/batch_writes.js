@@ -38,17 +38,15 @@
     assert.commandWorked(outColl.insert({_id: 2, a: 1}));
     assert.commandWorked(outColl.createIndex({a: 1}, {unique: true}));
 
-    // Test that both batched updates and inserts will successfully write the first document but
-    // fail on the second. We don't guarantee any particular behavior in this case, but this test is
-    // meant to characterize the current behavior.
-    assertErrorCode(coll, [{$out: {to: outColl.getName(), mode: "insertDocuments"}}], 16996);
-    assert.soon(() => {
-        return outColl.find().itcount() == 2;
-    });
-
-    assertErrorCode(coll, [{$out: {to: outColl.getName(), mode: "replaceDocuments"}}], 50904);
-    assert.soon(() => {
-        return outColl.find().itcount() == 2;
+    // Test that the writes for $out are unordered, meaning the operation continues even if it
+    // encounters a duplicate key error. We don't guarantee any particular behavior in this case,
+    // but this test is meant to characterize the current behavior.
+    ["insertDocuments", "replaceDocuments"].forEach(mode => {
+        assertErrorCode(
+            coll, [{$out: {to: outColl.getName(), mode: mode}}], ErrorCodes.DuplicateKey);
+        assert.soon(() => {
+            return outColl.find().itcount() == 9;
+        });
     });
 
     // Mode "replaceCollection" will drop the contents of the output collection, so there is no

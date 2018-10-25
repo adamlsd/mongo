@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2008 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -168,23 +170,60 @@ public:
     /**
      * Returns the total number of query results returned by the cursor so far.
      */
-    long long pos() const {
-        return _pos;
+    std::uint64_t nReturnedSoFar() const {
+        return _nReturnedSoFar;
     }
 
     /**
      * Increments the cursor's tracked number of query results returned so far by 'n'.
      */
-    void incPos(long long n) {
-        _pos += n;
+    void incNReturnedSoFar(std::uint64_t n) {
+        _nReturnedSoFar += n;
     }
 
     /**
      * Sets the cursor's tracked number of query results returned so far to 'n'.
      */
-    void setPos(long long n) {
-        _pos = n;
+    void setNReturnedSoFar(std::uint64_t n) {
+        invariant(n >= _nReturnedSoFar);
+        _nReturnedSoFar = n;
     }
+
+    /**
+     * Returns the number of batches returned by this cursor so far.
+     */
+    std::uint64_t getNBatches() const {
+        return _nBatchesReturned;
+    }
+
+    /**
+     * Increments the number of batches returned so far by one.
+     */
+    void incNBatches() {
+        ++_nBatchesReturned;
+    }
+
+    Date_t getLastUseDate() const {
+        return _lastUseDate;
+    }
+
+    Date_t getCreatedDate() const {
+        return _createdDate;
+    }
+
+    void setPlanSummary(std::string ps) {
+        _planSummary = std::move(ps);
+    }
+
+    StringData getPlanSummary() const {
+        return StringData(_planSummary);
+    }
+
+    /**
+     * Returns a generic cursor containing diagnostics about this cursor.
+     * The caller must either have this cursor pinned or hold a mutex from the cursor manager.
+     */
+    GenericCursor toGenericCursor() const;
 
     //
     // Timing.
@@ -271,7 +310,7 @@ private:
     }
 
     // The ID of the ClientCursor. A value of 0 is used to mean that no cursor id has been assigned.
-    CursorId _cursorid = 0;
+    const CursorId _cursorid = 0;
 
     // Threads may read from this field even if they don't have the cursor pinned, as long as they
     // have the correct partition of the CursorManager locked (just like _authenticatedUsers).
@@ -298,7 +337,10 @@ private:
     bool _disposed = false;
 
     // Tracks the number of results returned by this cursor so far.
-    long long _pos = 0;
+    std::uint64_t _nReturnedSoFar = 0;
+
+    // Tracks the number of batches returned by this cursor so far.
+    std::uint64_t _nBatchesReturned = 0;
 
     // Holds an owned copy of the command specification received from the client.
     const BSONObj _originatingCommand;
@@ -341,6 +383,10 @@ private:
     OperationContext* _operationUsingCursor;
 
     Date_t _lastUseDate;
+    Date_t _createdDate;
+
+    // A string with the plan summary of the cursor's query.
+    std::string _planSummary;
 };
 
 /**

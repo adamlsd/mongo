@@ -649,20 +649,6 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             opts.auditDestination = jsTestOptions().auditDestination;
         }
 
-        if (opts.hasOwnProperty("enableMajorityReadConcern")) {
-            // opts.enableMajorityReadConcern, if set, must be an empty string
-            if (opts.enableMajorityReadConcern !== "") {
-                throw new Error("The enableMajorityReadConcern option must be an empty string if " +
-                                "it is specified");
-            }
-        } else if (jsTestOptions().enableMajorityReadConcern !== undefined) {
-            if (jsTestOptions().enableMajorityReadConcern !== "") {
-                throw new Error("The enableMajorityReadConcern option must be an empty string if " +
-                                "it is specified");
-            }
-            opts.enableMajorityReadConcern = "";
-        }
-
         if (opts.noReplSet)
             opts.replSet = null;
         if (opts.arbiter)
@@ -1135,6 +1121,16 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                     }
                 }
 
+                // New mongod-specific options in 4.1.x.
+                if (!programMajorMinorVersion || programMajorMinorVersion >= 410) {
+                    if (jsTest.options().setSkipShardingPartsOfPrepareTransactionFailpoint &&
+                        jsTest.options().enableTestCommands) {
+                        argArray.push(
+                            ...["--setParameter",
+                                "failpoint.skipShardingPartsOfPrepareTransaction={mode:'alwaysOn'}"]);
+                    }
+                }
+
                 // New mongod-specific options in 4.0.x
                 if (!programMajorMinorVersion || programMajorMinorVersion >= 400) {
                     if (jsTest.options().transactionLifetimeLimitSeconds !== undefined) {
@@ -1160,6 +1156,12 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 if (programName.endsWith('mongod')) {
                     if (jsTest.options().storageEngine === "wiredTiger" ||
                         !jsTest.options().storageEngine) {
+                        if (jsTest.options().enableMajorityReadConcern &&
+                            !argArrayContains("--enableMajorityReadConcern")) {
+                            argArray.push(
+                                ...['--enableMajorityReadConcern',
+                                    jsTest.options().enableMajorityReadConcern.toString()]);
+                        }
                         if (jsTest.options().storageEngineCacheSizeGB &&
                             !argArrayContains('--wiredTigerCacheSizeGB')) {
                             argArray.push(...['--wiredTigerCacheSizeGB',
@@ -1249,7 +1251,8 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             } catch (e) {
                 var res = checkProgram(pid);
                 if (!res.alive) {
-                    print("Could not start mongo program at " + port + ", process ended");
+                    print("Could not start mongo program at " + port +
+                          ", process ended with exit code: " + res.exitCode);
                     serverExitCodeMap[port] = res.exitCode;
                     return true;
                 }
@@ -1285,9 +1288,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 m.pid = pid;
                 return true;
             } catch (e) {
-                if (!checkProgram(pid).alive) {
-                    print("Could not start mongo program at " + port + ", process ended");
-
+                var res = checkProgram(pid);
+                if (!res.alive) {
+                    print("Could not start mongo program at " + port +
+                          ", process ended with exit code: " + res.exitCode);
                     // Break out
                     m = null;
                     return true;

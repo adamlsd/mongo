@@ -1,23 +1,25 @@
-/*
- *    Copyright (C) 2013 MongoDB Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -56,6 +58,7 @@
 #include "mongo/util/net/sock.h"
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/net/ssl_options.h"
+#include "mongo/util/options_parser/options_parser.h"
 #include "mongo/util/options_parser/startup_options.h"
 
 using std::endl;
@@ -88,18 +91,49 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
             "config", "config,f", moe::String, "configuration file specifying additional options")
         .setSources(moe::SourceAllLegacy);
 
+    options
+        ->addOptionChaining("outputConfig",
+                            "outputConfig",
+                            moe::Switch,
+                            "Display the resolved configuration and exit")
+        .setSources(moe::SourceCommandLine)
+        .hidden();
+
+    options
+        ->addOptionChaining("configExpand",
+                            "configExpand",
+                            moe::String,
+                            "Process expansion directives in config file (none, exec, rest)")
+        .setSources(moe::SourceCommandLine);
 
     options
         ->addOptionChaining(
-            "net.bindIp",
-            "bind_ip",
-            moe::String,
-            "comma separated list of ip addresses to listen on - localhost by default")
-        .incompatibleWith("bind_ip_all");
+            "configExpandTimeoutSecs",
+            "configExpandTimeoutSecs",
+            moe::Int,
+            str::stream() << "Maximum number of seconds to wait for a single "
+                             "configuration expansion to resolve (default: "
+                          << durationCount<Seconds>(optionenvironment::kDefaultConfigExpandTimeout)
+                          << " secs)")
+        .setSources(moe::SourceCommandLine)
+        .hidden();
+
+    options->addOptionChaining(
+        "net.bindIp",
+        "bind_ip",
+        moe::String,
+        "comma separated list of ip addresses to listen on - localhost by default");
 
     options
         ->addOptionChaining("net.bindIpAll", "bind_ip_all", moe::Switch, "bind to all ip addresses")
-        .incompatibleWith("bind_ip");
+        .canonicalize([](moe::Environment* env) {
+            bool all = (*env)["net.bindIpAll"].as<bool>();
+            auto status = env->remove("net.bindIpAll");
+            if (!status.isOK()) {
+                return status;
+            }
+            return all ? env->set("net.bindIp", moe::Value("*")) : Status::OK();
+        });
 
     options->addOptionChaining(
         "net.ipv6", "ipv6", moe::Switch, "enable IPv6 support (disabled by default)");
@@ -111,6 +145,24 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
 
     options->addOptionChaining(
         "net.maxIncomingConnections", "maxConns", moe::Int, maxConnInfoBuilder.str().c_str());
+
+    options
+        ->addOptionChaining(
+            "net.maxIncomingConnectionsOverride",
+            "",
+            moe::StringVector,
+            "CIDR ranges that do not count towards the maxIncomingConnections limit")
+        .hidden()
+        .setSources(moe::SourceYAMLConfig);
+
+    options
+        ->addOptionChaining(
+            "net.reservedAdminThreads",
+            "",
+            moe::Int,
+            "number of worker threads to reserve for admin and internal connections")
+        .hidden()
+        .setSources(moe::SourceYAMLConfig);
 
     options
         ->addOptionChaining("net.transportLayer",
@@ -576,22 +628,39 @@ Status storeServerOptions(const moe::Environment& params) {
         }
     }
 
+    if (params.count("net.maxIncomingConnectionsOverride")) {
+        auto ranges = params["net.maxIncomingConnectionsOverride"].as<std::vector<std::string>>();
+        for (const auto& range : ranges) {
+            auto swr = CIDR::parse(range);
+            if (!swr.isOK()) {
+                serverGlobalParams.maxConnsOverride.push_back(range);
+            } else {
+                serverGlobalParams.maxConnsOverride.push_back(std::move(swr.getValue()));
+            }
+        }
+    }
+
+    if (params.count("net.reservedAdminThreads")) {
+        serverGlobalParams.reservedAdminThreads = params["net.reservedAdminThreads"].as<int>();
+    }
+
     if (params.count("net.wireObjectCheck")) {
         serverGlobalParams.objcheck = params["net.wireObjectCheck"].as<bool>();
     }
 
-    if (params.count("net.bindIpAll") && params["net.bindIpAll"].as<bool>()) {
-        // Bind to all IP addresses
-        serverGlobalParams.bind_ips.emplace_back("0.0.0.0");
-        if (params.count("net.ipv6") && params["net.ipv6"].as<bool>()) {
-            serverGlobalParams.bind_ips.emplace_back("::");
-        }
-    } else if (params.count("net.bindIp")) {
+    if (params.count("net.bindIp")) {
         std::string bind_ip = params["net.bindIp"].as<std::string>();
-        boost::split(serverGlobalParams.bind_ips,
-                     bind_ip,
-                     [](char c) { return c == ','; },
-                     boost::token_compress_on);
+        if (bind_ip == "*") {
+            serverGlobalParams.bind_ips.emplace_back("0.0.0.0");
+            if (params.count("net.ipv6") && params["net.ipv6"].as<bool>()) {
+                serverGlobalParams.bind_ips.emplace_back("::");
+            }
+        } else {
+            boost::split(serverGlobalParams.bind_ips,
+                         bind_ip,
+                         [](char c) { return c == ','; },
+                         boost::token_compress_on);
+        }
     }
 
     for (auto& ip : serverGlobalParams.bind_ips) {
@@ -657,9 +726,12 @@ Status storeServerOptions(const moe::Environment& params) {
                       "--transitionToAuth must be used with keyFile or x509 authentication");
     }
 
-    ret = storeMessageCompressionOptions(params);
-    if (!ret.isOK()) {
-        return ret;
+    if (params.count("net.compression.compressors")) {
+        const auto ret =
+            storeMessageCompressionOptions(params["net.compression.compressors"].as<string>());
+        if (!ret.isOK()) {
+            return ret;
+        }
     }
 
     return Status::OK();

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -121,18 +123,10 @@ PlanStage::StageState SortStage::doWork(WorkingSetID* out) {
         StageState code = child()->work(&id);
 
         if (PlanStage::ADVANCED == code) {
-            // Add it into the map for quick invalidation if it has a valid RecordId.
-            // A RecordId may be invalidated at any time (during a yield).  We need to get into
-            // the WorkingSet as quickly as possible to handle it.
             WorkingSetMember* member = _ws->get(id);
 
             // Planner must put a fetch before we get here.
             verify(member->hasObj());
-
-            // We might be sorting something that was invalidated at some point.
-            if (member->hasRecordId()) {
-                _wsidByRecordId[member->recordId] = id;
-            }
 
             SortableDataItem item;
             item.wsid = id;
@@ -177,38 +171,7 @@ PlanStage::StageState SortStage::doWork(WorkingSetID* out) {
     *out = _resultIterator->wsid;
     _resultIterator++;
 
-    // If we're returning something, take it out of our DL -> WSID map so that future
-    // calls to invalidate don't cause us to take action for a DL we're done with.
-    WorkingSetMember* member = _ws->get(*out);
-    if (member->hasRecordId()) {
-        _wsidByRecordId.erase(member->recordId);
-    }
-
     return PlanStage::ADVANCED;
-}
-
-void SortStage::doInvalidate(OperationContext* opCtx, const RecordId& dl, InvalidationType type) {
-    // If we have a deletion, we can fetch and carry on.
-    // If we have a mutation, it's easier to fetch and use the previous document.
-    // So, no matter what, fetch and keep the doc in play.
-
-    // _data contains indices into the WorkingSet, not actual data.  If a WorkingSetMember in
-    // the WorkingSet needs to change state as a result of a RecordId invalidation, it will still
-    // be at the same spot in the WorkingSet.  As such, we don't need to modify _data.
-    DataMap::iterator it = _wsidByRecordId.find(dl);
-
-    // If we're holding on to data that's got the RecordId we're invalidating...
-    if (_wsidByRecordId.end() != it) {
-        // Grab the WSM that we're nuking.
-        WorkingSetMember* member = _ws->get(it->second);
-        verify(member->recordId == dl);
-
-        WorkingSetCommon::fetchAndInvalidateRecordId(opCtx, member, _collection);
-
-        // Remove the RecordId from our set of active DLs.
-        _wsidByRecordId.erase(it);
-        ++_specificStats.forcedFetches;
-    }
 }
 
 unique_ptr<PlanStageStats> SortStage::getStats() {
@@ -306,13 +269,10 @@ void SortStage::addToBuffer(const SortableDataItem& item) {
         }
     }
 
-    // If the working set ID is valid, remove from
-    // RecordId invalidation map and free from working set.
+    // There was a buffered result which we can throw out because we are executing a sort with a
+    // limit, and the result is now known not to be in the top k set. Free the working set member
+    // associated with 'wsidToFree'.
     if (wsidToFree != WorkingSet::INVALID_ID) {
-        WorkingSetMember* member = _ws->get(wsidToFree);
-        if (member->hasRecordId()) {
-            _wsidByRecordId.erase(member->recordId);
-        }
         _ws->free(wsidToFree);
     }
 }

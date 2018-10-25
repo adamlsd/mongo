@@ -108,13 +108,6 @@ class test_txn19(wttest.WiredTigerTestCase, suite_subprocess):
         if corruptpos == 0:
             return kind == 'removal'
 
-        # NOTE:
-        # The removal or truncation of a middle log file (not first or last)
-        # that would be used in recovery is not currently handled gracefully.
-        if (kind == 'removal' or kind == 'truncate') and \
-           corruptpos != 6 and corruptpos > chkpt:
-            return False
-
         # All the other cases are valid
         return True
 
@@ -241,11 +234,17 @@ class test_txn19(wttest.WiredTigerTestCase, suite_subprocess):
     def log_corrupt_but_valid(self):
         if self.corrupt_last_file() and self.kind == 'removal':
             return True
-        # Certain corruptions in the last file can be detected.
-        if self.corrupt_hole_in_last_file():
-            return False
         if self.kind == 'truncate-middle' or \
+           self.kind == 'garbage-middle' or \
            self.kind == 'garbage-end':
+            return True
+        return False
+
+    # In certain cases, we detect log corruption, but just issue warnings.
+    def expect_warning_corruption(self):
+        if self.kind == 'garbage-middle' and self.chkpt <= self.corruptpos:
+            return True
+        if self.corrupt_hole_in_last_file():
             return True
         return False
 
@@ -284,7 +283,7 @@ class test_txn19(wttest.WiredTigerTestCase, suite_subprocess):
         #self.show_logs(newdir, 'before corruption')
         self.corrupt_log(newdir)
         #self.show_logs(newdir, 'after corruption')
-        salvage_config = self.base_config + ',log=(recover=salvage)'
+        salvage_config = self.base_config + ',salvage=true'
         errfile = 'list.err'
         outfile = 'list.out'
         expect_fail = self.expect_recovery_failure()
@@ -303,9 +302,13 @@ class test_txn19(wttest.WiredTigerTestCase, suite_subprocess):
 
         if expect_fail:
             self.check_file_contains_one_of(errfile,
-            ['/log file.*corrupted/', 'WT_ERROR: non-specific WiredTiger error'])
+                ['/log file.*corrupted/',
+                'WT_ERROR: non-specific WiredTiger error',
+                '/No such file/'])
         else:
             self.check_empty_file(errfile)
+            if self.expect_warning_corruption():
+                self.check_file_contains(outfile, '/log file .* corrupted/')
             self.check_file_contains(outfile, self.uri)
 
         found_records = self.recovered_records()
@@ -319,7 +322,16 @@ class test_txn19(wttest.WiredTigerTestCase, suite_subprocess):
             #   salvage: log file x truncated at beginning
             #   salvage: log file x truncated
             #   salvage: log file x removed
-            outpat = 'salvage: log file'
+            #
+            # The removal case may not give an informational error because
+            # the log file is already missing, so salvage itself is not
+            # removing or truncating any files. It is simply recovering as
+            # much as it can.
+            #
+            if self.kind == 'removal':
+                outpat = '^$'
+            else:
+                outpat = 'salvage: log file'
         else:
             errpat = '^$'
             outpat = '^$'

@@ -1,28 +1,31 @@
-/*    Copyright 2012 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -57,17 +60,22 @@ public:
     //
     // DBClientBase methods
     //
+    using DBClientBase::query;
 
     bool connect(const char* hostName, StringData applicationName, std::string& errmsg);
 
-    inline bool connect(const HostAndPort& host, StringData applicationName, std::string& errmsg) {
-        return connect(host.toString().c_str(), applicationName, errmsg);
+    Status connect(const HostAndPort& host, StringData applicationName) override {
+        std::string errmsg;
+        if (!connect(host.toString().c_str(), applicationName, errmsg)) {
+            return {ErrorCodes::HostNotFound, errmsg};
+        }
+        return Status::OK();
     }
 
     using DBClientBase::runCommandWithTarget;
     std::pair<rpc::UniqueReply, DBClientBase*> runCommandWithTarget(OpMsgRequest request) override;
 
-    std::unique_ptr<mongo::DBClientCursor> query(const std::string& ns,
+    std::unique_ptr<mongo::DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
                                                  mongo::Query query = mongo::Query(),
                                                  int nToReturn = 0,
                                                  int nToSkip = 0,
@@ -87,26 +95,22 @@ public:
     // Getters
     //
 
-    mongo::ConnectionString::ConnectionType type() const;
-    bool isFailed() const;
+    mongo::ConnectionString::ConnectionType type() const override;
+    bool isFailed() const override;
     double getSoTimeout() const override;
-    std::string getServerAddress() const;
-    std::string toString() const;
+    std::string getServerAddress() const override;
+    std::string toString() const override;
 
     //
     // Unsupported methods (defined to get rid of virtual function was hidden error)
     //
-    unsigned long long query(stdx::function<void(const mongo::BSONObj&)> f,
-                             const std::string& ns,
-                             mongo::Query query,
-                             const mongo::BSONObj* fieldsToReturn = 0,
-                             int queryOptions = 0) override;
 
     unsigned long long query(stdx::function<void(mongo::DBClientCursorBatchIterator&)> f,
-                             const std::string& ns,
+                             const NamespaceStringOrUUID& nsOrUuid,
                              mongo::Query query,
                              const mongo::BSONObj* fieldsToReturn = 0,
-                             int queryOptions = 0) override;
+                             int queryOptions = 0,
+                             int batchSize = 0) override;
 
     //
     // Unsupported methods (these are pure virtuals in the base class)
@@ -118,10 +122,10 @@ public:
               bool assertOk,
               std::string* actualServer) override;
     void say(mongo::Message& toSend, bool isRetry = false, std::string* actualServer = 0) override;
-    bool lazySupported() const;
+    bool lazySupported() const override;
 
 private:
-    void checkConnection();
+    void checkConnection() override;
 
     MockRemoteDBServer::InstanceID _remoteServerInstanceID;
     MockRemoteDBServer* _remoteServer;

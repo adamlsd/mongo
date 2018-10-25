@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -34,7 +36,6 @@
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/generic_cursor.h"
-#include "mongo/db/invalidation_type.h"
 #include "mongo/db/kill_sessions.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/record_id.h"
@@ -46,6 +47,7 @@
 
 namespace mongo {
 
+class AuthorizationSession;
 class OperationContext;
 class PseudoRandom;
 class PlanExecutor;
@@ -88,10 +90,13 @@ public:
     static void appendAllActiveSessions(OperationContext* opCtx, LogicalSessionIdSet* lsids);
 
     /**
-     * Returns a list of GenericCursors for all cursors on the global cursor manager and across all
-     * collection-level cursor maangers.
+     * Returns a list of GenericCursors for all idle cursors on the global cursor manager and across
+     * all collection-level cursor managers. Does not include currently pinned cursors.
+     * 'userMode': If auth is on, calling with userMode as kExcludeOthers will cause this function
+     * to only return cursors owned by the caller. If auth is off, this argument does not matter.
      */
-    static std::vector<GenericCursor> getAllCursors(OperationContext* opCtx);
+    static std::vector<GenericCursor> getIdleCursors(
+        OperationContext* opCtx, MongoProcessInterface::CurrentOpUserMode userMode);
 
     /**
      * Kills cursors with matching logical sessions. Returns a pair with the overall
@@ -125,12 +130,6 @@ public:
                        const std::string& reason);
 
     /**
-     * Broadcast a document invalidation to all relevant PlanExecutor(s).  invalidateDocument
-     * must called *before* the provided RecordId is about to be deleted or mutated.
-     */
-    void invalidateDocument(OperationContext* opCtx, const RecordId& dl, InvalidationType type);
-
-    /**
      * Destroys cursors that have been inactive for too long.
      *
      * Returns the number of cursors that were timed out.
@@ -138,10 +137,10 @@ public:
     std::size_t timeoutCursors(OperationContext* opCtx, Date_t now);
 
     /**
-     * Register an executor so that it can be notified of deletions, invalidations, collection
-     * drops, or the like during yields. Must be called before an executor yields. Registration
-     * happens automatically for yielding PlanExecutors, so this should only be called by a
-     * PlanExecutor itself. Returns a token that must be stored for use during deregistration.
+     * Register an executor so that it can be notified of events that cause the PlanExecutor to be
+     * killed. Must be called before an executor yields. Registration happens automatically for
+     * yielding PlanExecutors, so this should only be called by a PlanExecutor itself. Returns a
+     * token that must be stored for use during deregistration.
      */
     Partitioned<stdx::unordered_set<PlanExecutor*>>::PartitionId registerExecutor(
         PlanExecutor* exec);
@@ -195,13 +194,17 @@ public:
 
     /**
      * Appends sessions that have open cursors in this cursor manager to the given set of lsids.
+     * 'userMode': If auth is on, calling with userMode as kExcludeOthers will cause this function
+     * to only return cursors owned by the caller. If auth is off, this argument does not matter.
      */
     void appendActiveSessions(LogicalSessionIdSet* lsids) const;
 
     /**
-     * Appends all active cursors in this cursor manager to the output vector.
+     * Appends all idle (non-pinned) cursors in this cursor manager to the output vector.
      */
-    void appendActiveCursors(std::vector<GenericCursor>* cursors) const;
+    void appendIdleCursors(AuthorizationSession* ctxAuth,
+                           MongoProcessInterface::CurrentOpUserMode userMode,
+                           std::vector<GenericCursor>* cursors) const;
 
     /*
      * Returns a list of all open cursors for the given session.
@@ -284,7 +287,7 @@ private:
     // pointers to PlanExecutors are unowned, and a PlanExecutor will notify the CursorManager when
     // it is being destroyed. ClientCursors are owned by the CursorManager, except when they are in
     // use by a ClientCursorPin. When in use by a pin, an unowned pointer remains to ensure they
-    // still receive invalidations while in use.
+    // still receive kill notifications while in use.
     //
     // There are several mutexes at work to protect concurrent access to data structures managed by
     // this cursor manager. The two registration data structures '_registeredPlanExecutors' and

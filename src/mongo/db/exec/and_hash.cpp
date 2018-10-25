@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -380,57 +382,6 @@ PlanStage::StageState AndHashStage::hashOtherChildren(WorkingSetID* out) {
         }
 
         return childStatus;
-    }
-}
-
-// TODO SERVER-16857: Delete this method, as the invalidation mechanism was only needed for the
-// MMAPv1 storage engine.
-void AndHashStage::doInvalidate(OperationContext* opCtx,
-                                const RecordId& dl,
-                                InvalidationType type) {
-    // TODO remove this since calling isEOF is illegal inside of doInvalidate().
-    if (isEOF()) {
-        return;
-    }
-
-    // Invalidation can happen to our warmup results.  If that occurs just
-    // flag it and forget about it.
-    for (size_t i = 0; i < _lookAheadResults.size(); ++i) {
-        if (WorkingSet::INVALID_ID != _lookAheadResults[i]) {
-            WorkingSetMember* member = _ws->get(_lookAheadResults[i]);
-            if (member->hasRecordId() && member->recordId == dl) {
-                WorkingSetCommon::fetchAndInvalidateRecordId(opCtx, member, _collection);
-                _lookAheadResults[i] = WorkingSet::INVALID_ID;
-            }
-        }
-    }
-
-    // If it's a deletion, we have to forget about the RecordId, and since the AND-ing is by
-    // RecordId we can't continue processing it even with the object.
-    //
-    // If it's a mutation the predicates implied by the AND-ing may no longer be true.
-    //
-    // So, we flag and try to pick it up later.
-    DataMap::iterator it = _dataMap.find(dl);
-    if (_dataMap.end() != it) {
-        WorkingSetID id = it->second;
-        WorkingSetMember* member = _ws->get(id);
-        verify(member->recordId == dl);
-
-        if (_hashingChildren) {
-            ++_specificStats.flaggedInProgress;
-        } else {
-            ++_specificStats.flaggedButPassed;
-        }
-
-        // Update memory stats.
-        _memUsage -= member->getMemUsage();
-
-        // The RecordId is about to be invalidated.  Fetch it and clear the RecordId.
-        WorkingSetCommon::fetchAndInvalidateRecordId(opCtx, member, _collection);
-
-        // And don't return it from this stage.
-        _dataMap.erase(it);
     }
 }
 

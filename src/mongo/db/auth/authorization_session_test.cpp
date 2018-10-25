@@ -1,28 +1,31 @@
-/*    Copyright 2012 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -36,7 +39,6 @@
 #include "mongo/crypto/sha1_block.h"
 #include "mongo/crypto/sha256_block.h"
 #include "mongo/db/auth/action_type.h"
-#include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
@@ -149,20 +151,12 @@ const ResourcePattern otherUsersCollResource(
     ResourcePattern::forExactNamespace(NamespaceString("other.system.users")));
 const ResourcePattern thirdUsersCollResource(
     ResourcePattern::forExactNamespace(NamespaceString("third.system.users")));
-const ResourcePattern testIndexesCollResource(
-    ResourcePattern::forExactNamespace(NamespaceString("test.system.indexes")));
-const ResourcePattern otherIndexesCollResource(
-    ResourcePattern::forExactNamespace(NamespaceString("other.system.indexes")));
-const ResourcePattern thirdIndexesCollResource(
-    ResourcePattern::forExactNamespace(NamespaceString("third.system.indexes")));
 const ResourcePattern testProfileCollResource(
     ResourcePattern::forExactNamespace(NamespaceString("test.system.profile")));
 const ResourcePattern otherProfileCollResource(
     ResourcePattern::forExactNamespace(NamespaceString("other.system.profile")));
 const ResourcePattern thirdProfileCollResource(
     ResourcePattern::forExactNamespace(NamespaceString("third.system.profile")));
-const ResourcePattern testSystemNamespacesResource(
-    ResourcePattern::forExactNamespace(NamespaceString("test.system.namespaces")));
 
 TEST_F(AuthorizationSessionTest, AddUserAndCheckAuthorization) {
     // Check that disabling auth checks works
@@ -360,11 +354,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(otherUsersCollResource, ActionType::find));
     ASSERT_TRUE(
-        authzSession->isAuthorizedForActionsOnResource(testIndexesCollResource, ActionType::find));
-    ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testProfileCollResource, ActionType::find));
-    ASSERT_TRUE(
-        authzSession->isAuthorizedForActionsOnResource(otherIndexesCollResource, ActionType::find));
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
 
@@ -379,11 +369,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(otherUsersCollResource, ActionType::find));
     ASSERT_FALSE(
-        authzSession->isAuthorizedForActionsOnResource(testIndexesCollResource, ActionType::find));
-    ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testProfileCollResource, ActionType::find));
-    ASSERT_FALSE(
-        authzSession->isAuthorizedForActionsOnResource(otherIndexesCollResource, ActionType::find));
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
 
@@ -399,11 +385,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(otherUsersCollResource, ActionType::find));
     ASSERT_TRUE(
-        authzSession->isAuthorizedForActionsOnResource(testIndexesCollResource, ActionType::find));
-    ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testProfileCollResource, ActionType::find));
-    ASSERT_FALSE(
-        authzSession->isAuthorizedForActionsOnResource(otherIndexesCollResource, ActionType::find));
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
 
@@ -419,11 +401,7 @@ TEST_F(AuthorizationSessionTest, SystemCollectionsAccessControl) {
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(otherUsersCollResource, ActionType::find));
     ASSERT_FALSE(
-        authzSession->isAuthorizedForActionsOnResource(testIndexesCollResource, ActionType::find));
-    ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testProfileCollResource, ActionType::find));
-    ASSERT_FALSE(
-        authzSession->isAuthorizedForActionsOnResource(otherIndexesCollResource, ActionType::find));
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(otherProfileCollResource, ActionType::find));
 }
@@ -477,7 +455,7 @@ TEST_F(AuthorizationSessionTest, InvalidateUser) {
                                                     BSONObj()));
 
     // Make sure that invalidating the user causes the session to reload its privileges.
-    authzManager->invalidateUserByName(user->getName());
+    authzManager->invalidateUserByName(_opCtx.get(), user->getName());
     authzSession->startRequest(_opCtx.get());  // Refreshes cached data for invalid users
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::find));
@@ -496,7 +474,7 @@ TEST_F(AuthorizationSessionTest, InvalidateUser) {
                  &ignored)
         .transitional_ignore();
     // Make sure that invalidating the user causes the session to reload its privileges.
-    authzManager->invalidateUserByName(user->getName());
+    authzManager->invalidateUserByName(_opCtx.get(), user->getName());
     authzSession->startRequest(_opCtx.get());  // Refreshes cached data for invalid users
     ASSERT_FALSE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::find));
@@ -557,7 +535,7 @@ TEST_F(AuthorizationSessionTest, UseOldUserInfoInFaceOfConnectivityProblems) {
     // Even though the user's privileges have been reduced, since we've configured user
     // document lookup to fail, the authz session should continue to use its known out-of-date
     // privilege data.
-    authzManager->invalidateUserByName(user->getName());
+    authzManager->invalidateUserByName(_opCtx.get(), user->getName());
     authzSession->startRequest(_opCtx.get());  // Refreshes cached data for invalid users
     ASSERT_TRUE(
         authzSession->isAuthorizedForActionsOnResource(testFooCollResource, ActionType::find));
@@ -869,7 +847,7 @@ TEST_F(AuthorizationSessionTest, AddPrivilegesForStageFailsIfOutNamespaceIsNotVa
                                          << ""));
     BSONObj cmdObj =
         BSON("aggregate" << testFooNss.coll() << "pipeline" << pipeline << "cursor" << BSONObj());
-    ASSERT_THROWS_CODE(authzSession->checkAuthForAggregate(testFooNss, cmdObj, false).ignore(),
+    ASSERT_THROWS_CODE(authzSession->checkAuthForAggregate(testFooNss, cmdObj, false),
                        AssertionException,
                        ErrorCodes::InvalidNamespace);
 }
@@ -1250,19 +1228,6 @@ TEST_F(AuthorizationSessionTest, CannotListCollectionsWithoutListCollectionsPriv
     ASSERT_FALSE(authzSession->isAuthorizedToListCollections(testFooNss.db(), cmd));
     ASSERT_FALSE(authzSession->isAuthorizedToListCollections(testBarNss.db(), cmd));
     ASSERT_FALSE(authzSession->isAuthorizedToListCollections(testQuxNss.db(), cmd));
-}
-
-TEST_F(AuthorizationSessionTest, CanListCollectionsWithLegacySystemNamespacesAccess) {
-    BSONObj cmd = BSON("listCollections" << 1);
-
-    // Deprecated: permissions for the find action on test.system.namespaces allows us to list
-    // collections in the test database.
-    authzSession->assumePrivilegesForDB(
-        Privilege(testSystemNamespacesResource, {ActionType::find}));
-
-    ASSERT_TRUE(authzSession->isAuthorizedToListCollections(testFooNss.db(), cmd));
-    ASSERT_TRUE(authzSession->isAuthorizedToListCollections(testBarNss.db(), cmd));
-    ASSERT_TRUE(authzSession->isAuthorizedToListCollections(testQuxNss.db(), cmd));
 }
 
 TEST_F(AuthorizationSessionTest, CanListCollectionsWithListCollectionsPrivilege) {

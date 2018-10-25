@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -52,27 +54,25 @@ public:
         const Document& documentKey,
         boost::optional<BSONObj> readConcern) final;
 
-    std::vector<GenericCursor> getCursors(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx) const final;
+    std::vector<GenericCursor> getIdleCursors(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                              CurrentOpUserMode userMode) const final;
 
     DBClientBase* directClient() final {
         MONGO_UNREACHABLE;
     }
 
-    bool isSharded(OperationContext* opCtx, const NamespaceString& nss) final {
-        MONGO_UNREACHABLE;
-    }
+    bool isSharded(OperationContext* opCtx, const NamespaceString& nss) final;
 
     void insert(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                 const NamespaceString& ns,
-                const std::vector<BSONObj>& objs) final {
+                std::vector<BSONObj>&& objs) final {
         MONGO_UNREACHABLE;
     }
 
     void update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                 const NamespaceString& ns,
-                const std::vector<BSONObj>& queries,
-                const std::vector<BSONObj>& updates,
+                std::vector<BSONObj>&& queries,
+                std::vector<BSONObj>&& updates,
                 bool upsert,
                 bool multi) final {
         MONGO_UNREACHABLE;
@@ -124,10 +124,8 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(OperationContext*,
-                                                                     UUID) const final {
-        MONGO_UNREACHABLE;
-    }
+    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(
+        OperationContext* opCtx, NamespaceStringOrUUID nssOrUUID) const final;
 
     StatusWith<std::unique_ptr<Pipeline, PipelineDeleter>> makePipeline(
         const std::vector<BSONObj>& rawPipeline,
@@ -135,6 +133,33 @@ public:
         const MakePipelineOptions pipelineOptions) final {
         MONGO_UNREACHABLE;
     }
+
+    /**
+     * The following methods only make sense for data-bearing nodes and should never be called on
+     * a mongos.
+     */
+    BackupCursorState openBackupCursor(OperationContext* opCtx) final {
+        MONGO_UNREACHABLE;
+    }
+
+    void closeBackupCursor(OperationContext* opCtx, std::uint64_t cursorId) final {
+        MONGO_UNREACHABLE;
+    }
+
+    /**
+     * Mongos does not have a plan cache, so this method should never be called on mongos. Upstream
+     * checks are responsible for generating an error if a user attempts to introspect the plan
+     * cache on mongos.
+     */
+    std::vector<BSONObj> getMatchingPlanCacheEntryStats(OperationContext*,
+                                                        const NamespaceString&,
+                                                        const MatchExpression*) const final {
+        MONGO_UNREACHABLE;
+    }
+
+    bool uniqueKeyIsSupportedByIndex(const boost::intrusive_ptr<ExpressionContext>&,
+                                     const NamespaceString&,
+                                     const std::set<FieldPath>& uniqueKeyPaths) const final;
 
 protected:
     BSONObj _reportCurrentOpForClient(OperationContext* opCtx,

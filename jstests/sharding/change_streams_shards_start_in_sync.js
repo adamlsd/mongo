@@ -5,6 +5,7 @@
 // could occur, followed by write 'B' to shard 1, and then the change stream could be established on
 // shard 1, then some third write 'C' could occur.  This test ensures that in that case, both 'A'
 // and 'B' will be seen in the changestream before 'C'.
+// @tags: [uses_change_streams]
 (function() {
     "use strict";
 
@@ -88,12 +89,14 @@
 
     // Wait for the aggregate cursor to appear in currentOp on the current shard.
     function waitForShardCursor(rs) {
-        assert.soon(
-            () => st.rs0.getPrimary()
-                      .getDB('admin')
-                      .aggregate(
-                          [{"$listLocalCursors": {}}, {"$match": {ns: mongosColl.getFullName()}}])
-                      .itcount() === 1);
+        assert.soon(() => st.rs0.getPrimary()
+                              .getDB('admin')
+                              .aggregate([
+                                  {"$currentOp": {"idleCursors": true}},
+                                  {"$match": {ns: mongosColl.getFullName(), type: "idleCursor"}}
+
+                              ])
+                              .itcount() === 1);
     }
     // Make sure the shard 0 $changeStream cursor is established before doing the first writes.
     waitForShardCursor(st.rs0);

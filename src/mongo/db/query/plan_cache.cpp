@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -31,6 +33,8 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/query/plan_cache.h"
+
+#include <boost/iterator/transform_iterator.hpp>
 
 #include <algorithm>
 #include <math.h>
@@ -49,21 +53,21 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 namespace {
 
 // Delimiters for cache key encoding.
-const char kEncodeDiscriminatorsBegin = '<';
-const char kEncodeDiscriminatorsEnd = '>';
 const char kEncodeChildrenBegin = '[';
 const char kEncodeChildrenEnd = ']';
 const char kEncodeChildrenSeparator = ',';
-const char kEncodeSortSection = '~';
-const char kEncodeProjectionSection = '|';
 const char kEncodeCollationSection = '#';
+const char kEncodeDiscriminatorsBegin = '<';
+const char kEncodeDiscriminatorsEnd = '>';
+const char kEncodeProjectionSection = '|';
+const char kEncodeRegexFlagsSeparator = '/';
+const char kEncodeSortSection = '~';
 
 /**
  * Encode user-provided string. Cache key delimiters seen in the
@@ -73,14 +77,15 @@ void encodeUserString(StringData s, StringBuilder* keyBuilder) {
     for (size_t i = 0; i < s.size(); ++i) {
         char c = s[i];
         switch (c) {
-            case kEncodeDiscriminatorsBegin:
-            case kEncodeDiscriminatorsEnd:
             case kEncodeChildrenBegin:
             case kEncodeChildrenEnd:
             case kEncodeChildrenSeparator:
-            case kEncodeSortSection:
-            case kEncodeProjectionSection:
             case kEncodeCollationSection:
+            case kEncodeDiscriminatorsBegin:
+            case kEncodeDiscriminatorsEnd:
+            case kEncodeProjectionSection:
+            case kEncodeRegexFlagsSeparator:
+            case kEncodeSortSection:
             case '\\':
                 *keyBuilder << '\\';
             // Fall through to default case.
@@ -310,6 +315,75 @@ void encodeGeoNearMatchExpression(const GeoNearMatchExpression* tree, StringBuil
     }
 }
 
+void encodeIndexabilityForDiscriminators(const MatchExpression* tree,
+                                         const IndexToDiscriminatorMap& discriminators,
+                                         StringBuilder* keyBuilder) {
+    for (auto&& indexAndDiscriminatorPair : discriminators) {
+        *keyBuilder << indexAndDiscriminatorPair.second.isMatchCompatibleWithIndex(tree);
+    }
+}
+
+void encodeIndexability(const MatchExpression* tree,
+                        const PlanCacheIndexabilityState& indexabilityState,
+                        StringBuilder* keyBuilder) {
+    if (tree->path().empty()) {
+        return;
+    }
+
+    const IndexToDiscriminatorMap& discriminators =
+        indexabilityState.getDiscriminators(tree->path());
+    IndexToDiscriminatorMap wildcardDiscriminators =
+        indexabilityState.buildWildcardDiscriminators(tree->path());
+    if (discriminators.empty() && wildcardDiscriminators.empty()) {
+        return;
+    }
+
+    *keyBuilder << kEncodeDiscriminatorsBegin;
+    // For each discriminator on this path, append the character '0' or '1'.
+    encodeIndexabilityForDiscriminators(tree, discriminators, keyBuilder);
+    encodeIndexabilityForDiscriminators(tree, wildcardDiscriminators, keyBuilder);
+
+    *keyBuilder << kEncodeDiscriminatorsEnd;
+}
+
+template <class RegexIterator>
+void encodeRegexFlagsForMatch(RegexIterator first, RegexIterator last, StringBuilder* keyBuilder) {
+    // We sort the flags, so that queries with the same regex flags in different orders will have
+    // the same shape. We then add them to a set, so that identical flags across multiple regexes
+    // will be deduplicated and the resulting set of unique flags will be ordered consistently.
+    // Regex flags are not validated at parse-time, so we also ensure that only valid flags
+    // contribute to the encoding.
+    static const auto maxValidFlags = RegexMatchExpression::kValidRegexFlags.size();
+    std::set<char> flags;
+    for (auto it = first; it != last && flags.size() < maxValidFlags; ++it) {
+        auto inserter = std::inserter(flags, flags.begin());
+        std::copy_if((*it)->getFlags().begin(), (*it)->getFlags().end(), inserter, [](auto flag) {
+            return RegexMatchExpression::kValidRegexFlags.count(flag);
+        });
+    }
+    if (!flags.empty()) {
+        *keyBuilder << kEncodeRegexFlagsSeparator;
+        for (const auto& flag : flags) {
+            invariant(RegexMatchExpression::kValidRegexFlags.count(flag));
+            encodeUserString(StringData(&flag, 1), keyBuilder);
+        }
+        *keyBuilder << kEncodeRegexFlagsSeparator;
+    }
+}
+
+// Helper overload to prepare a vector of unique_ptrs for the heavy-lifting function above.
+void encodeRegexFlagsForMatch(const std::vector<std::unique_ptr<RegexMatchExpression>>& regexes,
+                              StringBuilder* keyBuilder) {
+    const auto transformFunc = [](const auto& regex) { return regex.get(); };
+    encodeRegexFlagsForMatch(boost::make_transform_iterator(regexes.begin(), transformFunc),
+                             boost::make_transform_iterator(regexes.end(), transformFunc),
+                             keyBuilder);
+}
+// Helper that passes a range covering the entire source set into the heavy-lifting function above.
+void encodeRegexFlagsForMatch(const std::vector<const RegexMatchExpression*>& regexes,
+                              StringBuilder* keyBuilder) {
+    encodeRegexFlagsForMatch(regexes.begin(), regexes.end(), keyBuilder);
+}
 }  // namespace
 
 //
@@ -411,9 +485,6 @@ PlanCacheEntry::PlanCacheEntry(const std::vector<QuerySolution*>& solutions,
 }
 
 PlanCacheEntry::~PlanCacheEntry() {
-    for (size_t i = 0; i < feedback.size(); ++i) {
-        delete feedback[i];
-    }
     for (size_t i = 0; i < plannerData.size(); ++i) {
         delete plannerData[i];
     }
@@ -439,12 +510,8 @@ PlanCacheEntry* PlanCacheEntry::clone() const {
     entry->works = works;
 
     // Copy performance stats.
-    for (size_t i = 0; i < feedback.size(); ++i) {
-        PlanCacheEntryFeedback* fb = new PlanCacheEntryFeedback();
-        fb->stats.reset(feedback[i]->stats->clone());
-        fb->score = feedback[i]->score;
-        entry->feedback.push_back(fb);
-    }
+    entry->feedback = feedback;
+
     return entry;
 }
 
@@ -500,7 +567,7 @@ std::string PlanCacheIndexTree::toString(int indents) const {
     } else {
         result << std::string(3 * indents, '-') << "Leaf ";
         if (NULL != entry.get()) {
-            result << entry->name << ", pos: " << index_pos << ", can combine? "
+            result << entry->identifier << ", pos: " << index_pos << ", can combine? "
                    << canCombineBounds;
         }
         for (const auto& orPushdown : orPushdowns) {
@@ -513,7 +580,7 @@ std::string PlanCacheIndexTree::toString(int indents) const {
                 firstPosition = false;
                 result << position;
             }
-            result << ": " << orPushdown.indexName << ", pos: " << orPushdown.position
+            result << ": " << orPushdown.indexEntryId << " pos: " << orPushdown.position
                    << ", can combine? " << orPushdown.canCombineBounds << ". ";
         }
         result << '\n';
@@ -597,28 +664,19 @@ void PlanCache::encodeKeyForMatch(const MatchExpression* tree, StringBuilder* ke
         encodeGeoNearMatchExpression(static_cast<const GeoNearMatchExpression*>(tree), keyBuilder);
     }
 
-    // REGEX requires that we encode the flags so that regexes with different options appear
-    // as different query shapes.
+    // We encode regular expression flags such that different options produce different shapes.
     if (MatchExpression::REGEX == tree->matchType()) {
-        const auto reMatchExpression = static_cast<const RegexMatchExpression*>(tree);
-        std::string flags = reMatchExpression->getFlags();
-        // Sort the flags, so that queries with the same regex flags in different orders will have
-        // the same shape.
-        std::sort(flags.begin(), flags.end());
-        encodeUserString(flags, keyBuilder);
+        encodeRegexFlagsForMatch({static_cast<const RegexMatchExpression*>(tree)}, keyBuilder);
+    } else if (MatchExpression::MATCH_IN == tree->matchType()) {
+        const auto* inMatch = static_cast<const InMatchExpression*>(tree);
+        if (!inMatch->getRegexes().empty()) {
+            // Append '_re' to distinguish an $in without regexes from an $in with regexes.
+            encodeUserString("_re"_sd, keyBuilder);
+            encodeRegexFlagsForMatch(inMatch->getRegexes(), keyBuilder);
+        }
     }
 
-    // Encode indexability.
-    const IndexToDiscriminatorMap& discriminators =
-        _indexabilityState.getDiscriminators(tree->path());
-    if (!discriminators.empty()) {
-        *keyBuilder << kEncodeDiscriminatorsBegin;
-        // For each discriminator on this path, append the character '0' or '1'.
-        for (auto&& indexAndDiscriminatorPair : discriminators) {
-            *keyBuilder << indexAndDiscriminatorPair.second.isMatchCompatibleWithIndex(tree);
-        }
-        *keyBuilder << kEncodeDiscriminatorsEnd;
-    }
+    encodeIndexability(tree, _indexabilityState, keyBuilder);
 
     // Traverse child nodes.
     // Enclose children in [].
@@ -632,6 +690,7 @@ void PlanCache::encodeKeyForMatch(const MatchExpression* tree, StringBuilder* ke
         }
         encodeKeyForMatch(tree->getChild(i), keyBuilder);
     }
+
     if (tree->numChildren() > 0) {
         *keyBuilder << kEncodeChildrenEnd;
     }
@@ -923,11 +982,7 @@ PlanCache::GetResult PlanCache::get(const PlanCacheKey& key) const {
     return {state, stdx::make_unique<CachedSolution>(key, *entry)};
 }
 
-Status PlanCache::feedback(const CanonicalQuery& cq, PlanCacheEntryFeedback* feedback) {
-    if (NULL == feedback) {
-        return Status(ErrorCodes::BadValue, "feedback is NULL");
-    }
-    std::unique_ptr<PlanCacheEntryFeedback> autoFeedback(feedback);
+Status PlanCache::feedback(const CanonicalQuery& cq, double score) {
     PlanCacheKey ck = computeKey(cq);
 
     stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
@@ -940,7 +995,7 @@ Status PlanCache::feedback(const CanonicalQuery& cq, PlanCacheEntryFeedback* fee
 
     // We store up to a constant number of feedback entries.
     if (entry->feedback.size() < static_cast<size_t>(internalQueryCacheFeedbacksStored.load())) {
-        entry->feedback.push_back(autoFeedback.release());
+        entry->feedback.push_back(score);
     }
 
     return Status::OK();
@@ -1001,6 +1056,23 @@ size_t PlanCache::size() const {
 
 void PlanCache::notifyOfIndexEntries(const std::vector<IndexEntry>& indexEntries) {
     _indexabilityState.updateDiscriminators(indexEntries);
+}
+
+std::vector<BSONObj> PlanCache::getMatchingStats(
+    const std::function<BSONObj(const PlanCacheEntry&)>& serializationFunc,
+    const std::function<bool(const BSONObj&)>& filterFunc) const {
+    std::vector<BSONObj> results;
+    stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
+
+    for (auto&& cacheEntry : _cache) {
+        const auto entry = cacheEntry.second;
+        auto serializedEntry = serializationFunc(*entry);
+        if (filterFunc(serializedEntry)) {
+            results.push_back(serializedEntry);
+        }
+    }
+
+    return results;
 }
 
 }  // namespace mongo

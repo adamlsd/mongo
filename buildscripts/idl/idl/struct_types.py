@@ -1,16 +1,29 @@
-# Copyright (C) 2017 MongoDB Inc.
+# Copyright (C) 2018-present MongoDB, Inc.
 #
-# This program is free software: you can redistribute it and/or  modify
-# it under the terms of the GNU Affero General Public License, version 3,
-# as published by the Free Software Foundation.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the Server Side Public License, version 1,
+# as published by MongoDB, Inc.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
+# Server Side Public License for more details.
 #
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the Server Side Public License
+# along with this program. If not, see
+# <http://www.mongodb.com/licensing/server-side-public-license>.
+#
+# As a special exception, the copyright holders give permission to link the
+# code of portions of this program with the OpenSSL library under certain
+# conditions as described in each individual source file and distribute
+# linked combinations including the program with the OpenSSL library. You
+# must comply with the Server Side Public License in all respects for
+# all of the code used other than as permitted herein. If you modify file(s)
+# with this exception, you may extend this exception to your version of the
+# file(s), but you are not obligated to do so. If you do not wish to do so,
+# delete this exception statement from your version. If you delete this
+# exception statement from all source files in the program, then also delete
+# it in the license file.
 #
 """Provide code generation information for structs and commands in a polymorphic way."""
 
@@ -23,6 +36,31 @@ from . import ast
 from . import common
 from . import cpp_types
 from . import writer
+
+
+def _is_required_constructor_arg(field):
+    # type: (ast.Field) -> bool
+    """Get whether we require this field to have a value set for constructor purposes."""
+    return not field.ignore and not field.optional and not field.default and not field.chained \
+        and not field.chained_struct_field and not field.serialize_op_msg_request_only
+
+
+def _get_arg_for_field(field):
+    # type: (ast.Field) -> unicode
+    """Generate a moveable parameter."""
+    cpp_type_info = cpp_types.get_cpp_type(field)
+    # Use the storage type for the constructor argument since the generated code will use std::move.
+    member_type = cpp_type_info.get_storage_type()
+
+    return "%s %s" % (member_type, common.camel_case(field.cpp_name))
+
+
+def _get_required_parameters(struct):
+    # type: (ast.Struct) -> List[unicode]
+    """Get a list of arguments for required parameters."""
+    return [
+        _get_arg_for_field(field) for field in struct.fields if _is_required_constructor_arg(field)
+    ]
 
 
 class ArgumentInfo(object):
@@ -126,6 +164,12 @@ class StructTypeInfoBase(object):
         pass
 
     @abstractmethod
+    def get_required_constructor_method(self):
+        # type: () -> MethodInfo
+        """Get the constructor method for a struct with parameters for required fields."""
+        pass
+
+    @abstractmethod
     def get_serializer_method(self):
         # type: () -> MethodInfo
         """Get the serializer method for a struct."""
@@ -207,6 +251,11 @@ class _StructTypeInfo(StructTypeInfoBase):
         # type: () -> MethodInfo
         class_name = common.title_case(self._struct.cpp_name)
         return MethodInfo(class_name, class_name, [])
+
+    def get_required_constructor_method(self):
+        # type: () -> MethodInfo
+        class_name = common.title_case(self._struct.cpp_name)
+        return MethodInfo(class_name, class_name, _get_required_parameters(self._struct))
 
     def get_deserializer_static_method(self):
         # type: () -> MethodInfo
@@ -324,6 +373,16 @@ class _IgnoredCommandTypeInfo(_CommandBaseTypeInfo):
         pass
 
 
+def _get_command_type_parameter(command):
+    # type: (ast.Command) -> unicode
+    """Get the parameter for the command type."""
+    cpp_type_info = cpp_types.get_cpp_type(command.command_field)
+    # Use the storage type for the constructor argument since the generated code will use std::move.
+    member_type = cpp_type_info.get_storage_type()
+
+    return "const %s %s" % (member_type, common.camel_case(command.command_field.cpp_name))
+
+
 class _CommandFromType(_CommandBaseTypeInfo):
     """Class for command code generation for custom type."""
 
@@ -336,15 +395,18 @@ class _CommandFromType(_CommandBaseTypeInfo):
 
     def get_constructor_method(self):
         # type: () -> MethodInfo
-        cpp_type_info = cpp_types.get_cpp_type(self._command.command_field)
-        # Use the storage type for the constructor argument since the generated code will use
-        # std::move.
-        member_type = cpp_type_info.get_storage_type()
-
         class_name = common.title_case(self._struct.cpp_name)
 
-        arg = "const %s %s" % (member_type, common.camel_case(self._command.command_field.cpp_name))
+        arg = _get_command_type_parameter(self._command)
         return MethodInfo(class_name, class_name, [arg], explicit=True)
+
+    def get_required_constructor_method(self):
+        # type: () -> MethodInfo
+        class_name = common.title_case(self._struct.cpp_name)
+
+        arg = _get_command_type_parameter(self._command)
+        return MethodInfo(class_name, class_name, [arg] + _get_required_parameters(self._struct),
+                          explicit=True)
 
     def get_serializer_method(self):
         # type: () -> MethodInfo
@@ -397,6 +459,12 @@ class _CommandWithNamespaceTypeInfo(_CommandBaseTypeInfo):
         # type: () -> MethodInfo
         class_name = common.title_case(self._struct.cpp_name)
         return MethodInfo(class_name, class_name, ['const NamespaceString nss'], explicit=True)
+
+    def get_required_constructor_method(self):
+        # type: () -> MethodInfo
+        class_name = common.title_case(self._struct.cpp_name)
+        return MethodInfo(class_name, class_name,
+                          ['const NamespaceString nss'] + _get_required_parameters(self._struct))
 
     def get_serializer_method(self):
         # type: () -> MethodInfo

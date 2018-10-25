@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -105,7 +107,7 @@ public:
 
     void startup(OperationContext* opCtx) final {
         _client = std::make_unique<DBDirectClient>(opCtx);
-        _cursor = _client->query(NamespaceString::kRsOplogNamespace.ns(),
+        _cursor = _client->query(NamespaceString::kRsOplogNamespace,
                                  QUERY("ts" << BSON("$gte" << _oplogApplicationStartPoint)),
                                  /*batchSize*/ 0,
                                  /*skip*/ 0,
@@ -242,13 +244,13 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
 
     // If we were passed in a stable timestamp, we are in rollback recovery and should recover from
     // that stable timestamp. Otherwise, we're recovering at startup. If this storage engine
-    // supports recover to stable timestamp, we ask it for the recovery timestamp. If the storage
-    // engine returns a timestamp, we recover from that point. However, if the storage engine
-    // returns "none", the storage engine does not have a stable checkpoint and we must recover from
-    // an unstable checkpoint instead.
-    const bool supportsRecoverToStableTimestamp =
-        _storageInterface->supportsRecoverToStableTimestamp(opCtx->getServiceContext());
-    if (!stableTimestamp && supportsRecoverToStableTimestamp) {
+    // supports recover to stable timestamp or enableMajorityReadConcern=false, we ask it for the
+    // recovery timestamp. If the storage engine returns a timestamp, we recover from that point.
+    // However, if the storage engine returns "none", the storage engine does not have a stable
+    // checkpoint and we must recover from an unstable checkpoint instead.
+    const bool supportsRecoveryTimestamp =
+        _storageInterface->supportsRecoveryTimestamp(opCtx->getServiceContext());
+    if (!stableTimestamp && supportsRecoveryTimestamp) {
         stableTimestamp = _storageInterface->getRecoveryTimestamp(opCtx->getServiceContext());
     }
 
@@ -260,7 +262,7 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
                             << appliedThrough.toString());
 
     if (stableTimestamp) {
-        invariant(supportsRecoverToStableTimestamp);
+        invariant(supportsRecoveryTimestamp);
         _recoverFromStableTimestamp(opCtx, *stableTimestamp, appliedThrough, topOfOplog);
     } else {
         _recoverFromUnstableCheckpoint(opCtx, appliedThrough, topOfOplog);
@@ -301,6 +303,20 @@ void ReplicationRecoveryImpl::_recoverFromUnstableCheckpoint(OperationContext* o
         // application and must apply from the appliedThrough to the top of the oplog.
         log() << "Starting recovery oplog application at the appliedThrough: " << appliedThrough
               << ", through the top of the oplog: " << topOfOplog;
+
+        // When `recoverFromOplog` truncates the oplog, that also happens to set the "oldest
+        // timestamp" to the truncation point[1]. `_applyToEndOfOplog` will then perform writes
+        // before the truncation point. Doing so violates the constraint that all updates must be
+        // timestamped newer than the "oldest timestamp". This call will move the "oldest
+        // timestamp" back to the `startPoint`.
+        //
+        // [1] This is arguably incorrect. On rollback for nodes that are not keeping history to
+        // the "majority point", the "oldest timestamp" likely needs to go back in time. The
+        // oplog's `cappedTruncateAfter` method was a convenient location for this logic, which,
+        // unfortunately, conflicts with the usage above.
+        opCtx->getServiceContext()->getStorageEngine()->setOldestTimestamp(
+            appliedThrough.getTimestamp());
+
         _applyToEndOfOplog(opCtx, appliedThrough.getTimestamp(), topOfOplog.getTimestamp());
     }
 

@@ -1,16 +1,29 @@
-# Copyright (C) 2017 MongoDB Inc.
+# Copyright (C) 2018-present MongoDB, Inc.
 #
-# This program is free software: you can redistribute it and/or  modify
-# it under the terms of the GNU Affero General Public License, version 3,
-# as published by the Free Software Foundation.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the Server Side Public License, version 1,
+# as published by MongoDB, Inc.
 #
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
+# Server Side Public License for more details.
 #
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the Server Side Public License
+# along with this program. If not, see
+# <http://www.mongodb.com/licensing/server-side-public-license>.
+#
+# As a special exception, the copyright holders give permission to link the
+# code of portions of this program with the OpenSSL library under certain
+# conditions as described in each individual source file and distribute
+# linked combinations including the program with the OpenSSL library. You
+# must comply with the Server Side Public License in all respects for
+# all of the code used other than as permitted herein. If you modify file(s)
+# with this exception, you may extend this exception to your version of the
+# file(s), but you are not obligated to do so. If you do not wish to do so,
+# delete this exception statement from your version. If you delete this
+# exception statement from all source files in the program, then also delete
+# it in the license file.
 #
 # pylint: disable=too-many-lines
 """Transform idl.syntax trees from the parser into well-defined idl.ast trees."""
@@ -505,6 +518,34 @@ def _normalize_method_name(cpp_type_name, cpp_method_name):
     return cpp_method_name
 
 
+def _bind_validator(ctxt, validator):
+    # type: (errors.ParserContext, syntax.Validator) -> ast.Validator
+    """Bind a validator from the idl.syntax tree."""
+
+    ast_validator = ast.Validator(validator.file_name, validator.line, validator.column)
+
+    # Parse syntax value as numeric if possible.
+    for pred in ["gt", "lt", "gte", "lte"]:
+        val = getattr(validator, pred)
+        if val is None:
+            continue
+
+        try:
+            intval = int(val)
+            if (intval < -0x80000000) or (intval > 0x7FFFFFFF):
+                raise ValueError('IDL ints are limited to int32_t')
+            setattr(ast_validator, pred, intval)
+        except ValueError:
+            try:
+                setattr(ast_validator, pred, float(val))
+            except ValueError:
+                ctxt.add_value_not_numeric_error(ast_validator, pred, val)
+                return None
+
+    ast_validator.callback = validator.callback
+    return ast_validator
+
+
 def _bind_field(ctxt, parsed_spec, field):
     # type: (errors.ParserContext, syntax.IDLSpec, syntax.Field) -> ast.Field
     """
@@ -597,6 +638,11 @@ def _bind_field(ctxt, parsed_spec, field):
 
         # Validation doc_sequence types
         _validate_doc_sequence_field(ctxt, ast_field)
+
+    if field.validator is not None:
+        ast_field.validator = _bind_validator(ctxt, field.validator)
+        if ast_field.validator is None:
+            return None
 
     return ast_field
 

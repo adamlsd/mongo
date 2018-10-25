@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #pragma once
@@ -48,6 +50,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_options.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
@@ -118,13 +121,13 @@ public:
 
     StatusWith<UserHandle> acquireUser(OperationContext* opCtx, const UserName& userName) override;
 
-    void invalidateUserByName(const UserName& user) override;
+    void invalidateUserByName(OperationContext* opCtx, const UserName& user) override;
 
-    void invalidateUsersFromDB(StringData dbname) override;
+    void invalidateUsersFromDB(OperationContext* opCtx, StringData dbname) override;
 
     Status initialize(OperationContext* opCtx) override;
 
-    void invalidateUserCache() override;
+    void invalidateUserCache(OperationContext* opCtx) override;
 
     Status _initializeUserFromPrivilegeDocument(User* user, const BSONObj& privDoc) override;
 
@@ -135,6 +138,8 @@ public:
                const BSONObj* patt) override;
 
     std::vector<CachedUserInfo> getUserCacheInfo() const override;
+
+    void setInUserManagementCommand(OperationContext* opCtx, bool val) override;
 
 private:
     /**
@@ -147,14 +152,15 @@ private:
      * Invalidates all User objects in the cache and removes them from the cache.
      * Should only be called when already holding _cacheMutex.
      */
-    void _invalidateUserCache_inlock();
+    void _invalidateUserCache_inlock(const CacheGuard&);
 
     /**
      * Given the objects describing an oplog entry that affects authorization data, invalidates
      * the portion of the user cache that is affected by that operation.  Should only be called
      * with oplog entries that have been pre-verified to actually affect authorization data.
      */
-    void _invalidateRelevantCacheData(const char* op,
+    void _invalidateRelevantCacheData(OperationContext* opCtx,
+                                      const char* op,
                                       const NamespaceString& ns,
                                       const BSONObj& o,
                                       const BSONObj* o2);
@@ -162,7 +168,14 @@ private:
     /**
      * Updates _cacheGeneration to a new OID
      */
-    void _updateCacheGeneration_inlock();
+    void _updateCacheGeneration_inlock(const CacheGuard&);
+
+
+    void _recachePinnedUsers(CacheGuard& guard, OperationContext* opCtx);
+
+    StatusWith<UserHandle> _acquireUserSlowPath(CacheGuard& guard,
+                                                OperationContext* opCtx,
+                                                const UserName& userName);
 
     /**
      * Fetches user information from a v2-schema user document for the named user,
@@ -191,10 +204,7 @@ private:
     /**
      * A cache of whether there are any users set up for the cluster.
      */
-    bool _privilegeDocsExist;
-
-    // Protects _privilegeDocsExist
-    mutable stdx::mutex _privilegeDocsExistMutex;
+    AtomicBool _privilegeDocsExist;
 
     std::unique_ptr<AuthzManagerExternalState> _externalState;
 
@@ -219,6 +229,13 @@ private:
     };
 
     InvalidatingLRUCache<UserName, User, UserCacheInvalidator> _userCache;
+    std::vector<UserHandle> _pinnedUsers;
+
+    /**
+     * Protects _cacheGeneration, _version and _isFetchPhaseBusy.  Manipulated
+     * via CacheGuard.
+     */
+    stdx::mutex _cacheWriteMutex;
 
     /**
      * Current generation of cached data.  Updated every time part of the cache gets
@@ -235,15 +252,11 @@ private:
     bool _isFetchPhaseBusy;
 
     /**
-     * Protects _userCache, _cacheGeneration, _version and _isFetchPhaseBusy.  Manipulated
-     * via CacheGuard.
-     */
-    stdx::mutex _cacheMutex;
-
-    /**
      * Condition used to signal that it is OK for another CacheGuard to enter a fetch phase.
      * Manipulated via CacheGuard.
      */
     stdx::condition_variable _fetchPhaseIsReady;
+
+    AtomicBool _inUserManagementCommand{false};
 };
 }  // namespace mongo

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -377,13 +379,21 @@ HostAndPort TopologyCoordinator::chooseNewSyncSource(Date_t now,
                     continue;
                 }
             }
-            // only consider candidates that are ahead of where we are
-            if (it->getHeartbeatAppliedOpTime() <= lastOpTimeFetched) {
-                LOG(1) << "Cannot select sync source equal to or behind our last fetched optime. "
-                       << "My last fetched oplog optime: " << lastOpTimeFetched.toBSON()
-                       << ", latest oplog optime of sync candidate "
-                       << itMemberConfig.getHostAndPort() << ": "
-                       << it->getHeartbeatAppliedOpTime().toBSON();
+            // Do not select a candidate that is behind me. If I am up to date with the candidate,
+            // only select them if they have a higher lastOpCommitted.
+            if (std::tuple<OpTime, OpTime>(it->getHeartbeatAppliedOpTime(),
+                                           it->getHeartbeatLastOpCommitted()) <=
+                std::tie(lastOpTimeFetched, _lastCommittedOpTime)) {
+                LOG(1) << "Cannot select this sync source. Sync source cannot be behind me, and if "
+                          "I am up-to-date with the sync source, it must have a higher "
+                          "lastOpCommitted. "
+                       << "Sync candidate: " << itMemberConfig.getHostAndPort()
+                       << ", my last fetched oplog optime: " << lastOpTimeFetched.toBSON()
+                       << ", latest oplog optime of sync candidate: "
+                       << it->getHeartbeatAppliedOpTime().toBSON()
+                       << ", my lastOpCommitted: " << _lastCommittedOpTime
+                       << ", lastOpCommitted of sync candidate: "
+                       << it->getHeartbeatLastOpCommitted();
                 continue;
             }
             // Candidate cannot be more latent than anything we've already considered.
@@ -684,7 +694,8 @@ HeartbeatResponseAction TopologyCoordinator::processHeartbeatResponse(
     Date_t now,
     Milliseconds networkRoundTripTime,
     const HostAndPort& target,
-    const StatusWith<ReplSetHeartbeatResponse>& hbResponse) {
+    const StatusWith<ReplSetHeartbeatResponse>& hbResponse,
+    OpTime lastOpCommitted) {
     const MemberState originalState = getMemberState();
     PingStats& hbStats = _pings[target];
     invariant(hbStats.getLastHeartbeatStartDate() != Date_t());
@@ -794,7 +805,7 @@ HeartbeatResponseAction TopologyCoordinator::processHeartbeatResponse(
     } else {
         ReplSetHeartbeatResponse hbr = std::move(hbResponse.getValue());
         LOG(3) << "setUpValues: heartbeat response good for member _id:" << member.getId();
-        advancedOpTime = hbData.setUpValues(now, std::move(hbr));
+        advancedOpTime = hbData.setUpValues(now, std::move(hbr), lastOpCommitted);
     }
 
     HeartbeatResponseAction nextAction;
@@ -1275,7 +1286,8 @@ bool TopologyCoordinator::prepareForUnconditionalStepDown() {
     return true;
 }
 
-Status TopologyCoordinator::prepareForStepDownAttempt() {
+StatusWith<TopologyCoordinator::StepDownAttemptAbortFn>
+TopologyCoordinator::prepareForStepDownAttempt() {
     if (_leaderMode == LeaderMode::kSteppingDown ||
         _leaderMode == LeaderMode::kAttemptingStepDown) {
         return Status{ErrorCodes::ConflictingOperationInProgress,
@@ -1286,14 +1298,15 @@ Status TopologyCoordinator::prepareForStepDownAttempt() {
         return Status{ErrorCodes::NotMaster, "This node is not a primary."};
     }
 
+    invariant(_leaderMode == LeaderMode::kMaster || _leaderMode == LeaderMode::kLeaderElect);
+    const auto previousLeaderMode = _leaderMode;
     _setLeaderMode(LeaderMode::kAttemptingStepDown);
-    return Status::OK();
-}
 
-void TopologyCoordinator::abortAttemptedStepDownIfNeeded() {
-    if (_leaderMode == TopologyCoordinator::LeaderMode::kAttemptingStepDown) {
-        _setLeaderMode(TopologyCoordinator::LeaderMode::kMaster);
-    }
+    return {[this, previousLeaderMode] {
+        if (_leaderMode == TopologyCoordinator::LeaderMode::kAttemptingStepDown) {
+            _setLeaderMode(previousLeaderMode);
+        }
+    }};
 }
 
 void TopologyCoordinator::changeMemberState_forTest(const MemberState& newMemberState,
@@ -1349,7 +1362,8 @@ void TopologyCoordinator::setCurrentPrimary_forTest(int primaryIndex,
             hbResponse.setSyncingTo(HostAndPort());
             _memberData.at(primaryIndex)
                 .setUpValues(_memberData.at(primaryIndex).getLastHeartbeat(),
-                             std::move(hbResponse));
+                             std::move(hbResponse),
+                             _memberData.at(primaryIndex).getHeartbeatLastOpCommitted());
         }
         _currentPrimaryIndex = primaryIndex;
     }
@@ -1621,12 +1635,23 @@ void TopologyCoordinator::fillMemberData(BSONObjBuilder* result) {
     {
         for (const auto& memberData : _memberData) {
             BSONObjBuilder entry(replicationProgress.subobjStart());
-            const auto lastDurableOpTime = memberData.getLastDurableOpTime();
-            BSONObjBuilder opTime(entry.subobjStart("optime"));
-            opTime.append("ts", lastDurableOpTime.getTimestamp());
-            opTime.append("term", lastDurableOpTime.getTerm());
-            opTime.done();
             entry.append("host", memberData.getHostAndPort().toString());
+
+            const auto lastDurableOpTime = memberData.getLastDurableOpTime();
+            entry.append("optime", lastDurableOpTime.toBSON());
+
+            const auto lastAppliedOpTime = memberData.getLastAppliedOpTime();
+            entry.append("lastAppliedOpTime", lastAppliedOpTime.toBSON());
+
+            const auto heartbeatAppliedOpTime = memberData.getHeartbeatAppliedOpTime();
+            entry.append("heartbeatAppliedOpTime", heartbeatAppliedOpTime.toBSON());
+
+            const auto heartbeatDurableOpTime = memberData.getHeartbeatDurableOpTime();
+            entry.append("heartbeatDurableOpTime", heartbeatDurableOpTime.toBSON());
+
+            const auto lastOpCommitted = memberData.getHeartbeatLastOpCommitted();
+            entry.append("heartbeatLastOpCommitted", lastOpCommitted.toBSON());
+
             if (_selfIndex >= 0) {
                 const int memberId = memberData.getMemberId();
                 invariant(memberId >= 0);
@@ -2046,7 +2071,7 @@ void TopologyCoordinator::_setLeaderMode(TopologyCoordinator::LeaderMode newMode
             break;
         case LeaderMode::kAttemptingStepDown:
             invariant(newMode == LeaderMode::kNotLeader || newMode == LeaderMode::kMaster ||
-                      newMode == LeaderMode::kSteppingDown);
+                      newMode == LeaderMode::kSteppingDown || newMode == LeaderMode::kLeaderElect);
             break;
         case LeaderMode::kSteppingDown:
             invariant(newMode == LeaderMode::kNotLeader);
@@ -2153,7 +2178,7 @@ bool TopologyCoordinator::attemptStepDown(
             uasserted(ErrorCodes::ExceededTimeLimit,
                       str::stream() << "No electable secondaries caught up as of "
                                     << dateToISOStringLocal(now)
-                                    << "Please use the replSetStepDown command with the argument "
+                                    << ". Please use the replSetStepDown command with the argument "
                                     << "{force: true} to force node to step down.");
         }
 
@@ -2481,18 +2506,25 @@ bool TopologyCoordinator::shouldChangeSyncSource(
     // If OplogQueryMetadata was provided, use its values, otherwise use the ones in
     // ReplSetMetadata.
     OpTime currentSourceOpTime;
+    OpTime currentSourceLastOpCommitted;
     int syncSourceIndex = -1;
     int primaryIndex = -1;
     if (oqMetadata) {
         currentSourceOpTime =
             std::max(oqMetadata->getLastOpApplied(),
                      _memberData.at(currentSourceIndex).getHeartbeatAppliedOpTime());
+        currentSourceLastOpCommitted =
+            std::max(oqMetadata->getLastOpCommitted(),
+                     _memberData.at(currentSourceIndex).getHeartbeatLastOpCommitted());
         syncSourceIndex = oqMetadata->getSyncSourceIndex();
         primaryIndex = oqMetadata->getPrimaryIndex();
     } else {
         currentSourceOpTime =
             std::max(replMetadata.getLastOpVisible(),
                      _memberData.at(currentSourceIndex).getHeartbeatAppliedOpTime());
+        currentSourceLastOpCommitted =
+            std::max(replMetadata.getLastOpCommitted(),
+                     _memberData.at(currentSourceIndex).getHeartbeatLastOpCommitted());
         syncSourceIndex = replMetadata.getSyncSourceIndex();
         primaryIndex = replMetadata.getPrimaryIndex();
     }
@@ -2506,13 +2538,21 @@ bool TopologyCoordinator::shouldChangeSyncSource(
     // Change sync source if they are not ahead of us, and don't have a sync source,
     // unless they are primary.
     const OpTime myLastOpTime = getMyLastAppliedOpTime();
-    if (syncSourceIndex == -1 && currentSourceOpTime <= myLastOpTime &&
+    if (syncSourceIndex == -1 &&
+        std::tie(currentSourceOpTime, currentSourceLastOpCommitted) <=
+            std::tie(myLastOpTime, _lastCommittedOpTime) &&
         primaryIndex != currentSourceIndex) {
         std::stringstream logMessage;
-        logMessage << "Choosing new sync source because our current sync source, "
-                   << currentSource.toString() << ", has an OpTime (" << currentSourceOpTime
-                   << ") which is not ahead of ours (" << myLastOpTime
-                   << "), it does not have a sync source, and it's not the primary";
+
+        logMessage << "Choosing new sync source. Our current sync source is not primary and does "
+                      "not have a sync source, so we require that it is not behind us, and that if "
+                      "we are up-to-date with it, it has a higher lastOpCommitted. "
+                   << "Current sync source: " << currentSource.toString()
+                   << ", my last fetched oplog optime: " << myLastOpTime
+                   << ", latest oplog optime of sync source: " << currentSourceOpTime
+                   << ", my lastOpCommitted: " << _lastCommittedOpTime
+                   << ", lastOpCommitted of sync source: " << currentSourceLastOpCommitted;
+
         if (primaryIndex >= 0) {
             logMessage << " (" << _rsConfig.getMemberAt(primaryIndex).getHostAndPort() << " is)";
         } else {

@@ -1,35 +1,38 @@
-/*    Copyright 2012 10gen Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/dbtests/mock/mock_dbclient_connection.h"
 
-#include "mongo/dbtests/mock/mock_dbclient_cursor.h"
+#include "mongo/client/dbclient_mockcursor.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/time_support.h"
 
@@ -74,18 +77,19 @@ std::pair<rpc::UniqueReply, DBClientBase*> MockDBClientConnection::runCommandWit
 }
 
 
-std::unique_ptr<mongo::DBClientCursor> MockDBClientConnection::query(const string& ns,
-                                                                     mongo::Query query,
-                                                                     int nToReturn,
-                                                                     int nToSkip,
-                                                                     const BSONObj* fieldsToReturn,
-                                                                     int queryOptions,
-                                                                     int batchSize) {
+std::unique_ptr<mongo::DBClientCursor> MockDBClientConnection::query(
+    const NamespaceStringOrUUID& nsOrUuid,
+    mongo::Query query,
+    int nToReturn,
+    int nToSkip,
+    const BSONObj* fieldsToReturn,
+    int queryOptions,
+    int batchSize) {
     checkConnection();
 
     try {
         mongo::BSONArray result(_remoteServer->query(_remoteServerInstanceID,
-                                                     ns,
+                                                     nsOrUuid,
                                                      query,
                                                      nToReturn,
                                                      nToSkip,
@@ -94,7 +98,7 @@ std::unique_ptr<mongo::DBClientCursor> MockDBClientConnection::query(const strin
                                                      batchSize));
 
         std::unique_ptr<mongo::DBClientCursor> cursor;
-        cursor.reset(new MockDBClientCursor(this, result));
+        cursor.reset(new DBClientMockCursor(this, BSONArray(result.copy()), batchSize));
         return cursor;
     } catch (const mongo::DBException&) {
         _isFailed = true;
@@ -121,23 +125,14 @@ string MockDBClientConnection::toString() const {
     return _remoteServer->toString();
 }
 
-unsigned long long MockDBClientConnection::query(stdx::function<void(const BSONObj&)> f,
-                                                 const string& ns,
-                                                 mongo::Query query,
-                                                 const BSONObj* fieldsToReturn,
-                                                 int queryOptions) {
-    verify(false);
-    return 0;
-}
-
 unsigned long long MockDBClientConnection::query(
     stdx::function<void(mongo::DBClientCursorBatchIterator&)> f,
-    const std::string& ns,
+    const NamespaceStringOrUUID& nsOrUuid,
     mongo::Query query,
     const mongo::BSONObj* fieldsToReturn,
-    int queryOptions) {
-    verify(false);
-    return 0;
+    int queryOptions,
+    int batchSize) {
+    return DBClientBase::query(f, nsOrUuid, query, fieldsToReturn, queryOptions, batchSize);
 }
 
 uint64_t MockDBClientConnection::getSockCreationMicroSec() const {

@@ -205,8 +205,15 @@ __wt_row_modify(WT_SESSION_IMPL *session, WT_CURSOR_BTREE *cbt,
 		    &ins, ins_size, skipdepth, exclusive));
 	}
 
-	if (logged && modify_type != WT_UPDATE_RESERVE)
+	if (logged && modify_type != WT_UPDATE_RESERVE) {
 		WT_ERR(__wt_txn_log_op(session, cbt));
+		/*
+		 * Set the key in the transaction operation to be used incase
+		 * this transaction is prepared to retrieve the update
+		 * corresponding to this operation.
+		 */
+		WT_ERR(__wt_txn_op_set_key(session, key));
+	}
 
 	if (0) {
 err:		/*

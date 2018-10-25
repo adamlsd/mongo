@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -47,10 +49,9 @@ using std::vector;
 
 namespace {
 
-// These values indicate the minimum deviation shard's number of chunks need to have from the
+// This value indicates the minimum deviation shard's number of chunks need to have from the
 // optimal average across all shards for a zone for a rebalancing migration to be initiated.
-const size_t kDefaultImbalanceThreshold = 2;
-const size_t kAggressiveImbalanceThreshold = 1;
+const size_t kDefaultImbalanceThreshold = 1;
 
 }  // namespace
 
@@ -290,7 +291,6 @@ ShardId BalancerPolicy::_getMostOverloadedShard(const ShardStatisticsVector& sha
 
 vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardStats,
                                             const DistributionStatus& distribution,
-                                            bool shouldAggressivelyBalance,
                                             std::set<ShardId>* usedShards) {
     vector<MigrateInfo> migrations;
 
@@ -388,9 +388,6 @@ vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardSt
     }
 
     // 3) for each tag balance
-    const size_t imbalanceThreshold = (shouldAggressivelyBalance || distribution.totalChunks() < 20)
-        ? kAggressiveImbalanceThreshold
-        : kDefaultImbalanceThreshold;
 
     vector<string> tagsPlusEmpty(distribution.tags().begin(), distribution.tags().end());
     tagsPlusEmpty.push_back("");
@@ -419,16 +416,14 @@ vector<MigrateInfo> BalancerPolicy::balance(const ShardStatisticsVector& shardSt
             continue;
         }
 
-        // Calculate the ceiling of the optimal number of chunks per shard
+        // Calculate the rounded optimal number of chunks per shard
         const size_t idealNumberOfChunksPerShardForTag =
-            (totalNumberOfChunksWithTag / totalNumberOfShardsWithTag) +
-            (totalNumberOfChunksWithTag % totalNumberOfShardsWithTag ? 1 : 0);
+            (size_t)std::roundf(totalNumberOfChunksWithTag / (float)totalNumberOfShardsWithTag);
 
         while (_singleZoneBalance(shardStats,
                                   distribution,
                                   tag,
                                   idealNumberOfChunksPerShardForTag,
-                                  imbalanceThreshold,
                                   &migrations,
                                   usedShards))
             ;
@@ -456,7 +451,6 @@ bool BalancerPolicy::_singleZoneBalance(const ShardStatisticsVector& shardStats,
                                         const DistributionStatus& distribution,
                                         const string& tag,
                                         size_t idealNumberOfChunksPerShardForTag,
-                                        size_t imbalanceThreshold,
                                         vector<MigrateInfo>* migrations,
                                         set<ShardId>* usedShards) {
     const ShardId from = _getMostOverloadedShard(shardStats, distribution, tag, *usedShards);
@@ -490,10 +484,10 @@ bool BalancerPolicy::_singleZoneBalance(const ShardStatisticsVector& shardStats,
     LOG(1) << "donor      : " << from << " chunks on " << max;
     LOG(1) << "receiver   : " << to << " chunks on " << min;
     LOG(1) << "ideal      : " << idealNumberOfChunksPerShardForTag;
-    LOG(1) << "threshold  : " << imbalanceThreshold;
+    LOG(1) << "threshold  : " << kDefaultImbalanceThreshold;
 
     // Check whether it is necessary to balance within this zone
-    if (imbalance < imbalanceThreshold)
+    if (imbalance < kDefaultImbalanceThreshold)
         return false;
 
     const vector<ChunkType>& chunks = distribution.getChunks(from);

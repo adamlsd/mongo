@@ -1,24 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -44,6 +45,7 @@
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/scopeguard.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/stringutils.h"
 #include "mongo/util/uuid.h"
@@ -57,6 +59,14 @@ using std::string;
 
 string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, int pretty) const {
     std::stringstream s;
+    BSONElement::jsonStringStream(format, includeFieldNames, pretty, s);
+    return s.str();
+}
+
+void BSONElement::jsonStringStream(JsonStringFormat format,
+                                   bool includeFieldNames,
+                                   int pretty,
+                                   std::stringstream& s) const {
     if (includeFieldNames)
         s << '"' << escape(fieldName()) << "\" : ";
     switch (type()) {
@@ -79,6 +89,8 @@ string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, 
         case NumberDouble:
             if (number() >= -std::numeric_limits<double>::max() &&
                 number() <= std::numeric_limits<double>::max()) {
+                auto origPrecision = s.precision();
+                auto guard = MakeGuard([&s, origPrecision]() { s.precision(origPrecision); });
                 s.precision(16);
                 s << number();
             }
@@ -129,7 +141,7 @@ string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, 
             }
             break;
         case Object:
-            s << embeddedObject().jsonString(format, pretty);
+            embeddedObject().jsonStringStream(format, pretty, false, s);
             break;
         case mongo::Array: {
             if (embeddedObject().isEmpty()) {
@@ -151,7 +163,7 @@ string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, 
                     if (strtol(e.fieldName(), 0, 10) > count) {
                         s << "undefined";
                     } else {
-                        s << e.jsonString(format, false, pretty ? pretty + 1 : 0);
+                        e.jsonStringStream(format, false, pretty ? pretty + 1 : 0, s);
                         e = i.next();
                     }
                     count++;
@@ -198,10 +210,22 @@ string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, 
 
             s << "{ \"$binary\" : \"";
             base64::encode(s, reader.view(), len);
-            s << "\", \"$type\" : \"" << hex;
+
+            auto origFill = s.fill();
+            auto origFmtF = s.flags();
+            auto origWidth = s.width();
+            auto guard = MakeGuard([&s, origFill, origFmtF, origWidth] {
+                s.fill(origFill);
+                s.setf(origFmtF);
+                s.width(origWidth);
+            });
+
+            s.setf(std::ios_base::hex, std::ios_base::basefield);
+
+            s << "\", \"$type\" : \"";
             s.width(2);
             s.fill('0');
-            s << type << dec;
+            s << type;
             s << "\" }";
             break;
         }
@@ -303,7 +327,6 @@ string BSONElement::jsonString(JsonStringFormat format, bool includeFieldNames, 
             string message = ss.str();
             massert(10312, message.c_str(), false);
     }
-    return s.str();
 }
 
 namespace {
@@ -546,7 +569,7 @@ bool BSONElement::binaryEqualValues(const BSONElement& rhs) const {
 
 BSONObj BSONElement::embeddedObjectUserCheck() const {
     if (MONGO_likely(isABSONObj()))
-        return BSONObj(value());
+        return BSONObj(value(), BSONObj::LargeSizeTrait{});
     std::stringstream ss;
     ss << "invalid parameter: expected an object (" << fieldName() << ")";
     uasserted(10065, ss.str());
@@ -555,7 +578,7 @@ BSONObj BSONElement::embeddedObjectUserCheck() const {
 
 BSONObj BSONElement::embeddedObject() const {
     verify(isABSONObj());
-    return BSONObj(value());
+    return BSONObj(value(), BSONObj::LargeSizeTrait{});
 }
 
 BSONObj BSONElement::codeWScopeObject() const {

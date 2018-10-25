@@ -26,6 +26,7 @@ MONGO_RUNNER_SUBDIR = "mongorunner"
 # Default path for where to look for executables.
 DEFAULT_DBTEST_EXECUTABLE = os.path.join(os.curdir, "dbtest")
 DEFAULT_MONGO_EXECUTABLE = os.path.join(os.curdir, "mongo")
+DEFAULT_MONGOEBENCH_EXECUTABLE = os.path.join(os.curdir, "mongoebench")
 DEFAULT_MONGOD_EXECUTABLE = os.path.join(os.curdir, "mongod")
 DEFAULT_MONGOS_EXECUTABLE = os.path.join(os.curdir, "mongos")
 
@@ -42,6 +43,9 @@ DEFAULTS = {
     "archive_limit_mb": 5000,
     "archive_limit_tests": 10,
     "base_port": 20000,
+    "benchrun_device": "Desktop",
+    "benchrun_embedded_root": "/data/local/tmp/benchrun_embedded",
+    "benchrun_report_root": "benchrun_embedded/results",
     "buildlogger_url": "https://logkeeper.mongodb.org",
     "continue_on_failure": False,
     "dbpath_prefix": None,
@@ -53,12 +57,14 @@ DEFAULTS = {
     "mongo_executable": None,
     "mongod_executable": None,
     "mongod_set_parameters": None,
+    "mongoebench_executable": None,
     "mongos_executable": None,
     "mongos_set_parameters": None,
     "no_journal": False,
     "num_clients_per_fixture": 1,
     "perf_report_file": None,
-    "repeat": 1,
+    "repeat_suites": 1,
+    "repeat_tests": 1,
     "report_failure_status": "fail",
     "report_file": None,
     "seed": long(time.time() * 256),  # Taken from random.py code in Python 2.7.
@@ -69,6 +75,7 @@ DEFAULTS = {
     "shell_write_mode": None,
     "shuffle": None,
     "stagger_jobs": None,
+    "majority_read_concern": None,  # Default is set on the commandline.
     "storage_engine": None,
     "storage_engine_cache_size_gb": None,
     "tag_file": None,
@@ -104,7 +111,8 @@ _SuiteOptions = collections.namedtuple("_SuiteOptions", [
     "fail_fast",
     "include_tags",
     "num_jobs",
-    "num_repeats",
+    "num_repeat_suites",
+    "num_repeat_tests",
     "report_failure_status",
 ])
 
@@ -166,7 +174,8 @@ class SuiteOptions(_SuiteOptions):
                 FAIL_FAST,
                 include_tags,
                 JOBS,
-                REPEAT,
+                REPEAT_SUITES,
+                REPEAT_TESTS,
                 REPORT_FAILURE_STATUS,
             ]))
 
@@ -251,6 +260,9 @@ EVERGREEN_VERSION_ID = None
 # If set, then any jstests that have any of the specified tags will be excluded from the suite(s).
 EXCLUDE_WITH_ANY_TAGS = None
 
+# A tag which is implicited excluded. This is useful for temporarily disabling a test.
+EXCLUDED_TAG = "__TEMPORARILY_DISABLED__"
+
 # If true, then a test failure or error will cause resmoke.py to exit and not run any more tests.
 FAIL_FAST = None
 
@@ -269,6 +281,9 @@ MONGOD_EXECUTABLE = None
 
 # The --setParameter options passed to mongod.
 MONGOD_SET_PARAMETERS = None
+
+# The path to the mongoebench executable used by resmoke.py.
+MONGOEBENCH_EXECUTABLE = None
 
 # The path to the mongos executable used by resmoke.py.
 MONGOS_EXECUTABLE = None
@@ -291,7 +306,10 @@ PERF_REPORT_FILE = None
 RANDOM_SEED = None
 
 # If set, then each suite is repeated the specified number of times.
-REPEAT = None
+REPEAT_SUITES = None
+
+# If set, then each test is repeated the specified number of times inside the suites.
+REPEAT_TESTS = None
 
 # Controls if the test failure status should be reported as failed or be silently ignored.
 REPORT_FAILURE_STATUS = None
@@ -318,6 +336,9 @@ SHUFFLE = None
 
 # If true, the launching of jobs is staggered in resmoke.py.
 STAGGER_JOBS = None
+
+# If set to true, it enables read concern majority. Else, read concern majority is disabled.
+MAJORITY_READ_CONCERN = None
 
 # If set, then all mongod's started by resmoke.py and by the mongo shell will use the specified
 # storage engine.
@@ -351,6 +372,11 @@ BENCHMARK_LIST_TESTS = None
 BENCHMARK_MIN_TIME = None
 BENCHMARK_REPETITIONS = None
 
+# Embedded Benchrun Test options.
+BENCHRUN_DEVICE = None
+BENCHRUN_EMBEDDED_ROOT = None
+BENCHRUN_REPORT_ROOT = None
+
 ##
 # Internally used configuration options that aren't exposed to the user
 ##
@@ -372,4 +398,5 @@ DEFAULT_INTEGRATION_TEST_LIST = "build/integration_tests.txt"
 # External files or executables, used as suite selectors, that are created during the build and
 # therefore might not be available when creating a test membership map.
 EXTERNAL_SUITE_SELECTORS = (DEFAULT_BENCHMARK_TEST_LIST, DEFAULT_UNIT_TEST_LIST,
-                            DEFAULT_INTEGRATION_TEST_LIST, DEFAULT_DBTEST_EXECUTABLE)
+                            DEFAULT_INTEGRATION_TEST_LIST, DEFAULT_DBTEST_EXECUTABLE,
+                            DEFAULT_MONGOEBENCH_EXECUTABLE)

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -136,12 +138,12 @@ TEST(WiredTigerRecordStoreTest, Isolation1) {
         rs->dataFor(t1.get(), id1);
         rs->dataFor(t2.get(), id1);
 
-        ASSERT_OK(rs->updateRecord(t1.get(), id1, "b", 2, NULL));
-        ASSERT_OK(rs->updateRecord(t1.get(), id2, "B", 2, NULL));
+        ASSERT_OK(rs->updateRecord(t1.get(), id1, "b", 2));
+        ASSERT_OK(rs->updateRecord(t1.get(), id2, "B", 2));
 
         try {
             // this should fail
-            rs->updateRecord(t2.get(), id1, "c", 2, NULL).transitional_ignore();
+            rs->updateRecord(t2.get(), id1, "c", 2).transitional_ignore();
             ASSERT(0);
         } catch (WriteConflictException&) {
             w2.reset(NULL);
@@ -187,7 +189,7 @@ TEST(WiredTigerRecordStoreTest, Isolation2) {
 
         {
             WriteUnitOfWork w(t1.get());
-            ASSERT_OK(rs->updateRecord(t1.get(), id1, "b", 2, NULL));
+            ASSERT_OK(rs->updateRecord(t1.get(), id1, "b", 2));
             w.commit();
         }
 
@@ -196,7 +198,7 @@ TEST(WiredTigerRecordStoreTest, Isolation2) {
             ASSERT_EQUALS(string("a"), rs->dataFor(t2.get(), id1).data());
             try {
                 // this should fail as our version of id1 is too old
-                rs->updateRecord(t2.get(), id1, "c", 2, NULL).transitional_ignore();
+                rs->updateRecord(t2.get(), id1, "c", 2).transitional_ignore();
                 ASSERT(0);
             } catch (WriteConflictException&) {
             }
@@ -524,10 +526,10 @@ TEST(WiredTigerRecordStoreTest, OplogStones_UpdateRecord) {
         BSONObj changed2 = makeBSONObjWithSize(Timestamp(1, 2), 51);
 
         WriteUnitOfWork wuow(opCtx.get());
-        ASSERT_NOT_OK(rs->updateRecord(
-            opCtx.get(), RecordId(1, 1), changed1.objdata(), changed1.objsize(), nullptr));
-        ASSERT_NOT_OK(rs->updateRecord(
-            opCtx.get(), RecordId(1, 2), changed2.objdata(), changed2.objsize(), nullptr));
+        ASSERT_NOT_OK(
+            rs->updateRecord(opCtx.get(), RecordId(1, 1), changed1.objdata(), changed1.objsize()));
+        ASSERT_NOT_OK(
+            rs->updateRecord(opCtx.get(), RecordId(1, 2), changed2.objdata(), changed2.objsize()));
     }
 
     // Attempts to shrink the records should also fail.
@@ -538,10 +540,10 @@ TEST(WiredTigerRecordStoreTest, OplogStones_UpdateRecord) {
         BSONObj changed2 = makeBSONObjWithSize(Timestamp(1, 2), 49);
 
         WriteUnitOfWork wuow(opCtx.get());
-        ASSERT_NOT_OK(rs->updateRecord(
-            opCtx.get(), RecordId(1, 1), changed1.objdata(), changed1.objsize(), nullptr));
-        ASSERT_NOT_OK(rs->updateRecord(
-            opCtx.get(), RecordId(1, 2), changed2.objdata(), changed2.objsize(), nullptr));
+        ASSERT_NOT_OK(
+            rs->updateRecord(opCtx.get(), RecordId(1, 1), changed1.objdata(), changed1.objsize()));
+        ASSERT_NOT_OK(
+            rs->updateRecord(opCtx.get(), RecordId(1, 2), changed2.objdata(), changed2.objsize()));
     }
 
     // Changing the contents of the records without changing their size should succeed.
@@ -552,10 +554,10 @@ TEST(WiredTigerRecordStoreTest, OplogStones_UpdateRecord) {
         BSONObj changed2 = makeBSONObjWithSize(Timestamp(1, 2), 50, 'z');
 
         WriteUnitOfWork wuow(opCtx.get());
-        ASSERT_OK(rs->updateRecord(
-            opCtx.get(), RecordId(1, 1), changed1.objdata(), changed1.objsize(), nullptr));
-        ASSERT_OK(rs->updateRecord(
-            opCtx.get(), RecordId(1, 2), changed2.objdata(), changed2.objsize(), nullptr));
+        ASSERT_OK(
+            rs->updateRecord(opCtx.get(), RecordId(1, 1), changed1.objdata(), changed1.objsize()));
+        ASSERT_OK(
+            rs->updateRecord(opCtx.get(), RecordId(1, 2), changed2.objdata(), changed2.objsize()));
         wuow.commit();
 
         ASSERT_EQ(1U, oplogStones->numStones());

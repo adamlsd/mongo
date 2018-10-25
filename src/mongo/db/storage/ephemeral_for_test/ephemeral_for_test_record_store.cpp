@@ -1,26 +1,27 @@
 // ephemeral_for_test_record_store.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -474,23 +475,13 @@ Status EphemeralForTestRecordStore::insertRecordsWithDocWriter(OperationContext*
 Status EphemeralForTestRecordStore::updateRecord(OperationContext* opCtx,
                                                  const RecordId& loc,
                                                  const char* data,
-                                                 int len,
-                                                 UpdateNotifier* notifier) {
+                                                 int len) {
     stdx::lock_guard<stdx::recursive_mutex> lock(_data->recordsMutex);
     EphemeralForTestRecord* oldRecord = recordFor(loc);
     int oldLen = oldRecord->size;
 
     // Documents in capped collections cannot change size. We check that above the storage layer.
     invariant(!_isCapped || len == oldLen);
-
-    if (notifier) {
-        // The in-memory KV engine uses the invalidation framework (does not support
-        // doc-locking), and therefore must notify that it is updating a document.
-        Status callbackStatus = notifier->recordStoreGoingToUpdateInPlace(opCtx, loc);
-        if (!callbackStatus.isOK()) {
-            return callbackStatus;
-        }
-    }
 
     EphemeralForTestRecord newRecord(len);
     memcpy(newRecord.data.get(), data, len);
@@ -631,7 +622,7 @@ int64_t EphemeralForTestRecordStore::storageSize(OperationContext* opCtx,
 
 RecordId EphemeralForTestRecordStore::allocateLoc() {
     RecordId out = RecordId(_data->nextId++);
-    invariant(out < RecordId::max());
+    invariant(out.isNormal());
     return out;
 }
 

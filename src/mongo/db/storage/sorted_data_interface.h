@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -45,21 +47,16 @@ class SortedDataBuilderInterface;
 struct ValidateResults;
 
 /**
- * This interface is a work in progress.  Notes below:
- *
- * This interface began as the SortedDataInterface, a way to hide the fact that there were two
- * on-disk formats for the btree.  With the introduction of other storage engines, this
- * interface was generalized to provide access to sorted data.  Specifically:
- *
- * 1. Many other storage engines provide different Btree(-ish) implementations.  This interface
- * could allow those interfaces to avoid storing btree buckets in an already sorted structure.
- *
- * TODO: See if there is actually a performance gain.
- *
- * 2. The existing btree implementation is written to assume that if it modifies a record it is
- * modifying the underlying record.  This interface is an attempt to work around that.
- *
- * TODO: See if this actually works.
+ * This enum is returned by any functions that could potentially insert special format onto disk. It
+ * is a way to inform the callers to do something when special format exists on disk.
+ * TODO SERVER-36385: Remove this enum in 4.4.
+ */
+enum SpecialFormatInserted { NoSpecialFormatInserted = 0, LongTypeBitsInserted = 1 };
+
+/**
+ * This is the uniform interface for storing indexes and supporting point queries as well as range
+ * queries. The actual implementation is up to the storage engine. All the storage engines must
+ * support an index key size up to the maximum document size.
  */
 class SortedDataInterface {
 public:
@@ -95,11 +92,14 @@ public:
      *
      *         ErrorCodes::DuplicateKey if 'key' already exists in 'this' index
      *         at a RecordId other than 'loc' and duplicates were not allowed
+     *
+     *         SpecialFormatInserted::LongTypeBitsInserted if the key we've
+     *         inserted has long typebits.
      */
-    virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& loc,
-                          bool dupsAllowed) = 0;
+    virtual StatusWith<SpecialFormatInserted> insert(OperationContext* opCtx,
+                                                     const BSONObj& key,
+                                                     const RecordId& loc,
+                                                     bool dupsAllowed) = 0;
 
     /**
      * Remove the entry from the index with the specified key and RecordId.
@@ -382,8 +382,13 @@ public:
      *
      * 'key' must be > or >= the last key passed to this function (depends on _dupsAllowed).  If
      * this is violated an error Status (ErrorCodes::InternalError) will be returned.
+     *
+     * @return Status::OK() if addKey succeeded,
+     *
+     *         SpecialFormatInserted::LongTypeBitsInserted if we've inserted any
+     *         key with long typebits.
      */
-    virtual Status addKey(const BSONObj& key, const RecordId& loc) = 0;
+    virtual StatusWith<SpecialFormatInserted> addKey(const BSONObj& key, const RecordId& loc) = 0;
 
     /**
      * Do any necessary work to finish building the tree.
@@ -393,8 +398,17 @@ public:
      *
      * This is called outside of any WriteUnitOfWork to allow implementations to split this up
      * into multiple units.
+     *
+     * @return SpecialFormatInserted::LongTypeBitsInserted if we've inserted any
+     * key with long typebits.
+     *
+     * TODO SERVER-36385: Change the return type from SpecialFormatInserted back to "void" as that
+     * was a hack introduced in SERVER-36280 for detecting long TypeBits in an edge case in one of
+     * the unique index builder implementations.
      */
-    virtual void commit(bool mayInterrupt) {}
+    virtual SpecialFormatInserted commit(bool mayInterrupt) {
+        return SpecialFormatInserted::NoSpecialFormatInserted;
+    }
 };
 
 }  // namespace mongo

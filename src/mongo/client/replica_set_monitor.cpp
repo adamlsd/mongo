@@ -1,28 +1,31 @@
-/*    Copyright 2014 MongoDB Inc.
+
+/**
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
@@ -253,11 +256,11 @@ void ReplicaSetMonitor::_doScheduledRefresh(const CallbackHandle& currentHandle)
     _scheduleRefresh(_executor->now() + _state->refreshPeriod);
 }
 
-StatusWith<HostAndPort> ReplicaSetMonitor::getHostOrRefresh(const ReadPreferenceSetting& criteria,
-                                                            Milliseconds maxWait) {
+Future<HostAndPort> ReplicaSetMonitor::getHostOrRefresh(const ReadPreferenceSetting& criteria,
+                                                        Milliseconds maxWait) {
     if (_isRemovedFromManager.load()) {
-        return {ErrorCodes::ReplicaSetMonitorRemoved,
-                str::stream() << "ReplicaSetMonitor for set " << getName() << " is removed"};
+        return Status(ErrorCodes::ReplicaSetMonitorRemoved,
+                      str::stream() << "ReplicaSetMonitor for set " << getName() << " is removed");
     }
 
     {
@@ -268,41 +271,58 @@ StatusWith<HostAndPort> ReplicaSetMonitor::getHostOrRefresh(const ReadPreference
             return {std::move(out)};
     }
 
-    const auto startTimeMs = Date_t::now();
+    // TODO early return if maxWait <= 0
 
-    while (true) {
-        // We might not have found any matching hosts due to the scan, which just completed may have
-        // seen stale data from before we joined. Therefore we should participate in a new scan to
-        // make sure all hosts are contacted at least once (possibly by other threads) before this
-        // function gives up.
-        Refresher refresher(startOrContinueRefresh());
+    const auto deadline = Date_t::now() + maxWait;
+    auto pf = makePromiseFuture<HostAndPort>();
 
-        HostAndPort out = refresher.refreshUntilMatches(criteria);
-        if (!out.empty())
-            return {std::move(out)};
+    // TODO SERVER-35688 use a threadpool or async networking here.
+    stdx::thread([
+        deadline,
+        criteria,
+        promise = std::move(pf.promise),
+        self = shared_from_this()
+    ]() mutable {
+        promise.setWith([&]() -> StatusWith<HostAndPort> {
+            while (true) {
+                // We might not have found any matching hosts due to the scan, which just
+                // completed may have seen stale data from before we joined. Therefore we should
+                // participate in a new scan to make sure all hosts are contacted at least once
+                // (possibly by other threads) before this function gives up.
+                Refresher refresher(self->startOrContinueRefresh());
 
-        if (globalInShutdownDeprecated()) {
-            return {ErrorCodes::ShutdownInProgress, str::stream() << "Server is shutting down"};
-        }
+                HostAndPort out = refresher.refreshUntilMatches(criteria);
+                if (!out.empty())
+                    return {std::move(out)};
 
-        const Milliseconds remaining = maxWait - (Date_t::now() - startTimeMs);
+                if (globalInShutdownDeprecated()) {
+                    return {ErrorCodes::ShutdownInProgress,
+                            str::stream() << "Server is shutting down"};
+                }
 
-        if (remaining < kFindHostMaxBackOffTime || areRefreshRetriesDisabledForTest.load()) {
-            break;
-        }
+                const Milliseconds remaining = deadline - Date_t::now();
 
-        // Back-off so we don't spam the replica set hosts too much
-        sleepFor(kFindHostMaxBackOffTime);
-    }
+                if (remaining < kFindHostMaxBackOffTime ||
+                    areRefreshRetriesDisabledForTest.load()) {
+                    break;
+                }
 
-    return {ErrorCodes::FailedToSatisfyReadPreference,
-            str::stream() << "Could not find host matching read preference " << criteria.toString()
-                          << " for set "
-                          << getName()};
+                // Back-off so we don't spam the replica set hosts too much
+                sleepFor(kFindHostMaxBackOffTime);
+            }
+            return Status(ErrorCodes::FailedToSatisfyReadPreference,
+                          str::stream() << "Could not find host matching read preference "
+                                        << criteria.toString()
+                                        << " for set "
+                                        << self->getName());
+        });
+    }).detach();
+
+    return std::move(pf.future);
 }
 
 HostAndPort ReplicaSetMonitor::getMasterOrUassert() {
-    return uassertStatusOK(getHostOrRefresh(kPrimaryOnlyReadPreference));
+    return getHostOrRefresh(kPrimaryOnlyReadPreference).get();
 }
 
 Refresher ReplicaSetMonitor::startOrContinueRefresh() {

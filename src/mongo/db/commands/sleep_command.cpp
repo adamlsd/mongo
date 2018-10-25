@@ -1,30 +1,32 @@
+
 /**
-*    Copyright (C) 2018 MongoDB Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
 
@@ -68,14 +70,24 @@ public:
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) const {}
 
-    void _sleepInReadLock(mongo::OperationContext* opCtx, long long millis) {
-        Lock::GlobalRead lk(opCtx);
-        opCtx->sleepFor(Milliseconds(millis));
-    }
-
-    void _sleepInWriteLock(mongo::OperationContext* opCtx, long long millis) {
-        Lock::GlobalWrite lk(opCtx);
-        opCtx->sleepFor(Milliseconds(millis));
+    void _sleepInLock(mongo::OperationContext* opCtx,
+                      long long millis,
+                      LockMode mode,
+                      const StringData& ns) {
+        if (ns.empty()) {
+            Lock::GlobalLock lk(opCtx, mode, opCtx->getDeadline(), Lock::InterruptBehavior::kThrow);
+            opCtx->sleepFor(Milliseconds(millis));
+        } else if (nsIsDbOnly(ns)) {
+            uassert(50961, "lockTarget is not a valid namespace", NamespaceString::validDBName(ns));
+            Lock::DBLock lk(opCtx, ns, mode, opCtx->getDeadline());
+            opCtx->sleepFor(Milliseconds(millis));
+        } else {
+            uassert(50962,
+                    "lockTarget is not a valid namespace",
+                    NamespaceString::validCollectionComponent(ns));
+            Lock::CollectionLock lk(opCtx->lockState(), ns, mode, opCtx->getDeadline());
+            opCtx->sleepFor(Milliseconds(millis));
+        }
     }
 
     CmdSleep() : BasicCommand("sleep") {}
@@ -99,12 +111,17 @@ public:
             millis = 10 * 1000;
         }
 
+        StringData lockTarget;
+        if (cmdObj["lockTarget"]) {
+            lockTarget = cmdObj["lockTarget"].checkAndGetStringData();
+        }
+
         if (!cmdObj["lock"]) {
             // Legacy implementation
             if (cmdObj.getBoolField("w")) {
-                _sleepInWriteLock(opCtx, millis);
+                _sleepInLock(opCtx, millis, MODE_X, lockTarget);
             } else {
-                _sleepInReadLock(opCtx, millis);
+                _sleepInLock(opCtx, millis, MODE_S, lockTarget);
             }
         } else {
             uassert(34346, "Only one of 'w' and 'lock' may be set.", !cmdObj["w"]);
@@ -113,10 +130,10 @@ public:
             if (lock == "none") {
                 opCtx->sleepFor(Milliseconds(millis));
             } else if (lock == "w") {
-                _sleepInWriteLock(opCtx, millis);
+                _sleepInLock(opCtx, millis, MODE_X, lockTarget);
             } else {
                 uassert(34347, "'lock' must be one of 'r', 'w', 'none'.", lock == "r");
-                _sleepInReadLock(opCtx, millis);
+                _sleepInLock(opCtx, millis, MODE_S, lockTarget);
             }
         }
 

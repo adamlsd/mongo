@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
@@ -43,19 +45,24 @@
 #include "mongo/db/s/sharding_statistics.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/grid.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
 
-Status onShardVersionMismatch(OperationContext* opCtx,
-                              const NamespaceString& nss,
-                              ChunkVersion shardVersionReceived,
-                              bool forceRefreshFromThisThread) noexcept {
+MONGO_FAIL_POINT_DEFINE(skipDatabaseVersionMetadataRefresh);
+MONGO_FAIL_POINT_DEFINE(skipShardFilteringMetadataRefresh);
+
+namespace {
+
+void onShardVersionMismatch(OperationContext* opCtx,
+                            const NamespaceString& nss,
+                            ChunkVersion shardVersionReceived,
+                            bool forceRefreshFromThisThread) {
     invariant(!opCtx->lockState()->isLocked());
     invariant(!opCtx->getClient()->isInDirectClient());
 
-    auto const shardingState = ShardingState::get(opCtx);
-    invariant(shardingState->canAcceptShardedCommands());
+    invariant(ShardingState::get(opCtx)->canAcceptShardedCommands());
 
     LOG(2) << "Metadata refresh requested for " << nss.ns() << " at shard version "
            << shardVersionReceived;
@@ -63,14 +70,9 @@ Status onShardVersionMismatch(OperationContext* opCtx,
     ShardingStatistics::get(opCtx).countStaleConfigErrors.addAndFetch(1);
 
     // Ensure any ongoing migrations have completed before trying to do the refresh. This wait is
-    // just an optimization so that MongoS does not exhaust its maximum number of StaleConfig retry
-    // attempts while the migration is being committed.
-    try {
-        auto& oss = OperationShardingState::get(opCtx);
-        oss.waitForMigrationCriticalSectionSignal(opCtx);
-    } catch (const DBException& ex) {
-        return ex.toStatus();
-    }
+    // just an optimization so that mongos does not exhaust its maximum number of StaleShardVersion
+    // retry attempts while the migration is being committed.
+    OperationShardingState::get(opCtx).waitForMigrationCriticalSectionSignal(opCtx);
 
     const auto currentShardVersion = [&] {
         AutoGetCollection autoColl(opCtx, nss, MODE_IS);
@@ -86,11 +88,50 @@ Status onShardVersionMismatch(OperationContext* opCtx,
         currentShardVersion.majorVersion() >= shardVersionReceived.majorVersion()) {
         // Don't need to remotely reload if we're in the same epoch and the requested version is
         // smaller than the one we know about. This means that the remote side is behind.
-        return Status::OK();
     }
 
+    if (MONGO_FAIL_POINT(skipShardFilteringMetadataRefresh)) {
+        return;
+    }
+
+    forceShardFilteringMetadataRefresh(opCtx, nss, forceRefreshFromThisThread);
+}
+
+void onDbVersionMismatch(OperationContext* opCtx,
+                         const StringData dbName,
+                         const DatabaseVersion& clientDbVersion,
+                         const boost::optional<DatabaseVersion>& serverDbVersion) {
+    invariant(!opCtx->lockState()->isLocked());
+    invariant(!opCtx->getClient()->isInDirectClient());
+
+    invariant(ShardingState::get(opCtx)->canAcceptShardedCommands());
+
+    if (serverDbVersion && serverDbVersion->getUuid() == clientDbVersion.getUuid() &&
+        serverDbVersion->getLastMod() >= clientDbVersion.getLastMod()) {
+        // The client was stale; do not trigger server-side refresh.
+        return;
+    }
+
+    // Ensure any ongoing movePrimary's have completed before trying to do the refresh. This wait is
+    // just an optimization so that mongos does not exhaust its maximum number of
+    // StaleDatabaseVersion retry attempts while the movePrimary is being committed.
+    OperationShardingState::get(opCtx).waitForMovePrimaryCriticalSectionSignal(opCtx);
+
+    if (MONGO_FAIL_POINT(skipDatabaseVersionMetadataRefresh)) {
+        return;
+    }
+
+    forceDatabaseRefresh(opCtx, dbName);
+}
+
+}  // namespace
+
+Status onShardVersionMismatchNoExcept(OperationContext* opCtx,
+                                      const NamespaceString& nss,
+                                      ChunkVersion shardVersionReceived,
+                                      bool forceRefreshFromThisThread) noexcept {
     try {
-        forceShardFilteringMetadataRefresh(opCtx, nss, forceRefreshFromThisThread);
+        onShardVersionMismatch(opCtx, nss, shardVersionReceived, forceRefreshFromThisThread);
         return Status::OK();
     } catch (const DBException& ex) {
         log() << "Failed to refresh metadata for collection" << nss << causedBy(redact(ex));
@@ -119,7 +160,7 @@ ChunkVersion forceShardFilteringMetadataRefresh(OperationContext* opCtx,
         AutoGetCollection autoColl(opCtx, nss, MODE_IX, MODE_X);
 
         auto* const css = CollectionShardingRuntime::get(opCtx, nss);
-        css->refreshMetadata(opCtx, nullptr);
+        css->setFilteringMetadata(opCtx, CollectionMetadata());
 
         return ChunkVersion::UNSHARDED();
     }
@@ -153,45 +194,23 @@ ChunkVersion forceShardFilteringMetadataRefresh(OperationContext* opCtx,
         return metadata->getShardVersion();
     }
 
-    std::unique_ptr<CollectionMetadata> newCollectionMetadata =
-        stdx::make_unique<CollectionMetadata>(cm, shardingState->shardId());
-
-    css->refreshMetadata(opCtx, std::move(newCollectionMetadata));
+    css->setFilteringMetadata(opCtx, CollectionMetadata(cm, shardingState->shardId()));
 
     return css->getMetadata(opCtx)->getShardVersion();
 }
 
-void onDbVersionMismatch(OperationContext* opCtx,
-                         const StringData dbName,
-                         const DatabaseVersion& clientDbVersion,
-                         const boost::optional<DatabaseVersion>& serverDbVersion) noexcept {
-    invariant(!opCtx->lockState()->isLocked());
-    invariant(!opCtx->getClient()->isInDirectClient());
-
-    auto const shardingState = ShardingState::get(opCtx);
-    invariant(shardingState->canAcceptShardedCommands());
-
-    if (serverDbVersion && serverDbVersion->getUuid() == clientDbVersion.getUuid() &&
-        serverDbVersion->getLastMod() >= clientDbVersion.getLastMod()) {
-        // The client was stale; do not trigger server-side refresh.
-        return;
-    }
-
+Status onDbVersionMismatchNoExcept(
+    OperationContext* opCtx,
+    const StringData dbName,
+    const DatabaseVersion& clientDbVersion,
+    const boost::optional<DatabaseVersion>& serverDbVersion) noexcept {
     try {
-        // TODO SERVER-33773 if the 'waitForMovePrimaryCriticalSection' flag is set on the
-        // OperationShardingState, wait for the movePrimary critical section to complete before
-        // attempting a refresh.
-    } catch (const DBException& ex) {
-        log() << "Failed to wait for movePrimary critical section to complete "
-              << causedBy(redact(ex));
-        return;
-    }
-
-    try {
-        forceDatabaseRefresh(opCtx, dbName);
+        onDbVersionMismatch(opCtx, dbName, clientDbVersion, serverDbVersion);
+        return Status::OK();
     } catch (const DBException& ex) {
         log() << "Failed to refresh databaseVersion for database " << dbName
               << causedBy(redact(ex));
+        return ex.toStatus();
     }
 }
 

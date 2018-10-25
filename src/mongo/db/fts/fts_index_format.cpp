@@ -1,32 +1,34 @@
 // fts_index_format.cpp
 
+
 /**
-*    Copyright (C) 2012 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #include "mongo/platform/basic.h"
 
@@ -36,6 +38,7 @@
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/fts/fts_index_format.h"
 #include "mongo/db/fts/fts_spec.h"
+#include "mongo/db/server_options.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/md5.hpp"
 #include "mongo/util/mongoutils/str.h"
@@ -160,12 +163,17 @@ void FTSIndexFormat::getKeys(const FTSSpec& spec, const BSONObj& obj, BSONObjSet
     // create index keys from raw scores
     // only 1 per string
 
-    uassert(16732,
-            mongoutils::str::stream() << "too many unique keys for a single document to"
-                                      << " have a text index, max is "
-                                      << term_freqs.size()
-                                      << obj["_id"],
-            term_freqs.size() <= 400000);
+    // TODO SERVER-36440: Completely remove this limit in 4.3.
+    if (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+        serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo40) {
+        uassert(16732,
+                mongoutils::str::stream() << "too many unique keys for a single document to"
+                                          << " have a text index, max is "
+                                          << term_freqs.size()
+                                          << obj["_id"],
+                term_freqs.size() <= 400000);
+    }
 
     long long keyBSONSize = 0;
     const int MaxKeyBSONSizeMB = 4;
@@ -194,13 +202,18 @@ void FTSIndexFormat::getKeys(const FTSSpec& spec, const BSONObj& obj, BSONObjSet
         keys->insert(res);
         keyBSONSize += res.objsize();
 
-        uassert(16733,
-                mongoutils::str::stream()
-                    << "trying to index text where term list is too big, max is "
-                    << MaxKeyBSONSizeMB
-                    << "mb "
-                    << obj["_id"],
-                keyBSONSize <= (MaxKeyBSONSizeMB * 1024 * 1024));
+        // TODO SERVER-36440: Completely remove this limit in 4.3.
+        if (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+            serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo40) {
+            uassert(16733,
+                    mongoutils::str::stream()
+                        << "trying to index text where term list is too big, max is "
+                        << MaxKeyBSONSizeMB
+                        << "mb "
+                        << obj["_id"],
+                    keyBSONSize <= (MaxKeyBSONSizeMB * 1024 * 1024));
+        }
     }
 }
 

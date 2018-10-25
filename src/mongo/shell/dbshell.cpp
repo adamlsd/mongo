@@ -737,7 +737,6 @@ bool mechanismRequiresPassword() {
     return std::none_of(
         begin(passwordlessMechanisms), end(passwordlessMechanisms), isInShellParameters);
 }
-}  // namespace
 
 int _main(int argc, char* argv[], char** envp) {
     registerShutdownTask([] {
@@ -780,29 +779,42 @@ int _main(int argc, char* argv[], char** envp) {
         ->attachAppender(std::make_unique<logger::ConsoleAppender<logger::MessageEventEphemeral>>(
             std::make_unique<logger::MessageEventUnadornedEncoder>()));
 
-    std::string& cmdlineURI = shellGlobalParams.url;
     MongoURI parsedURI;
-    if (!cmdlineURI.empty()) {
-        parsedURI = uassertStatusOK(MongoURI::parse(stdx::as_const(cmdlineURI)));
+    if (!shellGlobalParams.url.empty()) {
+        parsedURI = uassertStatusOK(MongoURI::parse(stdx::as_const(shellGlobalParams.url)));
     }
 
     // We create an altered URI from the one passed so that we can pass that to replica set
     // monitors.  This is to avoid making potentially breaking changes to the replica set monitor
     // code.
-    std::string processedURI = cmdlineURI;
-    auto pos = cmdlineURI.find('@');
-    auto protocolLength = processedURI.find("://");
-    if (pos != std::string::npos && protocolLength != std::string::npos) {
-        processedURI =
-            processedURI.substr(0, protocolLength) + "://" + processedURI.substr(pos + 1);
+    const auto &cmdlineURI = shellGlobalParams.url;
+
+    if (cmdlineURI.size()) {
+        if (mechanismRequiresPassword() && parsedURI.getUser().size()) {
+            shellGlobalParams.usingPassword = true;
+        }
+
+        if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {
+            shellGlobalParams.password =
+                parsedURI.getPassword().size() ? parsedURI.getPassword() : mongo::askPassword();
+        }
+
+        auto authParam = parsedURI.getOptions().find(kAuthParam);
+        if (authParam != end(parsedURI.getOptions()) &&
+            shellGlobalParams.authenticationDatabase.empty()) {
+            shellGlobalParams.authenticationDatabase = authParam->second;
+        }
+    } else if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {
+        shellGlobalParams.password = mongo::askPassword();
     }
+
 
     if (!shellGlobalParams.nodb) {  // connect to db
         stringstream ss;
         if (mongo::serverGlobalParams.quiet.load())
             ss << "__quiet = true;";
         ss << "db = connect( \""
-           << getURIFromArgs(processedURI, shellGlobalParams.dbhost, shellGlobalParams.port)
+           << getURIFromArgs(cmdlineURI, shellGlobalParams.dbhost, shellGlobalParams.port)
            << "\");";
 
         if (shellGlobalParams.shouldRetryWrites || parsedURI.getRetryWrites()) {
@@ -846,11 +858,6 @@ int _main(int argc, char* argv[], char** envp) {
             shellGlobalParams.password = mongo::askPassword();
         }
     }
-
-    // We now substitute the altered URI to permit the replica set monitors to see it without
-    // usernames.  This is to avoid making potentially breaking changes to the replica set monitor
-    // code.
-    cmdlineURI = processedURI;
 
 
     // Construct the authentication-related code to execute on shell startup.
@@ -1183,6 +1190,7 @@ int _main(int argc, char* argv[], char** envp) {
 
     return (lastLineSuccessful ? 0 : 1);
 }
+}  // namespace
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -244,7 +243,7 @@ public:
         return *this = clonable_ptr{copy};
     }
 
-    // Maintenance note: The two enable_if overloads of `clonable_ptr( std::nullptr_t )` are
+    // Maintenance note: The two enable_if overloads of `clonable_ptr(std::nullptr_t)` are
     // necessary, due to the fact that `std::nullptr_t` is capable of implicit conversion to a
     // built-in pointer type.  If the stateful form being deleted causes the `nullptr` to convert,
     // this could cause binding to another ctor which may be undesired.
@@ -317,11 +316,11 @@ public:
      * `factory`: The clone factory to use in future copies.
      * NOTE: It is not recommended to use this constructor, as the following is not exception safe
      * code:
-     * ~~~
+     * ```
      * std::function<T* ()> cloner= [](const T& p){ return p; };
      * auto getCloner= [=]{ return cloner; };
      * clonable_ptr<T, std::function<T* ()>> bad{new T, getCloner()}; // BAD IDEA!!!
-     * ~~~
+     * ```
      * Even if the above could be made exception safe, there are other more complicated use cases
      * which would not be exception safe.  (The above is not exception safe, because the `new T`
      * expression can be evaluated before the `getCloner()` expression is evaluated.  `getCloner()`
@@ -335,9 +334,9 @@ public:
      * a cloning function -- regardless of whether the `CloneFactory` is stateful or not.
      * NOTE: We have disabled this constructor, as the following is not exception safe
      * code:
-     * ~~~
+     * ```
      * clonable_ptr<T, std::function<T* ()>> bad{new T, [](const T& p){ return p; }}; // BAD IDEA!!!
-     * ~~~
+     * ```
      * Even if the above could be made exception safe, there are other more complicated use cases
      * which would not be exception safe.  (The above is not exception safe, because the `new T`
      * expression can be evaluated before the lambda expression is evaluated and converted to a

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -52,10 +51,10 @@ namespace dns {
  * structure does not need access to those fields at this time.
  */
 struct SRVHostEntry {
-    std::string host;
+    HostName host;
     std::uint16_t port;
 
-    SRVHostEntry(std::string initialHost, const std::uint16_t initialPort)
+    SRVHostEntry(HostName initialHost, const std::uint16_t initialPort)
         : host(std::move(initialHost)), port(initialPort) {}
 
     inline auto makeRelopsLens() const {
@@ -110,6 +109,6 @@ std::vector<std::string> getTXTRecords(const std::string& service);
  * other reason.
  * NOTE: This function mostly exists to provide an easy test of the OS DNS APIs in our test driver.
  */
-std::vector<std::string> lookupARecords(const std::string& service);
+std::vector<HostName> lookupARecords(const std::string& service);
 }  // namespace dns
 }  // namespace mongo

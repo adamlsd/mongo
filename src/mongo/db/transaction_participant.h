@@ -98,13 +98,6 @@ public:
         }
 
         /**
-         * Same as above but non-const.
-         */
-        Locker* locker() {
-            return _locker.get();
-        }
-
-        /**
          * Releases stashed transaction state onto 'opCtx'. Must only be called once.
          * Ephemerally holds the Client lock associated with opCtx.
          */
@@ -349,16 +342,6 @@ public:
      * abortActiveTransaction.
      */
     void abortActiveUnpreparedOrStashPreparedTransaction(OperationContext* opCtx);
-
-    /**
-     * If the transaction is not prepared, aborts the transaction and releases its resources.
-     * If the transaction is prepared, yields the transaction's locks and adds the Locker and
-     * LockSnapshot of the yielded locks to the end of the 'yieldedLocks' output vector.
-     *
-     * Not called with session checked out.
-     */
-    void abortOrYieldArbitraryTransaction(
-        std::vector<std::pair<Locker*, Locker::LockSnapshot>>* yieldedLocks);
 
     void addMultikeyPathInfo(MultikeyPathInfo info) {
         _multikeyPathInfo.push_back(std::move(info));
@@ -817,8 +800,11 @@ private:
     // Tracks and updates transaction metrics upon the appropriate transaction event.
     TransactionMetricsObserver _transactionMetricsObserver;
 
-    // Tracks the Timestamp of the first oplog entry written by this TransactionParticipant.
-    boost::optional<Timestamp> _oldestOplogEntryTS;
+    // Tracks the OpTime of the first oplog entry written by this TransactionParticipant.
+    boost::optional<repl::OpTime> _oldestOplogEntryOpTime;
+
+    // Tracks the OpTime of the abort/commit oplog entry associated with this transaction.
+    boost::optional<repl::OpTime> _finishOpTime;
 };
 
 }  // namespace mongo

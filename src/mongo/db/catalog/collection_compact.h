@@ -28,24 +28,20 @@
  *    it in the license file.
  */
 
-#include "mongo/db/exec/plan_stats.h"
-#include "mongo/db/jsobj.h"
+#pragma once
+
+#include "mongo/base/status_with.h"
+#include "mongo/db/catalog/collection.h"
+#include "mongo/db/storage/record_store.h"
 
 namespace mongo {
 
-void CommonStats::writeExplainTo(BSONObjBuilder* bob) const {
-    if (NULL == bob) {
-        return;
-    }
-    // potential overflow because original counters are unsigned 64-bit values
-    bob->append("works", static_cast<long long>(works));
-    bob->append("advanced", static_cast<long long>(advanced));
-}
-
-// forward to CommonStats for now
-// TODO: fill in specific stats
-void PlanStageStats::writeExplainTo(BSONObjBuilder* bob) const {
-    common.writeExplainTo(bob);
-}
+/**
+  * Compacts collection.
+  * See record_store.h for CompactStats and CompactOptions definitions.
+  */
+StatusWith<CompactStats> compactCollection(OperationContext* opCtx,
+                                           Collection* collection,
+                                           const CompactOptions* options);
 
 }  // namespace mongo

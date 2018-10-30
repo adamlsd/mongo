@@ -39,6 +39,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/s/async_requests_sender.h"
+#include "mongo/s/client/shard.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/util/string_map.h"
 
@@ -190,27 +191,28 @@ public:
     void onViewResolutionError();
 
     /**
-     * Computes and sets the atClusterTime for the current transaction. Does nothing if the given
-     * query is not the first statement that this transaction runs (i.e. if the atClusterTime
-     * has already been set).
+     * Computes and sets the atClusterTime for the current transaction based on the given query
+     * parameters. Does nothing if the transaction does not have snapshot read concern or an
+     * atClusterTime has already been selected and cannot be changed.
      */
-    void computeAtClusterTime(OperationContext* opCtx,
-                              bool mustRunOnAll,
-                              const std::set<ShardId>& shardIds,
-                              const NamespaceString& nss,
-                              const BSONObj query,
-                              const BSONObj collation);
+    void computeAndSetAtClusterTime(OperationContext* opCtx,
+                                    bool mustRunOnAll,
+                                    const std::set<ShardId>& shardIds,
+                                    const NamespaceString& nss,
+                                    const BSONObj query,
+                                    const BSONObj collation);
 
     /**
-     * Computes and sets the atClusterTime for the current transaction if it targets the
-     * given shard during its first statement. Does nothing if the atClusterTime has already
-     * been set.
+     * Computes and sets the atClusterTime for the current transaction based on the targeted shard.
+     * Does nothing if the transaction does not have snapshot read concern or an atClusterTime has
+     * already been selected and cannot be changed.
      */
-    void computeAtClusterTimeForOneShard(OperationContext* opCtx, const ShardId& shardId);
+    void computeAndSetAtClusterTimeForUnsharded(OperationContext* opCtx, const ShardId& shardId);
 
     /**
      * Sets the atClusterTime for the current transaction to the latest time in the router's logical
-     * clock.
+     * clock. Does nothing if the transaction does not have snapshot read concern or an
+     * atClusterTime has already been selected and cannot be changed.
      */
     void setDefaultAtClusterTime(OperationContext* opCtx);
 
@@ -230,7 +232,7 @@ public:
      * Commits the transaction. For transactions with multiple participants, this will initiate
      * the two phase commit procedure.
      */
-    void commitTransaction(OperationContext* opCtx);
+    Shard::CommandResponse commitTransaction(OperationContext* opCtx);
 
     /**
      * Sends abort to all participants and returns the responses from all shards.
@@ -258,12 +260,19 @@ private:
     /**
      * Run basic commit for transactions that touched a single shard.
      */
-    void _commitSingleShardTransaction(OperationContext* opCtx);
+    Shard::CommandResponse _commitSingleShardTransaction(OperationContext* opCtx);
 
     /**
      * Run two phase commit for transactions that touched multiple shards.
      */
-    void _commitMultiShardTransaction(OperationContext* opCtx);
+    Shard::CommandResponse _commitMultiShardTransaction(OperationContext* opCtx);
+
+    /**
+     * Sets the given logical time as the atClusterTime for the transaction to be the greater of the
+     * given time and the user's afterClusterTime, if one was provided.
+     */
+    void _setAtClusterTime(const boost::optional<LogicalTime>& afterClusterTime,
+                           LogicalTime candidateTime);
 
     /**
      * Returns true if the current transaction can retry on a stale version error from a contacted

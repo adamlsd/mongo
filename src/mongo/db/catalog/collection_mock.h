@@ -59,12 +59,17 @@ private:
         std::abort();
     }
 
-    const NamespaceString _ns;
+    NamespaceString _ns;
 
 public:
     const NamespaceString& ns() const {
         return _ns;
     }
+
+    void setNs(NamespaceString nss) final {
+        _ns = std::move(nss);
+    }
+
     bool ok() const {
         std::abort();
     }
@@ -148,9 +153,9 @@ public:
         std::abort();
     }
 
-    Status insertDocument(OperationContext* opCtx,
-                          const BSONObj& doc,
-                          const std::vector<MultiIndexBlock*>& indexBlocks) {
+    Status insertDocumentForBulkLoader(OperationContext* opCtx,
+                                       const BSONObj& doc,
+                                       const OnRecordInsertedFn& onRecordInserted) {
         std::abort();
     }
 
@@ -177,9 +182,6 @@ public:
         std::abort();
     }
 
-    StatusWith<CompactStats> compact(OperationContext* opCtx, const CompactOptions* options) {
-        std::abort();
-    }
     Status truncate(OperationContext* opCtx) {
         std::abort();
     }
@@ -278,7 +280,10 @@ public:
         std::abort();
     }
 
-    std::unique_ptr<MultiIndexBlock> createMultiIndexBlock(OperationContext* opCtx) {
+    std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> makePlanExecutor(
+        OperationContext* opCtx,
+        PlanExecutor::YieldPolicy yieldPolicy,
+        ScanDirection scanDirection) {
         std::abort();
     }
 

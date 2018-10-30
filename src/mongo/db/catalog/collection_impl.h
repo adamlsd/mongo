@@ -80,6 +80,8 @@ public:
         return _ns;
     }
 
+    void setNs(NamespaceString nss) final;
+
     OptionalCollectionUUID uuid() const {
         return _uuid;
     }
@@ -101,7 +103,7 @@ public:
     }
 
     CursorManager* getCursorManager() const final {
-        return &_cursorManager;
+        return _cursorManager.get();
     }
 
     bool requiresIdIndex() const final;
@@ -180,13 +182,15 @@ public:
                                    size_t nDocs) final;
 
     /**
-     * Inserts a document into the record store and adds it to the MultiIndexBlocks passed in.
+     * Inserts a document into the record store for a bulk loader that manages the index building
+     * outside this Collection. The bulk loader is notified with the RecordId of the document
+     * inserted into the RecordStore.
      *
      * NOTE: It is up to caller to commit the indexes.
      */
-    Status insertDocument(OperationContext* opCtx,
-                          const BSONObj& doc,
-                          const std::vector<MultiIndexBlock*>& indexBlocks) final;
+    Status insertDocumentForBulkLoader(OperationContext* opCtx,
+                                       const BSONObj& doc,
+                                       const OnRecordInsertedFn& onRecordInserted) final;
 
     /**
      * Updates the document @ oldLocation with newDoc.
@@ -222,8 +226,6 @@ public:
                                                      CollectionUpdateArgs* args) final;
 
     // -----------
-
-    StatusWith<CompactStats> compact(OperationContext* opCtx, const CompactOptions* options) final;
 
     /**
      * removes all documents as fast as possible
@@ -358,7 +360,10 @@ public:
      */
     const CollatorInterface* getDefaultCollator() const final;
 
-    std::unique_ptr<MultiIndexBlock> createMultiIndexBlock(OperationContext* opCtx) final;
+    std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> makePlanExecutor(
+        OperationContext* opCtx,
+        PlanExecutor::YieldPolicy yieldPolicy,
+        ScanDirection scanDirection) final;
 
 private:
     inline DatabaseCatalogEntry* dbce() const final {
@@ -390,7 +395,7 @@ private:
 
     int _magic;
 
-    const NamespaceString _ns;
+    NamespaceString _ns;
     OptionalCollectionUUID _uuid;
     CollectionCatalogEntry* const _details;
     RecordStore* const _recordStore;
@@ -415,10 +420,7 @@ private:
     ValidationAction _validationAction;
     ValidationLevel _validationLevel;
 
-    // this is mutable because read only users of the Collection class
-    // use it keep state.  This seems valid as const correctness of Collection
-    // should be about the data.
-    mutable CursorManager _cursorManager;
+    std::unique_ptr<CursorManager> _cursorManager;
 
     // Notifier object for awaitData. Threads polling a capped collection for new data can wait
     // on this object until notified of the arrival of new data.
@@ -430,7 +432,5 @@ private:
     boost::optional<Timestamp> _minVisibleSnapshot;
 
     Collection* _this;
-
-    friend class NamespaceDetails;
 };
 }  // namespace mongo

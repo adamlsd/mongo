@@ -37,6 +37,7 @@
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/db/exec/collection_scan_common.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 
@@ -47,14 +48,28 @@ class Collection;
 struct CompactOptions;
 struct CompactStats;
 class MAdvise;
-class NamespaceDetails;
 class OperationContext;
 
-class RecordStoreCompactAdaptor;
 class RecordStore;
 
 struct ValidateResults;
 class ValidateAdaptor;
+
+struct CompactOptions {
+    // padding
+    enum PaddingMode { PRESERVE, NONE, MANUAL } paddingMode = NONE;
+
+    // only used if _paddingMode == MANUAL
+    double paddingFactor = 1;  // what to multiple document size by
+    int paddingBytes = 0;      // what to add to ducment size after multiplication
+
+    // other
+    bool validateDocuments = true;
+
+    std::string toString() const;
+};
+
+struct CompactStats {};
 
 /**
  * Allows inserting a Record "in-place" without creating a copy ahead of time.
@@ -248,6 +263,10 @@ public:
 
     virtual const std::string& ns() const {
         return _ns;
+    }
+
+    void setNs(NamespaceString ns) {
+        _ns = ns.ns();
     }
 
     virtual const std::string& getIdent() const = 0;
@@ -476,12 +495,8 @@ public:
      * Attempt to reduce the storage space used by this RecordStore.
      *
      * Only called if compactSupported() returns true.
-     * No RecordStoreCompactAdaptor will be passed if compactsInPlace() returns true.
      */
-    virtual Status compact(OperationContext* opCtx,
-                           RecordStoreCompactAdaptor* adaptor,
-                           const CompactOptions* options,
-                           CompactStats* stats) {
+    virtual Status compact(OperationContext* opCtx) {
         MONGO_UNREACHABLE;
     }
 
@@ -588,14 +603,6 @@ public:
 
 protected:
     std::string _ns;
-};
-
-class RecordStoreCompactAdaptor {
-public:
-    virtual ~RecordStoreCompactAdaptor() {}
-    virtual bool isDataValid(const RecordData& recData) = 0;
-    virtual size_t dataSize(const RecordData& recData) = 0;
-    virtual void inserted(const RecordData& recData, const RecordId& newLocation) = 0;
 };
 
 struct ValidateResults {

@@ -67,7 +67,6 @@ struct BsonRecord {
  *
  * Index building functionality is supported by the IndexBuildBlockInterface interface. However, it
  * is recommended to use the higher level MultiIndexBlock interface.
- * See Collection::createMultiIndexBlock().
  *
  * Due to the resource-intensive nature of the index building process, this interface also provides
  * information on which indexes are available for queries through the following functions:
@@ -395,6 +394,8 @@ public:
     virtual void prepareInsertDeleteOptions(OperationContext* opCtx,
                                             const IndexDescriptor* desc,
                                             InsertDeleteOptions* options) const = 0;
+
+    virtual void setNs(NamespaceString ns) = 0;
 };
 
 }  // namespace mongo

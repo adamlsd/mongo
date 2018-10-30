@@ -294,7 +294,6 @@ public:
         std::string _indexNamespace;
 
         IndexCatalogEntry* _entry;
-        bool _inProgress;
 
         OperationContext* _opCtx;
     };
@@ -341,6 +340,8 @@ public:
     void prepareInsertDeleteOptions(OperationContext* opCtx,
                                     const IndexDescriptor* desc,
                                     InsertDeleteOptions* options) const override;
+
+    void setNs(NamespaceString ns) override;
 
 private:
     static const BSONObj _idObj;  // { _id : 1 }

@@ -86,6 +86,7 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/db/transaction_history_iterator.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/platform/random.h"
 #include "mongo/scripting/engine.h"
@@ -231,6 +232,11 @@ void createIndexForApplyOps(OperationContext* opCtx,
                             const NamespaceString& indexNss,
                             IncrementOpsAppliedStatsFn incrementOpsAppliedStats,
                             OplogApplication::Mode mode) {
+    // Lock the database if it's not locked.
+    boost::optional<Lock::DBLock> dbLock;
+    if (!opCtx->lockState()->isLocked()) {
+        dbLock.emplace(opCtx, indexNss.db(), MODE_X);
+    }
     // Check if collection exists.
     Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, indexNss.ns());
     auto indexCollection = db ? db->getCollection(opCtx, indexNss) : nullptr;
@@ -1010,7 +1016,34 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
          BSONObj& cmd,
          const OpTime& opTime,
          const OplogEntry& entry,
-         OplogApplication::Mode mode) -> Status { return Status::OK(); }}},
+         OplogApplication::Mode mode) -> Status {
+         if (mode == OplogApplication::Mode::kRecovering) {
+             const auto replCoord = ReplicationCoordinator::get(opCtx);
+             const auto recoveryTimestamp = replCoord->getRecoveryTimestamp();
+             invariant(recoveryTimestamp);
+
+             // If the commitTimestamp is before the recoveryTimestamp, then the data already
+             // reflects the operations from the transaction.
+             const auto commitTimestamp = cmd["commitTimestamp"].timestamp();
+             if (recoveryTimestamp.get() > commitTimestamp) {
+                 return Status::OK();
+             }
+
+             // Get the corresponding prepareTransaction oplog entry.
+             TransactionHistoryIterator iter(opTime);
+             invariant(iter.hasNext());
+             const auto commitOplogEntry = iter.next(opCtx);
+             invariant(iter.hasNext());
+             const auto prepareOplogEntry = iter.next(opCtx);
+
+             // Transform prepare command into a normal applyOps command.
+             const auto prepareCmd = prepareOplogEntry.getOperationToApply().removeField("prepare");
+
+             BSONObjBuilder resultWeDontCareAbout;
+             return applyOps(opCtx, nsToDatabase(ns), prepareCmd, mode, &resultWeDontCareAbout);
+         }
+         return Status::OK();
+     }}},
     {"abortTransaction",
      {[](OperationContext* opCtx,
          const char* ns,

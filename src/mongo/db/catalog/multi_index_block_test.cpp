@@ -28,46 +28,30 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/db/catalog/multi_index_block.h"
 
-#include "mongo/db/concurrency/lock_manager.h"
+#include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_mock.h"
+#include "mongo/db/catalog/multi_index_block_impl.h"
+#include "mongo/db/operation_context_noop.h"
+#include "mongo/unittest/unittest.h"
 
 namespace mongo {
+namespace {
 
 /**
- * This friend class to the LockManager extends LockManager functionality to enable behaviors
- * required for replication state transitions, which must atomically release the global X lock and
- * restore locks for prepared transactions into their individual Lockers.
+ * Simple initialization test for MultiIndexBlock to check library dependencies.
+ * For greater test coverage, it may be necessary to make this test fixture inherit from
+ * ServiceContextMongoDTest.
  */
-class ReplicationLockManagerManipulator {
-    MONGO_DISALLOW_COPYING(ReplicationLockManagerManipulator);
+class MultiIndexBlockTest : public unittest::Test {};
 
-public:
-    explicit ReplicationLockManagerManipulator(LockManager* lockManager);
-    ~ReplicationLockManagerManipulator() = default;
+TEST_F(MultiIndexBlockTest, Create) {
+    OperationContextNoop opCtx;
+    NamespaceString nss("mydb.mycoll");
+    Collection collection(std::make_unique<CollectionMock>(nss));
+    MultiIndexBlockImpl(&opCtx, &collection);
+}
 
-    /**
-     * Works like LockManager::lock() except that it only works for the Global lock and rather than
-     * looking up the true LockHead for the global resource ID, it puts the LockRequest into the
-     * given TemporaryResourceQueue, which is guaranteed not to have any conflicting locks for the
-     * given request.
-     */
-    void lockUncontestedTemporaryGlobalResource(
-        LockManager::TemporaryResourceQueue* tempGlobalResource,
-        LockRequest* request,
-        LockMode mode);
-
-    /**
-     * Takes the locks from a given TemporaryResourceQueue for the Global resource and moves them
-     * into the true LockHead for the global resource, atomically releasing the global X lock from
-     * the true LockHead for the global resource in the process.
-     */
-    void replaceGlobalLocksWithLocksFromTemporaryGlobalResource(
-        ResourceId resId, LockManager::TemporaryResourceQueue* tempGlobalResource);
-
-
-private:
-    LockManager* _lockManager;
-};
-
+}  // namespace
 }  // namespace mongo

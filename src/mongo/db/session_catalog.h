@@ -58,8 +58,6 @@ class SessionCatalog {
     friend class ScopedCheckedOutSession;
 
 public:
-    class PreventCheckingOutSessionsBlock;
-
     SessionCatalog() = default;
     ~SessionCatalog();
 
@@ -112,36 +110,30 @@ public:
     void invalidateSessions(OperationContext* opCtx, boost::optional<BSONObj> singleSessionDoc);
 
     /**
-     * Iterates through the SessionCatalog and applies 'workerFn' to each Session. This locks the
-     * SessionCatalog.
+     * Iterates through the SessionCatalog under the SessionCatalog mutex and applies 'workerFn' to
+     * each Session which matches the specified 'matcher'.
+     *
+     * NOTE: Since this method runs with the session catalog mutex, the work done by 'workerFn' is
+     * not allowed to block, perform I/O or acquire any lock manager locks.
+     *
      * TODO SERVER-33850: Take Matcher out of the SessionKiller namespace.
      */
-    using ScanSessionsCallbackFn = stdx::function<void(OperationContext*, Session*)>;
-    void scanSessions(OperationContext* opCtx,
-                      const SessionKiller::Matcher& matcher,
+    using ScanSessionsCallbackFn = stdx::function<void(Session*)>;
+    void scanSessions(const SessionKiller::Matcher& matcher,
                       const ScanSessionsCallbackFn& workerFn);
 
 private:
     struct SessionRuntimeInfo {
-        SessionRuntimeInfo(LogicalSessionId lsid) : txnState(std::move(lsid)) {}
+        SessionRuntimeInfo(LogicalSessionId lsid) : session(std::move(lsid)) {}
 
-        // Current check-out state of the session. If set to false, the session can be checked out.
-        // If set to true, the session is in use by another operation and the caller must wait to
-        // check it out.
-        bool checkedOut{false};
+        // Must only be accessed when the state is kInUse and only by the operation context, which
+        // currently has it checked out
+        Session session;
 
         // Signaled when the state becomes available. Uses the transaction table's mutex to protect
         // the state transitions.
         stdx::condition_variable availableCondVar;
-
-        // Must only be accessed when the state is kInUse and only by the operation context, which
-        // currently has it checked out
-        Session txnState;
     };
-
-    using SessionRuntimeInfoMap = stdx::unordered_map<LogicalSessionId,
-                                                      std::shared_ptr<SessionRuntimeInfo>,
-                                                      LogicalSessionIdHash>;
 
     /**
      * May release and re-acquire it zero or more times before returning. The returned
@@ -156,47 +148,10 @@ private:
      */
     void _releaseSession(const LogicalSessionId& lsid);
 
-    bool _isSessionCheckoutAllowed() const {
-        return _preventSessionCheckoutRequests == 0;
-    };
-
-    // Protects members below.
     stdx::mutex _mutex;
 
     // Owns the Session objects for all current Sessions.
-    SessionRuntimeInfoMap _sessions;
-
-    // Count of the number of Sessions that are currently checked out.
-    uint32_t _numCheckedOutSessions{0};
-
-    // When >0 all Session checkout or creation requests will block.
-    uint32_t _preventSessionCheckoutRequests{0};
-
-    // Condition that is signaled when the number of checked out sessions goes to 0.
-    stdx::condition_variable _allSessionsCheckedInCond;
-
-    // Condition that is signaled when checking out Sessions becomes legal again after having
-    // previously been forbidden.
-    stdx::condition_variable _checkingOutSessionsAllowedCond;
-};
-
-/**
- * While this object is in scope, all requests to check out a Session will block.
- */
-class SessionCatalog::PreventCheckingOutSessionsBlock {
-    MONGO_DISALLOW_COPYING(PreventCheckingOutSessionsBlock);
-
-public:
-    explicit PreventCheckingOutSessionsBlock(SessionCatalog* sessionCatalog);
-    ~PreventCheckingOutSessionsBlock();
-
-    /**
-     * Waits until there are no Sessions checked out in the SessionCatalog.
-     */
-    void waitForAllSessionsToBeCheckedIn(OperationContext* opCtx);
-
-private:
-    SessionCatalog* _sessionCatalog{nullptr};
+    LogicalSessionIdMap<std::shared_ptr<SessionRuntimeInfo>> _sessions;
 };
 
 /**
@@ -210,7 +165,7 @@ public:
     }
 
     Session* get() const {
-        return &_sri->txnState;
+        return &_sri->session;
     }
 
     Session* operator->() const {

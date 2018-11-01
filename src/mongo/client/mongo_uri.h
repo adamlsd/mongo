@@ -40,6 +40,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/connection_string.h"
+#include "mongo/client/dbclient_base.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/net/hostandport.h"
@@ -100,6 +101,11 @@ StatusWith<std::string> uriDecode(StringData str);
  *      if ( ! cs.isValid() ) throw "bad connection string: " + errmsg;
  *      DBClientBase * conn = cs.connect( errmsg );
  */
+struct IWannaParse {
+private:
+public:
+    IWannaParse() = default;
+};
 class MongoURI {
 public:
     // Note that, because this map is used for DNS TXT record injection on options, there is a
@@ -122,9 +128,10 @@ public:
      */
     static std::string redact(StringData url);
 
-    DBClientBase* connect(StringData applicationName,
-                          std::string& errmsg,
-                          boost::optional<double> socketTimeoutSecs = boost::none) const;
+    std::unique_ptr<DBClientBase> connect(
+        StringData applicationName,
+        std::string& errmsg,
+        boost::optional<double> socketTimeoutSecs = boost::none) const;
 
     const std::string& getUser() const {
         return _user;
@@ -158,6 +165,9 @@ public:
         return _connectString.getServers();
     }
 
+    // const std::string &getAuthenticationDatabase() const { if(
+    // _options.count("authenticationDatabase") ) return _options[ "authenticationDatabase" ]; if(
+    // database.empty() ) return "admin"; return getDatabase(); }
 
     const boost::optional<std::string> getAppName() const;
 

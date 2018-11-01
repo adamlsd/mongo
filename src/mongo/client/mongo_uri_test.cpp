@@ -496,7 +496,7 @@ TEST_F(ServiceContextTest, ValidButBadURIsFailToConnect) {
 
     std::string errmsg;
     auto dbclient = uri.connect(StringData(), errmsg);
-    ASSERT_EQ(dbclient, static_cast<decltype(dbclient)>(nullptr));
+    ASSERT_EQ(dbclient.get(), static_cast<decltype(dbclient)>(nullptr).get());
 }
 
 TEST(MongoURI, CloneURIForServer) {

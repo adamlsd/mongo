@@ -304,22 +304,23 @@ DBClientConnection* DBClientReplicaSet::checkMaster() {
         masterUri = _uri.cloneURIForServer(_masterHost);
 
     string errmsg;
-    DBClientConnection* newConn = NULL;
+    std::shared_ptr<DBClientConnection> newConn;
     boost::optional<double> socketTimeout;
     if (_so_timeout > 0.0)
         socketTimeout = _so_timeout;
 
     try {
-        // Needs to perform a dynamic_cast because we need to set the replSet
+        // Needs to perform a dynamic_pointer_cast because we need to set the replSet
         // callback. We should eventually not need this after we remove the
         // callback.
-        newConn = dynamic_cast<DBClientConnection*>(
-            masterUri.connect(_applicationName, errmsg, socketTimeout));
+        newConn = std::dynamic_pointer_cast<DBClientConnection>(
+            std::shared_ptr<DBClientBase>(
+            masterUri.connect(_applicationName, errmsg, socketTimeout)));
     } catch (const AssertionException& ex) {
         errmsg = ex.toString();
     }
 
-    if (newConn == NULL || !errmsg.empty()) {
+    if (!newConn  || !errmsg.empty()) {
         const std::string message = str::stream() << "can't connect to new replica set master ["
                                                   << _masterHost.toString() << "]"
                                                   << (errmsg.empty() ? "" : ", err: ") << errmsg;
@@ -330,7 +331,7 @@ DBClientConnection* DBClientReplicaSet::checkMaster() {
     resetMaster();
 
     _masterHost = h;
-    _master.reset(newConn);
+    _master = std::move(newConn);
     _master->setParentReplSetName(_setName);
     _master->setRequestMetadataWriter(getRequestMetadataWriter());
     _master->setReplyMetadataReader(getReplyMetadataReader());

@@ -309,9 +309,10 @@ void CursorResponse::addToReply(CursorResponse::ResponseType responseType,
     _addToReply(responseType, useDocumentSequences, true, reply);
 }
 
-void CursorResponse::addToReplyWithoutWriteConcern(CursorResponse::ResponseType responseType,
-                                                   const rpc::UseDocumentSequencesChoice useDocumentSequences,
-                                                   rpc::ReplyBuilderInterface* reply) const {
+void CursorResponse::addToReplyWithoutWriteConcern(
+    CursorResponse::ResponseType responseType,
+    const rpc::UseDocumentSequencesChoice useDocumentSequences,
+    rpc::ReplyBuilderInterface* reply) const {
     _addToReply(responseType, useDocumentSequences, false, reply);
 }
 

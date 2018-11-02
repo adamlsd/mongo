@@ -4,8 +4,9 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/db/jsobj.h"
 #include "mongo/logger/redaction.h"
+
+#include "mongo/db/jsobj.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/log.h"
 

@@ -4,8 +4,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/logger/redaction.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/logger/redaction.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/log.h"
 
@@ -53,7 +53,7 @@ TEST(RedactStatusTest, StatusOK) {
 
 TEST(RedactExceptionTest, NoRedact) {
     logger::globalLogDomain()->setShouldRedactLogs(false);
-    ASSERT_THROWS_WITH_CHECK(uasserted(ErrorCodes::InternalError, kMsg),
+    ASSERT_THROWS_WITH_CHECK([] { uasserted(ErrorCodes::InternalError, kMsg); }(),
                              DBException,
                              [](const DBException& ex) { ASSERT_EQ(redact(ex), ex.toString()); });
 }
@@ -61,9 +61,9 @@ TEST(RedactExceptionTest, NoRedact) {
 TEST(RedactExceptionTest, BasicException) {
     logger::globalLogDomain()->setShouldRedactLogs(true);
     ASSERT_THROWS_WITH_CHECK(
-        uasserted(ErrorCodes::InternalError, kMsg), DBException, [](const DBException& ex) {
-            ASSERT_EQ(redact(ex), "InternalError ###");
-        });
+        [] { uasserted(ErrorCodes::InternalError, kMsg); }(),
+        DBException,
+        [](const DBException& ex) { ASSERT_EQ(redact(ex), "InternalError ###"); });
 }
 
 TEST(RedactBSONTest, NoRedact) {

@@ -84,12 +84,12 @@ public:
 
     void initCollection(OperationContext* opCtx, const std::string& ns, bool forRepair);
 
-    void initCollectionBeforeRepair(OperationContext* opCtx, const std::string& ns);
     void reinitCollectionAfterRepair(OperationContext* opCtx, const std::string& ns);
 
 protected:
     class AddCollectionChange;
     class RemoveCollectionChange;
+    class RenameCollectionChange;
 
     typedef std::map<std::string, KVCollectionCatalogEntry*> CollectionMap;
 

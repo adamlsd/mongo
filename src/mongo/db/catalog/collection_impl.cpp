@@ -49,7 +49,6 @@
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog_impl.h"
 #include "mongo/db/catalog/index_consistency.h"
-#include "mongo/db/catalog/multi_index_block_impl.h"
 #include "mongo/db/catalog/namespace_uuid_cache.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/clientcursor.h"
@@ -63,6 +62,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
+#include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
@@ -101,13 +101,38 @@ MONGO_REGISTER_SHIM(Collection::parseValidationAction)
 }
 
 namespace {
-// Used below to fail during inserts.
+//  This fail point injects insertion failures for all collections unless a collection name is
+//  provided in the optional data object during configuration:
+//  data: {
+//      collectionNS: <fully-qualified collection namespace>,
+//  }
 MONGO_FAIL_POINT_DEFINE(failCollectionInserts);
 
 // Used to pause after inserting collection data and calling the opObservers.  Inserts to
 // replicated collections that are not part of a multi-statement transaction will have generated
 // their OpTime and oplog entry.
 MONGO_FAIL_POINT_DEFINE(hangAfterCollectionInserts);
+
+/**
+ * Checks the 'failCollectionInserts' fail point at the beginning of an insert operation to see if
+ * the insert should fail. Returns Status::OK if The function should proceed with the insertion.
+ * Otherwise, the function should fail and return early with the error Status.
+ */
+Status checkFailCollectionInsertsFailPoint(const NamespaceString& ns, const BSONObj& firstDoc) {
+    MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
+        const BSONObj& data = extraData.getData();
+        const auto collElem = data["collectionNS"];
+        // If the failpoint specifies no collection or matches the existing one, fail.
+        if (!collElem || ns.ns() == collElem.str()) {
+            const std::string msg = str::stream()
+                << "Failpoint (failCollectionInserts) has been enabled (" << data
+                << "), so rejecting insert (first doc): " << firstDoc;
+            log() << msg;
+            return {ErrorCodes::FailPointEnabled, msg};
+        }
+    }
+    return Status::OK();
+}
 
 // Uses the collator factory to convert the BSON representation of a collator to a
 // CollatorInterface. Returns null if the BSONObj is empty. We expect the stored collation to be
@@ -168,7 +193,7 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
           parseValidationAction(_details->getCollectionOptions(opCtx).validationAction))),
       _validationLevel(uassertStatusOK(
           parseValidationLevel(_details->getCollectionOptions(opCtx).validationLevel))),
-      _cursorManager(_ns),
+      _cursorManager(std::make_unique<CursorManager>(_ns)),
       _cappedNotifier(_recordStore->isCapped() ? stdx::make_unique<CappedInsertNotifier>()
                                                : nullptr),
       _this(_this_init) {}
@@ -332,17 +357,9 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
                                        OpDebug* opDebug,
                                        bool fromMigrate) {
 
-    MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
-        const BSONObj& data = extraData.getData();
-        const auto collElem = data["collectionNS"];
-        // If the failpoint specifies no collection or matches the existing one, fail.
-        if (!collElem || _ns.ns() == collElem.str()) {
-            const std::string msg = str::stream()
-                << "Failpoint (failCollectionInserts) has been enabled (" << data
-                << "), so rejecting insert (first doc): " << begin->doc;
-            log() << msg;
-            return {ErrorCodes::FailPointEnabled, msg};
-        }
+    auto status = checkFailCollectionInsertsFailPoint(_ns, (begin != end ? begin->doc : BSONObj()));
+    if (!status.isOK()) {
+        return status;
     }
 
     // Should really be done in the collection object at creation and updated on index create.
@@ -363,9 +380,10 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
 
     const SnapshotId sid = opCtx->recoveryUnit()->getSnapshotId();
 
-    Status status = _insertDocuments(opCtx, begin, end, opDebug);
-    if (!status.isOK())
+    status = _insertDocuments(opCtx, begin, end, opDebug);
+    if (!status.isOK()) {
         return status;
+    }
     invariant(sid == opCtx->recoveryUnit()->getSnapshotId());
 
     getGlobalServiceContext()->getOpObserver()->onInserts(
@@ -400,27 +418,18 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
     return insertDocuments(opCtx, docs.begin(), docs.end(), opDebug, fromMigrate);
 }
 
-Status CollectionImpl::insertDocument(OperationContext* opCtx,
-                                      const BSONObj& doc,
-                                      const std::vector<MultiIndexBlock*>& indexBlocks) {
+Status CollectionImpl::insertDocumentForBulkLoader(OperationContext* opCtx,
+                                                   const BSONObj& doc,
+                                                   const OnRecordInsertedFn& onRecordInserted) {
 
-    MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
-        const BSONObj& data = extraData.getData();
-        const auto collElem = data["collectionNS"];
-        // If the failpoint specifies no collection or matches the existing one, fail.
-        if (!collElem || _ns.ns() == collElem.str()) {
-            const std::string msg = str::stream()
-                << "Failpoint (failCollectionInserts) has been enabled (" << data
-                << "), so rejecting insert: " << doc;
-            log() << msg;
-            return {ErrorCodes::FailPointEnabled, msg};
-        }
+    auto status = checkFailCollectionInsertsFailPoint(_ns, doc);
+    if (!status.isOK()) {
+        return status;
     }
 
-    {
-        auto status = checkValidation(opCtx, doc);
-        if (!status.isOK())
-            return status;
+    status = checkValidation(opCtx, doc);
+    if (!status.isOK()) {
+        return status;
     }
 
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
@@ -433,11 +442,9 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
     if (!loc.isOK())
         return loc.getStatus();
 
-    for (auto&& indexBlock : indexBlocks) {
-        Status status = indexBlock->insert(doc, loc.getValue());
-        if (!status.isOK()) {
-            return status;
-        }
+    status = onRecordInserted(loc.getValue());
+    if (!status.isOK()) {
+        return status;
     }
 
     vector<InsertStatement> inserts;
@@ -489,12 +496,10 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
     timestamps.reserve(count);
 
     for (auto it = begin; it != end; it++) {
-        Record record = {RecordId(), RecordData(it->doc.objdata(), it->doc.objsize())};
-        records.push_back(record);
-        Timestamp timestamp = Timestamp(it->oplogSlot.opTime.getTimestamp());
-        timestamps.push_back(timestamp);
+        records.emplace_back(Record{RecordId(), RecordData(it->doc.objdata(), it->doc.objsize())});
+        timestamps.emplace_back(it->oplogSlot.opTime.getTimestamp());
     }
-    Status status = _recordStore->insertRecords(opCtx, &records, &timestamps);
+    Status status = _recordStore->insertRecords(opCtx, &records, timestamps);
     if (!status.isOK())
         return status;
 
@@ -792,7 +797,7 @@ Status CollectionImpl::truncate(OperationContext* opCtx) {
 
     // 2) drop indexes
     _indexCatalog->dropAllIndexes(opCtx, true);
-    _cursorManager.invalidateAll(opCtx, false, "collection truncated");
+    _cursorManager->invalidateAll(opCtx, false, "collection truncated");
 
     // 3) truncate record store
     auto status = _recordStore->truncate(opCtx);
@@ -815,7 +820,7 @@ void CollectionImpl::cappedTruncateAfter(OperationContext* opCtx, RecordId end, 
     BackgroundOperation::assertNoBgOpInProgForNs(ns());
     invariant(_indexCatalog->numIndexesInProgress(opCtx) == 0);
 
-    _cursorManager.invalidateAll(opCtx, false, "capped collection truncated");
+    _cursorManager->invalidateAll(opCtx, false, "capped collection truncated");
     _recordStore->cappedTruncateAfter(opCtx, end, inclusive);
 }
 
@@ -1289,8 +1294,26 @@ Status CollectionImpl::touch(OperationContext* opCtx,
     return Status::OK();
 }
 
-std::unique_ptr<MultiIndexBlock> CollectionImpl::createMultiIndexBlock(OperationContext* opCtx) {
-    return std::make_unique<MultiIndexBlockImpl>(opCtx, _this);
+std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> CollectionImpl::makePlanExecutor(
+    OperationContext* opCtx, PlanExecutor::YieldPolicy yieldPolicy, ScanDirection scanDirection) {
+    auto isForward = scanDirection == ScanDirection::kForward;
+    auto direction = isForward ? InternalPlanner::FORWARD : InternalPlanner::BACKWARD;
+    return InternalPlanner::collectionScan(opCtx, _ns.ns(), _this, yieldPolicy, direction);
+}
+
+void CollectionImpl::setNs(NamespaceString nss) {
+    _ns = std::move(nss);
+    _indexCatalog->setNs(_ns);
+    _infoCache.setNs(_ns);
+    _recordStore->setNs(_ns);
+
+    // Until the query layer is prepared for cursors to survive renames, all cursors are killed when
+    // the name of a collection changes. Therefore, the CursorManager should be empty. This means it
+    // is safe to re-establish it with a new namespace by tearing down the old one and allocating a
+    // new manager associated with the new name. This is done in order to ensure that the
+    // 'globalCursorIdCache' maintains the correct mapping from cursor id "prefix" (the high order
+    // bits) to namespace.
+    _cursorManager = std::make_unique<CursorManager>(_ns);
 }
 
 }  // namespace mongo

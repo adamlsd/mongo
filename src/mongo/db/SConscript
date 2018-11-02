@@ -637,6 +637,21 @@ env.Library(
 )
 
 env.Library(
+    target='session_catalog',
+    source=[
+        'session_catalog.cpp',
+        'session.cpp',
+    ],
+    LIBDEPS=[
+        'kill_sessions',
+        'logical_session_id',
+    ],
+    LIBDEPS_PRIVATE=[
+        'service_context',
+    ]
+)
+
+env.Library(
     target='catalog_raii',
     source=[
         'catalog_raii.cpp',
@@ -644,8 +659,6 @@ env.Library(
         'retryable_writes_stats.cpp',
         'server_transactions_metrics.cpp',
         'session_catalog_mongod.cpp',
-        'session_catalog.cpp',
-        'session.cpp',
         'single_transaction_stats.cpp',
         'transaction_coordinator_factory.cpp',
         'transaction_history_iterator.cpp',
@@ -668,15 +681,14 @@ env.Library(
         'curop_metrics',
         'dbdirectclient',
         'index/index_access_method',
-        'kill_sessions',
-        'logical_session_id',
         'namespace_string',
         'repl/oplog_entry',
         'repl/oplog_shim',
         's/sharding_api_d',
+        'session_catalog',
         'stats/fill_locker_info',
+        'stats/top',
         'views/views',
-        "stats/top",
     ],
     LIBDEPS_PRIVATE=[
         'commands/server_status',
@@ -754,6 +766,7 @@ env.Library(
     LIBDEPS=[
         'db_raii',
         'catalog/index_key_validate',
+        'catalog/multi_index_block',
         'concurrency/write_conflict_exception',
     ],
 )
@@ -865,6 +878,7 @@ env.Library(
         'write_ops',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/catalog/multi_index_block',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/auth/internal_user_auth',
@@ -894,6 +908,7 @@ env.Library(
         'db_raii',
         'index/index_access_methods',
         '$BUILD_DIR/mongo/db/catalog/index_catalog',
+        '$BUILD_DIR/mongo/db/catalog/multi_index_block',
     ],
     LIBDEPS_PRIVATE=[
         "logical_clock",
@@ -960,6 +975,7 @@ env.Library(
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/catalog/document_validation',
         '$BUILD_DIR/mongo/db/catalog/index_key_validate',
+        '$BUILD_DIR/mongo/db/catalog/multi_index_block',
         '$BUILD_DIR/mongo/db/storage/storage_repair_observer',
         '$BUILD_DIR/mongo/db/repl/oplog',
     ],
@@ -1022,6 +1038,7 @@ env.Library(
         'exec/projection.cpp',
         'exec/projection_exec.cpp',
         'exec/queued_data_stage.cpp',
+        'exec/requires_collection_stage.cpp',
         'exec/shard_filter.cpp',
         'exec/skip.cpp',
         'exec/sort.cpp',
@@ -1044,7 +1061,7 @@ env.Library(
         'pipeline/pipeline_d.cpp',
         'query/get_executor.cpp',
         'query/internal_plans.cpp',
-        'query/plan_executor.cpp',
+        'query/plan_executor_impl.cpp',
         'query/plan_ranker.cpp',
         'query/plan_yield_policy.cpp',
         'query/query_yield.cpp',
@@ -1851,8 +1868,6 @@ env.Library(
         'service_context_devnull_test_fixture.cpp',
     ],
     LIBDEPS=[
-        # this library is required only because of SERVER-29908
-        '$BUILD_DIR/mongo/db/s/sharding_runtime_d',
         'service_context_d_test_fixture',
     ],
     LIBDEPS_PRIVATE=[
@@ -1963,8 +1978,8 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'auth/authmocks',
-        'catalog_raii',
-        'repl/mock_repl_coord_server_fixture',
+        'service_context_d_test_fixture',
+        'session_catalog',
     ],
 )
 

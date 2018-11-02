@@ -43,17 +43,17 @@ Status emptyCapped(OperationContext* opCtx, const NamespaceString& collectionNam
 /**
  * Clones the collection "shortFrom" to the capped collection "shortTo" with a size of "size".
  */
-Status cloneCollectionAsCapped(OperationContext* opCtx,
-                               Database* db,
-                               const std::string& shortFrom,
-                               const std::string& shortTo,
-                               long long size,
-                               bool temp);
+void cloneCollectionAsCapped(OperationContext* opCtx,
+                             Database* db,
+                             const std::string& shortFrom,
+                             const std::string& shortTo,
+                             long long size,
+                             bool temp);
 
 /**
  * Converts the collection "collectionName" to a capped collection with a size of "size".
  */
-Status convertToCapped(OperationContext* opCtx,
-                       const NamespaceString& collectionName,
-                       long long size);
+void convertToCapped(OperationContext* opCtx,
+                     const NamespaceString& collectionName,
+                     long long size);
 }  // namespace mongo

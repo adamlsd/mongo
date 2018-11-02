@@ -1,36 +1,3 @@
-#-
-#    Copyright (C) 2018 MongoDB Inc.
-#
-#    This program is free software: you can redistribute it and/or  modify
-
-#    Copyright (C) 2018-present MongoDB, Inc.
-#
-#    This program is free software: you can redistribute it and/or modify
-#    it under the terms of the Server Side Public License, version 1,
-#    as published by MongoDB, Inc.
-#
-#    This program is distributed in the hope that it will be useful,
-#    but WITHOUT ANY WARRANTY; without even the implied warranty of
-#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#    Server Side Public License for more details.
-#
-#    You should have received a copy of the Server Side Public License
-#    along with this program. If not, see
-#    <http://www.mongodb.com/licensing/server-side-public-license>.
-#
-#    As a special exception, the copyright holders give permission to link the
-#    code of portions of this program with the OpenSSL library under certain
-#    conditions as described in each individual source file and distribute
-#    linked combinations including the program with the OpenSSL library. You
-#    must comply with the Server Side Public License in all respects for
-#    all of the code used other than as permitted herein. If you modify file(s)
-#    with this exception, you may extend this exception to your version of the
-#    file(s), but you are not obligated to do so. If you do not wish to do so,
-#    delete this exception statement from your version. If you delete this
-#    exception statement from all source files in the program, then also delete
-#    it in the license file.
-#
-
 Pod::Spec.new do |s|
 
   s.name         = "mongo_embedded"
@@ -44,11 +11,9 @@ Pod::Spec.new do |s|
   s.homepage     = "https://www.mongodb.com"
   s.author       = { "MongoDB, Inc" => "cocoapods@mongodb.com" }
 
-  s.license      = "GNU Affero General Public License v3.0"
-  # s.license      = { :type => "AGPLv3", :file => "FILE_LICENSE" }
+  s.license      = { :type => "MongoDB Embedded License", :file => "iPhoneOS/Frameworks/mongo_embedded.framework/LICENSE-Embedded.txt" }
 
-  s.platform     = :ios, :watchos, :tvos
-  s.ios.deployment_target = "10.2"
+  s.ios.deployment_target = "11.0"
   s.watchos.deployment_target = "4.3"
   s.tvos.deployment_target = "10.2"
 
@@ -57,5 +22,11 @@ Pod::Spec.new do |s|
   s.ios.vendored_frameworks = "iPhoneOS/Frameworks/mongo_embedded.framework"
   s.watchos.vendored_frameworks = "WatchOS/Frameworks/mongo_embedded.framework"
   s.tvos.vendored_frameworks = "AppleTVOS/Frameworks/mongo_embedded.framework"
+
+  # My current best understanding is that apple uses these to inject
+  # back in when running dsymutil on their side after regenerating a
+  # binary from the bitcode slices. So we need to keep these available
+  # in the pod so they get archived into end user application.
+  s.preserve_path = '**/*.bcsymbolmap'
 
 end

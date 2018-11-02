@@ -73,15 +73,11 @@ private:
 
     virtual StatusWith<CursorResponse> runAggregation(
         OperationContext* opCtx, const AggregationRequest& request) const final {
-        auto aggCmdObj = request.serializeToCommandObj().toBson();
         auto nss = request.getNamespaceString();
 
         rpc::OpMsgReplyBuilder replyBuilder;
-        auto status = ClusterAggregate::runAggregate(opCtx,
-                                                     ClusterAggregate::Namespaces{nss, nss},
-                                                     request,
-                                                     std::move(aggCmdObj),
-                                                     &replyBuilder);
+        auto status = ClusterAggregate::runAggregate(
+            opCtx, ClusterAggregate::Namespaces{nss, nss}, request, &replyBuilder);
 
         if (!status.isOK()) {
             return status;

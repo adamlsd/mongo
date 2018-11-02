@@ -388,7 +388,7 @@ void runCommand(OperationContext* opCtx,
         initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
 
     try {
-        if (osi && osi->getAutocommit()) {
+        if (osi.getAutocommit()) {
             scopedSession.emplace(opCtx);
 
             auto txnRouter = TransactionRouter::get(opCtx);
@@ -397,7 +397,7 @@ void runCommand(OperationContext* opCtx,
             auto txnNumber = opCtx->getTxnNumber();
             invariant(txnNumber);
 
-            auto startTxnSetting = osi->getStartTransaction();
+            auto startTxnSetting = osi.getStartTransaction();
             bool startTransaction = startTxnSetting ? *startTxnSetting : false;
 
             uassertStatusOK(CommandHelpers::canUseTransactions(nss.db(), command->getName()));
@@ -427,6 +427,14 @@ void runCommand(OperationContext* opCtx,
                         return staleInfo->getNss();
                     } else if (auto implicitCreateInfo =
                                    ex.extraInfo<CannotImplicitlyCreateCollectionInfo>()) {
+                        // Requests that attempt to implicitly create a collection in a transaction
+                        // should always fail with OperationNotSupportedInTransaction - this
+                        // assertion is only meant to safeguard that assumption.
+                        uassert(50983,
+                                str::stream() << "Cannot handle exception in a transaction: "
+                                              << ex.toStatus(),
+                                !TransactionRouter::get(opCtx));
+
                         return implicitCreateInfo->getNss();
                     } else {
                         throw;

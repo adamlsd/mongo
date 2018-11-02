@@ -48,7 +48,6 @@
 #include "mongo/db/multi_key_path_tracker.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/stdx/memory.h"
@@ -357,7 +356,7 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
         yieldPolicy = PlanExecutor::WRITE_CONFLICT_RETRY_ONLY;
     }
     auto exec =
-        InternalPlanner::collectionScan(_opCtx, _collection->ns().ns(), _collection, yieldPolicy);
+        _collection->makePlanExecutor(_opCtx, yieldPolicy, Collection::ScanDirection::kForward);
 
     Snapshotted<BSONObj> objToIndex;
     RecordId loc;
@@ -401,9 +400,10 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
             }
             wunit.commit();
             if (_buildInBackground) {
-                auto restoreStatus = exec->restoreState();  // Handles any WCEs internally.
-                if (!restoreStatus.isOK()) {
-                    return restoreStatus;
+                try {
+                    exec->restoreState();  // Handles any WCEs internally.
+                } catch (...) {
+                    return exceptionToStatus();
                 }
             }
 
@@ -423,15 +423,16 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
             // abandonSnapshot.
             exec->saveState();
             _opCtx->recoveryUnit()->abandonSnapshot();
-            auto restoreStatus = exec->restoreState();  // Handles any WCEs internally.
-            if (!restoreStatus.isOK()) {
-                return restoreStatus;
+            try {
+                exec->restoreState();  // Handles any WCEs internally.
+            } catch (...) {
+                return exceptionToStatus();
             }
         }
     }
 
     if (state != PlanExecutor::IS_EOF) {
-        return WorkingSetCommon::getMemberObjectStatus(objToIndex.value());
+        return exec->getMemberObjectStatus(objToIndex.value());
     }
 
     if (MONGO_FAIL_POINT(hangAfterStartingIndexBuildUnlocked)) {
@@ -486,6 +487,10 @@ Status MultiIndexBlockImpl::insert(const BSONObj& doc, const RecordId& loc) {
     return Status::OK();
 }
 
+Status MultiIndexBlockImpl::doneInserting() {
+    return doneInserting(nullptr);
+}
+
 Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
     invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
     for (size_t i = 0; i < _indexes.size(); i++) {
@@ -509,6 +514,10 @@ Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
 void MultiIndexBlockImpl::abortWithoutCleanup() {
     _indexes.clear();
     _needToCleanup = false;
+}
+
+void MultiIndexBlockImpl::commit() {
+    commit({});
 }
 
 void MultiIndexBlockImpl::commit(stdx::function<void(const BSONObj& spec)> onCreateFn) {

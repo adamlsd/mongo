@@ -1,5 +1,3 @@
-// record_store.h
-
 
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
@@ -37,6 +35,7 @@
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/db/exec/collection_scan_common.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/record_data.h"
 
@@ -47,14 +46,28 @@ class Collection;
 struct CompactOptions;
 struct CompactStats;
 class MAdvise;
-class NamespaceDetails;
 class OperationContext;
 
-class RecordStoreCompactAdaptor;
 class RecordStore;
 
 struct ValidateResults;
 class ValidateAdaptor;
+
+struct CompactOptions {
+    // padding
+    enum PaddingMode { PRESERVE, NONE, MANUAL } paddingMode = NONE;
+
+    // only used if _paddingMode == MANUAL
+    double paddingFactor = 1;  // what to multiple document size by
+    int paddingBytes = 0;      // what to add to ducment size after multiplication
+
+    // other
+    bool validateDocuments = true;
+
+    std::string toString() const;
+};
+
+struct CompactStats {};
 
 /**
  * Allows inserting a Record "in-place" without creating a copy ahead of time.
@@ -246,8 +259,12 @@ public:
     // name of the RecordStore implementation
     virtual const char* name() const = 0;
 
-    virtual const std::string& ns() const {
+    const std::string& ns() const {
         return _ns;
+    }
+
+    void setNs(NamespaceString ns) {
+        _ns = ns.ns();
     }
 
     virtual const std::string& getIdent() const = 0;
@@ -284,13 +301,15 @@ public:
     /**
      * Get the RecordData at loc, which must exist.
      *
-     * If unowned data is returned, it is valid until the next modification of this Record or
-     * the lock on this collection is released.
+     * If unowned data is returned, it is only valid until either of these happens:
+     *  - The record is modified
+     *  - The snapshot from which it was obtained is abandoned
+     *  - The lock on the collection is released
      *
-     * In general, prefer findRecord or RecordCursor::seekExact since they can tell you if a
-     * record has been removed.
+     * In general, prefer findRecord or RecordCursor::seekExact since they can tell you if a record
+     * has been removed.
      */
-    virtual RecordData dataFor(OperationContext* opCtx, const RecordId& loc) const {
+    RecordData dataFor(OperationContext* opCtx, const RecordId& loc) const {
         RecordData data;
         invariant(findRecord(opCtx, loc, &data));
         return data;
@@ -323,24 +342,26 @@ public:
 
     virtual void deleteRecord(OperationContext* opCtx, const RecordId& dl) = 0;
 
-    virtual StatusWith<RecordId> insertRecord(OperationContext* opCtx,
-                                              const char* data,
-                                              int len,
-                                              Timestamp timestamp) = 0;
-
+    /**
+     * Inserts the specified records into this RecordStore by copying the passed-in record data and
+     * updates 'inOutRecords' to contain the ids of the inserted records.
+     */
     virtual Status insertRecords(OperationContext* opCtx,
-                                 std::vector<Record>* records,
-                                 std::vector<Timestamp>* timestamps) {
-        int index = 0;
-        for (auto& record : *records) {
-            StatusWith<RecordId> res =
-                insertRecord(opCtx, record.data.data(), record.data.size(), (*timestamps)[index++]);
-            if (!res.isOK())
-                return res.getStatus();
+                                 std::vector<Record>* inOutRecords,
+                                 const std::vector<Timestamp>& timestamps) = 0;
 
-            record.id = res.getValue();
-        }
-        return Status::OK();
+    /**
+     * A thin wrapper around insertRecords() to simplify handling of single document inserts.
+     */
+    StatusWith<RecordId> insertRecord(OperationContext* opCtx,
+                                      const char* data,
+                                      int len,
+                                      Timestamp timestamp) {
+        std::vector<Record> inOutRecords{Record{RecordId(), RecordData(data, len)}};
+        Status status = insertRecords(opCtx, &inOutRecords, std::vector<Timestamp>{timestamp});
+        if (!status.isOK())
+            return status;
+        return inOutRecords.front().id;
     }
 
     /**
@@ -476,12 +497,8 @@ public:
      * Attempt to reduce the storage space used by this RecordStore.
      *
      * Only called if compactSupported() returns true.
-     * No RecordStoreCompactAdaptor will be passed if compactsInPlace() returns true.
      */
-    virtual Status compact(OperationContext* opCtx,
-                           RecordStoreCompactAdaptor* adaptor,
-                           const CompactOptions* options,
-                           CompactStats* stats) {
+    virtual Status compact(OperationContext* opCtx) {
         MONGO_UNREACHABLE;
     }
 
@@ -588,14 +605,6 @@ public:
 
 protected:
     std::string _ns;
-};
-
-class RecordStoreCompactAdaptor {
-public:
-    virtual ~RecordStoreCompactAdaptor() {}
-    virtual bool isDataValid(const RecordData& recData) = 0;
-    virtual size_t dataSize(const RecordData& recData) = 0;
-    virtual void inserted(const RecordData& recData, const RecordId& newLocation) = 0;
 };
 
 struct ValidateResults {

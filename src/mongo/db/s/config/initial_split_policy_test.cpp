@@ -42,6 +42,8 @@
 namespace mongo {
 namespace {
 
+using unittest::assertGet;
+
 /**
  * Asserts that the given vectors of BSON objects are equal
  */
@@ -301,9 +303,7 @@ public:
         tagDocBuilder.append(TagsType::min(), range.getMin());
         tagDocBuilder.append(TagsType::max(), range.getMax());
         tagDocBuilder.append(TagsType::tag(), zoneName);
-        const auto parseStatus = TagsType::fromBSON(tagDocBuilder.obj());
-        uassertStatusOK(parseStatus);
-        return parseStatus.getValue();
+        return assertGet(TagsType::fromBSON(tagDocBuilder.obj()));
     }
 
     /**
@@ -428,6 +428,22 @@ TEST_F(GenerateShardCollectionInitialZonedChunksTest, EmptyTagsShouldFail) {
         checkGeneratedInitialZoneChunks(tags, 1, expectedChunkRanges, expectedShardIds),
         AssertionException,
         ErrorCodes::InvalidOptions);
+}
+
+TEST_F(GenerateShardCollectionInitialZonedChunksTest, ZoneNotAssociatedWithAnyShardShouldFail) {
+    const auto zone1 = zoneName("0");
+    const auto zone2 = zoneName("1");
+
+    const std::vector<TagsType> tags{
+        makeTag(ChunkRange(keyPattern().globalMin(), BSON(shardKey() << 0)), zone1),
+        makeTag(ChunkRange(BSON(shardKey() << 0), keyPattern().globalMax()), zone2)};
+    const StringMap<std::vector<ShardId>> tagToShards{{zone1, {ShardId("Shard0")}}, {zone2, {}}};
+
+    ASSERT_THROWS_CODE(
+        InitialSplitPolicy::generateShardCollectionInitialZonedChunks(
+            nss(), shardKeyPattern(), timeStamp(), tags, tagToShards, makeShardIds(1)),
+        AssertionException,
+        50973);
 }
 
 }  // namespace

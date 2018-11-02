@@ -38,6 +38,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/exchange_spec_gen.h"
 #include "mongo/db/query/explain_options.h"
+#include "mongo/db/write_concern_options.h"
 #include "mongo/rpc/reply_builder_interface.h"
 
 namespace mongo {
@@ -201,6 +202,10 @@ public:
         return _exchangeSpec;
     }
 
+    boost::optional<WriteConcernOptions> getWriteConcern() const {
+        return _writeConcern;
+    }
+
     //
     // Setters for optional fields.
     //
@@ -267,6 +272,10 @@ public:
             : rpc::UseDocumentSequencesChoice::kDoNotUse;
     }
 
+    void setWriteConcern(WriteConcernOptions writeConcern) {
+        _writeConcern = writeConcern;
+    }
+
 private:
     // Required fields.
     const NamespaceString _nss;
@@ -314,5 +323,8 @@ private:
     // represents a producer running as a part of the exchange machinery.
     // This is an internal option; we do not expect it to be set on requests from users or drivers.
     boost::optional<ExchangeSpec> _exchangeSpec;
+
+    // The explicit writeConcern for the operation or boost::none if the user did not specifiy one.
+    boost::optional<WriteConcernOptions> _writeConcern;
 };
 }  // namespace mongo

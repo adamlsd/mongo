@@ -102,7 +102,7 @@ bool handleCursorCommand(OperationContext* opCtx,
 
         uassert(50957,
                 "$exchange is not compatible with document sequences",
-                request.getTempOptInToDocumentSequences() !=
+                request.getTempOptInToDocumentSequences() ==
                     rpc::UseDocumentSequencesChoice::kDoNotUse);
 
         uassert(

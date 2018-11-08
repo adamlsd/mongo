@@ -166,9 +166,9 @@
  * normal `.ignore()` code.  This macro exists only to make using `ASSERT_THROWS` less inconvenient
  * on functions which both throw and return `Status` or `StatusWith`.
  */
-#define UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(STATEMENT) \
-    do {                                                             \
-        (void)(STATEMENT);                                           \
+#define UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(EXPRESSION) \
+    do {                                                              \
+        (void)(EXPRESSION);                                           \
     } while (false)
 
 /**

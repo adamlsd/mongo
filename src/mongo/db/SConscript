@@ -169,6 +169,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/auth/internal_user_auth',
         '$BUILD_DIR/mongo/util/net/ssl_manager',
     ]
 )
@@ -623,7 +624,7 @@ env.Library(
         'transaction_coordinator_catalog.cpp',
         'transaction_coordinator_factory_mongod.cpp',
         'transaction_coordinator_service.cpp',
-        'transaction_coordinator_commands_impl.cpp',
+        'transaction_coordinator_util.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -691,6 +692,7 @@ env.Library(
         'views/views',
     ],
     LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/util/concurrency/thread_pool',
         'commands/server_status',
         'update/update_driver',
     ]
@@ -1038,6 +1040,7 @@ env.Library(
         'exec/projection.cpp',
         'exec/projection_exec.cpp',
         'exec/queued_data_stage.cpp',
+        'exec/record_store_fast_count.cpp',
         'exec/requires_collection_stage.cpp',
         'exec/shard_filter.cpp',
         'exec/skip.cpp',
@@ -1158,7 +1161,6 @@ env.Library(
         "ops/write_ops_parsers",
         "pipeline/aggregation",
         "query_exec",
-        "repair_database",
         "repl/bgsync",
         "repl/oplog_buffer_blocking_queue",
         "repl/oplog_buffer_collection",
@@ -1593,9 +1595,10 @@ env.Library(
     target='snapshot_window_options',
     source=[
         'snapshot_window_options.cpp',
+        env.Idlc('snapshot_window_options.idl')[0],
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/server_parameters',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 

@@ -298,9 +298,20 @@ void execCommandClient(OperationContext* opCtx,
         } else {
             invocation->run(opCtx, result);
         }
+
+        auto body = result->getBodyBuilder();
+
+        MONGO_FAIL_POINT_BLOCK_IF(failCommand, data, [&](const BSONObj& data) {
+            return CommandHelpers::shouldActivateFailCommandFailPoint(data,
+                                                                      request.getCommandName()) &&
+                data.hasField("writeConcernError");
+        }) {
+            body.append(data.getData()["writeConcernError"]);
+        }
     }
 
     auto body = result->getBodyBuilder();
+
     bool ok = CommandHelpers::extractOrAppendOk(body);
     if (!ok) {
         c->incrementCommandsFailed();
@@ -365,8 +376,17 @@ void runCommand(OperationContext* opCtx,
     // Fill out all currentOp details.
     CurOp::get(opCtx)->setGenericOpRequestDetails(opCtx, nss, command, request.body, opType);
 
+    auto osi =
+        initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
+    validateSessionOptions(osi, command->getName(), nss.db());
+
     auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    auto readConcernParseStatus = readConcernArgs.initialize(request.body);
+    auto readConcernParseStatus = [&]() {
+        // We must obtain the client lock to set the ReadConcernArgs on the operation
+        // context as it may be concurrently read by CurrentOp.
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        return readConcernArgs.initialize(request.body);
+    }();
     if (!readConcernParseStatus.isOK()) {
         auto builder = replyBuilder->getBodyBuilder();
         CommandHelpers::appendCommandStatusNoThrow(builder, readConcernParseStatus);
@@ -384,10 +404,8 @@ void runCommand(OperationContext* opCtx,
     }
 
     boost::optional<ScopedRouterSession> scopedSession;
-    auto osi =
-        initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
-
     try {
+        CommandHelpers::evaluateFailCommandFailPoint(opCtx, commandName);
         if (osi.getAutocommit()) {
             scopedSession.emplace(opCtx);
 
@@ -399,8 +417,6 @@ void runCommand(OperationContext* opCtx,
 
             auto startTxnSetting = osi.getStartTransaction();
             bool startTransaction = startTxnSetting ? *startTxnSetting : false;
-
-            uassertStatusOK(CommandHelpers::canUseTransactions(nss.db(), command->getName()));
 
             txnRouter->beginOrContinueTxn(opCtx, *txnNumber, startTransaction);
         }

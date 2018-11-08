@@ -1,5 +1,3 @@
-// biggie_record_store.h
-
 
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
@@ -33,7 +31,6 @@
 #pragma once
 
 #include <atomic>
-#include <boost/shared_array.hpp>
 #include <map>
 
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -49,15 +46,6 @@ namespace biggie {
  * A RecordStore that stores all data in-memory.
  */
 class RecordStore : public ::mongo::RecordStore {
-    const bool _isCapped;
-    const int64_t _cappedMaxSize;
-    const int64_t _cappedMaxDocs;
-    std::string _identStr;
-    StringData _ident;
-    std::string _prefix;
-    std::string _postfix;
-    CappedCallback* _cappedCallback;
-
 public:
     explicit RecordStore(StringData ns,
                          StringData ident,
@@ -71,6 +59,7 @@ public:
     virtual long long dataSize(OperationContext* opCtx) const;
     virtual long long numRecords(OperationContext* opCtx) const;
     virtual bool isCapped() const;
+    virtual void setCappedCallback(CappedCallback*);
     virtual int64_t storageSize(OperationContext* opCtx,
                                 BSONObjBuilder* extraInfo = NULL,
                                 int infoLevel = 0) const;
@@ -128,14 +117,34 @@ public:
                                         long long dataSize);
 
 private:
+    const bool _isCapped;
+    const int64_t _cappedMaxSize;
+    const int64_t _cappedMaxDocs;
+
+    std::string _identStr;
+    StringData _ident;
+
+    std::string _prefix;
+    std::string _postfix;
+
+    mutable stdx::mutex _cappedCallbackMutex;  // Guards _cappedCallback
+    CappedCallback* _cappedCallback;
+
+    mutable stdx::mutex _cappedDeleterMutex;
+
     AtomicInt64 _highest_record_id{1};
     std::string generateKey(const uint8_t* key, size_t key_len) const;
+
     /*
      * This gets the next (guaranteed) unique record id.
      */
     inline int64_t nextRecordId() {
         return _highest_record_id.fetchAndAdd(1);
     }
+
+    bool cappedAndNeedDelete(OperationContext* opCtx, StringStore* workingCopy);
+    void cappedDeleteAsNeeded(OperationContext* opCtx, StringStore* workingCopy);
+
     class Cursor final : public SeekableRecordCursor {
         OperationContext* opCtx;
         StringData _ident;
@@ -145,6 +154,7 @@ private:
         boost::optional<std::string> _savedPosition;
         bool _needFirstSeek = true;
         bool _lastMoveWasRestore = false;
+        bool _isCapped;
 
     public:
         Cursor(OperationContext* opCtx, const RecordStore& rs);
@@ -159,6 +169,7 @@ private:
     private:
         bool inPrefix(const std::string& key_string);
     };
+
     class ReverseCursor final : public SeekableRecordCursor {
         OperationContext* opCtx;
         StringData _ident;
@@ -168,6 +179,7 @@ private:
         boost::optional<std::string> _savedPosition;
         bool _needFirstSeek = true;
         bool _lastMoveWasRestore = false;
+        bool _isCapped;
 
     public:
         ReverseCursor(OperationContext* opCtx, const RecordStore& rs);

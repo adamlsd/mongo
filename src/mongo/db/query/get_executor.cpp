@@ -49,6 +49,7 @@
 #include "mongo/db/exec/idhack.h"
 #include "mongo/db/exec/multi_plan.h"
 #include "mongo/db/exec/projection.h"
+#include "mongo/db/exec/record_store_fast_count.h"
 #include "mongo/db/exec/shard_filter.h"
 #include "mongo/db/exec/sort_key_generator.h"
 #include "mongo/db/exec/subplan.h"
@@ -60,6 +61,7 @@
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/ops/update_lifecycle.h"
 #include "mongo/db/query/canonical_query.h"
+#include "mongo/db/query/canonical_query_encoder.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/query/index_bounds_builder.h"
@@ -198,13 +200,12 @@ void fillOutPlannerParams(OperationContext* opCtx,
     // Ignore index filters when it is possible to use the id-hack.
     if (!IDHackStage::supportsQuery(collection, *canonicalQuery)) {
         QuerySettings* querySettings = collection->infoCache()->getQuerySettings();
-        PlanCacheKey planCacheKey =
-            collection->infoCache()->getPlanCache()->computeKey(*canonicalQuery);
+        const auto key = canonicalQuery->encodeKey();
 
         // Filter index catalog if index filters are specified for query.
         // Also, signal to planner that application hint should be ignored.
         if (boost::optional<AllowedIndicesFilter> allowedIndicesFilter =
-                querySettings->getAllowedIndicesFilter(planCacheKey)) {
+                querySettings->getAllowedIndicesFilter(key)) {
             filterAllowedIndexEntries(*allowedIndicesFilter, &plannerParams->indices);
             plannerParams->indexFiltersApplied = true;
         }
@@ -399,10 +400,13 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
 
     // Check that the query should be cached.
     if (collection->infoCache()->getPlanCache()->shouldCacheQuery(*canonicalQuery)) {
-        auto planCacheKey = collection->infoCache()->getPlanCache()->computeKey(*canonicalQuery);
-
         // Fill in opDebug information.
-        CurOp::get(opCtx)->debug().queryHash = PlanCache::computeQueryHash(planCacheKey);
+        const auto planCacheKey =
+            collection->infoCache()->getPlanCache()->computeKey(*canonicalQuery);
+        CurOp::get(opCtx)->debug().queryHash =
+            canonical_query_encoder::computeHash(planCacheKey.getStableKeyStringData());
+        CurOp::get(opCtx)->debug().planCacheKey =
+            canonical_query_encoder::computeHash(planCacheKey.toString());
 
         // Try to look up a cached solution for the query.
         if (auto cs =
@@ -1270,12 +1274,12 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
         ? PlanExecutor::INTERRUPT_ONLY
         : PlanExecutor::YIELD_AUTO;
 
+    const CountStageParams params(request);
+
     if (!collection) {
-        // Treat collections that do not exist as empty collections. Note that the explain
-        // reporting machinery always assumes that the root stage for a count operation is
-        // a CountStage, so in this case we put a CountStage on top of an EOFStage.
-        const bool useRecordStoreCount = false;
-        CountStageParams params(request, useRecordStoreCount);
+        // Treat collections that do not exist as empty collections. Note that the explain reporting
+        // machinery always assumes that the root stage for a count operation is a CountStage, so in
+        // this case we put a CountStage on top of an EOFStage.
         unique_ptr<PlanStage> root = make_unique<CountStage>(
             opCtx, collection, std::move(params), ws.get(), new EOFStage(opCtx));
         return PlanExecutor::make(
@@ -1290,11 +1294,10 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
     const bool isEmptyQueryPredicate =
         cq->root()->matchType() == MatchExpression::AND && cq->root()->numChildren() == 0;
     const bool useRecordStoreCount = isEmptyQueryPredicate && request.getHint().isEmpty();
-    CountStageParams params(request, useRecordStoreCount);
 
     if (useRecordStoreCount) {
         unique_ptr<PlanStage> root =
-            make_unique<CountStage>(opCtx, collection, std::move(params), ws.get(), nullptr);
+            make_unique<RecordStoreFastCountStage>(opCtx, collection, params.skip, params.limit);
         return PlanExecutor::make(
             opCtx, std::move(ws), std::move(root), request.getNs(), yieldPolicy);
     }

@@ -156,13 +156,6 @@ public:
     static TransactionParticipant* getFromNonCheckedOutSession(Session* session);
 
     /**
-     * Apply `abortTransaction` oplog entry.
-     */
-    static Status applyAbortTransaction(OperationContext* opCtx,
-                                        const repl::OplogEntry& entry,
-                                        repl::OplogApplication::Mode mode);
-
-    /**
      * Kills the transaction if it is running, ensuring that it releases all resources, even if the
      * transaction is in prepare().  Avoids writing any oplog entries or making any changes to the
      * transaction table.  State for prepared transactions will be re-constituted at startup.
@@ -293,19 +286,22 @@ public:
 
     std::string transactionInfoForLogForTest(const SingleThreadedLockStats* lockStats,
                                              bool committed,
-                                             repl::ReadConcernArgs readConcernArgs) {
+                                             repl::ReadConcernArgs readConcernArgs,
+                                             bool wasPrepared) {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         TransactionState::StateFlag terminationCause =
             committed ? TransactionState::kCommitted : TransactionState::kAborted;
-        return _transactionInfoForLog(lockStats, terminationCause, readConcernArgs);
+        return _transactionInfoForLog(lockStats, terminationCause, readConcernArgs, wasPrepared);
     }
 
     /**
      * If this session is not holding stashed locks in _txnResourceStash (transaction is active),
      * reports the current state of the session using the provided builder. Locks the session
      * object's mutex while running.
+     * If this is called from a thread other than the owner of the opCtx, that thread must be
+     * holding the client lock.
      */
-    void reportUnstashedState(repl::ReadConcernArgs readConcernArgs, BSONObjBuilder* builder) const;
+    void reportUnstashedState(OperationContext* opCtx, BSONObjBuilder* builder) const;
 
     /**
      * Convenience method which creates and populates a BSONObj containing the stashed state.
@@ -700,7 +696,8 @@ private:
     // passed in order for this method to be called.
     std::string _transactionInfoForLog(const SingleThreadedLockStats* lockStats,
                                        TransactionState::StateFlag terminationCause,
-                                       repl::ReadConcernArgs readConcernArgs);
+                                       repl::ReadConcernArgs readConcernArgs,
+                                       bool wasPrepared);
 
     // Reports transaction stats for both active and inactive transactions using the provided
     // builder.  The lock may be either a lock on _mutex or a lock on _metricsMutex.

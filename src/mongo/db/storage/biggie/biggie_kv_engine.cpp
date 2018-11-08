@@ -65,24 +65,29 @@ std::unique_ptr<::mongo::RecordStore> KVEngine::getRecordStore(OperationContext*
                                                                StringData ns,
                                                                StringData ident,
                                                                const CollectionOptions& options) {
-    // TODO: deal with options.
-    _idents[ident.toString()] = true;
-    return std::make_unique<RecordStore>(ns, ident);
-}
-
-std::shared_ptr<StringStore> KVEngine::getMaster() const {
-    stdx::lock_guard<stdx::mutex> lock(_masterLock);
-    return _master;
-}
-
-bool KVEngine::compareAndSwapMaster(std::shared_ptr<StringStore> compareAgainst,
-                                    std::unique_ptr<StringStore>& newMaster) {
-    stdx::lock_guard<stdx::mutex> lock(_masterLock);
-    if (compareAgainst->sameRoot(*_master)) {
-        _master.reset(newMaster.release());
-        return true;
+    std::unique_ptr<::mongo::RecordStore> recordStore;
+    if (options.capped) {
+        recordStore = stdx::make_unique<RecordStore>(
+            ns,
+            ident,
+            true,
+            options.cappedSize ? options.cappedSize : kDefaultCappedSizeBytes,
+            options.cappedMaxDocs ? options.cappedMaxDocs : -1);
+    } else {
+        recordStore = stdx::make_unique<RecordStore>(ns, ident, false);
     }
-    return false;
+    _idents[ident.toString()] = true;
+    return recordStore;
+}
+
+bool KVEngine::trySwapMaster(StringStore& newMaster, uint64_t version) {
+    stdx::lock_guard<stdx::mutex> lock(_masterLock);
+    invariant(!newMaster.hasBranch() && !_master.hasBranch());
+    if (_masterVersion != version)
+        return false;
+    _master = newMaster;
+    _masterVersion++;
+    return true;
 }
 
 

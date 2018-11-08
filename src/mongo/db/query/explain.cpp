@@ -45,6 +45,7 @@
 #include "mongo/db/exec/text.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/keypattern.h"
+#include "mongo/db/query/canonical_query_encoder.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
@@ -464,11 +465,6 @@ void Explain::statsToBSON(const PlanStageStats& stats,
             }
             intervalsBob.doneFast();
         }
-    } else if (STAGE_GROUP == stats.stageType) {
-        GroupStats* spec = static_cast<GroupStats*>(stats.specific.get());
-        if (verbosity >= ExplainOptions::Verbosity::kExecStats) {
-            bob->appendNumber("nGroups", spec->nGroups);
-        }
     } else if (STAGE_IDHACK == stats.stageType) {
         IDHackStats* spec = static_cast<IDHackStats*>(stats.specific.get());
         if (verbosity >= ExplainOptions::Verbosity::kExecStats) {
@@ -518,6 +514,13 @@ void Explain::statsToBSON(const PlanStageStats& stats,
     } else if (STAGE_PROJECTION == stats.stageType) {
         ProjectionStats* spec = static_cast<ProjectionStats*>(stats.specific.get());
         bob->append("transformBy", spec->projObj);
+    } else if (STAGE_RECORD_STORE_FAST_COUNT == stats.stageType) {
+        CountStats* spec = static_cast<CountStats*>(stats.specific.get());
+
+        if (verbosity >= ExplainOptions::Verbosity::kExecStats) {
+            bob->appendNumber("nCounted", spec->nCounted);
+            bob->appendNumber("nSkipped", spec->nSkipped);
+        }
     } else if (STAGE_SHARDING_FILTER == stats.stageType) {
         ShardingFilterStats* spec = static_cast<ShardingFilterStats*>(stats.specific.get());
 
@@ -645,13 +648,17 @@ void Explain::generatePlannerInfo(PlanExecutor* exec,
     // field will always be false in the case of EOF or idhack plans.
     bool indexFilterSet = false;
     boost::optional<uint32_t> queryHash;
+    boost::optional<uint32_t> planCacheKeyHash;
     if (collection && exec->getCanonicalQuery()) {
         const CollectionInfoCache* infoCache = collection->infoCache();
         const QuerySettings* querySettings = infoCache->getQuerySettings();
         PlanCacheKey planCacheKey =
             infoCache->getPlanCache()->computeKey(*exec->getCanonicalQuery());
-        queryHash = PlanCache::computeQueryHash(planCacheKey);
-        if (auto allowedIndicesFilter = querySettings->getAllowedIndicesFilter(planCacheKey)) {
+        planCacheKeyHash = canonical_query_encoder::computeHash(planCacheKey.toString());
+        queryHash = canonical_query_encoder::computeHash(planCacheKey.getStableKeyStringData());
+
+        if (auto allowedIndicesFilter =
+                querySettings->getAllowedIndicesFilter(planCacheKey.getStableKey())) {
             // Found an index filter set on the query shape.
             indexFilterSet = true;
         }
@@ -673,6 +680,10 @@ void Explain::generatePlannerInfo(PlanExecutor* exec,
 
     if (queryHash) {
         plannerBob.append("queryHash", unsignedIntToFixedLengthHex(*queryHash));
+    }
+
+    if (planCacheKeyHash) {
+        plannerBob.append("planCacheKey", unsignedIntToFixedLengthHex(*planCacheKeyHash));
     }
 
     BSONObjBuilder winningPlanBob(plannerBob.subobjStart("winningPlan"));
@@ -999,6 +1010,7 @@ void Explain::planCacheEntryToBSON(const PlanCacheEntry& entry, BSONObjBuilder* 
     }
     shapeBuilder.doneFast();
     out->append("queryHash", unsignedIntToFixedLengthHex(entry.queryHash));
+    out->append("planCacheKey", unsignedIntToFixedLengthHex(entry.planCacheKey));
 
     // Append whether or not the entry is active.
     out->append("isActive", entry.isActive);

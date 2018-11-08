@@ -62,6 +62,8 @@
 
 namespace mongo {
 
+MONGO_EXPORT_SERVER_PARAMETER(useReadOnceCursorsForIndexBuilds, bool, true);
+
 using std::unique_ptr;
 using std::string;
 using std::endl;
@@ -358,6 +360,15 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
     auto exec =
         _collection->makePlanExecutor(_opCtx, yieldPolicy, Collection::ScanDirection::kForward);
 
+    // Hint to the storage engine that this collection scan should not keep data in the cache.
+    // Do not use read-once cursors for background builds because saveState/restoreState is called
+    // with every insert into the index, which resets the collection scan cursor between every call
+    // to getNextSnapshotted(). With read-once cursors enabled, this can evict data we may need to
+    // read again, incurring a significant performance penalty.
+    // TODO: Enable this for all index builds when SERVER-37268 is complete.
+    bool readOnce = !_buildInBackground && useReadOnceCursorsForIndexBuilds.load();
+    _opCtx->recoveryUnit()->setReadOnce(readOnce);
+
     Snapshotted<BSONObj> objToIndex;
     RecordId loc;
     PlanExecutor::ExecState state;
@@ -467,31 +478,47 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
     return Status::OK();
 }
 
-Status MultiIndexBlockImpl::insert(const BSONObj& doc, const RecordId& loc) {
+Status MultiIndexBlockImpl::insert(const BSONObj& doc,
+                                   const RecordId& loc,
+                                   std::vector<BSONObj>* const dupKeysInserted) {
     for (size_t i = 0; i < _indexes.size(); i++) {
         if (_indexes[i].filterExpression && !_indexes[i].filterExpression->matchesBSON(doc)) {
             continue;
         }
 
-        int64_t unused;
+        InsertResult result;
         Status idxStatus(ErrorCodes::InternalError, "");
         if (_indexes[i].bulk) {
             idxStatus = _indexes[i].bulk->insert(_opCtx, doc, loc, _indexes[i].options);
         } else {
-            idxStatus = _indexes[i].real->insert(_opCtx, doc, loc, _indexes[i].options, &unused);
+            idxStatus = _indexes[i].real->insert(_opCtx, doc, loc, _indexes[i].options, &result);
         }
 
         if (!idxStatus.isOK())
             return idxStatus;
+
+        if (dupKeysInserted) {
+            dupKeysInserted->insert(
+                dupKeysInserted->end(), result.dupsInserted.begin(), result.dupsInserted.end());
+        }
     }
     return Status::OK();
 }
 
 Status MultiIndexBlockImpl::doneInserting() {
-    return doneInserting(nullptr);
+    return _doneInserting(nullptr, nullptr);
 }
 
-Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
+Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupRecords) {
+    return _doneInserting(dupRecords, nullptr);
+}
+
+Status MultiIndexBlockImpl::doneInserting(std::vector<BSONObj>* dupKeysInserted) {
+    return _doneInserting(nullptr, dupKeysInserted);
+}
+
+Status MultiIndexBlockImpl::_doneInserting(std::set<RecordId>* dupRecords,
+                                           std::vector<BSONObj>* dupKeysInserted) {
     invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
     for (size_t i = 0; i < _indexes.size(); i++) {
         if (_indexes[i].bulk == NULL)
@@ -502,7 +529,8 @@ Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
                                                      _indexes[i].bulk.get(),
                                                      _allowInterruption,
                                                      _indexes[i].options.dupsAllowed,
-                                                     dupsOut);
+                                                     dupRecords,
+                                                     dupKeysInserted);
         if (!status.isOK()) {
             return status;
         }

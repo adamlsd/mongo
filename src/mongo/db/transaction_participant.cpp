@@ -48,7 +48,6 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/op_observer.h"
-#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -296,40 +295,6 @@ const LogicalSessionId& TransactionParticipant::_sessionId() const {
     const auto* owningSession = getTransactionParticipant.owner(this);
     return owningSession->getSessionId();
 }
-
-Status TransactionParticipant::applyAbortTransaction(OperationContext* opCtx,
-                                                     const repl::OplogEntry& entry,
-                                                     repl::OplogApplication::Mode mode) {
-    // We don't put transactions into the prepare state until the end of recovery, so there is
-    // no transaction to abort.
-    if (mode == repl::OplogApplication::Mode::kRecovering) {
-        return Status::OK();
-    }
-
-    // Return error if run via applyOps command.
-    uassert(50972,
-            "abortTransaction is only used internally by secondaries.",
-            mode != repl::OplogApplication::Mode::kApplyOpsCmd);
-
-    // TODO: SERVER-36492 Only run on secondary until we support initial sync.
-    invariant(mode == repl::OplogApplication::Mode::kSecondary);
-
-    // Transaction operations are in its own batch, so we can modify their opCtx.
-    invariant(entry.getSessionId());
-    invariant(entry.getTxnNumber());
-    opCtx->setLogicalSessionId(*entry.getSessionId());
-    opCtx->setTxnNumber(*entry.getTxnNumber());
-    // The write on transaction table may be applied concurrently, so refreshing state
-    // from disk may read that write, causing starting a new transaction on an existing
-    // txnNumber. Thus, we start a new transaction without refreshing state from disk.
-    OperationContextSessionMongodWithoutRefresh sessionCheckout(opCtx);
-
-    auto transaction = TransactionParticipant::get(opCtx);
-    transaction->unstashTransactionResources(opCtx, "abortTransaction");
-    transaction->abortActiveTransaction(opCtx);
-    return Status::OK();
-}
-
 
 void TransactionParticipant::_beginOrContinueRetryableWrite(WithLock wl, TxnNumber txnNumber) {
     if (txnNumber > _activeTxnNumber) {
@@ -945,17 +910,23 @@ void TransactionParticipant::commitPreparedTransaction(OperationContext* opCtx,
     opCtx->recoveryUnit()->setCommitTimestamp(commitTimestamp);
 
     try {
-        // We reserve an oplog slot before committing the transaction so that no writes that are
-        // causally related to the transaction commit enter the oplog at a timestamp earlier than
-        // the commit oplog entry.
-        OplogSlotReserver oplogSlotReserver(opCtx);
-        const auto commitOplogSlot = oplogSlotReserver.getReservedOplogSlot();
-        invariant(commitOplogSlot.opTime.getTimestamp() >= commitTimestamp,
-                  str::stream() << "Commit oplog entry must be greater than or equal to commit "
-                                   "timestamp due to causal consistency. commit timestamp: "
-                                << commitTimestamp.toBSON()
-                                << ", commit oplog entry optime: "
-                                << commitOplogSlot.opTime.toBSON());
+        // On secondary, we generate a fake empty oplog slot, since it's not used by opObserver.
+        OplogSlot commitOplogSlot;
+        boost::optional<OplogSlotReserver> oplogSlotReserver;
+
+        // On primary, we reserve an oplog slot before committing the transaction so that no
+        // writes that are causally related to the transaction commit enter the oplog at a
+        // timestamp earlier than the commit oplog entry.
+        if (opCtx->writesAreReplicated()) {
+            oplogSlotReserver.emplace(opCtx);
+            commitOplogSlot = oplogSlotReserver->getReservedOplogSlot();
+            invariant(commitOplogSlot.opTime.getTimestamp() >= commitTimestamp,
+                      str::stream() << "Commit oplog entry must be greater than or equal to commit "
+                                       "timestamp due to causal consistency. commit timestamp: "
+                                    << commitTimestamp.toBSON()
+                                    << ", commit oplog entry optime: "
+                                    << commitOplogSlot.opTime.toBSON());
+        }
 
         // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
         // into the session. We also do not want to write to storage with the mutex locked.
@@ -1314,7 +1285,7 @@ void TransactionParticipant::reportStashedState(BSONObjBuilder* builder) const {
     }
 }
 
-void TransactionParticipant::reportUnstashedState(repl::ReadConcernArgs readConcernArgs,
+void TransactionParticipant::reportUnstashedState(OperationContext* opCtx,
                                                   BSONObjBuilder* builder) const {
     stdx::lock_guard<stdx::mutex> lm(_metricsMutex);
 
@@ -1327,7 +1298,7 @@ void TransactionParticipant::reportUnstashedState(repl::ReadConcernArgs readConc
     if (!singleTransactionStats.isForMultiDocumentTransaction() ||
         singleTransactionStats.isActive() || singleTransactionStats.isEnded()) {
         BSONObjBuilder transactionBuilder;
-        _reportTransactionStats(lm, &transactionBuilder, readConcernArgs);
+        _reportTransactionStats(lm, &transactionBuilder, repl::ReadConcernArgs::get(opCtx));
         builder->append("transaction", transactionBuilder.obj());
     }
 }
@@ -1441,7 +1412,8 @@ void TransactionParticipant::_reportTransactionStats(WithLock wl,
 std::string TransactionParticipant::_transactionInfoForLog(
     const SingleThreadedLockStats* lockStats,
     TransactionState::StateFlag terminationCause,
-    repl::ReadConcernArgs readConcernArgs) {
+    repl::ReadConcernArgs readConcernArgs,
+    bool wasPrepared) {
     invariant(lockStats);
     invariant(terminationCause == TransactionState::kCommitted ||
               terminationCause == TransactionState::kAborted);
@@ -1494,6 +1466,13 @@ std::string TransactionParticipant::_transactionInfoForLog(
     s << " "
       << duration_cast<Milliseconds>(singleTransactionStats.getDuration(tickSource, curTick));
 
+    s << " wasPrepared:" << wasPrepared;
+    if (wasPrepared) {
+        s << " totalPreparedDurationMicros:"
+          << durationCount<Microseconds>(
+                 singleTransactionStats.getPreparedDuration(tickSource, curTick));
+    }
+
     return s.str();
 }
 
@@ -1507,9 +1486,10 @@ void TransactionParticipant::_logSlowTransaction(WithLock wl,
         // Log the transaction if its duration is longer than the slowMS command threshold.
         if (_transactionMetricsObserver.getSingleTransactionStats().getDuration(
                 tickSource, tickSource->getTicks()) > Milliseconds(serverGlobalParams.slowMS)) {
+            bool wasPrepared = !_prepareOpTime.isNull();
             log(logger::LogComponent::kTransaction)
-                << "transaction "
-                << _transactionInfoForLog(lockStats, terminationCause, readConcernArgs);
+                << "transaction " << _transactionInfoForLog(
+                                         lockStats, terminationCause, readConcernArgs, wasPrepared);
         }
     }
 }

@@ -7,7 +7,12 @@
 
 (function() {
     "use strict";
-    const coll = db.jstests_currentop;
+    const coll = db.jstests_currentop_cursors;
+    // Will skip lsid tests if not in commands read mode.
+    const commandReadMode = db.getMongo().readMode() == "commands";
+
+    load("jstests/libs/fixture_helpers.js");  // for FixtureHelpers
+
     // Avoiding using the shell helper to avoid the implicit collection recreation.
     db.runCommand({drop: coll.getName()});
     assert.commandWorked(db.createCollection(coll.getName(), {capped: true, size: 1000}));
@@ -15,8 +20,8 @@
         assert.commandWorked(coll.insert({"val": i}));
     }
     /**
-     * runTest creates a new collection called jstests_currentop and then runs the provided find
-     * query. It calls $currentOp and does some basic assertions to make sure idleCursors is
+     * runTest creates a new collection called jstests_currentop_cursors and then runs the provided
+     * find query. It calls $currentOp and does some basic assertions to make sure idleCursors is
      * behaving as intended in each case.
      * findFunc: A function that runs a find query. Is expected to return a cursorID.
      *  Arbitrary code can be run in findFunc as long as it returns a cursorID.
@@ -36,7 +41,7 @@
                     {$match: {$and: [{type: "idleCursor"}, {"cursor.cursorId": findOut}]}}
                 ])
                 .toArray();
-        assert.eq(result[0].cursor.ns, coll.getFullName(), result);
+        assert.eq(result[0].ns, coll.getFullName(), result);
         assert.eq(result[0].cursor.originatingCommand.find, coll.getName(), result);
         assertFunc(findOut, result);
         const noIdle =
@@ -54,13 +59,27 @@
         assert.eq(noIdle.length, 0, tojson(noFlag));
     }
 
+    // Basic test with default values.
     runTest({
         findFunc: function() {
-            return assert.commandWorked(db.runCommand({find: "jstests_currentop", batchSize: 2}))
+            return assert
+                .commandWorked(db.runCommand({find: "jstests_currentop_cursors", batchSize: 2}))
                 .cursor.id;
         },
         assertFunc: function(cursorId, result) {
             assert.eq(result.length, 1, result);
+            // Plan summary does not exist on mongos, so skip this test on mongos.
+            if (!FixtureHelpers.isMongos(db)) {
+                assert.eq(result[0].planSummary, "COLLSCAN", result);
+            } else {
+                assert(!result[0].hasOwnProperty("planSummary"), result);
+            }
+            // Lsid will not exist if not in command read mode.
+            if (commandReadMode) {
+                assert(result[0].lsid.hasOwnProperty('id'), result);
+                assert(result[0].lsid.hasOwnProperty('uid'), result);
+            }
+            assert.eq(result[0].host, getHostName(), result);
             const idleCursor = result[0].cursor;
             assert.eq(idleCursor.nDocsReturned, 2, result);
             assert.eq(idleCursor.nBatchesReturned, 1, result);
@@ -69,13 +88,19 @@
             assert.eq(idleCursor.noCursorTimeout, false, result);
             assert.eq(idleCursor.originatingCommand.batchSize, 2, result);
             assert.lte(idleCursor.createdDate, idleCursor.lastAccessDate, result);
+            // Make sure that the top level fields do not also appear in the cursor subobject.
+            assert(!idleCursor.hasOwnProperty("planSummary"), result);
+            assert(!idleCursor.hasOwnProperty('host'), result);
+            assert(!idleCursor.hasOwnProperty('lsid'), result);
         }
     });
+
+    // Test that tailable, awaitData, and noCursorTimeout are set.
     runTest({
         findFunc: function() {
             return assert
                 .commandWorked(db.runCommand({
-                    find: "jstests_currentop",
+                    find: "jstests_currentop_cursors",
                     batchSize: 2,
                     tailable: true,
                     awaitData: true,
@@ -93,17 +118,20 @@
             assert.eq(idleCursor.originatingCommand.batchSize, 2, result);
         }
     });
+
+    // Test that dates are set correctly.
     runTest({
         findFunc: function() {
-            return assert.commandWorked(db.runCommand({find: "jstests_currentop", batchSize: 2}))
+            return assert
+                .commandWorked(db.runCommand({find: "jstests_currentop_cursors", batchSize: 2}))
                 .cursor.id;
         },
         assertFunc: function(cursorId, result) {
             const adminDB = db.getSiblingDB("admin");
             // Make sure the two cursors have different creation times.
             assert.soon(() => {
-                const secondCursor =
-                    assert.commandWorked(db.runCommand({find: "jstests_currentop", batchSize: 2}));
+                const secondCursor = assert.commandWorked(
+                    db.runCommand({find: "jstests_currentop_cursors", batchSize: 2}));
 
                 const secondResult =
                     adminDB
@@ -124,11 +152,12 @@
         }
     });
 
+    // Test larger batch size.
     runTest({
         findFunc: function() {
             return assert
-                .commandWorked(
-                    db.runCommand({find: "jstests_currentop", batchSize: 4, noCursorTimeout: true}))
+                .commandWorked(db.runCommand(
+                    {find: "jstests_currentop_cursors", batchSize: 4, noCursorTimeout: true}))
                 .cursor.id;
         },
         assertFunc: function(cursorId, result) {
@@ -141,16 +170,18 @@
         }
     });
 
+    // Test batchSize and nDocs are incremented correctly.
     runTest({
         findFunc: function() {
-            return assert.commandWorked(db.runCommand({find: "jstests_currentop", batchSize: 2}))
+            return assert
+                .commandWorked(db.runCommand({find: "jstests_currentop_cursors", batchSize: 2}))
                 .cursor.id;
         },
         assertFunc: function(cursorId, result) {
             const adminDB = db.getSiblingDB("admin");
             const originalAccess = result[0].cursor.lastAccessDate;
-            assert.commandWorked(
-                db.runCommand({getMore: cursorId, collection: "jstests_currentop", batchSize: 2}));
+            assert.commandWorked(db.runCommand(
+                {getMore: cursorId, collection: "jstests_currentop_cursors", batchSize: 2}));
             result =
                 adminDB
                     .aggregate([
@@ -166,7 +197,7 @@
             // creation.
             assert.soon(() => {
                 assert.commandWorked(db.runCommand(
-                    {getMore: cursorId, collection: "jstests_currentop", batchSize: 2}));
+                    {getMore: cursorId, collection: "jstests_currentop_cursors", batchSize: 2}));
                 result =
                     adminDB
                         .aggregate([
@@ -184,5 +215,44 @@
             });
         }
     });
+
+    // planSummary does not exist on Mongos, so skip this test.
+    if (!FixtureHelpers.isMongos(db)) {
+        runTest({
+            findFunc: function() {
+                assert.commandWorked(coll.createIndex({"val": 1}));
+                return assert
+                    .commandWorked(db.runCommand({
+                        find: "jstests_currentop_cursors",
+                        filter: {"val": {$gt: 2}},
+                        batchSize: 2
+                    }))
+                    .cursor.id;
+
+            },
+            assertFunc: function(cursorId, result) {
+                assert.eq(result.length, 1, result);
+                assert.eq(result[0].planSummary, "IXSCAN { val: 1 }", result);
+
+            }
+        });
+    }
+    // Test lsid.id value is correct if in commandReadMode.
+    if (commandReadMode) {
+        const session = db.getMongo().startSession();
+        runTest({
+            findFunc: function() {
+                const sessionDB = session.getDatabase("test");
+                return assert
+                    .commandWorked(
+                        sessionDB.runCommand({find: "jstests_currentop_cursors", batchSize: 2}))
+                    .cursor.id;
+            },
+            assertFunc: function(cursorId, result) {
+                assert.eq(result.length, 1, result);
+                assert.eq(session.getSessionId().id, result[0].lsid.id);
+            }
+        });
+    }
 
 })();

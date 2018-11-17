@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -37,6 +39,9 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/service_context.h"
+#include "mongo/s/catalog_cache.h"
+#include "mongo/s/grid.h"
+#include "mongo/util/net/socket_utils.h"
 
 namespace mongo {
 
@@ -78,10 +83,34 @@ std::vector<BSONObj> MongoProcessCommon::getCurrentOps(
     if (cursorMode == CurrentOpCursorMode::kIncludeCursors) {
 
         for (auto&& cursor : getIdleCursors(expCtx, userMode)) {
-            ops.push_back(BSON("type"
-                               << "idleCursor"
-                               << "cursor"
-                               << cursor.toBSON()));
+            BSONObjBuilder cursorObj;
+            auto ns = cursor.getNs();
+            auto lsid = cursor.getLsid();
+            cursorObj.append("type", "idleCursor");
+            cursorObj.append("host", getHostNameCached());
+            cursorObj.append("ns", ns->toString());
+            // If in legacy read mode, lsid is not present.
+            if (lsid) {
+                cursorObj.append("lsid", lsid->toBSON());
+            }
+            cursor.setNs(boost::none);
+            cursor.setLsid(boost::none);
+            // On mongos, planSummary is not present.
+            auto planSummaryData = cursor.getPlanSummary();
+            if (planSummaryData) {
+                auto planSummaryText = planSummaryData->toString();
+                // Plan summary has to appear in the top level object, not the cursor object.
+                // We remove it, create the op, then put it back.
+                cursor.setPlanSummary(boost::none);
+                cursorObj.append("planSummary", planSummaryText);
+                cursorObj.append("cursor", cursor.toBSON());
+                cursor.setPlanSummary(StringData(planSummaryText));
+            } else {
+                cursorObj.append("cursor", cursor.toBSON());
+            }
+            ops.emplace_back(cursorObj.obj());
+            cursor.setNs(ns);
+            cursor.setLsid(lsid);
         }
     }
 
@@ -108,4 +137,16 @@ bool MongoProcessCommon::keyPatternNamesExactPaths(const BSONObj& keyPattern,
     return nFieldsMatched == uniqueKeyPaths.size();
 }
 
+boost::optional<OID> MongoProcessCommon::refreshAndGetEpoch(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx, const NamespaceString& nss) const {
+    const bool forceRefreshFromThisThread = false;
+    auto routingInfo = uassertStatusOK(
+        Grid::get(expCtx->opCtx)
+            ->catalogCache()
+            ->getCollectionRoutingInfoWithRefresh(expCtx->opCtx, nss, forceRefreshFromThisThread));
+    if (auto chunkManager = routingInfo.cm()) {
+        return chunkManager->getVersion().epoch();
+    }
+    return boost::none;
+}
 }  // namespace mongo

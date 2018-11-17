@@ -1,26 +1,27 @@
 // wiredtiger_kv_engine.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
- *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -303,9 +304,8 @@ public:
                     WT_SESSION* s = session->getSession();
                     invariantWTOK(s->checkpoint(s, "use_timestamp=true"));
 
-                    // Now that the checkpoint is durable, publish the previously recorded stable
-                    // timestamp and oplog needed to recover from it.
-                    _lastStableCheckpointTimestamp.store(stableTimestamp.asULL());
+                    // Now that the checkpoint is durable, publish the oplog needed to recover
+                    // from it.
                     _oplogNeededForCrashRecovery.store(oplogNeededForRollback.asULL());
                 }
             } catch (const WriteConflictException&) {
@@ -348,10 +348,6 @@ public:
         }
     }
 
-    std::uint64_t getLastStableCheckpointTimestamp() const {
-        return _lastStableCheckpointTimestamp.load();
-    }
-
     std::uint64_t getOplogNeededForCrashRecovery() const {
         return _oplogNeededForCrashRecovery.load();
     }
@@ -380,10 +376,6 @@ private:
 
     bool _hasTriggeredFirstStableCheckpoint = false;
 
-    // The earliest stable timestamp at which the last checkpoint could have been taken. The
-    // checkpoint might have used a newer stable timestamp if stable was updated concurrently with
-    // checkpointing.
-    AtomicWord<std::uint64_t> _lastStableCheckpointTimestamp;
     AtomicWord<std::uint64_t> _oplogNeededForCrashRecovery;
 };
 
@@ -577,7 +569,10 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     WiredTigerSession session(_conn);
     if (!_readOnly && repair && _hasUri(session.getSession(), _sizeStorerUri)) {
         log() << "Repairing size cache";
-        fassertNoTrace(28577, _salvageIfNeeded(_sizeStorerUri.c_str()));
+
+        auto status = _salvageIfNeeded(_sizeStorerUri.c_str());
+        if (status.code() != ErrorCodes::DataModifiedByRepair)
+            fassertNoTrace(28577, status);
     }
 
     _sizeStorer = std::make_unique<WiredTigerSizeStorer>(_conn, _sizeStorerUri, _readOnly);
@@ -653,22 +648,26 @@ void WiredTigerKVEngine::_openWiredTiger(const std::string& path, const std::str
             severe() << kWTRepairMsg;
             fassertFailedNoTrace(50944);
         }
-
-        warning() << "Attempting to salvage WiredTiger metadata";
-        configStr = wtOpenConfig + ",salvage=true";
-        ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
-        if (!ret) {
-            StorageRepairObserver::get(getGlobalServiceContext())
-                ->onModification("WiredTiger metadata salvaged");
-            return;
-        }
-
-        severe() << "Failed to salvage WiredTiger metadata: " + wtRCToStatus(ret).reason();
-        fassertFailedNoTrace(50947);
     }
 
     severe() << "Reason: " << wtRCToStatus(ret).reason();
-    fassertFailedNoTrace(28595);
+    if (!_inRepairMode) {
+        fassertFailedNoTrace(28595);
+    }
+
+    // Always attempt to salvage metadata regardless of error code when in repair mode.
+
+    warning() << "Attempting to salvage WiredTiger metadata";
+    configStr = wtOpenConfig + ",salvage=true";
+    ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
+    if (!ret) {
+        StorageRepairObserver::get(getGlobalServiceContext())
+            ->onModification("WiredTiger metadata salvaged");
+        return;
+    }
+
+    severe() << "Failed to salvage WiredTiger metadata: " + wtRCToStatus(ret).reason();
+    fassertFailedNoTrace(50947);
 }
 
 void WiredTigerKVEngine::cleanShutdown() {
@@ -1060,7 +1059,7 @@ std::unique_ptr<RecordStore> WiredTigerKVEngine::getGroupedRecordStore(
         if (options.cappedSize) {
             params.cappedMaxSize = options.cappedSize;
         } else {
-            params.cappedMaxSize = 4096;
+            params.cappedMaxSize = kDefaultCappedSizeBytes;
         }
     }
     params.cappedMaxDocs = -1;
@@ -1659,7 +1658,7 @@ boost::optional<Timestamp> WiredTigerKVEngine::getLastStableRecoveryTimestamp() 
         return stable;
     }
 
-    const auto ret = _checkpointThread->getLastStableCheckpointTimestamp();
+    const auto ret = _getCheckpointTimestamp();
     if (ret) {
         return Timestamp(ret);
     }
@@ -1741,6 +1740,15 @@ Timestamp WiredTigerKVEngine::getOldestTimestamp() const {
 
 Timestamp WiredTigerKVEngine::getInitialDataTimestamp() const {
     return Timestamp(_initialDataTimestamp.load());
+}
+
+std::uint64_t WiredTigerKVEngine::_getCheckpointTimestamp() const {
+    char buf[(2 * 8 /*bytes in hex*/) + 1 /*nul terminator*/];
+    invariantWTOK(_conn->query_timestamp(_conn, buf, "get=last_checkpoint"));
+
+    std::uint64_t tmp;
+    fassert(50963, parseNumberFromStringWithBase(buf, 16, &tmp));
+    return tmp;
 }
 
 }  // namespace mongo

@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -130,9 +132,8 @@ public:
         coll->getIndexCatalog()->findIndexesByKeyPattern(&_opCtx, BSON("a" << 1), false, &indexes);
         ASSERT_EQ(indexes.size(), 1U);
 
-        DistinctParams params;
-        params.descriptor = indexes[0];
-        params.direction = 1;
+        DistinctParams params{&_opCtx, *indexes[0]};
+        params.scanDirection = 1;
         // Distinct-ing over the 0-th field of the keypattern.
         params.fieldNo = 0;
         // We'll look at all values in the bounds.
@@ -142,7 +143,7 @@ public:
         params.bounds.fields.push_back(oil);
 
         WorkingSet ws;
-        DistinctScan distinct(&_opCtx, params, &ws);
+        DistinctScan distinct(&_opCtx, std::move(params), &ws);
 
         WorkingSetID wsid;
         // Get our first result.
@@ -197,12 +198,11 @@ public:
         coll->getIndexCatalog()->findIndexesByKeyPattern(&_opCtx, BSON("a" << 1), false, &indexes);
         verify(indexes.size() == 1);
 
-        DistinctParams params;
-        params.descriptor = indexes[0];
-        ASSERT_TRUE(params.descriptor->isMultikey(&_opCtx));
+        DistinctParams params{&_opCtx, *indexes[0]};
+        ASSERT_TRUE(params.isMultiKey);
 
-        verify(params.descriptor);
-        params.direction = 1;
+        verify(params.accessMethod);
+        params.scanDirection = 1;
         // Distinct-ing over the 0-th field of the keypattern.
         params.fieldNo = 0;
         // We'll look at all values in the bounds.
@@ -212,7 +212,7 @@ public:
         params.bounds.fields.push_back(oil);
 
         WorkingSet ws;
-        DistinctScan distinct(&_opCtx, params, &ws);
+        DistinctScan distinct(&_opCtx, std::move(params), &ws);
 
         // We should see each number in the range [1, 6] exactly once.
         std::set<int> seen;
@@ -266,11 +266,9 @@ public:
             &_opCtx, BSON("a" << 1 << "b" << 1), false, &indices);
         ASSERT_EQ(1U, indices.size());
 
-        DistinctParams params;
-        params.descriptor = indices[0];
-        ASSERT_TRUE(params.descriptor);
+        DistinctParams params{&_opCtx, *indices[0]};
 
-        params.direction = 1;
+        params.scanDirection = 1;
         params.fieldNo = 1;
         params.bounds.isSimpleRange = false;
 
@@ -283,7 +281,7 @@ public:
         params.bounds.fields.push_back(bOil);
 
         WorkingSet ws;
-        DistinctScan distinct(&_opCtx, params, &ws);
+        DistinctScan distinct(&_opCtx, std::move(params), &ws);
 
         WorkingSetID wsid;
         PlanStage::StageState state;

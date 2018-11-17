@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
@@ -158,15 +160,30 @@ void ClusterCommandTestFixture::runCommandInspectRequests(BSONObj cmd,
     future.timed_get(kFutureTimeout);
 }
 
-void ClusterCommandTestFixture::runCommandMaxErrors(BSONObj cmd,
-                                                    ErrorCodes::Error code,
-                                                    bool isTargeted) {
+void ClusterCommandTestFixture::expectAbortTransaction() {
+    onCommandForPoolExecutor([](const executor::RemoteCommandRequest& request) {
+        auto cmdName = request.cmdObj.firstElement().fieldNameStringData();
+        ASSERT_EQ(cmdName, "abortTransaction");
+        return BSON("ok" << 1);
+    });
+}
+
+void ClusterCommandTestFixture::runTxnCommandMaxErrors(BSONObj cmd,
+                                                       ErrorCodes::Error code,
+                                                       bool isTargeted) {
     auto future = launchAsync([&] { runCommand(cmd); });
 
     size_t numRetries =
         isTargeted ? kMaxNumStaleVersionRetries : kMaxNumStaleVersionRetries * numShards;
     for (size_t i = 0; i < numRetries; i++) {
         expectReturnsError(code);
+    }
+
+    // In a transaction, each targeted shard is sent abortTransaction when the router exhausts its
+    // retries.
+    size_t numTargetedShards = isTargeted ? 1 : 2;
+    for (size_t i = 0; i < numTargetedShards; i++) {
+        expectAbortTransaction();
     }
 
     future.timed_get(kFutureTimeout);
@@ -199,13 +216,13 @@ void ClusterCommandTestFixture::testRetryOnSnapshotError(BSONObj targetedCmd,
 void ClusterCommandTestFixture::testMaxRetriesSnapshotErrors(BSONObj targetedCmd,
                                                              BSONObj scatterGatherCmd) {
     // Target one shard.
-    runCommandMaxErrors(_makeCmd(targetedCmd), ErrorCodes::SnapshotUnavailable, true);
-    runCommandMaxErrors(_makeCmd(targetedCmd), ErrorCodes::SnapshotTooOld, true);
+    runTxnCommandMaxErrors(_makeCmd(targetedCmd), ErrorCodes::SnapshotUnavailable, true);
+    runTxnCommandMaxErrors(_makeCmd(targetedCmd), ErrorCodes::SnapshotTooOld, true);
 
     // Target all shards
     if (!scatterGatherCmd.isEmpty()) {
-        runCommandMaxErrors(_makeCmd(scatterGatherCmd), ErrorCodes::SnapshotUnavailable, false);
-        runCommandMaxErrors(_makeCmd(scatterGatherCmd), ErrorCodes::SnapshotTooOld, false);
+        runTxnCommandMaxErrors(_makeCmd(scatterGatherCmd), ErrorCodes::SnapshotUnavailable, false);
+        runTxnCommandMaxErrors(_makeCmd(scatterGatherCmd), ErrorCodes::SnapshotTooOld, false);
     }
 }
 

@@ -4,6 +4,8 @@
 (function() {
     "use strict";
 
+    load("jstests/sharding/libs/sharded_transactions_helpers.js");
+
     const dbName = "test";
     const collName = "foo";
 
@@ -27,9 +29,7 @@
     // No database versioned requests have been sent to Shard0, so it is stale.
     assert.commandWorked(sessionDB.runCommand({distinct: collName, key: "_id", query: {_id: 0}}));
 
-    // TODO SERVER-36304: Change this to commitTransaction once multi shard transactions can be
-    // committed through mongos.
-    session.abortTransaction();
+    session.commitTransaction();
 
     //
     // Stale database version on second command to a shard should fail.
@@ -50,7 +50,10 @@
         ErrorCodes.NoSuchTransaction);
     assert.eq(res.errorLabels, ["TransientTransactionError"]);
 
-    session.abortTransaction();
+    assertNoSuchTransactionOnAllShards(
+        st, session.getSessionId(), session.getTxnNumber_forTesting());
+    assert.commandFailedWithCode(session.abortTransaction_forTesting(),
+                                 ErrorCodes.NoSuchTransaction);
 
     //
     // Stale database version on first command to a new shard should succeed.
@@ -83,14 +86,14 @@
     assert.commandWorked(
         sessionOtherDB.runCommand({distinct: otherCollName, key: "_id", query: {_id: 0}}));
 
-    // TODO SERVER-36304: Change this to commitTransaction.
-    session.abortTransaction();
+    session.commitTransaction();
 
     //
     // NoSuchTransaction should be returned if the router exhausts its retries.
     //
 
     st.ensurePrimaryShard(dbName, st.shard0.shardName);
+    st.ensurePrimaryShard(otherDbName, st.shard1.shardName);
 
     // Disable database metadata refreshes on the stale shard so it will indefinitely return a stale
     // version error.
@@ -99,13 +102,20 @@
 
     session.startTransaction();
 
+    // Target Shard1, to verify the transaction on it is implicitly aborted later.
+    assert.commandWorked(sessionOtherDB.runCommand({find: otherCollName}));
+
     // Target the first database which is on Shard0. The shard is stale and won't refresh its
     // metadata, so mongos should exhaust its retries and implicitly abort the transaction.
     assert.commandFailedWithCode(
         sessionDB.runCommand({distinct: collName, key: "_id", query: {_id: 0}}),
         ErrorCodes.NoSuchTransaction);
 
-    session.abortTransaction();
+    // Verify all shards aborted the transaction.
+    assertNoSuchTransactionOnAllShards(
+        st, session.getSessionId(), session.getTxnNumber_forTesting());
+    assert.commandFailedWithCode(session.abortTransaction_forTesting(),
+                                 ErrorCodes.NoSuchTransaction);
 
     assert.commandWorked(st.rs0.getPrimary().adminCommand(
         {configureFailPoint: "skipDatabaseVersionMetadataRefresh", mode: "off"}));

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -59,16 +61,15 @@ using stdx::make_unique;
 const char* SubplanStage::kStageType = "SUBPLAN";
 
 SubplanStage::SubplanStage(OperationContext* opCtx,
-                           Collection* collection,
+                           const Collection* collection,
                            WorkingSet* ws,
                            const QueryPlannerParams& params,
                            CanonicalQuery* cq)
-    : PlanStage(kStageType, opCtx),
-      _collection(collection),
+    : RequiresCollectionStage(kStageType, opCtx, collection),
       _ws(ws),
       _plannerParams(params),
       _query(cq) {
-    invariant(_collection);
+    invariant(cq);
     invariant(_query->root()->matchType() == MatchExpression::OR);
     invariant(_query->root()->numChildren(),
               "Cannot use a SUBPLAN stage for an $or with no children");
@@ -134,7 +135,7 @@ Status SubplanStage::planSubqueries() {
 
         // Plan the i-th child. We might be able to find a plan for the i-th child in the plan
         // cache. If there's no cached plan, then we generate and rank plans using the MPS.
-        const auto* planCache = _collection->infoCache()->getPlanCache();
+        const auto* planCache = collection()->infoCache()->getPlanCache();
 
         // Populate branchResult->cachedSolution if an active cachedSolution entry exists.
         if (planCache->shouldCacheQuery(*branchResult->canonicalQuery)) {
@@ -260,7 +261,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
             invariant(_children.empty());
             _children.emplace_back(
                 stdx::make_unique<MultiPlanStage>(getOpCtx(),
-                                                  _collection,
+                                                  collection(),
                                                   branchResult->canonicalQuery.get(),
                                                   MultiPlanStage::CachingMode::SometimesCache));
             ON_BLOCK_EXIT([&] {
@@ -273,7 +274,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
             for (size_t ix = 0; ix < branchResult->solutions.size(); ++ix) {
                 PlanStage* nextPlanRoot;
                 invariant(StageBuilder::build(getOpCtx(),
-                                              _collection,
+                                              collection(),
                                               *branchResult->canonicalQuery,
                                               *branchResult->solutions[ix],
                                               _ws,
@@ -357,7 +358,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
     _ws->clear();
     PlanStage* root;
     invariant(StageBuilder::build(
-        getOpCtx(), _collection, *_query, *_compositeSolution.get(), _ws, &root));
+        getOpCtx(), collection(), *_query, *_compositeSolution.get(), _ws, &root));
     invariant(_children.empty());
     _children.emplace_back(root);
 
@@ -389,7 +390,7 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
     if (1 == solutions.size()) {
         PlanStage* root;
         // Only one possible plan.  Run it.  Build the stages from the solution.
-        verify(StageBuilder::build(getOpCtx(), _collection, *_query, *solutions[0], _ws, &root));
+        verify(StageBuilder::build(getOpCtx(), collection(), *_query, *solutions[0], _ws, &root));
         invariant(_children.empty());
         _children.emplace_back(root);
 
@@ -402,7 +403,7 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
         // Many solutions. Create a MultiPlanStage to pick the best, update the cache,
         // and so on. The working set will be shared by all candidate plans.
         invariant(_children.empty());
-        _children.emplace_back(new MultiPlanStage(getOpCtx(), _collection, _query));
+        _children.emplace_back(new MultiPlanStage(getOpCtx(), collection(), _query));
         MultiPlanStage* multiPlanStage = static_cast<MultiPlanStage*>(child().get());
 
         for (size_t ix = 0; ix < solutions.size(); ++ix) {
@@ -413,7 +414,7 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
             // version of StageBuild::build when WorkingSet is shared
             PlanStage* nextPlanRoot;
             verify(StageBuilder::build(
-                getOpCtx(), _collection, *_query, *solutions[ix], _ws, &nextPlanRoot));
+                getOpCtx(), collection(), *_query, *solutions[ix], _ws, &nextPlanRoot));
 
             // Takes ownership of 'nextPlanRoot'.
             multiPlanStage->addPlan(std::move(solutions[ix]), nextPlanRoot, _ws);

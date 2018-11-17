@@ -43,11 +43,7 @@
     ];
 
     // Verify that all commands that can start a transaction are able to retry on snapshot errors.
-    //
-    // TODO SERVER-36304: Until participants send their vote to the coordinator, transactions with
-    // multiples shards cannot be committed through mongos. Once this is possible remove the
-    // multipleShards parameter.
-    function runTest(st, collName, numShardsToError, errorCode, multipleShards) {
+    function runTest(st, collName, numShardsToError, errorCode) {
         const session = st.s.startSession();
         const sessionDB = session.getDatabase(dbName);
 
@@ -64,13 +60,7 @@
             session.startTransaction({readConcern: {level: "snapshot"}});
             assert.commandWorked(sessionDB.runCommand(commandBody));
 
-            if (multipleShards) {
-                // TODO SERVER-36304: Multi-shard transactions cannot be committed through mongos
-                // until participants send their vote to the coordinator during two phase commit.
-                session.abortTransaction();
-            } else {
-                session.commitTransaction();
-            }
+            session.commitTransaction();
 
             unsetFailCommandOnEachShard(st, numShardsToError);
 
@@ -88,13 +78,7 @@
             session.startTransaction({readConcern: {level: "snapshot"}});
             assert.commandWorked(sessionDB.runCommand(commandBody));
 
-            if (multipleShards) {
-                // TODO SERVER-36304: Multi-shard transactions cannot be committed through mongos
-                // until participants send their vote to the coordinator during two phase commit.
-                session.abortTransaction();
-            } else {
-                session.commitTransaction();
-            }
+            session.commitTransaction();
 
             unsetFailCommandOnEachShard(st, numShardsToError);
 
@@ -114,9 +98,13 @@
                                                      ErrorCodes.NoSuchTransaction);
             assert.eq(res.errorLabels, ["TransientTransactionError"]);
 
-            session.abortTransaction();
-
             unsetFailCommandOnEachShard(st, numShardsToError);
+
+            assertNoSuchTransactionOnAllShards(
+                st, session.getSessionId(), session.getTxnNumber_forTesting());
+
+            assert.commandFailedWithCode(session.abortTransaction_forTesting(),
+                                         ErrorCodes.NoSuchTransaction);
         }
     }
 
@@ -162,7 +150,7 @@
 
     // Test only one shard throwing the error when more than one are targeted.
     for (let errorCode of kSnapshotErrors) {
-        runTest(st, collName, 1, errorCode, 2);
+        runTest(st, collName, 1, errorCode, true);
     }
 
     st.stop();

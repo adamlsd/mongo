@@ -21,9 +21,9 @@ selector:
   - jstests/core/txns/disallow_operations_on_prepared_transaction.js
   - jstests/core/txns/empty_prepare.js
   - jstests/core/txns/ensure_active_txn_for_prepare_transaction.js
+  - jstests/core/txns/errors_on_committed_transaction.js
   - jstests/core/txns/no_new_transactions_when_prepared_transaction_in_progress.js
   - jstests/core/txns/no_writes_to_config_transactions_with_prepared_transaction.js
-  - jstests/core/txns/prepare_committed_transaction.js
   - jstests/core/txns/prepare_conflict.js
   - jstests/core/txns/prepare_nonexistent_transaction.js
   - jstests/core/txns/prepare_prepared_transaction.js
@@ -52,11 +52,6 @@ selector:
   # Writes to the local database are not allowed through mongos.
   # TODO SERVER-28756: Mongos CSRS write retry logic drops txnNumbers.
   - jstests/core/txns/banned_txn_dbs.js
-
-  # TODO SERVER-36260: Mongos should reject commands with txnNumbers that aren't allowed in a
-  # transaction.
-  # TODO SERVER-33709: Support readConcern snapshot in cluster count command.
-  - jstests/core/txns/commands_not_allowed_in_txn.js
 
   # TODO SERVER-35825: Mongos should only allow readConcern on writes that start transactions.
   - jstests/core/txns/no_read_concern_snapshot_outside_txn.js

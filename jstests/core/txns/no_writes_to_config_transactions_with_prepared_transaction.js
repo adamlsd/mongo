@@ -45,7 +45,6 @@
     }));
     assert.commandWorked(sessionDB.adminCommand({
         prepareTransaction: 1,
-        coordinatorId: "dummy",
         txnNumber: NumberLong(0),
         stmtId: NumberInt(1),
         autocommit: false
@@ -95,7 +94,7 @@
         {abortTransaction: 1, txnNumber: NumberLong(0), stmtid: NumberInt(2), autocommit: false}));
     session.endSession();
 
-    session2.abortTransaction();
+    session2.abortTransaction_forTesting();
     session2.endSession();
 
 }());

@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -61,13 +63,11 @@ CachedPlanStage::CachedPlanStage(OperationContext* opCtx,
                                  const QueryPlannerParams& params,
                                  size_t decisionWorks,
                                  PlanStage* root)
-    : PlanStage(kStageType, opCtx),
-      _collection(collection),
+    : RequiresCollectionStage(kStageType, opCtx, collection),
       _ws(ws),
       _canonicalQuery(cq),
       _plannerParams(params),
       _decisionWorks(decisionWorks) {
-    invariant(_collection);
     _children.emplace_back(root);
 }
 
@@ -195,7 +195,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
 
     if (shouldCache) {
         // Deactivate the current cache entry.
-        PlanCache* cache = _collection->infoCache()->getPlanCache();
+        PlanCache* cache = collection()->infoCache()->getPlanCache();
         cache->deactivate(*_canonicalQuery);
     }
 
@@ -222,7 +222,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
         PlanStage* newRoot;
         // Only one possible plan. Build the stages from the solution.
         verify(StageBuilder::build(
-            getOpCtx(), _collection, *_canonicalQuery, *solutions[0], _ws, &newRoot));
+            getOpCtx(), collection(), *_canonicalQuery, *solutions[0], _ws, &newRoot));
         _children.emplace_back(newRoot);
         _replannedQs = std::move(solutions.back());
         solutions.pop_back();
@@ -240,7 +240,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
     auto cachingMode = shouldCache ? MultiPlanStage::CachingMode::AlwaysCache
                                    : MultiPlanStage::CachingMode::NeverCache;
     _children.emplace_back(
-        new MultiPlanStage(getOpCtx(), _collection, _canonicalQuery, cachingMode));
+        new MultiPlanStage(getOpCtx(), collection(), _canonicalQuery, cachingMode));
     MultiPlanStage* multiPlanStage = static_cast<MultiPlanStage*>(child().get());
 
     for (size_t ix = 0; ix < solutions.size(); ++ix) {
@@ -250,7 +250,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
 
         PlanStage* nextPlanRoot;
         verify(StageBuilder::build(
-            getOpCtx(), _collection, *_canonicalQuery, *solutions[ix], _ws, &nextPlanRoot));
+            getOpCtx(), collection(), *_canonicalQuery, *solutions[ix], _ws, &nextPlanRoot));
 
         // Takes ownership of 'nextPlanRoot'.
         multiPlanStage->addPlan(std::move(solutions[ix]), nextPlanRoot, _ws);
@@ -306,7 +306,7 @@ const SpecificStats* CachedPlanStage::getSpecificStats() const {
 void CachedPlanStage::updatePlanCache() {
     const double score = PlanRanker::scoreTree(getStats()->children[0].get());
 
-    PlanCache* cache = _collection->infoCache()->getPlanCache();
+    PlanCache* cache = collection()->infoCache()->getPlanCache();
     Status fbs = cache->feedback(*_canonicalQuery, score);
     if (!fbs.isOK()) {
         LOG(5) << _canonicalQuery->ns() << ": Failed to update cache with feedback: " << redact(fbs)

@@ -24,7 +24,6 @@
               "the session");
     assert.commandFailedWithCode(sessionDB.adminCommand({
         prepareTransaction: 1,
-        coordinatorId: "dummy",
         txnNumber: NumberLong(0),
         stmtId: NumberInt(1),
         autocommit: false
@@ -35,11 +34,10 @@
         "Test that we can't call prepareTransaction if the most recent transaction was aborted");
     session.startTransaction();
     assert.commandWorked(sessionColl.insert({_id: 1}));
-    session.abortTransaction();
+    session.abortTransaction_forTesting();
 
     assert.commandFailedWithCode(sessionDB.adminCommand({
         prepareTransaction: 1,
-        coordinatorId: "dummy",
         txnNumber: NumberLong(0),
         stmtId: NumberInt(1),
         autocommit: false
@@ -54,7 +52,6 @@
 
     assert.commandFailedWithCode(sessionDB.adminCommand({
         prepareTransaction: 1,
-        coordinatorId: "dummy",
         txnNumber: NumberLong(1),
         stmtId: NumberInt(1),
         autocommit: false

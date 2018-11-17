@@ -1,29 +1,31 @@
+
 /**
- * Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- * This program is free software: you can redistribute it and/or  modify
- * it under the terms of the GNU Affero General Public License, version 3,
- * as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
  *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
- * As a special exception, the copyright holders give permission to link the
- * code of portions of this program with the OpenSSL library under certain
- * conditions as described in each individual source file and distribute
- * linked combinations including the program with the OpenSSL library. You
- * must comply with the GNU Affero General Public License in all respects
- * for all of the code used other than as permitted herein. If you modify
- * file(s) with this exception, you may extend this exception to your
- * version of the file(s), but you are not obligated to do so. If you do not
- * wish to do so, delete this exception statement from your version. If you
- * delete this exception statement from all source files in the program,
- * then also delete it in the license file.
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -51,7 +53,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/server_options.h"
-#include "mongo/db/session_catalog.h"
+#include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/db/views/durable_view_catalog.h"
 #include "mongo/scripting/engine.h"
@@ -116,12 +118,13 @@ void onWriteOpCompleted(OperationContext* opCtx,
         return;
 
     if (session) {
-        session->onWriteOpCompletedOnPrimary(opCtx,
-                                             *opCtx->getTxnNumber(),
-                                             std::move(stmtIdsWritten),
-                                             lastStmtIdWriteOpTime,
-                                             lastStmtIdWriteDate,
-                                             txnState);
+        const auto txnParticipant = TransactionParticipant::get(opCtx);
+        txnParticipant->onWriteOpCompletedOnPrimary(opCtx,
+                                                    *opCtx->getTxnNumber(),
+                                                    std::move(stmtIdsWritten),
+                                                    lastStmtIdWriteOpTime,
+                                                    lastStmtIdWriteDate,
+                                                    txnState);
     }
 }
 
@@ -186,7 +189,9 @@ OpTimeBundle replLogUpdate(OperationContext* opCtx,
     if (session) {
         sessionInfo.setSessionId(*opCtx->getLogicalSessionId());
         sessionInfo.setTxnNumber(*opCtx->getTxnNumber());
-        oplogLink.prevOpTime = session->getLastWriteOpTime(*opCtx->getTxnNumber());
+
+        const auto txnParticipant = TransactionParticipant::get(opCtx);
+        oplogLink.prevOpTime = txnParticipant->getLastWriteOpTime(*opCtx->getTxnNumber());
     }
 
     OpTimeBundle opTimes;
@@ -250,7 +255,9 @@ OpTimeBundle replLogDelete(OperationContext* opCtx,
     if (session) {
         sessionInfo.setSessionId(*opCtx->getLogicalSessionId());
         sessionInfo.setTxnNumber(*opCtx->getTxnNumber());
-        oplogLink.prevOpTime = session->getLastWriteOpTime(*opCtx->getTxnNumber());
+
+        const auto txnParticipant = TransactionParticipant::get(opCtx);
+        oplogLink.prevOpTime = txnParticipant->getLastWriteOpTime(*opCtx->getTxnNumber());
     }
 
     OpTimeBundle opTimes;
@@ -413,7 +420,7 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
         AuthorizationManager::get(opCtx->getServiceContext())
             ->logOp(opCtx, "i", nss, it->doc, nullptr);
         auto opTime = opTimeList.empty() ? repl::OpTime() : opTimeList[index];
-        shardObserveInsertOp(opCtx, nss, it->doc, opTime, fromMigrate);
+        shardObserveInsertOp(opCtx, nss, it->doc, opTime, fromMigrate, inMultiDocumentTransaction);
     }
 
     if (nss.coll() == "system.js") {
@@ -428,7 +435,7 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
         }
     } else if (nss == NamespaceString::kSessionTransactionsTableNamespace && !lastOpTime.isNull()) {
         for (auto it = first; it != last; it++) {
-            SessionCatalog::get(opCtx)->invalidateSessions(opCtx, it->doc);
+            MongoDSessionCatalog::invalidateSessions(opCtx, it->doc);
         }
     }
 }
@@ -482,7 +489,8 @@ void OpObserverImpl::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArg
                                  args.nss,
                                  args.updateArgs.updatedDoc,
                                  opTime.writeOpTime,
-                                 opTime.prePostImageOpTime);
+                                 opTime.prePostImageOpTime,
+                                 inMultiDocumentTransaction);
         }
     }
 
@@ -496,7 +504,7 @@ void OpObserverImpl::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArg
         FeatureCompatibilityVersion::onInsertOrUpdate(opCtx, args.updateArgs.updatedDoc);
     } else if (args.nss == NamespaceString::kSessionTransactionsTableNamespace &&
                !opTime.writeOpTime.isNull()) {
-        SessionCatalog::get(opCtx)->invalidateSessions(opCtx, args.updateArgs.updatedDoc);
+        MongoDSessionCatalog::invalidateSessions(opCtx, args.updateArgs.updatedDoc);
     }
 }
 
@@ -542,8 +550,12 @@ void OpObserverImpl::onDelete(OperationContext* opCtx,
 
     if (nss != NamespaceString::kSessionTransactionsTableNamespace) {
         if (!fromMigrate) {
-            shardObserveDeleteOp(
-                opCtx, nss, documentKey, opTime.writeOpTime, opTime.prePostImageOpTime);
+            shardObserveDeleteOp(opCtx,
+                                 nss,
+                                 documentKey,
+                                 opTime.writeOpTime,
+                                 opTime.prePostImageOpTime,
+                                 inMultiDocumentTransaction);
         }
     }
 
@@ -558,7 +570,7 @@ void OpObserverImpl::onDelete(OperationContext* opCtx,
             uasserted(40670, "removing FeatureCompatibilityVersion document is not allowed");
     } else if (nss == NamespaceString::kSessionTransactionsTableNamespace &&
                !opTime.writeOpTime.isNull()) {
-        SessionCatalog::get(opCtx)->invalidateSessions(opCtx, documentKey);
+        MongoDSessionCatalog::invalidateSessions(opCtx, documentKey);
     }
 }
 
@@ -718,7 +730,7 @@ void OpObserverImpl::onDropDatabase(OperationContext* opCtx, const std::string& 
         50714, "dropping the admin database is not allowed.", dbName != NamespaceString::kAdminDb);
 
     if (dbName == NamespaceString::kSessionTransactionsTableNamespace.db()) {
-        SessionCatalog::get(opCtx)->invalidateSessions(opCtx, boost::none);
+        MongoDSessionCatalog::invalidateSessions(opCtx, boost::none);
     }
 
     NamespaceUUIDCache::get(opCtx).evictNamespacesInDatabase(dbName);
@@ -729,7 +741,8 @@ void OpObserverImpl::onDropDatabase(OperationContext* opCtx, const std::string& 
 
 repl::OpTime OpObserverImpl::onDropCollection(OperationContext* opCtx,
                                               const NamespaceString& collectionName,
-                                              OptionalCollectionUUID uuid) {
+                                              OptionalCollectionUUID uuid,
+                                              const CollectionDropType dropType) {
     const auto cmdNss = collectionName.getCommandNS();
     const auto cmdObj = BSON("drop" << collectionName.coll());
 
@@ -757,7 +770,7 @@ repl::OpTime OpObserverImpl::onDropCollection(OperationContext* opCtx,
     if (collectionName.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(opCtx, collectionName);
     } else if (collectionName == NamespaceString::kSessionTransactionsTableNamespace) {
-        SessionCatalog::get(opCtx)->invalidateSessions(opCtx, boost::none);
+        MongoDSessionCatalog::invalidateSessions(opCtx, boost::none);
     }
 
     AuthorizationManager::get(opCtx->getServiceContext())
@@ -934,8 +947,9 @@ OpTimeBundle logApplyOpsForTransaction(OperationContext* opCtx,
     repl::OplogLink oplogLink;
     sessionInfo.setSessionId(*opCtx->getLogicalSessionId());
     sessionInfo.setTxnNumber(*opCtx->getTxnNumber());
-    StmtId stmtId(0);
-    oplogLink.prevOpTime = session->getLastWriteOpTime(*opCtx->getTxnNumber());
+
+    const auto txnParticipant = TransactionParticipant::get(opCtx);
+    oplogLink.prevOpTime = txnParticipant->getLastWriteOpTime(*opCtx->getTxnNumber());
     // Until we support multiple oplog entries per transaction, prevOpTime should always be null.
     invariant(oplogLink.prevOpTime.isNull());
 
@@ -947,6 +961,8 @@ OpTimeBundle logApplyOpsForTransaction(OperationContext* opCtx,
             applyOpsBuilder.append("prepare", true);
         }
         auto applyOpCmd = applyOpsBuilder.done();
+        const StmtId stmtId(0);
+
         auto times = replLogApplyOps(
             opCtx, cmdNss, applyOpCmd, sessionInfo, stmtId, oplogLink, prepare, prepareOplogSlot);
 
@@ -969,14 +985,15 @@ void logCommitOrAbortForPreparedTransaction(OperationContext* opCtx,
                                             const OplogSlot& oplogSlot,
                                             const BSONObj& objectField,
                                             DurableTxnStateEnum durableState) {
-    invariant(session->isLockedTxnNumber(*opCtx->getTxnNumber()));
     const NamespaceString cmdNss{"admin", "$cmd"};
 
     OperationSessionInfo sessionInfo;
     repl::OplogLink oplogLink;
     sessionInfo.setSessionId(*opCtx->getLogicalSessionId());
     sessionInfo.setTxnNumber(*opCtx->getTxnNumber());
-    oplogLink.prevOpTime = session->getLastWriteOpTime(*opCtx->getTxnNumber());
+
+    const auto txnParticipant = TransactionParticipant::get(opCtx);
+    oplogLink.prevOpTime = txnParticipant->getLastWriteOpTime(*opCtx->getTxnNumber());
 
     const StmtId stmtId(1);
     const auto wallClockTime = getWallClockTimeForOpLog(opCtx);
@@ -985,6 +1002,11 @@ void logCommitOrAbortForPreparedTransaction(OperationContext* opCtx,
     // write conflict retry loop.
     invariant(!opCtx->getWriteUnitOfWork());
     invariant(!opCtx->lockState()->inAWriteUnitOfWork());
+
+    // We must not have a maximum lock timeout, since writing the commit or abort oplog entry for a
+    // prepared transaction must always succeed.
+    invariant(!opCtx->lockState()->hasMaxLockTimeout());
+
     writeConflictRetry(
         opCtx, "onPreparedTransactionCommitOrAbort", NamespaceString::kRsOplogNamespace.ns(), [&] {
 
@@ -1018,6 +1040,10 @@ void logCommitOrAbortForPreparedTransaction(OperationContext* opCtx,
 void OpObserverImpl::onTransactionCommit(OperationContext* opCtx,
                                          boost::optional<OplogSlot> commitOplogEntryOpTime,
                                          boost::optional<Timestamp> commitTimestamp) {
+    if (!opCtx->writesAreReplicated()) {
+        return;
+    }
+
     invariant(opCtx->getTxnNumber());
     Session* const session = OperationContextSession::get(opCtx);
     invariant(session);
@@ -1086,7 +1112,8 @@ void OpObserverImpl::onTransactionPrepare(OperationContext* opCtx, const OplogSl
     }
 }
 
-void OpObserverImpl::onTransactionAbort(OperationContext* opCtx) {
+void OpObserverImpl::onTransactionAbort(OperationContext* opCtx,
+                                        boost::optional<OplogSlot> abortOplogEntryOpTime) {
     if (!opCtx->writesAreReplicated()) {
         return;
     }
@@ -1098,18 +1125,14 @@ void OpObserverImpl::onTransactionAbort(OperationContext* opCtx) {
     auto txnParticipant = TransactionParticipant::get(opCtx);
     invariant(txnParticipant);
 
-    if (!txnParticipant->transactionIsPrepared()) {
+    if (!abortOplogEntryOpTime) {
         invariant(!txnParticipant->transactionIsCommitted());
         return;
     }
 
-    // We write the oplog entry in a side transaction so that we do not commit the prepared
-    // transaction, since we must write the oplog entry before aborting the prepared transaction.
-    TransactionParticipant::SideTransactionBlock sideTxn(opCtx);
-
     AbortTransactionOplogObject cmdObj;
     logCommitOrAbortForPreparedTransaction(
-        opCtx, session, OplogSlot(), cmdObj.toBSON(), DurableTxnStateEnum::kAborted);
+        opCtx, session, *abortOplogEntryOpTime, cmdObj.toBSON(), DurableTxnStateEnum::kAborted);
 }
 
 void OpObserverImpl::onReplicationRollback(OperationContext* opCtx,
@@ -1126,7 +1149,7 @@ void OpObserverImpl::onReplicationRollback(OperationContext* opCtx,
     // If there were ops rolled back that were part of operations on a session, then invalidate
     // the session cache.
     if (rbInfo.rollbackSessionIds.size() > 0) {
-        SessionCatalog::get(opCtx)->invalidateSessions(opCtx, boost::none);
+        MongoDSessionCatalog::invalidateSessions(opCtx, boost::none);
     }
 
     // Reset the key manager cache.

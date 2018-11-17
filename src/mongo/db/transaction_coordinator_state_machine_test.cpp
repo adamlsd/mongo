@@ -1,29 +1,31 @@
+
 /**
- *    Copyright (C) 2018 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
@@ -68,15 +70,49 @@ void expectScheduleThrows(Schedule schedule) {
     ASSERT_EQ(State::kBroken, coordinator.state());
 }
 
+
+void doCommit(StateMachine& coordinator) {
+    runSchedule(coordinator,
+                {Event::kRecvParticipantList,
+                 Event::kMadeParticipantListDurable,
+                 Event::kRecvFinalVoteCommit,
+                 Event::kMadeCommitDecisionDurable,
+                 Event::kRecvFinalCommitAck});
+}
+
+void doAbort(StateMachine& coordinator) {
+    runSchedule(coordinator,
+                {Event::kRecvParticipantList,
+                 Event::kMadeParticipantListDurable,
+                 Event::kRecvVoteAbort,
+                 Event::kMadeAbortDecisionDurable,
+                 Event::kRecvFinalAbortAck});
+}
+
 TEST(CoordinatorStateMachine, AbortSucceeds) {
-    expectScheduleSucceeds({Event::kRecvVoteAbort}, State::kAborted);
-    expectScheduleSucceeds({Event::kRecvVoteAbort, Event::kRecvVoteAbort}, State::kAborted);
+    expectScheduleSucceeds({Event::kRecvParticipantList,
+                            Event::kMadeParticipantListDurable,
+                            Event::kRecvVoteAbort,
+                            Event::kMadeAbortDecisionDurable,
+                            Event::kRecvFinalAbortAck},
+                           State::kAborted);
+    // Check that it's okay to receive two vote aborts.
+    expectScheduleSucceeds({Event::kRecvParticipantList,
+                            Event::kMadeParticipantListDurable,
+                            Event::kRecvVoteAbort,
+                            Event::kRecvVoteAbort,
+                            Event::kMadeAbortDecisionDurable,
+                            Event::kRecvFinalAbortAck},
+                           State::kAborted);
 }
 
 TEST(CoordinatorStateMachine, CommitSucceeds) {
-    expectScheduleSucceeds(
-        {Event::kRecvParticipantList, Event::kRecvFinalVoteCommit, Event::kRecvFinalCommitAck},
-        State::kCommitted);
+    expectScheduleSucceeds({Event::kRecvParticipantList,
+                            Event::kMadeParticipantListDurable,
+                            Event::kRecvFinalVoteCommit,
+                            Event::kMadeCommitDecisionDurable,
+                            Event::kRecvFinalCommitAck},
+                           State::kCommitted);
 }
 
 TEST(CoordinatorStateMachine, RecvFinalVoteCommitAndRecvVoteAbortThrows) {
@@ -88,7 +124,7 @@ TEST(CoordinatorStateMachine, RecvFinalVoteCommitAndRecvVoteAbortThrows) {
 TEST(CoordinatorStateMachine, WaitForTransitionToOnlyTerminalStatesReturnsCorrectStateOnAbort) {
     StateMachine coordinator;
     auto future = coordinator.waitForTransitionTo({State::kCommitted, State::kAborted});
-    runSchedule(coordinator, {Event::kRecvVoteAbort});
+    doAbort(coordinator);
     ASSERT_EQ(future.get(), State::kAborted);
 }
 
@@ -98,15 +134,13 @@ TEST(CoordinatorStateMachine, WaitForTransitionToStatesThatHaventBeenReachedRetu
     ASSERT_FALSE(future.isReady());
     // We need to abort here because we require that all promises are triggered prior to coordinator
     // destruction.
-    runSchedule(coordinator, {Event::kRecvVoteAbort});
+    doAbort(coordinator);
 }
 
 TEST(CoordinatorStateMachine, WaitForTransitionToOnlyTerminalStatesReturnsCorrectStateOnCommit) {
     StateMachine coordinator;
     auto future = coordinator.waitForTransitionTo({State::kCommitted, State::kAborted});
-    runSchedule(
-        coordinator,
-        {Event::kRecvParticipantList, Event::kRecvFinalVoteCommit, Event::kRecvFinalCommitAck});
+    doCommit(coordinator);
     ASSERT_EQ(future.get(), State::kCommitted);
 }
 
@@ -115,8 +149,9 @@ TEST(CoordinatorStateMachine,
     StateMachine coordinator;
     runSchedule(coordinator, {Event::kRecvParticipantList});
     auto future = coordinator.waitForTransitionTo(
-        {State::kWaitingForVotes, State::kCommitted, State::kAborted});
-    ASSERT_EQ(future.get(), TransactionCoordinator::StateMachine::State::kWaitingForVotes);
+        {State::kMakingParticipantListDurable, State::kCommitted, State::kAborted});
+    ASSERT_EQ(future.get(),
+              TransactionCoordinator::StateMachine::State::kMakingParticipantListDurable);
 }
 
 TEST(CoordinatorStateMachine, WaitForTransitionToMultipleStatesReturnsFirstStateToBeHit) {
@@ -126,7 +161,7 @@ TEST(CoordinatorStateMachine, WaitForTransitionToMultipleStatesReturnsFirstState
                                                    State::kCommitted,
                                                    State::kAborted});
 
-    runSchedule(coordinator, {Event::kRecvParticipantList, Event::kRecvFinalVoteCommit});
+    doCommit(coordinator);
 
     ASSERT_EQ(future.get(), TransactionCoordinator::StateMachine::State::kWaitingForVotes);
 }
@@ -138,7 +173,7 @@ TEST(CoordinatorStateMachine,
         {State::kWaitingForVotes, State::kCommitted, State::kAborted});
     auto future2 = coordinator.waitForTransitionTo(
         {State::kWaitingForCommitAcks, State::kCommitted, State::kAborted});
-    runSchedule(coordinator, {Event::kRecvParticipantList, Event::kRecvFinalVoteCommit});
+    doCommit(coordinator);
 
     ASSERT_EQ(future1.get(), TransactionCoordinator::StateMachine::State::kWaitingForVotes);
     ASSERT_EQ(future2.get(), TransactionCoordinator::StateMachine::State::kWaitingForCommitAcks);
@@ -161,7 +196,7 @@ TEST(CoordinatorStateMachine,
                      coordinator.waitForTransitionTo(
                          {State::kWaitingForCommitAcks, State::kCommitted, State::kAborted})};
 
-    runSchedule(coordinator, {Event::kRecvParticipantList, Event::kRecvFinalVoteCommit});
+    doCommit(coordinator);
 
     for (auto& future1 : futures1) {
         ASSERT_EQ(future1.get(), TransactionCoordinator::StateMachine::State::kWaitingForVotes);

@@ -4,6 +4,8 @@
 (function() {
     "use strict";
 
+    load("jstests/sharding/libs/sharded_transactions_helpers.js");
+
     function expectChunks(st, ns, chunks) {
         for (let i = 0; i < chunks.length; i++) {
             assert.eq(chunks[i],
@@ -72,9 +74,7 @@
     // Targets Shard1, which is stale.
     assert.commandWorked(sessionDB.runCommand({find: collName, filter: {_id: 5}}));
 
-    // TODO SERVER-36304: Change this to commitTransaction once multi shard transactions can be
-    // committed through mongos.
-    session.abortTransaction();
+    session.commitTransaction();
 
     //
     // Stale shard version on second command to a shard should fail.
@@ -101,7 +101,10 @@
                                      ErrorCodes.NoSuchTransaction);
     assert.eq(res.errorLabels, ["TransientTransactionError"]);
 
-    session.abortTransaction();
+    assertNoSuchTransactionOnAllShards(
+        st, session.getSessionId(), session.getTxnNumber_forTesting());
+    assert.commandFailedWithCode(session.abortTransaction_forTesting(),
+                                 ErrorCodes.NoSuchTransaction);
 
     //
     // Stale shard version on first command to a new shard should succeed.
@@ -123,8 +126,7 @@
     // Targets Shard0 for the other ns, which is stale.
     assert.commandWorked(sessionDB.runCommand({find: otherCollName, filter: {_id: 5}}));
 
-    // TODO SERVER-36304: Change this to commitTransaction.
-    session.abortTransaction();
+    session.commitTransaction();
 
     //
     // Stale mongos aborts on old shard.
@@ -143,8 +145,7 @@
     // stale but should succeed.
     assert.commandWorked(sessionDB.runCommand({find: collName, filter: {_id: 5}}));
 
-    // TODO SERVER-36304: Change this to commitTransaction.
-    session.abortTransaction();
+    session.commitTransaction();
 
     // Verify there is no in-progress transaction on Shard1.
     res = assert.commandFailedWithCode(st.rs1.getPrimary().getDB(dbName).runCommand({
@@ -175,8 +176,7 @@
     // Targets all shards, two of which are stale.
     assert.commandWorked(sessionDB.runCommand({find: collName}));
 
-    // TODO SERVER-36304: Change this to commitTransaction.
-    session.abortTransaction();
+    session.commitTransaction();
 
     //
     // Can retry a stale write on the first statement.
@@ -192,8 +192,7 @@
     // Targets Shard1, which is stale.
     assert.commandWorked(sessionDB.runCommand({insert: collName, documents: [{_id: 6}]}));
 
-    // TODO SERVER-36304: Change this to commitTransaction.
-    session.abortTransaction();
+    session.commitTransaction();
 
     //
     // Cannot retry a stale write past the first statement.
@@ -218,8 +217,11 @@
         ErrorCodes.NoSuchTransaction);
     assert.eq(res.errorLabels, ["TransientTransactionError"]);
 
-    // TODO SERVER-36304: Change this to commitTransaction.
-    session.abortTransaction();
+    // The transaction should have been implicitly aborted on all shards.
+    assertNoSuchTransactionOnAllShards(
+        st, session.getSessionId(), session.getTxnNumber_forTesting());
+    assert.commandFailedWithCode(session.abortTransaction_forTesting(),
+                                 ErrorCodes.NoSuchTransaction);
 
     //
     // NoSuchTransaction should be returned if the router exhausts its retries.
@@ -237,12 +239,19 @@
 
     session.startTransaction();
 
-    // Targets Shard0, which is stale and won't refresh its metadata, so mongos should exhaust its
-    // retries and implicitly abort the transaction.
-    assert.commandFailedWithCode(sessionDB.runCommand({find: collName, filter: {_id: -5}}),
+    // Target Shard2, to verify the transaction on it is aborted implicitly later.
+    assert.commandWorked(sessionDB.runCommand({find: collName, filter: {_id: 5}}));
+
+    // Targets all shards. Shard0 is stale and won't refresh its metadata, so mongos should exhaust
+    // its retries and implicitly abort the transaction.
+    assert.commandFailedWithCode(sessionDB.runCommand({find: collName}),
                                  ErrorCodes.NoSuchTransaction);
 
-    session.abortTransaction();
+    // Verify the shards that did not return an error were also aborted.
+    assertNoSuchTransactionOnAllShards(
+        st, session.getSessionId(), session.getTxnNumber_forTesting());
+    assert.commandFailedWithCode(session.abortTransaction_forTesting(),
+                                 ErrorCodes.NoSuchTransaction);
 
     assert.commandWorked(st.rs0.getPrimary().adminCommand(
         {configureFailPoint: "skipShardFilteringMetadataRefresh", mode: "off"}));

@@ -1,36 +1,44 @@
+
 /**
- *    Copyright (C) 2018 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects
- *    for all of the code used other than as permitted herein. If you modify
- *    file(s) with this exception, you may extend this exception to your
- *    version of the file(s), but you are not obligated to do so. If you do not
- *    wish to do so, delete this exception statement from your version. If you
- *    delete this exception statement from all source files in the program,
- *    then also delete it in the license file.
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
  */
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/index/wildcard_key_generator.h"
+#include "mongo/db/query/collation/collator_interface_mock.h"
+#include "mongo/db/query/planner_wildcard_helpers.h"
 #include "mongo/db/query/query_planner_test_fixture.h"
+#include "mongo/unittest/death_test.h"
 
 namespace mongo {
+
+namespace wcp = ::mongo::wildcard_planning;
 
 const std::string kIndexName = "indexName";
 
@@ -51,7 +59,9 @@ protected:
     void addWildcardIndex(BSONObj keyPattern,
                           const std::set<std::string>& multikeyPathSet = {},
                           BSONObj wildcardProjection = BSONObj{},
-                          MatchExpression* partialFilterExpr = nullptr) {
+                          MatchExpression* partialFilterExpr = nullptr,
+                          CollatorInterface* collator = nullptr,
+                          const std::string& indexName = kIndexName) {
         // Convert the set of std::string to a set of FieldRef.
         std::set<FieldRef> multikeyFieldRefs;
         for (auto&& path : multikeyPathSet) {
@@ -62,26 +72,49 @@ protected:
         const bool isMultikey = !multikeyPathSet.empty();
         BSONObj infoObj = BSON("wildcardProjection" << wildcardProjection);
 
-        params.indices.push_back(IndexEntry{std::move(keyPattern),
-                                            IndexType::INDEX_WILDCARD,
-                                            isMultikey,
-                                            {},  // multikeyPaths
-                                            std::move(multikeyFieldRefs),
-                                            false,  // sparse
-                                            false,  // unique
-                                            IndexEntry::Identifier{kIndexName},
-                                            partialFilterExpr,
-                                            std::move(infoObj),
-                                            nullptr});  // collator
+        _projExec = WildcardKeyGenerator::createProjectionExec(keyPattern, wildcardProjection);
+
+        params.indices.push_back({std::move(keyPattern),
+                                  IndexType::INDEX_WILDCARD,
+                                  isMultikey,
+                                  {},  // multikeyPaths
+                                  std::move(multikeyFieldRefs),
+                                  false,  // sparse
+                                  false,  // unique
+                                  IndexEntry::Identifier{indexName},
+                                  partialFilterExpr,
+                                  std::move(infoObj),
+                                  collator,
+                                  _projExec.get()});
     }
+
+    std::unique_ptr<ProjectionExecAgg> _projExec;
 };
+
+//
+// General planning tests.
+//
+
+DEATH_TEST_F(QueryPlannerWildcardTest, CannotExpandPreExpandedWildcardIndexEntry, "Invariant") {
+    addWildcardIndex(BSON("$**" << 1));
+    ASSERT_EQ(params.indices.size(), 2U);
+
+    // Expand the $** index and add the expanded entry to the list of available indices.
+    std::vector<IndexEntry> expandedIndex;
+    wcp::expandWildcardIndexEntry(params.indices.back(), {"a"}, &expandedIndex);
+    ASSERT_EQ(expandedIndex.size(), 1U);
+    params.indices.push_back(expandedIndex.front());
+
+    // Now run a query. This will invariant when the planner expands the expanded index.
+    runQuery(fromjson("{a: 1}"));
+}
 
 //
 // Null comparison and existence tests.
 //
 
 TEST_F(QueryPlannerWildcardTest, ExistsTrueQueriesUseWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$exists: true}}"));
 
@@ -90,7 +123,7 @@ TEST_F(QueryPlannerWildcardTest, ExistsTrueQueriesUseWildcardIndexes) {
 }
 
 TEST_F(QueryPlannerWildcardTest, ExistsFalseQueriesDontUseWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$exists: false}}"));
 
@@ -99,7 +132,7 @@ TEST_F(QueryPlannerWildcardTest, ExistsFalseQueriesDontUseWildcardIndexes) {
 }
 
 TEST_F(QueryPlannerWildcardTest, EqualsNullQueriesDontUseWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$eq: null}}"));
 
@@ -107,17 +140,63 @@ TEST_F(QueryPlannerWildcardTest, EqualsNullQueriesDontUseWildcardIndexes) {
     assertSolutionExists("{cscan: {dir: 1}}");
 }
 
-TEST_F(QueryPlannerWildcardTest, NotEqualsNullQueriesDontUseWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, NotEqualsNullQueriesUseWildcardIndexes) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$ne: null}}"));
 
     assertNumSolutions(1U);
-    assertSolutionExists("{cscan: {dir: 1}}");
+    assertSolutionExists(
+        "{fetch: {filter: {x: {$ne: null}}, node: {ixscan: {pattern: {$_path: 1, x: 1},"
+        "bounds: {'$_path': [['x','x',true,true], ['x.','x/',true,false]],"
+        "x: [['MinKey','MaxKey',true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, NotEqualsNullQueriesDoNotUseWildcardIndexesWhenMultiKey) {
+    addWildcardIndex(BSON("$**" << 1), {"x"});
+
+    runQuery(fromjson("{'x': {$ne: null}}"));
+
+    assertHasOnlyCollscan();
+}
+
+TEST_F(QueryPlannerWildcardTest, NotEqualsNullInElemMatchQueriesUseWildcardIndexesWhenMultiKey) {
+    addWildcardIndex(BSON("$**" << 1), {"x"});
+
+    runQuery(fromjson("{'x': {$elemMatch: {$ne: null}}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {node: {ixscan: {pattern: {$_path: 1, 'x': 1},"
+        "bounds: {'$_path': [['x','x',true,true], ['x.','x/',true,false]],"
+        "'x': [['MinKey', 'MaxKey',true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, NotEqualsNullInElemMatchObjectSparseMultiKeyAboveElemMatch) {
+    addWildcardIndex(BSON("$**" << 1), {"a", "a.b"});
+
+    runQuery(fromjson("{'a.b': {$elemMatch: {'c.d': {$ne: null}}}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {node: {ixscan: {pattern: {'$_path': 1, 'a.b.c.d': 1},"
+        "bounds: {'$_path': [['a.b.c.d','a.b.c.d',true,true], ['a.b.c.d.','a.b.c.d/',true,false]],"
+        "'a.b.c.d': [['MinKey', 'MaxKey', true, true]]"
+        "}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, NotEqualsNullInElemMatchObjectSparseMultiKeyBelowElemMatch) {
+    // "a.b.c" being multikey will prevent us from using the index since $elemMatch doesn't do
+    // implicit array traversal.
+    addWildcardIndex(BSON("$**" << 1), {"a.b.c"});
+
+    runQuery(fromjson("{'a.b': {$elemMatch: {'c.d': {$ne: null}}}}"));
+
+    assertHasOnlyCollscan();
 }
 
 TEST_F(QueryPlannerWildcardTest, NotEqualsNullAndExistsQueriesUseWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$ne: null, $exists: true}}"));
 
@@ -126,7 +205,7 @@ TEST_F(QueryPlannerWildcardTest, NotEqualsNullAndExistsQueriesUseWildcardIndexes
 }
 
 TEST_F(QueryPlannerWildcardTest, EqualsNullAndExistsQueriesUseWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$eq: null, $exists: true}}"));
 
@@ -135,7 +214,7 @@ TEST_F(QueryPlannerWildcardTest, EqualsNullAndExistsQueriesUseWildcardIndexes) {
 }
 
 TEST_F(QueryPlannerWildcardTest, EmptyBoundsWithWildcardIndexes) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$lte: 5, $gte: 10}}"));
 
@@ -361,7 +440,7 @@ TEST_F(QueryPlannerWildcardTest, ExprEqCanUseSparseIndexForEqualityToNull) {
 }
 
 TEST_F(QueryPlannerWildcardTest, PrefixRegex) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
     runQuery(fromjson("{a: /^foo/}"));
 
     assertNumSolutions(1U);
@@ -372,7 +451,7 @@ TEST_F(QueryPlannerWildcardTest, PrefixRegex) {
 }
 
 TEST_F(QueryPlannerWildcardTest, NonPrefixRegex) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
     runQuery(fromjson("{a: /foo/}"));
 
     assertNumSolutions(1U);
@@ -573,6 +652,10 @@ TEST_F(QueryPlannerWildcardTest, InBasic) {
         "bounds: {'$_path': [['a','a',true,true]], a: [[1,1,true,true],[2,2,true,true]]}}}}}");
 }
 
+//
+// Array tests.
+//
+
 TEST_F(QueryPlannerWildcardTest, EqualsEmptyArray) {
     addWildcardIndex(BSON("$**" << 1));
     runQuery(fromjson("{a: []}"));
@@ -604,6 +687,10 @@ TEST_F(QueryPlannerWildcardTest, EqualsArrayWithValue) {
 
     assertHasOnlyCollscan();
 }
+
+//
+// $in tests.
+//
 
 TEST_F(QueryPlannerWildcardTest, InEmptyArray) {
     addWildcardIndex(BSON("$**" << 1));
@@ -649,6 +736,10 @@ TEST_F(QueryPlannerWildcardTest, InBasicOrEquivalent) {
         "node: {ixscan: {filter: null, pattern: {'$_path': 1, a: 1},"
         "bounds: {'$_path': [['a','a',true,true]], a: [[1,1,true,true],[2,2,true,true]]}}}}}");
 }
+
+//
+// Partial index tests.
+//
 
 TEST_F(QueryPlannerWildcardTest, PartialIndexCanAnswerPredicateOnFilteredField) {
     auto filterObj = fromjson("{a: {$gt: 0}}");
@@ -831,6 +922,10 @@ TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupplyCandidatePlanForTextS
         "{fetch: {filter: {b: 10}, node: {text: {prefix: {a: 10}, search: 'banana'}}}}");
 }
 
+//
+// Negation tests.
+//
+
 TEST_F(QueryPlannerWildcardTest, WildcardDoesNotSupportNegationPredicate) {
     // Wildcard indexes can't support negation queries because they are sparse, and {a: {$ne: 5}}
     // will match documents which don't have an "a" field.
@@ -870,8 +965,8 @@ TEST_F(QueryPlannerWildcardTest, WildcardDoesNotSupportNegationPredicateInsideEl
 // Hinting with all paths index tests.
 //
 
-TEST_F(QueryPlannerTest, ChooseWildcardIndexHint) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, ChooseWildcardIndexHint) {
+    addWildcardIndex(BSON("$**" << 1));
     addIndex(BSON("x" << 1));
 
     runQueryHint(fromjson("{x: {$eq: 1}}"), BSON("$**" << 1));
@@ -880,10 +975,10 @@ TEST_F(QueryPlannerTest, ChooseWildcardIndexHint) {
     assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
 }
 
-TEST_F(QueryPlannerTest, ChooseWildcardIndexHintByName) {
-    StringData wildcard = "wildcard";
+TEST_F(QueryPlannerWildcardTest, ChooseWildcardIndexHintByName) {
+    std::string wildcard = "wildcard";
     CollatorInterface* nullCollator = nullptr;
-    addIndex(BSON("$**" << 1), nullCollator, wildcard);
+    addWildcardIndex(BSON("$**" << 1), {}, {}, {}, nullCollator, wildcard);
     addIndex(BSON("x" << 1));
 
     runQueryHint(fromjson("{x: {$eq: 1}}"),
@@ -894,8 +989,8 @@ TEST_F(QueryPlannerTest, ChooseWildcardIndexHintByName) {
     assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
 }
 
-TEST_F(QueryPlannerTest, ChooseWildcardIndexHintWithPath) {
-    addIndex(BSON("x.$**" << 1));
+TEST_F(QueryPlannerWildcardTest, ChooseWildcardIndexHintWithPath) {
+    addWildcardIndex(BSON("x.$**" << 1));
     addIndex(BSON("x" << 1));
 
     runQueryHint(fromjson("{x: {$eq: 1}}"), BSON("x.$**" << 1));
@@ -904,8 +999,8 @@ TEST_F(QueryPlannerTest, ChooseWildcardIndexHintWithPath) {
     assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
 }
 
-TEST_F(QueryPlannerTest, ChooseWildcardIndexHintWithOr) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, ChooseWildcardIndexHintWithOr) {
+    addWildcardIndex(BSON("$**" << 1));
     addIndex(BSON("x" << 1 << "y" << 1));
 
     runQueryHint(fromjson("{$or: [{x: 1}, {y: 1}]}"), BSON("$**" << 1));
@@ -916,8 +1011,8 @@ TEST_F(QueryPlannerTest, ChooseWildcardIndexHintWithOr) {
         " {ixscan: {pattern: {$_path: 1, y: 1}}}]}}}}");
 }
 
-TEST_F(QueryPlannerTest, ChooseWildcardIndexHintWithCompoundIndex) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, ChooseWildcardIndexHintWithCompoundIndex) {
+    addWildcardIndex(BSON("$**" << 1));
     addIndex(BSON("x" << 1 << "y" << 1));
 
     runQueryHint(fromjson("{x: 1, y: 1}"), BSON("$**" << 1));
@@ -927,40 +1022,44 @@ TEST_F(QueryPlannerTest, ChooseWildcardIndexHintWithCompoundIndex) {
     assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, y: 1}}}}}");
 }
 
-TEST_F(QueryPlannerTest, QueryNotInWildcardIndexHint) {
-    addIndex(BSON("a.$**" << 1));
+TEST_F(QueryPlannerWildcardTest, QueryNotInWildcardIndexHint) {
+    addWildcardIndex(BSON("a.$**" << 1));
     addIndex(BSON("x" << 1));
 
     runQueryHint(fromjson("{x: {$eq: 1}}"), BSON("a.$**" << 1));
     assertNumSolutions(0U);
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotExist) {
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotExist) {
     addIndex(BSON("x" << 1));
 
     runInvalidQueryHint(fromjson("{x: {$eq: 1}}"), BSON("$**" << 1));
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexHintWithPartialFilter) {
+TEST_F(QueryPlannerWildcardTest, WildcardIndexHintWithPartialFilter) {
     auto filterObj = fromjson("{a: {$gt: 100}}");
     auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
-    addIndex(BSON("$**" << 1), filterExpr.get());
+    addWildcardIndex(BSON("$**" << 1), {}, {}, filterExpr.get());
 
     runQueryHint(fromjson("{a: {$eq: 1}}"), BSON("$**" << 1));
     assertNumSolutions(0U);
 }
 
-TEST_F(QueryPlannerTest, MultipleWildcardIndexesHintWithPartialFilter) {
+TEST_F(QueryPlannerWildcardTest, MultipleWildcardIndexesHintWithPartialFilter) {
     auto filterObj = fromjson("{a: {$gt: 100}, b: {$gt: 100}}");
     auto filterExpr = QueryPlannerTest::parseMatchExpression(filterObj);
-    addIndex(BSON("$**" << 1), filterExpr.get());
+    addWildcardIndex(BSON("$**" << 1), {}, {}, filterExpr.get());
 
     runQueryHint(fromjson("{a: {$eq: 1}, b: {$eq: 1}}"), BSON("$**" << 1));
     assertNumSolutions(0U);
 }
 
+//
+// Object comparison tests.
+//
+
 TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportObjectEquality) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {abc: 1}}"));
     assertHasOnlyCollscan();
@@ -975,7 +1074,7 @@ TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportObjectEquality) {
 }
 
 TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportObjectInequality) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$lt: {abc: 1}}}"));
     assertHasOnlyCollscan();
@@ -1007,8 +1106,12 @@ TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportObjectInequality) {
     assertSolutionExists("{fetch: {node: {ixscan: {pattern: {$_path: 1, x: 1}}}}}");
 }
 
+//
+// Unsupported values tests.
+//
+
 TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportInWithUnsupportedValues) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     runQuery(fromjson("{x: {$in: [1, 2, 3, {abc: 1}]}}"));
     assertHasOnlyCollscan();
@@ -1019,7 +1122,7 @@ TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportInWithUnsupportedVal
 }
 
 TEST_F(QueryPlannerWildcardTest, WildcardIndexesSupportElemMatchWithNull) {
-    addIndex(BSON("$**" << 1));
+    addWildcardIndex(BSON("$**" << 1));
 
     // Simple case.
     runQuery(fromjson("{x: {$elemMatch: {$lt: 5, $gt: 0}}}"));
@@ -1049,6 +1152,10 @@ TEST_F(QueryPlannerWildcardTest, WildcardIndexesDoNotSupportElemMatchObject) {
     runQuery(fromjson("{x: {$elemMatch: {a: 1}}}"));
     assertHasOnlyCollscan();
 }
+
+//
+// Sorting tests.
+//
 
 TEST_F(QueryPlannerWildcardTest, WildcardIndexCanProvideNonBlockingSort) {
     addWildcardIndex(BSON("$**" << 1));
@@ -1489,26 +1596,26 @@ TEST_F(QueryPlannerWildcardTest, ShouldDeclineToAnswerQueriesThatTraverseTooMany
 // Min/max with wildcard index.
 //
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMin) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMin) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(BSONObj(), BSON("$**" << 1), fromjson("{x: 1}"), BSONObj());
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMax) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMax) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(BSONObj(), BSON("$**" << 1), BSONObj(), fromjson("{x: 10}"));
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMinMax) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMinMax) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(BSONObj(), BSON("$**" << 1), fromjson("{x: 1}"), fromjson("{x: 10}"));
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportCompoundMinMax) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportCompoundMinMax) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(
         BSONObj(), BSON("$**" << 1), fromjson("{x: 1, y: 1}"), fromjson("{x: 10, y:10}"));
@@ -1516,29 +1623,29 @@ TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportCompoundMinMax) {
 
 // Test with a query argument to check that the expanded indices are not used.
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMinWithFilter) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMinWithFilter) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(
         fromjson("{x: {$eq: 5}}"), BSON("$**" << 1), fromjson("{x: 1}"), BSONObj());
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMaxWithFilter) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMaxWithFilter) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(
         fromjson("{x: {$eq: 5}}"), BSON("$**" << 1), BSONObj(), fromjson("{x: 10}"));
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMinMaxWithFilter) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMinMaxWithFilter) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(
         fromjson("{x: {$eq: 5}}"), BSON("$**" << 1), fromjson("{x: 1}"), fromjson("{x: 10}"));
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportCompoundMinMaxWithFilter) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportCompoundMinMaxWithFilter) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(fromjson("{x: 5, y: 5}"),
                               BSON("$**" << 1),
@@ -1546,15 +1653,15 @@ TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportCompoundMinMaxWithFilter) {
                               fromjson("{x: 10, y:10}"));
 }
 
-TEST_F(QueryPlannerTest, PathSpecifiedWildcardIndexDoesNotSupportMinMax) {
-    addIndex(BSON("x.$**" << 1));
+TEST_F(QueryPlannerWildcardTest, PathSpecifiedWildcardIndexDoesNotSupportMinMax) {
+    addWildcardIndex(BSON("x.$**" << 1));
 
     runInvalidQueryHintMinMax(
         fromjson("{x: {$eq: 5}}"), BSON("x.$**" << 1), fromjson("{x: 1}"), fromjson("{x: 10}"));
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotEffectValidMinMax) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotEffectValidMinMax) {
+    addWildcardIndex(BSON("$**" << 1));
     addIndex(BSON("x" << 1));
 
     runQueryHintMinMax(
@@ -1566,8 +1673,8 @@ TEST_F(QueryPlannerTest, WildcardIndexDoesNotEffectValidMinMax) {
         "node: {ixscan: {filter: null, pattern: {x: 1}}}}}");
 }
 
-TEST_F(QueryPlannerTest, WildcardIndexDoesNotSupportMinMaxWithoutHint) {
-    addIndex(BSON("$**" << 1));
+TEST_F(QueryPlannerWildcardTest, WildcardIndexDoesNotSupportMinMaxWithoutHint) {
+    addWildcardIndex(BSON("$**" << 1));
 
     runInvalidQueryHintMinMax(
         fromjson("{x: {$eq: 5}}"), BSONObj(), fromjson("{x: 1}"), fromjson("{x: 10}"));
@@ -1668,6 +1775,109 @@ TEST_F(QueryPlannerWildcardTest, CanAnswerInContainingEmptyObjectWhenPathIsMulti
         "bounds: {$_path: [['a','a',true,true]], a: [[2,2,true,true],[{},{},true,true]]}}}}");
 }
 
-// TODO SERVER-36517: Add testing for DISTINCT_SCAN.
+TEST_F(QueryPlannerWildcardTest, CanProduceSortMergePlanWithWildcardIndex) {
+    addWildcardIndex(BSON("$**" << 1));
+    addIndex(BSON("a" << 1 << "b" << 1));
+    runQueryAsCommand(fromjson("{filter: {$or: [{a: 1, b: 1}, {b: 2}]}, sort: {b: -1}}"));
+    assertNumSolutions(3U);
+    assertSolutionExists(
+        "{fetch: {filter: null, node: {mergeSort: {nodes: ["
+        "{fetch: {filter: {a: 1}, node: {ixscan: {pattern: {$_path: 1, b: 1}, bounds: "
+        "{$_path: [['b','b',true,true]], b: [[1,1,true,true]]}}}}},"
+        "{ixscan: {pattern: {$_path: 1, b: 1}, bounds:"
+        "{$_path: [['b','b',true,true]], b: [[2,2,true,true]]}}}]}}}}");
+    assertSolutionExists(
+        "{fetch: {filter: null, node: {mergeSort: {nodes: ["
+        "{ixscan: {pattern: {a: 1, b: 1}, bounds: "
+        "{a: [[1,1,true,true]], b: [[1,1,true,true]]}}},"
+        "{ixscan: {pattern: {$_path: 1, b: 1}, bounds:"
+        "{$_path: [['b','b',true,true]], b: [[2,2,true,true]]}}}]}}}}");
+    assertSolutionExists(
+        "{sort: {pattern: {b: -1}, limit: 0, node: {sortKeyGen: {node: "
+        "{fetch: {filter: null, node: {or: {nodes: ["
+        "{fetch: {filter: {b: 1}, node: {ixscan: {pattern: {$_path: 1, a: 1}, bounds:"
+        "{$_path: [['a','a',true,true]], a: [[1,1,true,true]]}}}}},"
+        "{ixscan: {filter: null, pattern: {$_path: 1, b: 1}, bounds:"
+        "{$_path: [['b','b',true,true]], b: [[2,2,true,true]]}}}]}}}}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, ContainedOrPushdownWorksWithWildcardIndex) {
+    addWildcardIndex(BSON("$**" << 1));
+    addIndex(BSON("a" << 1 << "b" << 1));
+    runQuery(fromjson("{a: 1, $or: [{c: 2}, {b: 3}]}"));
+    assertNumSolutions(4U);
+    assertSolutionExists(
+        "{fetch: {filter: {a: 1}, node: {or: {nodes: ["
+        "{ixscan: {pattern: {a: 1, b: 1}, filter: null, bounds:"
+        "{a: [[1,1,true,true]], b: [[3,3,true,true]]}}},"
+        "{ixscan: {pattern: {$_path: 1, c: 1}, filter: null, bounds:"
+        "{$_path: [['c','c',true,true]], c: [[2,2,true,true]]}}}]}}}}");
+    assertSolutionExists(
+        "{fetch: {filter: {a: 1}, node: {or: {nodes: ["
+        "{ixscan: {pattern: {$_path: 1, c: 1}, filter: null, bounds:"
+        "{$_path: [['c','c',true,true]], c: [[2,2,true,true]]}}},"
+        "{ixscan: {pattern: {$_path: 1, b: 1}, filter: null, bounds:"
+        "{$_path: [['b','b',true,true]], b: [[3,3,true,true]]}}}]}}}}");
+    assertSolutionExists(
+        "{fetch: {filter: {$or: [{c: 2}, {b: 3}]}, node:"
+        "{ixscan: {filter: null, pattern: {a: 1, b: 1}, bounds:"
+        "{a: [[1,1,true,true]], b:[['MinKey','MaxKey',true,true]]}}}}}");
+    assertSolutionExists(
+        "{fetch: {filter: {$or: [{c: 2}, {b: 3}]}, node:"
+        "{ixscan: {filter: null, pattern: {$_path: 1, a: 1}, bounds:"
+        "{$_path: [['a','a',true,true]], a:[[1,1,true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, TypeOfObjectWithWildcardIndex) {
+    addWildcardIndex(BSON("$**" << 1));
+    runQuery(fromjson("{a: {$type: 'object'}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: {a: {$type: [3]}}, node:"
+        "{ixscan: {filter: null, pattern: {$_path: 1, a: 1}, bounds:"
+        "{$_path: [['a','a',true,true], ['a.','a/', true, false]], "
+        "a:[['MinKey','MaxKey',true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, TypeOfArrayWithWildcardIndex) {
+    addWildcardIndex(BSON("$**" << 1));
+    runQuery(fromjson("{a: {$type: 'array'}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: {a: {$type: [4]}}, node:"
+        "{ixscan: {filter: null, pattern: {$_path: 1, a: 1}, bounds:"
+        "{$_path: [['a','a',true,true], ['a.','a/', true, false]], "
+        "a:[['MinKey','MaxKey',true,true]]}}}}}");
+}
+
+TEST_F(QueryPlannerWildcardTest,
+       StringComparisonWithUnequalCollatorsAndWildcardIndexResultsInCollscan) {
+    CollatorInterfaceMock alwaysEqualCollator(CollatorInterfaceMock::MockType::kAlwaysEqual);
+    addWildcardIndex(fromjson("{'$**': 1}"), {}, {}, {}, &alwaysEqualCollator);
+
+    runQueryAsCommand(
+        fromjson("{find: 'testns', filter: {a: {$lt: 'foo'}}, collation: {locale: 'reverse'}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists("{cscan: {dir: 1}}");
+}
+
+TEST_F(QueryPlannerWildcardTest, StringComparisonWithEqualCollatorsAndWildcardIndexUsesIndex) {
+    params.options &= ~QueryPlannerParams::INCLUDE_COLLSCAN;
+
+    CollatorInterfaceMock reverseStringCollator(CollatorInterfaceMock::MockType::kReverseString);
+    addWildcardIndex(fromjson("{'$**': 1}"), {}, {}, {}, &reverseStringCollator);
+
+    runQueryAsCommand(
+        fromjson("{find: 'testns', filter: {a: {$lt: 'foo'}}, collation: {locale: 'reverse'}}"));
+
+    assertNumSolutions(1U);
+    assertSolutionExists(
+        "{fetch: {filter: null, collation: {locale: 'reverse'}, node: "
+        "{ixscan: {filter: null, pattern: {'$_path': 1, a: 1},"
+        "bounds: {'$_path': [['a','a',true,true]], 'a': [['','oof',true,false]]}}}}}");
+}
 
 }  // namespace mongo

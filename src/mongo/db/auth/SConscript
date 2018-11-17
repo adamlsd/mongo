@@ -185,8 +185,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/mutable/mutable_bson',
-        '$BUILD_DIR/mongo/bson/util/bson_extract',
     ],
 )
 
@@ -222,6 +220,19 @@ env.Library(
     ],
 )
 
+env.CppUnitTest(
+    target='security_key_test',
+    source=[
+        'security_key_test.cpp',
+    ],
+    LIBDEPS=[
+        'auth',
+        'security_file',
+        'security_key',
+        'user',
+    ],
+)
+
 env.Library(
     target='authservercommon',
     source=[
@@ -234,7 +245,6 @@ env.Library(
         'auth_impl_internal',
         'authorization_manager_global',
         'saslauth',
-        'security_file',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/client/sasl_client',
@@ -245,13 +255,18 @@ env.Library(
     ],
 )
 
-env.Library(
+yamlEnv = env.Clone()
+yamlEnv.InjectThirdPartyIncludePaths(libraries=['yaml'])
+yamlEnv.Library(
     target='security_file',
     source=[
         'security_file.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/third_party/shim_yaml',
     ],
 )
 

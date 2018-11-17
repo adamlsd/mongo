@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2018 MongoDB, Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -26,14 +28,15 @@
  *    it in the license file.
  */
 
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kTransaction
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/logical_clock.h"
+#include "mongo/db/service_context.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/transaction_coordinator.h"
-
-#include "mongo/db/session.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
@@ -41,21 +44,24 @@ using Action = TransactionCoordinator::StateMachine::Action;
 using Event = TransactionCoordinator::StateMachine::Event;
 using State = TransactionCoordinator::StateMachine::State;
 
+//
+// Pre-decision
+//
+
 Action TransactionCoordinator::recvCoordinateCommit(const std::set<ShardId>& participants) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     _participantList.recordFullList(participants);
     return _stateMachine.onEvent(std::move(lk), Event::kRecvParticipantList);
 }
 
-Action TransactionCoordinator::recvVoteCommit(const ShardId& shardId, Timestamp prepareTimestamp) {
+Action TransactionCoordinator::madeParticipantListDurable() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-
-    _participantList.recordVoteCommit(shardId, prepareTimestamp);
-
-    auto event = (_participantList.allParticipantsVotedCommit()) ? Event::kRecvFinalVoteCommit
-                                                                 : Event::kRecvVoteCommit;
-    return _stateMachine.onEvent(std::move(lk), event);
+    return _stateMachine.onEvent(std::move(lk), Event::kMadeParticipantListDurable);
 }
+
+//
+// Abort path
+//
 
 Action TransactionCoordinator::recvVoteAbort(const ShardId& shardId) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
@@ -63,22 +69,87 @@ Action TransactionCoordinator::recvVoteAbort(const ShardId& shardId) {
     return _stateMachine.onEvent(std::move(lk), Event::kRecvVoteAbort);
 }
 
-Action TransactionCoordinator::recvTryAbort() {
+Action TransactionCoordinator::madeAbortDecisionDurable() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    return _stateMachine.onEvent(std::move(lk), Event::kRecvTryAbort);
+    return _stateMachine.onEvent(std::move(lk), Event::kMadeAbortDecisionDurable);
 }
 
-void TransactionCoordinator::recvCommitAck(const ShardId& shardId) {
+Action TransactionCoordinator::recvAbortAck(const ShardId& shardId) {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    _participantList.recordAbortAck(shardId);
+    auto event = _participantList.allParticipantsAckedAbort() ? Event::kRecvFinalAbortAck
+                                                              : Event::kRecvAbortAck;
+    return _stateMachine.onEvent(std::move(lk), event);
+}
+
+//
+// Commit path
+//
+
+Action TransactionCoordinator::recvVoteCommit(const ShardId& shardId, Timestamp prepareTimestamp) {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    _participantList.recordVoteCommit(shardId, prepareTimestamp);
+    auto event = (_participantList.allParticipantsVotedCommit()) ? Event::kRecvFinalVoteCommit
+                                                                 : Event::kRecvVoteCommit;
+    if (event == Event::kRecvFinalVoteCommit) {
+        const auto maxPrepareTs = _participantList.getHighestPrepareTimestamp();
+        _commitTimestamp = Timestamp(maxPrepareTs.getSecs(), maxPrepareTs.getInc() + 1);
+        Status s = LogicalClock::get(getGlobalServiceContext())
+                       ->advanceClusterTime(LogicalTime(_commitTimestamp.get()));
+        if (!s.isOK()) {
+            log() << "Coordinator shard failed to advance cluster time to commitTimestamp "
+                  << causedBy(s);
+        }
+    }
+    return _stateMachine.onEvent(std::move(lk), event);
+}
+
+Action TransactionCoordinator::madeCommitDecisionDurable() {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    return _stateMachine.onEvent(std::move(lk), Event::kMadeCommitDecisionDurable);
+}
+
+Action TransactionCoordinator::recvCommitAck(const ShardId& shardId) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     _participantList.recordCommitAck(shardId);
-    if (_participantList.allParticipantsAckedCommit()) {
-        _stateMachine.onEvent(std::move(lk), Event::kRecvFinalCommitAck);
-    }
+    auto event = _participantList.allParticipantsAckedCommit() ? Event::kRecvFinalCommitAck
+                                                               : Event::kRecvCommitAck;
+    return _stateMachine.onEvent(std::move(lk), event);
 }
+
+//
+// Any time
+//
 
 Future<TransactionCoordinator::StateMachine::State> TransactionCoordinator::waitForCompletion() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     return _stateMachine.waitForTransitionTo({State::kCommitted, State::kAborted});
+}
+
+Future<TransactionCoordinator::CommitDecision> TransactionCoordinator::waitForDecision() {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    return _stateMachine
+        .waitForTransitionTo({State::kWaitingForAbortAcks,
+                              State::kWaitingForCommitAcks,
+                              State::kCommitted,
+                              State::kAborted})
+        .then([](auto state) {
+            switch (state) {
+                case TransactionCoordinator::StateMachine::State::kWaitingForAbortAcks:
+                case TransactionCoordinator::StateMachine::State::kAborted:
+                    return TransactionCoordinator::CommitDecision::kAbort;
+                case TransactionCoordinator::StateMachine::State::kWaitingForCommitAcks:
+                case TransactionCoordinator::StateMachine::State::kCommitted:
+                    return TransactionCoordinator::CommitDecision::kCommit;
+                default:
+                    MONGO_UNREACHABLE;
+            }
+        });
+}
+
+Action TransactionCoordinator::recvTryAbort() {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    return _stateMachine.onEvent(std::move(lk), Event::kRecvTryAbort);
 }
 
 //
@@ -99,39 +170,70 @@ Future<TransactionCoordinator::StateMachine::State> TransactionCoordinator::wait
 const std::map<State, std::map<Event, TransactionCoordinator::StateMachine::Transition>>
     TransactionCoordinator::StateMachine::transitionTable = {
         // clang-format off
-        {State::kWaitingForParticipantList, {
-            {Event::kRecvVoteAbort,         {Action::kSendAbort, State::kAborted}},
-            {Event::kRecvVoteCommit,        {}},
-            {Event::kRecvParticipantList,   {State::kWaitingForVotes}},
-            {Event::kRecvTryAbort,          {Action::kSendAbort, State::kAborted}},
+        {State::kUninitialized, {
+            {Event::kRecvParticipantList,   {Action::kWriteParticipantList, State::kMakingParticipantListDurable}},
+            {Event::kRecvTryAbort,          {{}, State::kAborted}},
+        }},
+        {State::kMakingParticipantListDurable, {
+            {Event::kRecvParticipantList,          {}},
+            {Event::kMadeParticipantListDurable,   {Action::kSendPrepare, State::kWaitingForVotes}},
+            {Event::kRecvTryAbort,                 {}},
         }},
         {State::kWaitingForVotes, {
-            {Event::kRecvVoteAbort,         {Action::kSendAbort, State::kAborted}},
-            {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
-            {Event::kRecvFinalVoteCommit,   {Action::kSendCommit, State::kWaitingForCommitAcks}},
-            {Event::kRecvTryAbort,          {Action::kSendAbort, State::kAborted}},
+            {Event::kRecvVoteAbort,         {Action::kWriteAbortDecision, State::kMakingAbortDecisionDurable}},
+            {Event::kRecvVoteCommit,        {}},
+            {Event::kRecvFinalVoteCommit,   {Action::kWriteCommitDecision, State::kMakingCommitDecisionDurable}},
+            {Event::kRecvTryAbort,          {}},
         }},
-        {State::kAborted, {
+
+        // Abort path
+        // Note: Can continue to receive votes after abort decision has been made, because an abort
+        // decision only requires a single voteAbort.
+        {State::kMakingAbortDecisionDurable, {
+            {Event::kRecvParticipantList,      {}},
+            {Event::kRecvVoteAbort,            {}},
+            {Event::kRecvVoteCommit,           {}},
+            {Event::kMadeAbortDecisionDurable, {Action::kSendAbort, State::kWaitingForAbortAcks}},
+            {Event::kRecvTryAbort,             {}},
+        }},
+        {State::kWaitingForAbortAcks, {
+            {Event::kRecvParticipantList,   {}},
             {Event::kRecvVoteAbort,         {}},
             {Event::kRecvVoteCommit,        {}},
-            {Event::kRecvParticipantList,   {}},
+            {Event::kRecvAbortAck,          {}},
+            {Event::kRecvFinalAbortAck,     {Action::kDone, State::kAborted}},
             {Event::kRecvTryAbort,          {}},
+
+        }},
+        {State::kAborted, {
+            {Event::kRecvParticipantList,   {}},
+            {Event::kRecvVoteAbort,         {}},
+            {Event::kRecvVoteCommit,        {}},
+            {Event::kRecvTryAbort,          {}},
+        }},
+
+        // Commit path
+        // Note: Cannot continue to receive votes after commit decision has been made, because a
+        // commit decision requires all voteCommits.
+        {State::kMakingCommitDecisionDurable, {
+            {Event::kRecvParticipantList,       {}},
+            {Event::kMadeCommitDecisionDurable, {Action::kSendCommit, State::kWaitingForCommitAcks}},
+            {Event::kRecvTryAbort,              {}},
+
         }},
         {State::kWaitingForCommitAcks, {
-            {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
-            {Event::kRecvFinalVoteCommit,   {Action::kSendCommit}},
-            {Event::kRecvFinalCommitAck,    {State::kCommitted}},
+            {Event::kRecvCommitAck,         {}},
+            {Event::kRecvFinalCommitAck,    {Action::kDone, State::kCommitted}},
             {Event::kRecvTryAbort,          {}},
+
         }},
         {State::kCommitted, {
-            {Event::kRecvVoteCommit,        {}},
             {Event::kRecvParticipantList,   {}},
-            {Event::kRecvFinalVoteCommit,   {}},
-            {Event::kRecvFinalCommitAck,    {}},
             {Event::kRecvTryAbort,          {}},
         }},
+
         {State::kBroken, {}},
         // clang-format on
 };
@@ -173,6 +275,7 @@ void TransactionCoordinator::StateMachine::_signalAllPromisesWaitingForState(
 
 Action TransactionCoordinator::StateMachine::onEvent(stdx::unique_lock<stdx::mutex> lk,
                                                      Event event) {
+
     const auto legalTransitions = transitionTable.find(_state)->second;
     if (!legalTransitions.count(event)) {
         std::string errmsg = str::stream() << "Transaction coordinator received illegal event '"
@@ -182,9 +285,20 @@ Action TransactionCoordinator::StateMachine::onEvent(stdx::unique_lock<stdx::mut
     }
 
     const auto transition = legalTransitions.find(event)->second;
+
     if (transition.nextState) {
+        StringBuilder ss;
+        ss << "TransactionCoordinator received event " << event << " while in state " << _state
+           << " and returning " << transition.action << " and transitioning to "
+           << *transition.nextState;
+        LOG(3) << ss.str();
         _state = *transition.nextState;
         _signalAllPromisesWaitingForState(std::move(lk), _state);
+    } else {
+        StringBuilder ss;
+        ss << "TransactionCoordinator received event " << event << " while in state " << _state
+           << " and returning " << transition.action << " and not transitioning to new state";
+        LOG(3) << ss.str();
     }
 
     return transition.action;
@@ -286,17 +400,29 @@ void TransactionCoordinator::ParticipantList::recordVoteAbort(const ShardId& sha
         participant.vote != Participant::Vote::kCommit);
 
     participant.vote = Participant::Vote::kAbort;
+    participant.ack = Participant::Ack::kAbort;
 }
 
 void TransactionCoordinator::ParticipantList::recordCommitAck(const ShardId& shardId) {
     auto it = _participants.find(shardId);
     uassert(
-        ErrorCodes::InternalError,
+        50989,
         str::stream() << "Transaction commit coordinator processed 'commit' ack from participant "
                       << shardId.toString()
                       << " not in participant list",
         it != _participants.end());
     it->second.ack = Participant::Ack::kCommit;
+}
+
+void TransactionCoordinator::ParticipantList::recordAbortAck(const ShardId& shardId) {
+    auto it = _participants.find(shardId);
+    uassert(
+        50990,
+        str::stream() << "Transaction commit coordinator processed 'abort' ack from participant "
+                      << shardId.toString()
+                      << " not in participant list",
+        it != _participants.end());
+    it->second.ack = Participant::Ack::kAbort;
 }
 
 bool TransactionCoordinator::ParticipantList::allParticipantsVotedCommit() const {
@@ -305,6 +431,13 @@ bool TransactionCoordinator::ParticipantList::allParticipantsVotedCommit() const
                                             [](const std::pair<ShardId, Participant>& i) {
                                                 return i.second.vote == Participant::Vote::kCommit;
                                             });
+}
+
+bool TransactionCoordinator::ParticipantList::allParticipantsAckedAbort() const {
+    return std::all_of(
+        _participants.begin(), _participants.end(), [](const std::pair<ShardId, Participant>& i) {
+            return i.second.ack == Participant::Ack::kAbort;
+        });
 }
 
 bool TransactionCoordinator::ParticipantList::allParticipantsAckedCommit() const {
@@ -325,6 +458,14 @@ Timestamp TransactionCoordinator::ParticipantList::getHighestPrepareTimestamp() 
         }
     }
     return highestPrepareTimestamp;
+}
+
+std::set<ShardId> TransactionCoordinator::ParticipantList::getParticipants() const {
+    std::set<ShardId> participants;
+    for (const auto& kv : _participants) {
+        participants.insert(kv.first);
+    }
+    return participants;
 }
 
 std::set<ShardId> TransactionCoordinator::ParticipantList::getNonAckedCommitParticipants() const {

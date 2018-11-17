@@ -226,6 +226,15 @@ add_option('dbg',
     type='choice',
 )
 
+add_option('separate-debug',
+    choices=['on', 'off'],
+    const='on',
+    default='off',
+    help='Produce separate debug files (only effective in --install-mode=hygienic)',
+    nargs='?',
+    type='choice',
+)
+
 add_option('spider-monkey-dbg',
     choices=['on', 'off'],
     const='on',
@@ -496,10 +505,10 @@ add_option('runtime-hardening',
     type='choice',
 )
 
-add_option('use-s390x-crc32',
+add_option('use-hardware-crc32',
     choices=["on", "off"],
     default="on",
-    help="Enable CRC32 hardware accelaration on s390x",
+    help="Enable CRC32 hardware accelaration",
     type='choice',
 )
 
@@ -1314,7 +1323,8 @@ if link_model.startswith("dynamic"):
     def library(env, target, source, *args, **kwargs):
         sharedLibrary = env.SharedLibrary(target, source, *args, **kwargs)
         sharedArchive = env.SharedArchive(target, source=sharedLibrary[0].sources, *args, **kwargs)
-        return (sharedLibrary, sharedArchive)
+        sharedLibrary.extend(sharedArchive)
+        return sharedLibrary
 
     env['BUILDERS']['Library'] = library
     env['BUILDERS']['LibraryObject'] = env['BUILDERS']['SharedObject']
@@ -1876,7 +1886,7 @@ if env['TARGET_ARCH'] == 'i386':
 
 # Needed for auth tests since key files are stored in git with mode 644.
 if not env.TargetOSIs('windows'):
-    for keysuffix in [ "1" , "2" ]:
+    for keysuffix in [ "1" , "2", "ForRollover" ]:
         keyfile = "jstests/libs/key%s" % keysuffix
         os.chmod( keyfile , stat.S_IWUSR|stat.S_IRUSR )
 
@@ -2246,6 +2256,12 @@ def doConfigure(myenv):
         if conf.CheckNonVirtualDtor():
             myenv.Append( CXXFLAGS=["-Wnon-virtual-dtor"] )
         conf.Finish()
+
+        # As of XCode 9, this flag must be present (it is not enabled
+        # by -Wall), in order to enforce that -mXXX-version-min=YYY
+        # will enforce that you don't use APIs from ZZZ.
+        if env.TargetOSIs('darwin'):
+            AddToCCFLAGSIfSupported(env, '-Wunguarded-availability')
 
     if get_option('runtime-hardening') == "on":
         # Enable 'strong' stack protection preferentially, but fall back to 'all' if it is not
@@ -3047,9 +3063,31 @@ def doConfigure(myenv):
             context.Result(result)
             return result
 
+        def CheckOpenSSL_EC_KEY_new(context):
+            compile_test_body = textwrap.dedent("""
+            #include <openssl/ssl.h>
+            #include <openssl/ec.h>
+
+            int main() {
+                SSL_CTX_set_tmp_ecdh(0, 0);
+                EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+                EC_KEY_free(0);
+                return 0;
+            }
+            """)
+
+            context.Message("Checking if EC_KEY_new_by_curve_name is supported... ")
+            result = context.TryCompile(compile_test_body, ".cpp")
+            context.Result(result)
+            return result
+
         conf.AddTest("CheckOpenSSL_EC_DH", CheckOpenSSL_EC_DH)
         if conf.CheckOpenSSL_EC_DH():
             conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAS_SSL_SET_ECDH_AUTO')
+
+        conf.AddTest("CheckOpenSSL_EC_KEY_new", CheckOpenSSL_EC_KEY_new)
+        if conf.CheckOpenSSL_EC_KEY_new():
+            conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAVE_SSL_EC_KEY_NEW')
 
     ssl_provider = get_option("ssl-provider")
     if ssl_provider == 'auto':
@@ -3490,6 +3528,10 @@ env = doConfigure( env )
 
 # TODO: Later, this should live somewhere more graceful.
 if get_option('install-mode') == 'hygienic':
+
+    if get_option('separate-debug') == "on":
+        env.Tool('separate_debug')
+
     env.Tool('auto_install_binaries')
     if env['PLATFORM'] == 'posix':
         env.AppendUnique(
@@ -3519,6 +3561,8 @@ if get_option('install-mode') == 'hygienic':
                 "-Wl,-install_name,@rpath/${TARGET.file}",
             ],
         )
+elif get_option('separate-debug') == "on":
+    env.FatalError('Cannot use --separate-debug without --install-mode=hygienic')
 
 # Now that we are done with configure checks, enable icecream, if available.
 env.Tool('icecream')

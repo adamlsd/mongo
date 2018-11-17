@@ -249,7 +249,6 @@ __wt_txn_op_set_key(WT_SESSION_IMPL *session, const WT_ITEM *key)
 	    WT_IS_METADATA(op->btree->dhandle))
 		return (0);
 
-#ifdef HAVE_LONG_RUNNING_PREPARE
 	WT_ASSERT(session, op->type == WT_TXN_OP_BASIC_ROW ||
 	    op->type == WT_TXN_OP_INMEM_ROW);
 
@@ -263,10 +262,6 @@ __wt_txn_op_set_key(WT_SESSION_IMPL *session, const WT_ITEM *key)
 	 * prepared.
 	 */
 	return (__wt_buf_set(session, &op->u.op_row.key, key->data, key->size));
-#else
-	WT_UNUSED(key);
-	return (0);
-#endif
 }
 
 /*
@@ -357,18 +352,24 @@ __wt_txn_resolve_prepared_op(
 	 * eviction free those updates before subsequent ops are processed,
 	 * which means a search could reasonably not find an update in that
 	 * case.
+	 * We track the update count only for commit, but not for rollback, as
+	 * our tracking is based on transaction id, and in case of rollback, we
+	 * set it to aborted.
 	 */
-	WT_ASSERT(session, upd != NULL || txn->multi_update_count != 0);
-	if (upd == NULL)
+	if (upd == NULL && commit) {
+		WT_ASSERT(session, txn->multi_update_count > 0);
 		--txn->multi_update_count;
+	}
 #endif
 
-	op->u.op_upd = upd;
 	WT_STAT_CONN_INCR(session, txn_prepared_updates_resolved);
 
 	for (; upd != NULL; upd = upd->next) {
 		 if (upd->txnid != txn->id)
 			continue;
+
+		if (op->u.op_upd == NULL)
+			op->u.op_upd = upd;
 
 		if (!commit) {
 			upd->txnid = WT_TXN_ABORTED;
@@ -549,7 +550,7 @@ __wt_txn_op_commit_page_del(WT_SESSION_IMPL *session, WT_REF *ref)
 	 * Publish to ensure we don't let the page be evicted and the updates
 	 * discarded before being written.
 	 */
-	WT_PUBLISH(ref->state, previous_state);
+	WT_REF_SET_STATE(ref, previous_state);
 }
 
 /*
@@ -1338,7 +1339,7 @@ __wt_txn_am_oldest(WT_SESSION_IMPL *session)
 	txn = &session->txn;
 	txn_global = &conn->txn_global;
 
-	if (txn->id == WT_TXN_NONE)
+	if (txn->id == WT_TXN_NONE || F_ISSET(txn, WT_TXN_PREPARE))
 		return (false);
 
 	WT_ORDERED_READ(session_cnt, conn->session_cnt);

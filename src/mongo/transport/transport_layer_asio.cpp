@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2017 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -103,7 +105,9 @@ private:
 
             armTimer();
             return _timer->async_wait(UseFuture{}).tapError([timer = _timer](const Status& status) {
-                LOG(2) << "Timer received error: " << status;
+                if (status != ErrorCodes::CallbackCanceled) {
+                    LOG(2) << "Timer received error: " << status;
+                }
             });
 
         } catch (asio::system_error& ex) {
@@ -257,8 +261,20 @@ public:
         return &_endpoint;
     }
 
+    const Endpoint* operator->() const noexcept {
+        return &_endpoint;
+    }
+
     Endpoint& operator*() noexcept {
         return _endpoint;
+    }
+
+    const Endpoint& operator*() const noexcept {
+        return _endpoint;
+    }
+
+    bool operator<(const WrappedEndpoint& rhs) const noexcept {
+        return _endpoint < rhs._endpoint;
     }
 
     const std::string& toString() const {
@@ -638,8 +654,9 @@ Status TransportLayerASIO::setup() {
     _listenerPort = _listenerOptions.port;
     WrappedResolver resolver(*_acceptorReactor);
 
+    // Self-deduplicating list of unique endpoint addresses.
+    std::set<WrappedEndpoint> endpoints;
     for (auto& ip : listenAddrs) {
-        std::error_code ec;
         if (ip.empty()) {
             warning() << "Skipping empty bind address";
             continue;
@@ -652,68 +669,68 @@ Status TransportLayerASIO::setup() {
             continue;
         }
         auto& addrs = swAddrs.getValue();
+        endpoints.insert(addrs.begin(), addrs.end());
+    }
 
-        for (auto& addr : addrs) {
+    for (auto& addr : endpoints) {
 #ifndef _WIN32
-            if (addr.family() == AF_UNIX) {
-                if (::unlink(addr.toString().c_str()) == -1 && errno != ENOENT) {
-                    error() << "Failed to unlink socket file " << addr.toString().c_str() << " "
-                            << errnoWithDescription(errno);
-                    fassertFailedNoTrace(40486);
-                }
+        if (addr.family() == AF_UNIX) {
+            if (::unlink(addr.toString().c_str()) == -1 && errno != ENOENT) {
+                error() << "Failed to unlink socket file " << addr.toString().c_str() << " "
+                        << errnoWithDescription(errno);
+                fassertFailedNoTrace(40486);
             }
-#endif
-            if (addr.family() == AF_INET6 && !_listenerOptions.enableIPv6) {
-                error() << "Specified ipv6 bind address, but ipv6 is disabled";
-                fassertFailedNoTrace(40488);
-            }
-
-            GenericAcceptor acceptor(*_acceptorReactor);
-            acceptor.open(addr->protocol());
-            acceptor.set_option(GenericAcceptor::reuse_address(true));
-            if (addr.family() == AF_INET6) {
-                acceptor.set_option(asio::ip::v6_only(true));
-            }
-
-            acceptor.non_blocking(true, ec);
-            if (ec) {
-                return errorCodeToStatus(ec);
-            }
-
-            acceptor.bind(*addr, ec);
-            if (ec) {
-                return errorCodeToStatus(ec);
-            }
-
-#ifndef _WIN32
-            if (addr.family() == AF_UNIX) {
-                if (::chmod(addr.toString().c_str(), serverGlobalParams.unixSocketPermissions) ==
-                    -1) {
-                    error() << "Failed to chmod socket file " << addr.toString().c_str() << " "
-                            << errnoWithDescription(errno);
-                    fassertFailedNoTrace(40487);
-                }
-            }
-#endif
-            if (_listenerOptions.port == 0 &&
-                (addr.family() == AF_INET || addr.family() == AF_INET6)) {
-                if (_listenerPort != _listenerOptions.port) {
-                    return Status(ErrorCodes::BadValue,
-                                  "Port 0 (ephemeral port) is not allowed when"
-                                  " listening on multiple IP interfaces");
-                }
-                std::error_code ec;
-                auto endpoint = acceptor.local_endpoint(ec);
-                if (ec) {
-                    return errorCodeToStatus(ec);
-                }
-                _listenerPort = endpointToHostAndPort(endpoint).port();
-            }
-
-            sockaddr_storage sa;
-            memcpy(&sa, addr->data(), addr->size());
-            _acceptors.emplace_back(SockAddr(sa, addr->size()), std::move(acceptor));
         }
+#endif
+        if (addr.family() == AF_INET6 && !_listenerOptions.enableIPv6) {
+            error() << "Specified ipv6 bind address, but ipv6 is disabled";
+            fassertFailedNoTrace(40488);
+        }
+
+        GenericAcceptor acceptor(*_acceptorReactor);
+        acceptor.open(addr->protocol());
+        acceptor.set_option(GenericAcceptor::reuse_address(true));
+        if (addr.family() == AF_INET6) {
+            acceptor.set_option(asio::ip::v6_only(true));
+        }
+
+        std::error_code ec;
+        acceptor.non_blocking(true, ec);
+        if (ec) {
+            return errorCodeToStatus(ec);
+        }
+
+        acceptor.bind(*addr, ec);
+        if (ec) {
+            return errorCodeToStatus(ec);
+        }
+
+#ifndef _WIN32
+        if (addr.family() == AF_UNIX) {
+            if (::chmod(addr.toString().c_str(), serverGlobalParams.unixSocketPermissions) == -1) {
+                error() << "Failed to chmod socket file " << addr.toString().c_str() << " "
+                        << errnoWithDescription(errno);
+                fassertFailedNoTrace(40487);
+            }
+        }
+#endif
+        if (_listenerOptions.port == 0 && (addr.family() == AF_INET || addr.family() == AF_INET6)) {
+            if (_listenerPort != _listenerOptions.port) {
+                return Status(ErrorCodes::BadValue,
+                              "Port 0 (ephemeral port) is not allowed when"
+                              " listening on multiple IP interfaces");
+            }
+            std::error_code ec;
+            auto endpoint = acceptor.local_endpoint(ec);
+            if (ec) {
+                return errorCodeToStatus(ec);
+            }
+            _listenerPort = endpointToHostAndPort(endpoint).port();
+        }
+
+        sockaddr_storage sa;
+        memcpy(&sa, addr->data(), addr->size());
+        _acceptors.emplace_back(SockAddr(sa, addr->size()), std::move(acceptor));
     }
 
     if (_acceptors.empty() && _listenerOptions.isIngress()) {

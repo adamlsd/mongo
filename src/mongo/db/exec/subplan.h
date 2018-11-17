@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -35,7 +37,7 @@
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
-#include "mongo/db/exec/plan_stage.h"
+#include "mongo/db/exec/requires_collection_stage.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/plan_cache.h"
 #include "mongo/db/query/plan_yield_policy.h"
@@ -67,10 +69,10 @@ class OperationContext;
  *
  *   --Plans for entire rooted $or queries are neither written to nor read from the plan cache.
  */
-class SubplanStage final : public PlanStage {
+class SubplanStage final : public RequiresCollectionStage {
 public:
     SubplanStage(OperationContext* opCtx,
-                 Collection* collection,
+                 const Collection* collection,
                  WorkingSet* ws,
                  const QueryPlannerParams& params,
                  CanonicalQuery* cq);
@@ -125,6 +127,11 @@ public:
         return _compositeSolution.get();
     }
 
+protected:
+    void saveState(RequiresCollTag) final {}
+
+    void restoreState(RequiresCollTag) final {}
+
 private:
     /**
      * A class used internally in order to keep track of the results of planning
@@ -171,9 +178,6 @@ private:
      * Used as a fallback if subplanning fails. Helper for pickBestPlan().
      */
     Status choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy);
-
-    // Not owned here. Must be non-null.
-    Collection* _collection;
 
     // Not owned here.
     WorkingSet* _ws;

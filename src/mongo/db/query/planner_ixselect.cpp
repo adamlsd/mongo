@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -52,80 +54,10 @@ namespace mongo {
 
 namespace {
 
-namespace app = ::mongo::wildcard_planning;
+namespace wcp = ::mongo::wildcard_planning;
 
 std::size_t numPathComponents(StringData path) {
     return FieldRef{path}.numParts();
-}
-
-/**
- * Given a single wildcard index, and a set of fields which are being queried, create 'mock'
- * IndexEntry for each of the appropriate fields.
- */
-void expandIndex(const IndexEntry& wildcardIndex,
-                 const stdx::unordered_set<std::string>& fields,
-                 vector<IndexEntry>* out) {
-    invariant(out);
-    invariant(wildcardIndex.type == INDEX_WILDCARD);
-    // Should only have one field of the form {"path.$**" : 1}.
-    invariant(wildcardIndex.keyPattern.nFields() == 1);
-
-    // $** indexes do not keep the multikey metadata inside the index catalog entry, as the amount
-    // of metadata is not bounded. We do not expect IndexEntry objects for $** indexes to have a
-    // fixed-size vector of multikey metadata until after they are expanded.
-    invariant(wildcardIndex.multikeyPaths.empty());
-
-    const auto projExec = WildcardKeyGenerator::createProjectionExec(
-        wildcardIndex.keyPattern, wildcardIndex.infoObj.getObjectField("wildcardProjection"));
-
-    const auto projectedFields = projExec->applyProjectionToFields(fields);
-
-    const auto& includedPaths = projExec->getExhaustivePaths();
-
-    out->reserve(out->size() + projectedFields.size());
-    for (auto&& fieldName : projectedFields) {
-        // Convert string 'fieldName' into a FieldRef, to better facilitate the subsequent checks.
-        const auto queryPath = FieldRef{fieldName};
-        // $** indices hold multikey metadata directly in the index keys, rather than in the index
-        // catalog. In turn, the index key data is used to produce a set of multikey paths
-        // in-memory. Here we convert this set of all multikey paths into a MultikeyPaths vector
-        // which will indicate to the downstream planning code which components of 'fieldName' are
-        // multikey.
-        auto multikeyPaths = app::buildMultiKeyPathsForExpandedWildcardIndexEntry(
-            queryPath, wildcardIndex.multikeyPathSet);
-
-        // Check whether a query on the current fieldpath is answerable by the $** index, given any
-        // numerical path components that may be present in the path string.
-        if (!app::validateNumericPathComponents(multikeyPaths, includedPaths, queryPath)) {
-            continue;
-        }
-
-        // The expanded IndexEntry is only considered multikey if the particular path represented by
-        // this IndexEntry has a multikey path component. For instance, suppose we have index {$**:
-        // 1} with "a" as the only multikey path. If we have a query on paths "a.b" and "c.d", then
-        // we will generate two expanded index entries: one for "a.b" and "c.d". The "a.b" entry
-        // will be marked as multikey because "a" is multikey, whereas the "c.d" entry will not be
-        // marked as multikey.
-        invariant(multikeyPaths.size() == 1u);
-        const bool isMultikey = !multikeyPaths[0].empty();
-
-        IndexEntry entry(BSON(fieldName << wildcardIndex.keyPattern.firstElement()),
-                         IndexType::INDEX_WILDCARD,
-                         isMultikey,
-                         std::move(multikeyPaths),
-                         // Expanded index entries always use the fixed-size multikey paths
-                         // representation, so we purposefully discard 'multikeyPathSet'.
-                         {},
-                         true,   // sparse
-                         false,  // unique
-                         {wildcardIndex.identifier.catalogName, fieldName},
-                         wildcardIndex.filterExpr,
-                         wildcardIndex.infoObj,
-                         wildcardIndex.collator);
-
-        invariant("$_path"_sd != fieldName);
-        out->push_back(std::move(entry));
-    }
 }
 
 bool canUseWildcardIndex(BSONElement elt, MatchExpression::MatchType matchType) {
@@ -206,11 +138,11 @@ bool QueryPlannerIXSelect::notEqualsNullCanUseIndex(const IndexEntry& index,
         //
         // For example, take the query {"a.b": {$elemMatch: {"c.d": {$ne: null}}}}. We can use an
         // "a.b.c.d" index if _only_ "a" and/or "a.b" is/are multikey, because there will be no
-        // array traversal for the "c.d" part of the query. If "a.b.c" or "a.b.c.d" are multikey, we
-        // cannot use this index. As an example of what would go wrong, suppose the collection
-        // contained the document {a: [{b: []}]}. The "a.b.c.d" index key for that document would be
-        // undefined, and so would be excluded from the index bounds. However, that document should
-        // match the query.
+        // array traversal for the "c.d" part of the query. If "a.b.c" or "a.b.c.d" are multikey,
+        // we cannot use this index. As an example of what would go wrong, suppose the collection
+        // contained the document {a: {b: {c: []}}}. The "a.b.c.d" index key for that document
+        // would be null, and so would be excluded from the index bounds. However, that document
+        // should match the query.
         const std::size_t firstComponentAfterElemMatch =
             numPathComponents(elemMatchContext.fullPathToParentElemMatch);
         for (auto&& multikeyComponent : index.multikeyPaths[keyPatternIndex]) {
@@ -378,7 +310,7 @@ std::vector<IndexEntry> QueryPlannerIXSelect::expandIndexes(
     std::vector<IndexEntry> out;
     for (auto&& entry : relevantIndices) {
         if (entry.type == IndexType::INDEX_WILDCARD) {
-            expandIndex(entry, fields, &out);
+            wcp::expandWildcardIndexEntry(entry, fields, &out);
         } else {
             out.push_back(entry);
         }
@@ -392,18 +324,6 @@ std::vector<IndexEntry> QueryPlannerIXSelect::expandIndexes(
     }
 
     return out;
-}
-
-// static
-// This is the public method which does not accept an ElemMatchContext.
-bool QueryPlannerIXSelect::compatible(const BSONElement& keyPatternElt,
-                                      const IndexEntry& index,
-                                      std::size_t keyPatternIdx,
-                                      MatchExpression* node,
-                                      StringData fullPathToNode,
-                                      const CollatorInterface* collator) {
-    return _compatible(
-        keyPatternElt, index, keyPatternIdx, node, fullPathToNode, collator, ElemMatchContext{});
 }
 
 // static
@@ -461,23 +381,38 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
 
         // There are restrictions on when we can use the index if the expression is a NOT.
         if (exprtype == MatchExpression::NOT) {
-            // Don't allow indexed NOT on special index types such as geo or text indices.
+            // Don't allow indexed NOT on special index types such as geo or text indices. The
+            // exception is that $** indexes may be used for {$ne: null} queries.
+            //
             // TODO: SERVER-30994 should remove this check entirely and allow $not on the
-            // 'non-special' fields of non-btree indices.
-            // (e.g. {a: 1, geo: "2dsphere"})
-            if (INDEX_BTREE != index.type && !isChildOfElemMatchValue) {
+            // 'non-special' fields of non-btree indices (e.g. {a: 1, geo: "2dsphere"}).
+            if (INDEX_BTREE != index.type && INDEX_WILDCARD != index.type &&
+                !isChildOfElemMatchValue) {
                 return false;
             }
 
-            // Prevent negated preds from using sparse indices. Doing so would cause us to
-            // miss documents which do not contain the indexed fields.
-            if (index.sparse) {
+            const auto* child = node->getChild(0);
+            MatchExpression::MatchType childtype = child->matchType();
+            const bool isNotEqualsNull =
+                (childtype == MatchExpression::EQ &&
+                 static_cast<const ComparisonMatchExpression*>(child)->getData().type() ==
+                     BSONType::jstNULL);
+
+            // The type being INDEX_WILDCARD implies that the index is sparse.
+            invariant(!(index.type == INDEX_WILDCARD && !index.sparse));
+
+            // Prevent negated predicates from using sparse indices. Doing so would cause us to
+            // miss documents which do not contain the indexed fields. The only case where we may
+            // use a sparse index for a negation is when the query is {$ne: null}. This is due to
+            // the behavior of {$eq: null} matching documents where the field does not exist OR the
+            // field is equal to literal null. The negation of {$eq: null} therefore matches
+            // documents where the field does exist AND the field is not equal to literal
+            // null. Since the field must exist, it is safe to use a sparse index.
+            if (index.sparse && !isNotEqualsNull) {
                 return false;
             }
 
             // Can't index negations of MOD, REGEX, TYPE_OPERATOR, or ELEM_MATCH_VALUE.
-            auto* child = node->getChild(0);
-            MatchExpression::MatchType childtype = child->matchType();
             if (MatchExpression::REGEX == childtype || MatchExpression::MOD == childtype ||
                 MatchExpression::TYPE_OPERATOR == childtype ||
                 MatchExpression::ELEM_MATCH_VALUE == childtype) {
@@ -486,10 +421,6 @@ bool QueryPlannerIXSelect::_compatible(const BSONElement& keyPatternElt,
 
             // Most of the time we can't use a multikey index for a $ne: null query, however there
             // are a few exceptions around $elemMatch.
-            const bool isNotEqualsNull =
-                (childtype == MatchExpression::EQ &&
-                 static_cast<ComparisonMatchExpression*>(child)->getData().type() ==
-                     BSONType::jstNULL);
             if (isNotEqualsNull &&
                 !notEqualsNullCanUseIndex(index, keyPatternElt, keyPatternIdx, elemMatchContext)) {
                 return false;

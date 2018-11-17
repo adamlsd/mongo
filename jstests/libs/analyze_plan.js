@@ -58,6 +58,22 @@ function getPlanStage(root, stage) {
 }
 
 /**
+ * Returns the set of rejected plans from the given replset or sharded explain output.
+ */
+function getRejectedPlans(root) {
+    if (root.queryPlanner.winningPlan.hasOwnProperty("shards")) {
+        const rejectedPlans = [];
+        for (let shard of root.queryPlanner.winningPlan.shards) {
+            for (let rejectedPlan of shard.rejectedPlans) {
+                rejectedPlans.push(Object.assign({shardName: shard.shardName}, rejectedPlan));
+            }
+        }
+        return rejectedPlans;
+    }
+    return root.queryPlanner.rejectedPlans;
+}
+
+/**
  * Given the root stage of explain's JSON representation of a query plan ('root'), returns true if
  * the query planner reports at least one rejected alternative plan, and false otherwise.
  */
@@ -97,6 +113,22 @@ function hasRejectedPlans(root) {
         return root.queryPlanner.winningPlan.shards.find(
                    (shard) => sectionHasRejectedPlans(shard)) !== undefined;
     }
+}
+
+/**
+ * Returns an array of execution stages from the given replset or sharded explain output.
+ */
+function getExecutionStages(root) {
+    if (root.executionStats.executionStages.hasOwnProperty("shards")) {
+        const executionStages = [];
+        for (let shard of root.executionStats.executionStages.shards) {
+            executionStages.push(Object.assign(
+                {shardName: shard.shardName, executionSuccess: shard.executionSuccess},
+                shard.executionStages));
+        }
+        return executionStages;
+    }
+    return [root.executionStats.executionStages];
 }
 
 /**
@@ -266,8 +298,8 @@ function getChunkSkips(root) {
 }
 
 /**
- * Given explain output at executionStats level verbosity, confirms that the root stage is COUNT and
- * that the result of the count is equal to 'expectedCount'.
+ * Given explain output at executionStats level verbosity, confirms that the root stage is COUNT or
+ * RECORD_STORE_FAST_COUNT and that the result of the count is equal to 'expectedCount'.
  */
 function assertExplainCount({explainResults, expectedCount}) {
     const execStages = explainResults.executionStats.executionStages;
@@ -279,12 +311,14 @@ function assertExplainCount({explainResults, expectedCount}) {
         let totalCounted = 0;
         for (let shardExplain of execStages.shards) {
             const countStage = shardExplain.executionStages;
-            assert.eq(countStage.stage, "COUNT", "root stage on shard is not COUNT");
+            assert(countStage.stage === "COUNT" || countStage.stage === "RECORD_STORE_FAST_COUNT",
+                   "root stage on shard is not COUNT or RECORD_STORE_FAST_COUNT");
             totalCounted += countStage.nCounted;
         }
         assert.eq(totalCounted, expectedCount, "wrong count result");
     } else {
-        assert.eq(execStages.stage, "COUNT", "root stage is not COUNT");
+        assert(execStages.stage === "COUNT" || execStages.stage === "RECORD_STORE_FAST_COUNT",
+               "root stage on shard is not COUNT or RECORD_STORE_FAST_COUNT");
         assert.eq(execStages.nCounted, expectedCount, "wrong count result");
     }
 }

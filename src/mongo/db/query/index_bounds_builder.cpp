@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013 10gen Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -57,7 +59,7 @@ namespace mongo {
 
 namespace {
 
-namespace app = ::mongo::wildcard_planning;
+namespace wcp = ::mongo::wildcard_planning;
 
 // Helper for checking that an OIL "appears" to be ascending given one interval.
 void assertOILIsAscendingLocally(const vector<Interval>& intervals, size_t idx) {
@@ -345,7 +347,7 @@ void IndexBoundsBuilder::translate(const MatchExpression* expr,
     // adjusted regardless of the predicate. Having filled out the initial bounds, we apply any
     // necessary changes to the tightness here.
     if (index.type == IndexType::INDEX_WILDCARD) {
-        *tightnessOut = app::applyWildcardIndexScanBoundsTightness(index, *tightnessOut);
+        *tightnessOut = wcp::translateWildcardIndexBoundsAndTightness(index, *tightnessOut, oilOut);
     }
 }
 
@@ -422,9 +424,6 @@ void IndexBoundsBuilder::_translatePredicate(const MatchExpression* expr,
         // build exact bounds for the inverse, for example the query {a: {$ne: null}}.
         if (MatchExpression::EQ == child->matchType() &&
             static_cast<ComparisonMatchExpression*>(child)->getData().type() == BSONType::jstNULL) {
-            // We don't expect to try to use a sparse index for $ne: null. While this should be
-            // correct, it is not currently supported.
-            invariant(!index.sparse);
             *tightnessOut = IndexBoundsBuilder::EXACT;
         }
 
@@ -471,6 +470,8 @@ void IndexBoundsBuilder::_translatePredicate(const MatchExpression* expr,
         }
     } else if (ComparisonMatchExpressionBase::isEquality(expr->matchType())) {
         const auto* node = static_cast<const ComparisonMatchExpressionBase*>(expr);
+        // There is no need to sort intervals or merge overlapping intervals here since the output
+        // is from one element.
         translateEquality(node->getData(), index, isHashed, oilOut, tightnessOut);
     } else if (MatchExpression::LTE == expr->matchType()) {
         const LTEMatchExpression* node = static_cast<const LTEMatchExpression*>(expr);
@@ -673,8 +674,12 @@ void IndexBoundsBuilder::_translatePredicate(const MatchExpression* expr,
         // Create our various intervals.
 
         IndexBoundsBuilder::BoundsTightness tightness;
+        bool arrayOrNullPresent = false;
         for (auto&& equality : ime->getEqualities()) {
             translateEquality(equality, index, isHashed, oilOut, &tightness);
+            // The ordering invariant of oil has been violated by the call to translateEquality.
+            arrayOrNullPresent = arrayOrNullPresent || equality.type() == BSONType::jstNULL ||
+                equality.type() == BSONType::Array;
             if (tightness != IndexBoundsBuilder::EXACT) {
                 *tightnessOut = tightness;
             }
@@ -702,7 +707,12 @@ void IndexBoundsBuilder::_translatePredicate(const MatchExpression* expr,
             *tightnessOut = IndexBoundsBuilder::INEXACT_FETCH;
         }
 
-        unionize(oilOut);
+        // Equalities are already sorted and deduped so unionize is unneccesary if no regexes
+        // are present. Hashed indexes may also cause the bounds to be out-of-order.
+        // Arrays and nulls introduce multiple elements that neccesitate a sort and deduping.
+        if (!ime->getRegexes().empty() || index.type == IndexType::INDEX_HASHED ||
+            arrayOrNullPresent)
+            unionize(oilOut);
     } else if (MatchExpression::GEO == expr->matchType()) {
         const GeoMatchExpression* gme = static_cast<const GeoMatchExpression*>(expr);
 
@@ -872,7 +882,7 @@ Interval IndexBoundsBuilder::makePointInterval(const BSONObj& obj) {
 }
 
 // static
-Interval IndexBoundsBuilder::makePointInterval(const string& str) {
+Interval IndexBoundsBuilder::makePointInterval(StringData str) {
     BSONObjBuilder bob;
     bob.append("", str);
     return makePointInterval(bob.obj());

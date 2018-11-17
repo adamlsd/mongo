@@ -167,24 +167,19 @@
         insert: collName,
         documents: [{_id: "doc1"}],
         readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber++),
+        txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
         startTransaction: true,
         autocommit: false
     }));
 
-    jsTestLog("Check that mapreduce accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
-        mapreduce: collName,
-        map: function() {
-            emit(this, this);
-        },
-        reduce: function(key, values) {
-            return key;
-        },
-        out: {inline: 1},
+    // Abort the transaction to release locks.
+    // abortTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        abortTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0)
+        stmtId: NumberInt(1),
+        autocommit: false
     }));
 
     const isMongos = assert.commandWorked(db.runCommand("ismaster")).msg === "isdbgrid";
@@ -236,7 +231,6 @@
         // prepareTransaction can only be run on the admin database.
         assert.commandWorked(sessionDb.adminCommand({
             prepareTransaction: 1,
-            coordinatorId: "dummy",
             txnNumber: NumberLong(txnNumber),
             stmtId: NumberInt(1),
             autocommit: false
@@ -249,7 +243,6 @@
         }));
         assert.commandFailedWithCode(sessionDb.runCommand({
             prepareTransaction: 1,
-            coordinatorId: "dummy",
             txnNumber: NumberLong(txnNumber++),
             stmtId: NumberInt(0),
             autocommit: false

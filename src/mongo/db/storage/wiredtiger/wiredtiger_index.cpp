@@ -1,25 +1,27 @@
 // wiredtiger_index.cpp
 
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -207,7 +209,7 @@ StatusWith<std::string> WiredTigerIndex::generateCreateString(const std::string&
     // Raise an error about unrecognized fields that may be introduced in newer versions of
     // this storage engine.
     // Ensure that 'configString' field is a string. Raise an error if this is not the case.
-    BSONElement storageEngineElement = desc.getInfoElement("storageEngine");
+    BSONElement storageEngineElement = desc.infoObj()["storageEngine"];
     if (storageEngineElement.isABSONObj()) {
         BSONObj storageEngine = storageEngineElement.Obj();
         StatusWith<std::string> parseStatus =
@@ -677,18 +679,18 @@ public:
 private:
     StatusWith<SpecialFormatInserted> addKeyTimestampSafe(const BSONObj& newKey,
                                                           const RecordId& id) {
-        // Do a duplicate check
-        const int cmp = newKey.woCompare(_previousKey, _ordering);
-        if (cmp == 0) {
-            // Duplicate found!
-            if (!_dupsAllowed) {
+        // Do a duplicate check, but only if dups aren't allowed.
+        if (!_dupsAllowed) {
+            const int cmp = newKey.woCompare(_previousKey, _ordering);
+            if (cmp == 0) {
+                // Duplicate found!
                 return buildDupKeyErrorStatus(
                     newKey, _idx->collectionNamespace(), _idx->indexName(), _idx->keyPattern());
+            } else {
+                // _previousKey.isEmpty() is only true on the first call to addKey().
+                // newKey must be > the last key
+                invariant(_previousKey.isEmpty() || cmp > 0);
             }
-        } else {
-            // _previousKey.isEmpty() is only true on the first call to addKey().
-            // newKey must be > the last key
-            invariant(_previousKey.isEmpty() || cmp > 0);
         }
 
         _keyString.resetToKey(newKey, _idx->ordering(), id);
@@ -706,7 +708,9 @@ private:
 
         invariantWTOK(_cursor->insert(_cursor));
 
-        _previousKey = newKey.getOwned();
+        // Don't copy the key again if dups are allowed.
+        if (!_dupsAllowed)
+            _previousKey = newKey.getOwned();
 
         if (_keyString.getTypeBits().isLongEncoding())
             return StatusWith<SpecialFormatInserted>(SpecialFormatInserted::LongTypeBitsInserted);

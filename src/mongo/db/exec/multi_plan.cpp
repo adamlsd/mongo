@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -64,17 +66,14 @@ MultiPlanStage::MultiPlanStage(OperationContext* opCtx,
                                const Collection* collection,
                                CanonicalQuery* cq,
                                CachingMode cachingMode)
-    : PlanStage(kStageType, opCtx),
-      _collection(collection),
+    : RequiresCollectionStage(kStageType, opCtx, collection),
       _cachingMode(cachingMode),
       _query(cq),
       _bestPlanIdx(kNoSuchPlan),
       _backupPlanIdx(kNoSuchPlan),
       _failure(false),
       _failureCount(0),
-      _statusMemberId(WorkingSet::INVALID_ID) {
-    invariant(_collection);
-}
+      _statusMemberId(WorkingSet::INVALID_ID) {}
 
 void MultiPlanStage::addPlan(std::unique_ptr<QuerySolution> solution,
                              PlanStage* root,
@@ -128,7 +127,7 @@ PlanStage::StageState MultiPlanStage::doWork(WorkingSetID* out) {
         // if the best solution fails. Alternatively we could try to
         // defer cache insertion to be after the first produced result.
 
-        _collection->infoCache()->getPlanCache()->remove(*_query).transitional_ignore();
+        collection()->infoCache()->getPlanCache()->remove(*_query).transitional_ignore();
 
         _bestPlanIdx = _backupPlanIdx;
         _backupPlanIdx = kNoSuchPlan;
@@ -202,7 +201,7 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
     // make sense.
     ScopedTimer timer(getClock(), &_commonStats.executionTimeMillis);
 
-    size_t numWorks = getTrialPeriodWorks(getOpCtx(), _collection);
+    size_t numWorks = getTrialPeriodWorks(getOpCtx(), collection());
     size_t numResults = getTrialPeriodNumToReturn(*_query);
 
     // Work the plans, stopping when a plan hits EOF or returns some
@@ -271,7 +270,7 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
             size_t runnerUpIdx = ranking->candidateOrder[1];
 
             LOG(1) << "Winning plan tied with runner-up. Not caching."
-                   << " ns: " << _collection->ns() << " " << redact(_query->toStringShort())
+                   << " ns: " << collection()->ns() << " " << redact(_query->toStringShort())
                    << " winner score: " << ranking->scores[0]
                    << " winner summary: " << Explain::getPlanSummary(_candidates[winnerIdx].root)
                    << " runner-up score: " << ranking->scores[1] << " runner-up summary: "
@@ -285,7 +284,7 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
 
             size_t winnerIdx = ranking->candidateOrder[0];
             LOG(1) << "Winning plan had zero results. Not caching."
-                   << " ns: " << _collection->ns() << " " << redact(_query->toStringShort())
+                   << " ns: " << collection()->ns() << " " << redact(_query->toStringShort())
                    << " winner score: " << ranking->scores[0]
                    << " winner summary: " << Explain::getPlanSummary(_candidates[winnerIdx].root);
         }
@@ -319,7 +318,8 @@ Status MultiPlanStage::pickBestPlan(PlanYieldPolicy* yieldPolicy) {
         }
 
         if (validSolutions) {
-            _collection->infoCache()
+            collection()
+                ->infoCache()
                 ->getPlanCache()
                 ->set(*_query,
                       solutions,

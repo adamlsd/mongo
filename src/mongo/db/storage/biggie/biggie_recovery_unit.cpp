@@ -1,40 +1,41 @@
-// biggie_recovery_unit.cpp
 
 /**
-*    Copyright (C) 2014 MongoDB Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2018-present MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    Server Side Public License for more details.
+ *
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the Server Side Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include "mongo/db/storage/biggie/biggie_recovery_unit.h"
+#include "mongo/platform/basic.h"
 
 #include <mutex>
 
 #include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/storage/biggie/biggie_recovery_unit.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -46,21 +47,25 @@ RecoveryUnit::RecoveryUnit(KVEngine* parentKVEngine, stdx::function<void()> cb)
 void RecoveryUnit::beginUnitOfWork(OperationContext* opCtx) {}
 
 void RecoveryUnit::commitUnitOfWork() {
-    if (_dirty && _workingCopy) {
+    if (_dirty) {
+        invariant(_forked);
         while (true) {
-            std::shared_ptr<StringStore> master = _KVEngine->getMaster();
+            std::pair<uint64_t, StringStore> masterInfo = _KVEngine->getMasterInfo();
             try {
-                _workingCopy->merge3(*_mergeBase, *master);
+                _workingCopy.merge3(_mergeBase, masterInfo.second);
             } catch (const merge_conflict_exception&) {
                 throw WriteConflictException();
             }
-            stdx::lock_guard<stdx::mutex> lkOnMaster(_KVEngine->getMasterLock());
-            if (_KVEngine->getMaster_inlock() == master) {
-                _KVEngine->setMaster_inlock(std::move(_workingCopy));
-                _mergeBase.reset();
+
+            if (_KVEngine->trySwapMaster(_workingCopy, masterInfo.first)) {
+                // Merged successfully
                 break;
+            } else {
+                // Retry the merge, but update the mergeBase since some progress was made merging.
+                _mergeBase = masterInfo.second;
             }
         }
+        _forked = false;
         _dirty = false;
     }
     try {
@@ -74,8 +79,8 @@ void RecoveryUnit::commitUnitOfWork() {
 }
 
 void RecoveryUnit::abortUnitOfWork() {
-    _workingCopy.reset();
-    _mergeBase.reset();
+    _forked = false;
+    _dirty = false;
     try {
         for (Changes::reverse_iterator it = _changes.rbegin(), end = _changes.rend(); it != end;
              ++it) {
@@ -94,8 +99,7 @@ bool RecoveryUnit::waitUntilDurable() {
 }
 
 void RecoveryUnit::abandonSnapshot() {
-    _mergeBase.reset();
-    _workingCopy.reset();
+    _forked = false;
     _dirty = false;
 }
 
@@ -108,17 +112,25 @@ SnapshotId RecoveryUnit::getSnapshotId() const {
 }
 
 bool RecoveryUnit::forkIfNeeded() {
-    // _workingCopy and _mergeBase either both exist or both don't.
-    invariant((_workingCopy && _mergeBase) || (!_workingCopy && !_mergeBase));
-    if (_mergeBase) {
+    if (_forked)
         return false;
-    }
-    _mergeBase = _KVEngine->getMaster();
-    _workingCopy = std::make_unique<StringStore>(*_mergeBase);
+
+    // Update the copies of the trees when not in a WUOW so cursors can retrieve the latest data.
+
+    std::pair<uint64_t, StringStore> masterInfo = _KVEngine->getMasterInfo();
+    StringStore master = masterInfo.second;
+
+    _mergeBase = master;
+    _workingCopy = master;
+
+    _forked = true;
     return true;
 }
 
 void RecoveryUnit::setOrderedCommit(bool orderedCommit) {}
 
+RecoveryUnit* RecoveryUnit::get(OperationContext* opCtx) {
+    return checked_cast<biggie::RecoveryUnit*>(opCtx->recoveryUnit());
+}
 }  // namespace biggie
 }  // namespace mongo

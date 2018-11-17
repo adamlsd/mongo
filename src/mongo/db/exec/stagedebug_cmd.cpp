@@ -1,23 +1,25 @@
+
 /**
- *    Copyright (C) 2013-2014 MongoDB Inc.
+ *    Copyright (C) 2018-present MongoDB, Inc.
  *
- *    This program is free software: you can redistribute it and/or  modify
- *    it under the terms of the GNU Affero General Public License, version 3,
- *    as published by the Free Software Foundation.
+ *    This program is free software: you can redistribute it and/or modify
+ *    it under the terms of the Server Side Public License, version 1,
+ *    as published by MongoDB, Inc.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *    GNU Affero General Public License for more details.
+ *    Server Side Public License for more details.
  *
- *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    You should have received a copy of the Server Side Public License
+ *    along with this program. If not, see
+ *    <http://www.mongodb.com/licensing/server-side-public-license>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
+ *    must comply with the Server Side Public License in all respects for
  *    all of the code used other than as permitted herein. If you modify file(s)
  *    with this exception, you may extend this exception to your version of the
  *    file(s), but you are not obligated to do so. If you do not wish to do so,
@@ -307,13 +309,14 @@ public:
             params.bounds.boundInclusion = IndexBounds::makeBoundInclusionFromBoundBools(
                 nodeArgs["startKeyInclusive"].Bool(), nodeArgs["endKeyInclusive"].Bool());
             params.direction = nodeArgs["direction"].numberInt();
+            params.shouldDedup = desc->isMultikey(opCtx);
 
             return new IndexScan(opCtx, params, workingSet, matcher);
         } else if ("andHash" == nodeName) {
             uassert(
                 16921, "Nodes argument must be provided to AND", nodeArgs["nodes"].isABSONObj());
 
-            auto andStage = make_unique<AndHashStage>(opCtx, workingSet, collection);
+            auto andStage = make_unique<AndHashStage>(opCtx, workingSet);
 
             int nodesAdded = 0;
             BSONObjIterator it(nodeArgs["nodes"].Obj());
@@ -336,7 +339,7 @@ public:
             uassert(
                 16924, "Nodes argument must be provided to AND", nodeArgs["nodes"].isABSONObj());
 
-            auto andStage = make_unique<AndSortedStage>(opCtx, workingSet, collection);
+            auto andStage = make_unique<AndSortedStage>(opCtx, workingSet);
 
             int nodesAdded = 0;
             BSONObjIterator it(nodeArgs["nodes"].Obj());
@@ -409,7 +412,6 @@ public:
             return new SkipStage(opCtx, nodeArgs["num"].numberInt(), workingSet, subNode);
         } else if ("cscan" == nodeName) {
             CollectionScanParams params;
-            params.collection = collection;
 
             // What direction?
             uassert(16963,
@@ -421,22 +423,8 @@ public:
                 params.direction = CollectionScanParams::BACKWARD;
             }
 
-            return new CollectionScan(opCtx, params, workingSet, matcher);
-        }
-// sort is disabled for now.
-#if 0
-            else if ("sort" == nodeName) {
-                uassert(16969, "Node argument must be provided to sort",
-                        nodeArgs["node"].isABSONObj());
-                uassert(16970, "Pattern argument must be provided to sort",
-                        nodeArgs["pattern"].isABSONObj());
-                PlanStage* subNode = parseQuery(opCtx, db, nodeArgs["node"].Obj(), workingSet, exprs);
-                SortStageParams params;
-                params.pattern = nodeArgs["pattern"].Obj();
-                return new SortStage(params, workingSet, subNode);
-            }
-#endif
-        else if ("mergeSort" == nodeName) {
+            return new CollectionScan(opCtx, collection, params, workingSet, matcher);
+        } else if ("mergeSort" == nodeName) {
             uassert(
                 16971, "Nodes argument must be provided to sort", nodeArgs["nodes"].isABSONObj());
             uassert(16972,
@@ -447,7 +435,7 @@ public:
             params.pattern = nodeArgs["pattern"].Obj();
             // Dedup is true by default.
 
-            auto mergeStage = make_unique<MergeSortStage>(opCtx, params, workingSet, collection);
+            auto mergeStage = make_unique<MergeSortStage>(opCtx, params, workingSet);
 
             BSONObjIterator it(nodeArgs["nodes"].Obj());
             while (it.more()) {

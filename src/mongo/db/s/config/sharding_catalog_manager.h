@@ -122,30 +122,30 @@ public:
     //
 
     /**
-     * Adds the given shardName to the zone. Returns ErrorCodes::ShardNotFound if a shard by that
+     * Adds the given shardName to the zone. Throws `ErrorCodes::ShardNotFound` if a shard by that
      * name does not exist.
      */
-    Status addShardToZone(OperationContext* opCtx,
-                          const std::string& shardName,
-                          const std::string& zoneName);
+    void addShardToZone(OperationContext* opCtx,
+                        const std::string& shardName,
+                        const std::string& zoneName);
 
     /**
-     * Removes the given shardName from the zone. Returns ErrorCodes::ShardNotFound if a shard by
+     * Removes the given shardName from the zone. Throws `ErrorCodes::ShardNotFound` if a shard by
      * that name does not exist.
      */
-    Status removeShardFromZone(OperationContext* opCtx,
-                               const std::string& shardName,
-                               const std::string& zoneName);
+    void removeShardFromZone(OperationContext* opCtx,
+                             const std::string& shardName,
+                             const std::string& zoneName);
 
     /**
      * Assigns a range of a sharded collection to a particular shard zone. If range is a prefix of
      * the shard key, the range will be converted into a new range with full shard key filled with
      * MinKey values.
      */
-    Status assignKeyRangeToZone(OperationContext* opCtx,
-                                const NamespaceString& nss,
-                                const ChunkRange& range,
-                                const std::string& zoneName);
+    void assignKeyRangeToZone(OperationContext* opCtx,
+                              const NamespaceString& nss,
+                              const ChunkRange& range,
+                              const std::string& zoneName);
 
     /**
      * Removes a range from a zone.
@@ -153,9 +153,9 @@ public:
      * NOTE: unlike assignKeyRangeToZone, the given range will never be converted to include the
      * full shard key.
      */
-    Status removeKeyRangeFromZone(OperationContext* opCtx,
-                                  const NamespaceString& nss,
-                                  const ChunkRange& range);
+    void removeKeyRangeFromZone(OperationContext* opCtx,
+                                const NamespaceString& nss,
+                                const ChunkRange& range);
 
     //
     // Chunk Operations
@@ -165,12 +165,12 @@ public:
      * Updates metadata in the config.chunks collection to show the given chunk as split into
      * smaller chunks at the specified split points.
      */
-    Status commitChunkSplit(OperationContext* opCtx,
-                            const NamespaceString& nss,
-                            const OID& requestEpoch,
-                            const ChunkRange& range,
-                            const std::vector<BSONObj>& splitPoints,
-                            const std::string& shardName);
+    void commitChunkSplit(OperationContext* opCtx,
+                          const NamespaceString& nss,
+                          const OID& requestEpoch,
+                          const ChunkRange& range,
+                          const std::vector<BSONObj>& splitPoints,
+                          const std::string& shardName);
 
     /**
      * Updates metadata in the config.chunks collection so the chunks with given boundaries are seen
@@ -178,12 +178,12 @@ public:
      * If 'validAfter' is not set, this means the commit request came from an older server version,
      * which is not history-aware.
      */
-    Status commitChunkMerge(OperationContext* opCtx,
-                            const NamespaceString& nss,
-                            const OID& requestEpoch,
-                            const std::vector<BSONObj>& chunkBoundaries,
-                            const std::string& shardName,
-                            const boost::optional<Timestamp>& validAfter);
+    void commitChunkMerge(OperationContext* opCtx,
+                          const NamespaceString& nss,
+                          const OID& requestEpoch,
+                          const std::vector<BSONObj>& chunkBoundaries,
+                          const std::string& shardName,
+                          const boost::optional<Timestamp>& validAfter);
 
     /**
      * Updates metadata in config.chunks collection to show the given chunk in its new shard.
@@ -231,16 +231,15 @@ public:
     /**
      * Retrieves all databases for a shard.
      *
-     * Returns a !OK status if an error occurs.
+     * Throws if an error occurs.
      */
-    StatusWith<std::vector<std::string>> getDatabasesForShard(OperationContext* opCtx,
-                                                              const ShardId& shardId);
+    std::vector<std::string> getDatabasesForShard(OperationContext* opCtx, const ShardId& shardId);
 
     /**
      * Updates metadata in config.databases collection to show the given primary database on its
      * new shard.
      */
-    Status commitMovePrimary(OperationContext* opCtx, const StringData nss, const ShardId& toShard);
+    void commitMovePrimary(OperationContext* opCtx, const StringData nss, const ShardId& toShard);
 
     //
     // Collection Operations
@@ -249,11 +248,10 @@ public:
     /**
      * Drops the specified collection from the collection metadata store.
      *
-     * Returns Status::OK if successful or any error code indicating the failure. These are
-     * some of the known failures:
+     * Throws a DB exception indicating the failure. These are some of the known failures:
      *  - NamespaceNotFound - collection does not exist
      */
-    Status dropCollection(OperationContext* opCtx, const NamespaceString& nss);
+    void dropCollection(OperationContext* opCtx, const NamespaceString& nss);
 
 
     /**
@@ -326,10 +324,10 @@ public:
      *
      * On success returns the name of the newly added shard.
      */
-    StatusWith<std::string> addShard(OperationContext* opCtx,
-                                     const std::string* shardProposedName,
-                                     const ConnectionString& shardConnectionString,
-                                     const long long maxSize);
+    std::string addShard(OperationContext* opCtx,
+                         const std::string* shardProposedName,
+                         const ConnectionString& shardConnectionString,
+                         const long long maxSize);
 
     /**
      * Tries to remove a shard. To completely remove a shard from a sharded cluster,
@@ -412,15 +410,15 @@ private:
      * algorithm.
      */
     ShardType _validateHostAsShard(OperationContext* opCtx,
-                                               std::shared_ptr<RemoteCommandTargeter> targeter,
-                                               const std::string* shardProposedName,
-                                               const ConnectionString& connectionString);
+                                   std::shared_ptr<RemoteCommandTargeter> targeter,
+                                   const std::string* shardProposedName,
+                                   const ConnectionString& connectionString);
 
     /**
      * Drops the sessions collection on the specified host.
      */
     void _dropSessionsCollection(OperationContext* opCtx,
-                                   std::shared_ptr<RemoteCommandTargeter> targeter);
+                                 std::shared_ptr<RemoteCommandTargeter> targeter);
 
     /**
      * Runs the listDatabases command on the specified host and returns the names of all databases
@@ -434,25 +432,25 @@ private:
      * Runs a command against a "shard" that is not yet in the cluster and thus not present in the
      * ShardRegistry.
      */
-    StatusWith<Shard::CommandResponse> _runCommandForAddShard(OperationContext* opCtx,
-                                                              RemoteCommandTargeter* targeter,
-                                                              StringData dbName,
-                                                              const BSONObj& cmdObj);
+    Shard::CommandResponse _runCommandForAddShard(OperationContext* opCtx,
+                                                  RemoteCommandTargeter* targeter,
+                                                  StringData dbName,
+                                                  const BSONObj& cmdObj);
 
     /**
      * Selects an optimal shard on which to place a newly created database from the set of
      * available shards. Will return ShardNotFound if shard could not be found.
      */
     static ShardId _selectShardForNewDatabase(OperationContext* opCtx,
-                                                          ShardRegistry* shardRegistry);
+                                              ShardRegistry* shardRegistry);
 
     /**
      * Helper method for running a count command against the config server with appropriate error
      * handling.
      */
     long long _runCountCommandOnConfig(OperationContext* opCtx,
-                                                   const NamespaceString& nss,
-                                                   BSONObj query);
+                                       const NamespaceString& nss,
+                                       BSONObj query);
 
     /**
      * Appends a read committed read concern to the request object.
@@ -463,8 +461,8 @@ private:
      * Retrieve the full chunk description from the config.
      */
     ChunkType _findChunkOnConfig(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const BSONObj& key);
+                                 const NamespaceString& nss,
+                                 const BSONObj& key);
 
     // The owning service context
     ServiceContext* const _serviceContext;

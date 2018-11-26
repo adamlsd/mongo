@@ -102,8 +102,8 @@ public:
 
         auto parsedRequest = uassertStatusOK(AddShardToZoneRequest::parseFromConfigCommand(cmdObj));
 
-        uassertStatusOK(ShardingCatalogManager::get(opCtx)->addShardToZone(
-            opCtx, parsedRequest.getShardName(), parsedRequest.getZoneName()));
+        ShardingCatalogManager::get(opCtx)->addShardToZone(
+            opCtx, parsedRequest.getShardName(), parsedRequest.getZoneName());
 
         return true;
     }

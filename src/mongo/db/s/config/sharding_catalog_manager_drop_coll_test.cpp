@@ -168,7 +168,12 @@ public:
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready("Test");
         auto opCtx = cc().makeOperationContext();
-        return ShardingCatalogManager::get(opCtx.get())->dropCollection(opCtx.get(), dropNS());
+        try {
+            ShardingCatalogManager::get(opCtx.get())->dropCollection(opCtx.get(), dropNS());
+            return Status::OK();
+        } catch (const DBException& ex) {
+            return ex.toStatus();
+        }
     }
 
     const NamespaceString& dropNS() const {

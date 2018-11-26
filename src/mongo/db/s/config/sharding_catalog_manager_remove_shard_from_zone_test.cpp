@@ -53,8 +53,8 @@ TEST_F(RemoveShardFromZoneTest, RemoveZoneThatNoLongerExistsShouldNotError) {
 
     setupShards({shard}).transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->removeShardFromZone(operationContext(), shard.getName(), "z"));
+    ShardingCatalogManager::get(operationContext())
+        ->removeShardFromZone(operationContext(), shard.getName(), "z");
     auto shardDocStatus = getShardDoc(operationContext(), shard.getName());
     ASSERT_OK(shardDocStatus.getStatus());
 
@@ -75,8 +75,8 @@ TEST_F(RemoveShardFromZoneTest, RemovingZoneThatIsOnlyReferencedByAnotherShardSh
 
     setupShards({shardA, shardB}).transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->removeShardFromZone(operationContext(), shardB.getName(), "z"));
+    ShardingCatalogManager::get(operationContext())
+        ->removeShardFromZone(operationContext(), shardB.getName(), "z");
 
     // Shard A should still be in zone 'z'.
     auto shardADocStatus = getShardDoc(operationContext(), shardA.getName());
@@ -117,8 +117,8 @@ TEST_F(RemoveShardFromZoneTest, RemoveLastZoneFromShardShouldSucceedWhenNoChunks
     insertToConfigCollection(operationContext(), TagsType::ConfigNS, tagDoc.toBSON())
         .transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->removeShardFromZone(operationContext(), shardA.getName(), "z"));
+    ShardingCatalogManager::get(operationContext())
+        ->removeShardFromZone(operationContext(), shardA.getName(), "z");
 
     // Shard A should not be in zone 'z'.
     auto shardADocStatus = getShardDoc(operationContext(), shardA.getName());
@@ -157,9 +157,9 @@ TEST_F(RemoveShardFromZoneTest, RemoveLastZoneFromShardShouldFailWhenAChunkRefer
     insertToConfigCollection(operationContext(), TagsType::ConfigNS, tagDoc.toBSON())
         .transitional_ignore();
 
-    auto status = ShardingCatalogManager::get(operationContext())
-                      ->removeShardFromZone(operationContext(), shardA.getName(), "z");
-    ASSERT_EQ(ErrorCodes::ZoneStillInUse, status);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->removeShardFromZone(operationContext(), shardA.getName(), "z"),
+                  ExceptionFor<ErrorCodes::ZoneStillInUse>);
 
     // Shard A should still be in zone 'z'.
     auto shardADocStatus = getShardDoc(operationContext(), shardA.getName());
@@ -188,9 +188,9 @@ TEST_F(RemoveShardFromZoneTest, RemoveZoneShouldFailIfShardDoesntExist) {
 
     setupShards({shardA}).transitional_ignore();
 
-    auto status = ShardingCatalogManager::get(operationContext())
-                      ->removeShardFromZone(operationContext(), "b", "z");
-    ASSERT_EQ(ErrorCodes::ShardNotFound, status);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->removeShardFromZone(operationContext(), "b", "z"),
+                  ExceptionFor<ErrorCodes::ShardNotFound>);
 
     // Shard A should still be in zone 'z'.
     auto shardADocStatus = getShardDoc(operationContext(), shardA.getName());
@@ -215,8 +215,8 @@ TEST_F(RemoveShardFromZoneTest, RemoveZoneFromShardShouldOnlyRemoveZoneOnSpecifi
 
     setupShards({shardA, shardB}).transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->removeShardFromZone(operationContext(), shardB.getName(), "z"));
+    ShardingCatalogManager::get(operationContext())
+        ->removeShardFromZone(operationContext(), shardB.getName(), "z");
 
     // Shard A should still be in zone 'z'.
     auto shardADocStatus = getShardDoc(operationContext(), shardA.getName());

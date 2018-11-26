@@ -94,8 +94,8 @@ public:
 
         const auto dbname = commitMovePrimaryRequest.get_configsvrCommitMovePrimary();
 
-        uassertStatusOK(ShardingCatalogManager::get(opCtx)->commitMovePrimary(
-            opCtx, dbname, commitMovePrimaryRequest.getTo().toString()));
+        ShardingCatalogManager::get(opCtx)->commitMovePrimary(
+            opCtx, dbname, commitMovePrimaryRequest.getTo().toString());
 
         return true;
     }

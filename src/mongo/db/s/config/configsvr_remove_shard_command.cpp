@@ -126,7 +126,7 @@ public:
             uassertStatusOK(shardingCatalogManager->removeShard(opCtx, shard->getId()));
 
         std::vector<std::string> databases =
-            uassertStatusOK(shardingCatalogManager->getDatabasesForShard(opCtx, shard->getId()));
+            shardingCatalogManager->getDatabasesForShard(opCtx, shard->getId());
 
         // Get BSONObj containing:
         // 1) note about moving or dropping databases in a shard

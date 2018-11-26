@@ -110,7 +110,8 @@ DatabaseType ShardingCatalogManager::createDatabase(OperationContext* opCtx,
     // The database does not exist. Insert an entry for the new database into the sharding catalog.
 
     // Pick a primary shard for the new database.
-    const auto primaryShardId = _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
+    const auto primaryShardId =
+        _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
 
     // Insert an entry for the new database into the sharding catalog.
     DatabaseType db(dbName, std::move(primaryShardId), false, databaseVersion::makeNew());
@@ -162,8 +163,8 @@ void ShardingCatalogManager::enableSharding(OperationContext* opCtx, const std::
         ShardingCatalogClient::kLocalWriteConcern));
 }
 
-StatusWith<std::vector<std::string>> ShardingCatalogManager::getDatabasesForShard(
-    OperationContext* opCtx, const ShardId& shardId) try {
+std::vector<std::string> ShardingCatalogManager::getDatabasesForShard(
+    OperationContext* opCtx, const ShardId& shardId) {
     auto findResult = uassertStatusOK(Grid::get(opCtx)->catalogClient()->_exhaustiveFindOnConfig(
         opCtx,
         kConfigReadSelector,
@@ -176,20 +177,16 @@ StatusWith<std::vector<std::string>> ShardingCatalogManager::getDatabasesForShar
     std::vector<std::string> dbs;
     for (const BSONObj& obj : findResult.value) {
         std::string dbName;
-        uassertStatusOK( bsonExtractStringField(obj, DatabaseType::name(), &dbName));
+        uassertStatusOK(bsonExtractStringField(obj, DatabaseType::name(), &dbName));
         dbs.push_back(std::move(dbName));
     }
 
     return dbs;
 }
-catch( const DBException &ex )
-{
-    return ex.toStatus();
-}
 
-Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
-                                                 const StringData dbname,
-                                                 const ShardId& toShard) try {
+void ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
+                                               const StringData dbname,
+                                               const ShardId& toShard) {
 
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
@@ -215,7 +212,7 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
         // The primary has already been set to the destination shard. It's likely that there was a
         // network error and the shard resent the command.
         repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
-        return Status::OK();
+        return;
     }
 
     auto newDbType = dbType;
@@ -228,10 +225,8 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
     auto updateQueryBuilder = BSONObjBuilder(BSON(DatabaseType::name << dbname));
     updateQueryBuilder.append(DatabaseType::version.name(), currentDatabaseVersion.toBSON());
 
-    auto updateResult =[&]
-    {
-        try
-        {
+    auto updateResult = [&] {
+        try {
             return uassertStatusOK(Grid::get(opCtx)->catalogClient()->updateConfigDocument(
                 opCtx,
                 DatabaseType::ConfigNS,
@@ -239,11 +234,8 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
                 newDbType.toBSON(),
                 false,
                 ShardingCatalogClient::kLocalWriteConcern));
-        }
-        catch( const DBException &ex )
-        {
-            log() << "error committing movePrimary: " << dbname
-                  << causedBy(redact(ex.toStatus()));
+        } catch (const DBException& ex) {
+            log() << "error committing movePrimary: " << dbname << causedBy(redact(ex.toStatus()));
             throw;
         }
     }();
@@ -262,12 +254,6 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
     // Ensure the next attempt to retrieve the database or any of its collections will do a full
     // reload
     Grid::get(opCtx)->catalogCache()->purgeDatabase(dbname);
-
-    return Status::OK();
-}
-catch( const DBException &ex )
-{
-    return ex.toStatus();
 }
 
 }  // namespace mongo

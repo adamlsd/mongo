@@ -192,7 +192,7 @@ private:
             _dropUnshardedCollectionFromShard(opCtx, dbStatus.getValue().value.getPrimary(), nss);
         } else {
             uassertStatusOK(collStatus);
-            uassertStatusOK(ShardingCatalogManager::get(opCtx)->dropCollection(opCtx, nss));
+            ShardingCatalogManager::get(opCtx)->dropCollection(opCtx, nss);
         }
     }
 

@@ -129,7 +129,7 @@ std::string generateNewShardName(OperationContext* opCtx) {
 
 }  // namespace
 
-StatusWith<Shard::CommandResponse> ShardingCatalogManager::_runCommandForAddShard(
+Shard::CommandResponse ShardingCatalogManager::_runCommandForAddShard(
     OperationContext* opCtx,
     RemoteCommandTargeter* targeter,
     StringData dbName,
@@ -199,10 +199,14 @@ boost::optional<ShardType> ShardingCatalogManager::_checkIfShardExists(
     const std::string* proposedShardName,
     long long proposedShardMaxSize) {
     // Check whether any host in the connection is already part of the cluster.
-    const auto existingShards =
-        uassertStatusOKWithContext(Grid::get(opCtx)->catalogClient()->getAllShards(
-                                       opCtx, repl::ReadConcernLevel::kLocalReadConcern),
-                                   "Failed to load existing shards during addShard");
+    const auto existingShards = [&] {
+        try {
+            return Grid::get(opCtx)->catalogClient()->getAllShards(
+                opCtx, repl::ReadConcernLevel::kLocalReadConcern);
+        } catch (const DBException& ex) {
+            uasserted(ex.toStatus().code(), "Failed to load existing shards during addShard");
+        }
+    }();
 
     // Now check if this shard already exists - if it already exists *with the same options* then
     // the addShard request can return success early without doing anything more.
@@ -288,8 +292,8 @@ ShardType ShardingCatalogManager::_validateHostAsShard(
     const ConnectionString& connectionString) {
     auto swCommandResponse = [&] {
         try {
-            return uassertStatusOK(_runCommandForAddShard(
-                opCtx, targeter.get(), NamespaceString::kAdminDb, BSON("isMaster" << 1)));
+            return _runCommandForAddShard(
+                opCtx, targeter.get(), NamespaceString::kAdminDb, BSON("isMaster" << 1));
         } catch (const ExceptionFor<ErrorCodes::IncompatibleServerVersion>& ex) {
             uasserted(ex.toStatus().withReason(
                           str::stream() << "Cannot add " << connectionString.toString()
@@ -463,8 +467,8 @@ void ShardingCatalogManager::_dropSessionsCollection(
         wcBuilder.append("w", "majority");
     }
 
-    auto swCommandResponse = uassertStatusOK(_runCommandForAddShard(
-        opCtx, targeter.get(), NamespaceString::kLogicalSessionsNamespace.db(), builder.done()));
+    auto swCommandResponse = _runCommandForAddShard(
+        opCtx, targeter.get(), NamespaceString::kLogicalSessionsNamespace.db(), builder.done());
 
     auto& cmdStatus = swCommandResponse.commandStatus;
 
@@ -477,15 +481,12 @@ std::vector<std::string> ShardingCatalogManager::_getDBNamesListFromShard(
     OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter) {
 
     auto swCommandResponse =
-        uassertStatusOK(_runCommandForAddShard(opCtx,
-                                               targeter.get(),
-                                               NamespaceString::kAdminDb,
-                                               BSON("listDatabases" << 1 << "nameOnly" << true)));
+        _runCommandForAddShard(opCtx,
+                               targeter.get(),
+                               NamespaceString::kAdminDb,
+                               BSON("listDatabases" << 1 << "nameOnly" << true));
 
-    auto& cmdStatus = swCommandResponse.commandStatus;
-    if (!cmdStatus.isOK()) {
-        uasserted(cmdStatus, "");
-    }
+    uassertStatusOK(swCommandResponse.commandStatus);
 
     auto& cmdResult = swCommandResponse.response;
 
@@ -503,11 +504,11 @@ std::vector<std::string> ShardingCatalogManager::_getDBNamesListFromShard(
     return dbNames;
 }
 
-StatusWith<std::string> ShardingCatalogManager::addShard(
+std::string ShardingCatalogManager::addShard(
     OperationContext* opCtx,
     const std::string* shardProposedName,
     const ConnectionString& shardConnectionString,
-    const long long maxSize) try {
+    const long long maxSize) {
     if (shardConnectionString.type() == ConnectionString::INVALID) {
         uasserted(ErrorCodes::BadValue, "Invalid connection string");
     }
@@ -521,8 +522,8 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
 
     // Check if this shard has already been added (can happen in the case of a retry after a network
     // error, for example) and thus this addShard request should be considered a no-op.
-    auto existingShard = uassertStatusOK(
-        _checkIfShardExists(opCtx, shardConnectionString, shardProposedName, maxSize));
+    auto existingShard =
+        _checkIfShardExists(opCtx, shardConnectionString, shardProposedName, maxSize);
     if (existingShard) {
         // These hosts already belong to an existing shard, so report success and terminate the
         // addShard request.  Make sure to set the last optime for the client to the system last
@@ -608,8 +609,8 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
 
     // Helper function that runs a command on the to-be shard and returns the status
     auto runCmdOnNewShard = [this, &opCtx, &targeter](const BSONObj& cmd) -> Status {
-        auto commandResponse = uassertStatusOK(
-            _runCommandForAddShard(opCtx, targeter.get(), NamespaceString::kAdminDb, cmd));
+        auto commandResponse =
+            _runCommandForAddShard(opCtx, targeter.get(), NamespaceString::kAdminDb, cmd);
         // Grabs the underlying status from a StatusWith object by taking the first
         // non-OK status, if there is one. This is needed due to the semantics of
         // _runCommandForAddShard.
@@ -667,13 +668,8 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
         }
         auto versionResponse =
             _runCommandForAddShard(opCtx, targeter.get(), NamespaceString::kAdminDb, setFCVCmd);
-        if (!versionResponse.isOK()) {
-            return versionResponse.getStatus();
-        }
 
-        if (!versionResponse.getValue().commandStatus.isOK()) {
-            return versionResponse.getValue().commandStatus;
-        }
+        uassertStatusOK(versionResponse.commandStatus);
 
         log() << "going to insert new entry for shard into config.shards: " << shardType.toString();
 
@@ -684,7 +680,7 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
             ShardingCatalogClient::kLocalWriteConcern);
         if (!result.isOK()) {
             log() << "error adding shard: " << shardType.toBSON() << " err: " << result.reason();
-            return result;
+            uassertStatusOK( result);
         }
     }
 
@@ -718,15 +714,13 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     // Ensure the added shard is visible to this process.
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
     if (!shardRegistry->getShard(opCtx, shardType.getName()).isOK()) {
-        return {ErrorCodes::OperationFailed,
+        uasserted (ErrorCodes::OperationFailed,
                 "Could not find shard metadata for shard after adding it. This most likely "
-                "indicates that the shard was removed immediately after it was added."};
+                "indicates that the shard was removed immediately after it was added.");
     }
     stopMonitoringGuard.Dismiss();
 
     return shardType.getName();
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
 StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationContext* opCtx,

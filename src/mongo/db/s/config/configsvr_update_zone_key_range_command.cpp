@@ -113,11 +113,11 @@ public:
         }
 
         if (parsedRequest.isRemove()) {
-            uassertStatusOK(ShardingCatalogManager::get(opCtx)->removeKeyRangeFromZone(
-                opCtx, parsedRequest.getNS(), parsedRequest.getRange()));
+            ShardingCatalogManager::get(opCtx)->removeKeyRangeFromZone(
+                opCtx, parsedRequest.getNS(), parsedRequest.getRange());
         } else {
-            uassertStatusOK(ShardingCatalogManager::get(opCtx)->assignKeyRangeToZone(
-                opCtx, parsedRequest.getNS(), parsedRequest.getRange(), zoneName));
+            ShardingCatalogManager::get(opCtx)->assignKeyRangeToZone(
+                opCtx, parsedRequest.getNS(), parsedRequest.getRange(), zoneName);
         }
 
         return true;

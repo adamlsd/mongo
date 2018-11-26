@@ -409,12 +409,11 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
     auto future = launchAsync([this, expectedShardName] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName =
-            assertGet(ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(),
-                                     &expectedShardName,
-                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     100));
+        auto shardName = ShardingCatalogManager::get(operationContext())
+                             ->addShard(operationContext(),
+                                        &expectedShardName,
+                                        assertGet(ConnectionString::parse("StandaloneHost:12345")),
+                                        100);
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -494,9 +493,9 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(
+        auto shardName =
             ShardingCatalogManager::get(operationContext())
-                ->addShard(operationContext(), nullptr, ConnectionString(shardTarget), 100));
+                ->addShard(operationContext(), nullptr, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -545,10 +544,11 @@ TEST_F(AddShardTest, AddSCCCConnectionStringAsShard) {
 
     auto future = launchAsync([this, invalidConn] {
         const std::string shardName("StandaloneShard");
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &shardName, invalidConn, 100);
-        ASSERT_EQUALS(ErrorCodes::BadValue, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(), "Invalid connection string");
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &shardName, invalidConn, 100),
+            ExceptionFor<ErrorCodes::BadValue>,
+            "Invalid connection string");
     });
 
     future.timed_get(kLongFutureTimeout);
@@ -560,13 +560,14 @@ TEST_F(AddShardTest, EmptyShardName) {
     std::string expectedShardName = "";
 
     auto future = launchAsync([this, expectedShardName] {
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(),
-                                     &expectedShardName,
-                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                     100);
-        ASSERT_EQUALS(ErrorCodes::BadValue, status);
-        ASSERT_EQUALS("shard name cannot be empty", status.getStatus().reason());
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(),
+                           &expectedShardName,
+                           assertGet(ConnectionString::parse("StandaloneHost:12345")),
+                           100),
+            ExceptionFor<ErrorCodes::BadValue>,
+            "shard name cannot be empty");
     });
 
     future.timed_get(kLongFutureTimeout);
@@ -586,12 +587,12 @@ TEST_F(AddShardTest, UnreachableHost) {
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status =
+        ASSERT_THROWS_WHAT_CONTAINS(
             ShardingCatalogManager::get(operationContext())
                 ->addShard(
-                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(), "host unreachable");
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
+            "host unreachable");
     });
 
     Status hostUnreachableStatus = Status(ErrorCodes::HostUnreachable, "host unreachable");
@@ -614,11 +615,11 @@ TEST_F(AddShardTest, AddMongosAsShard) {
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status =
+        ASSERT_THROWS(
             ShardingCatalogManager::get(operationContext())
                 ->addShard(
-                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation, status);
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100),
+            ExceptionFor<ErrorCodes::IllegalOperation>);
     });
 
     expectIsMaster(shardTarget,
@@ -642,12 +643,12 @@ TEST_F(AddShardTest, AddReplicaSetShardAsStandalone) {
     auto future = launchAsync([this, expectedShardName, shardTarget] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status =
+        ASSERT_THROWS_WHAT_CONTAINS(
             ShardingCatalogManager::get(operationContext())
                 ->addShard(
-                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(), "use replica set url format");
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
+            "use replica set url format");
     });
 
     BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "setName"
@@ -675,10 +676,11 @@ TEST_F(AddShardTest, AddStandaloneHostShardAsReplicaSet) {
     auto future = launchAsync([this, expectedShardName, connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &expectedShardName, connString, 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(), "host did not return a set name");
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &expectedShardName, connString, 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
+            "host did not return a set name");
     });
 
     BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "maxWireVersion"
@@ -704,10 +706,11 @@ TEST_F(AddShardTest, ReplicaSetMistmatchedReplicaSetName) {
     auto future = launchAsync([this, expectedShardName, connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &expectedShardName, connString, 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(), "does not match the actual set name");
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &expectedShardName, connString, 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
+            "does not match the actual set name");
     });
 
     BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "setName"
@@ -735,11 +738,11 @@ TEST_F(AddShardTest, ShardIsCSRSConfigServer) {
     auto future = launchAsync([this, expectedShardName, connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &expectedShardName, connString, 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(),
-                               "as a shard since it is a config server");
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &expectedShardName, connString, 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
+            "as a shard since it is a config server");
     });
 
     BSONObj commandResponse = BSON("ok" << 1 << "ismaster" << true << "setName"
@@ -769,11 +772,11 @@ TEST_F(AddShardTest, ReplicaSetMissingHostsProvidedInSeedList) {
     auto future = launchAsync([this, expectedShardName, connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &expectedShardName, connString, 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(status.getStatus().reason(),
-                               "host2:12345 does not belong to replica set");
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &expectedShardName, connString, 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
+            "host2:12345 does not belong to replica set");
     });
 
     BSONArrayBuilder hosts;
@@ -805,11 +808,11 @@ TEST_F(AddShardTest, AddShardWithNameConfigFails) {
     auto future = launchAsync([this, expectedShardName, connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &expectedShardName, connString, 100);
-        ASSERT_EQUALS(ErrorCodes::BadValue, status);
-        ASSERT_EQUALS(status.getStatus().reason(),
-                      "use of shard replica set with name 'config' is not allowed");
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &expectedShardName, connString, 100),
+            ExceptionFor<ErrorCodes::BadValue>,
+            "use of shard replica set with name 'config' is not allowed");
     });
 
     BSONArrayBuilder hosts;
@@ -852,11 +855,10 @@ TEST_F(AddShardTest, ShardContainsExistingDatabase) {
     auto future = launchAsync([this, expectedShardName, connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto status = ShardingCatalogManager::get(operationContext())
-                          ->addShard(operationContext(), &expectedShardName, connString, 100);
-        ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
-        ASSERT_STRING_CONTAINS(
-            status.getStatus().reason(),
+        ASSERT_THROWS_WHAT_CONTAINS(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), &expectedShardName, connString, 100),
+            ExceptionFor<ErrorCodes::OperationFailed>,
             "because a local database 'existing' exists in another existingShard");
     });
 
@@ -901,8 +903,8 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
     auto future = launchAsync([this, &expectedShardName, &connString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
-                                       ->addShard(operationContext(), nullptr, connString, 100));
+        auto shardName = ShardingCatalogManager::get(operationContext())
+                             ->addShard(operationContext(), nullptr, connString, 100);
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -968,8 +970,8 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
     auto future = launchAsync([this, &expectedShardName, &seedString] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
-                                       ->addShard(operationContext(), nullptr, seedString, 100));
+        auto shardName = ShardingCatalogManager::get(operationContext())
+                             ->addShard(operationContext(), nullptr, seedString, 100);
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -1046,10 +1048,10 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(
+        auto shardName =
             ShardingCatalogManager::get(operationContext())
                 ->addShard(
-                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100));
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -1138,12 +1140,12 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future1 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(operationContext())
+        ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                           ->addShard(operationContext(),
                                      &differentName,
                                      ConnectionString(shardTarget),
-                                     existingShard.getMaxSizeMB()));
+                                     existingShard.getMaxSizeMB()),
+                      ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future1.timed_get(kLongFutureTimeout);
 
@@ -1154,12 +1156,12 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future2 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(operationContext())
+        ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                           ->addShard(operationContext(),
                                      nullptr,
                                      ConnectionString(shardTarget),
-                                     existingShard.getMaxSizeMB() + 100));
+                                     existingShard.getMaxSizeMB() + 100),
+                      ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future2.timed_get(kLongFutureTimeout);
 
@@ -1170,12 +1172,12 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future3 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(operationContext())
+        ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                           ->addShard(operationContext(),
                                      nullptr,
                                      ConnectionString::forReplicaSet("mySet", {shardTarget}),
-                                     existingShard.getMaxSizeMB()));
+                                     existingShard.getMaxSizeMB()),
+                      ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future3.timed_get(kLongFutureTimeout);
 
@@ -1186,11 +1188,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future4 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
-                                       ->addShard(operationContext(),
-                                                  &existingShardName,
-                                                  ConnectionString(shardTarget),
-                                                  existingShard.getMaxSizeMB()));
+        auto shardName = ShardingCatalogManager::get(operationContext())
+                             ->addShard(operationContext(),
+                                        &existingShardName,
+                                        ConnectionString(shardTarget),
+                                        existingShard.getMaxSizeMB());
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future4.timed_get(kLongFutureTimeout);
@@ -1203,11 +1205,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future5 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
-                                       ->addShard(operationContext(),
-                                                  nullptr,
-                                                  ConnectionString(shardTarget),
-                                                  existingShard.getMaxSizeMB()));
+        auto shardName = ShardingCatalogManager::get(operationContext())
+                             ->addShard(operationContext(),
+                                        nullptr,
+                                        ConnectionString(shardTarget),
+                                        existingShard.getMaxSizeMB());
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future5.timed_get(kLongFutureTimeout);
@@ -1247,11 +1249,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future1 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(
-            ErrorCodes::IllegalOperation,
+        ASSERT_THROWS(
             ShardingCatalogManager::get(operationContext())
                 ->addShard(
-                    operationContext(), &differentName, connString, existingShard.getMaxSizeMB()));
+                    operationContext(), &differentName, connString, existingShard.getMaxSizeMB()),
+            ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future1.timed_get(kLongFutureTimeout);
 
@@ -1262,11 +1264,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future2 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(
-            ErrorCodes::IllegalOperation,
+        ASSERT_THROWS(
             ShardingCatalogManager::get(operationContext())
                 ->addShard(
-                    operationContext(), nullptr, connString, existingShard.getMaxSizeMB() + 100));
+                    operationContext(), nullptr, connString, existingShard.getMaxSizeMB() + 100),
+            ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future2.timed_get(kLongFutureTimeout);
 
@@ -1281,12 +1283,12 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future3 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(operationContext())
+        ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                           ->addShard(operationContext(),
                                      nullptr,
                                      ConnectionString(shardTarget),
-                                     existingShard.getMaxSizeMB()));
+                                     existingShard.getMaxSizeMB()),
+                      ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future3.timed_get(kLongFutureTimeout);
 
@@ -1300,13 +1302,13 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future4 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      ShardingCatalogManager::get(operationContext())
+        ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                           ->addShard(operationContext(),
                                      nullptr,
                                      ConnectionString::forReplicaSet(differentSetName,
                                                                      connString.getServers()),
-                                     existingShard.getMaxSizeMB()));
+                                     existingShard.getMaxSizeMB()),
+                      ExceptionFor<ErrorCodes::IllegalOperation>);
     });
     future4.timed_get(kLongFutureTimeout);
 
@@ -1317,11 +1319,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future5 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
-                                       ->addShard(operationContext(),
-                                                  &existingShardName,
-                                                  connString,
-                                                  existingShard.getMaxSizeMB()));
+        auto shardName = ShardingCatalogManager::get(operationContext())
+                             ->addShard(operationContext(),
+                                        &existingShardName,
+                                        connString,
+                                        existingShard.getMaxSizeMB());
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future5.timed_get(kLongFutureTimeout);
@@ -1331,9 +1333,9 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future6 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(
+        auto shardName =
             ShardingCatalogManager::get(operationContext())
-                ->addShard(operationContext(), nullptr, connString, existingShard.getMaxSizeMB()));
+                ->addShard(operationContext(), nullptr, connString, existingShard.getMaxSizeMB());
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future6.timed_get(kLongFutureTimeout);
@@ -1356,11 +1358,10 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future7 = launchAsync([&] {
         ON_BLOCK_EXIT([&] { Client::destroy(); });
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
-                                       ->addShard(operationContext(),
-                                                  nullptr,
-                                                  otherHostConnString,
-                                                  existingShard.getMaxSizeMB()));
+        auto shardName =
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), nullptr, otherHostConnString, existingShard.getMaxSizeMB());
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future7.timed_get(kLongFutureTimeout);

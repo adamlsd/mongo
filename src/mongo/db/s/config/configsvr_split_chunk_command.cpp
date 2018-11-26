@@ -113,14 +113,12 @@ public:
 
         auto parsedRequest = uassertStatusOK(SplitChunkRequest::parseFromConfigCommand(cmdObj));
 
-        Status splitChunkResult =
-            ShardingCatalogManager::get(opCtx)->commitChunkSplit(opCtx,
-                                                                 parsedRequest.getNamespace(),
-                                                                 parsedRequest.getEpoch(),
-                                                                 parsedRequest.getChunkRange(),
-                                                                 parsedRequest.getSplitPoints(),
-                                                                 parsedRequest.getShardName());
-        uassertStatusOK(splitChunkResult);
+        ShardingCatalogManager::get(opCtx)->commitChunkSplit(opCtx,
+                                                             parsedRequest.getNamespace(),
+                                                             parsedRequest.getEpoch(),
+                                                             parsedRequest.getChunkRange(),
+                                                             parsedRequest.getSplitPoints(),
+                                                             parsedRequest.getShardName());
 
         return true;
     }

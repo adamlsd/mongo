@@ -63,13 +63,13 @@ TEST_F(SplitChunkTest, SplitExistingChunkCorrectlyShouldSucceed) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->commitChunkSplit(operationContext(),
-                                     kNamespace,
-                                     origVersion.epoch(),
-                                     ChunkRange(chunkMin, chunkMax),
-                                     splitPoints,
-                                     "shard0000"));
+    ShardingCatalogManager::get(operationContext())
+        ->commitChunkSplit(operationContext(),
+                           kNamespace,
+                           origVersion.epoch(),
+                           ChunkRange(chunkMin, chunkMax),
+                           splitPoints,
+                           "shard0000");
 
     // First chunkDoc should have range [chunkMin, chunkSplitPoint]
     auto chunkDocStatus = getChunkDoc(operationContext(), chunkMin);
@@ -124,13 +124,13 @@ TEST_F(SplitChunkTest, MultipleSplitsOnExistingChunkShouldSucceed) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->commitChunkSplit(operationContext(),
-                                     kNamespace,
-                                     origVersion.epoch(),
-                                     ChunkRange(chunkMin, chunkMax),
-                                     splitPoints,
-                                     "shard0000"));
+    ShardingCatalogManager::get(operationContext())
+        ->commitChunkSplit(operationContext(),
+                           kNamespace,
+                           origVersion.epoch(),
+                           ChunkRange(chunkMin, chunkMax),
+                           splitPoints,
+                           "shard0000");
 
     // First chunkDoc should have range [chunkMin, chunkSplitPoint]
     auto chunkDocStatus = getChunkDoc(operationContext(), chunkMin);
@@ -208,13 +208,13 @@ TEST_F(SplitChunkTest, NewSplitShouldClaimHighestVersion) {
 
     ASSERT_OK(setupChunks({chunk, chunk2}));
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->commitChunkSplit(operationContext(),
-                                     kNamespace,
-                                     collEpoch,
-                                     ChunkRange(chunkMin, chunkMax),
-                                     splitPoints,
-                                     "shard0000"));
+    ShardingCatalogManager::get(operationContext())
+        ->commitChunkSplit(operationContext(),
+                           kNamespace,
+                           collEpoch,
+                           ChunkRange(chunkMin, chunkMax),
+                           splitPoints,
+                           "shard0000");
 
     // First chunkDoc should have range [chunkMin, chunkSplitPoint]
     auto chunkDocStatus = getChunkDoc(operationContext(), chunkMin);
@@ -258,14 +258,14 @@ TEST_F(SplitChunkTest, PreConditionFailErrors) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    auto splitStatus = ShardingCatalogManager::get(operationContext())
-                           ->commitChunkSplit(operationContext(),
-                                              kNamespace,
-                                              origVersion.epoch(),
-                                              ChunkRange(chunkMin, BSON("a" << 7)),
-                                              splitPoints,
-                                              "shard0000");
-    ASSERT_EQ(ErrorCodes::BadValue, splitStatus);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkSplit(operationContext(),
+                                         kNamespace,
+                                         origVersion.epoch(),
+                                         ChunkRange(chunkMin, BSON("a" << 7)),
+                                         splitPoints,
+                                         "shard0000"),
+                  ExceptionFor<ErrorCodes::BadValue>);
 }
 
 TEST_F(SplitChunkTest, NonExisingNamespaceErrors) {
@@ -285,14 +285,14 @@ TEST_F(SplitChunkTest, NonExisingNamespaceErrors) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    auto splitStatus = ShardingCatalogManager::get(operationContext())
-                           ->commitChunkSplit(operationContext(),
-                                              NamespaceString("TestDB.NonExistingColl"),
-                                              origVersion.epoch(),
-                                              ChunkRange(chunkMin, chunkMax),
-                                              splitPoints,
-                                              "shard0000");
-    ASSERT_EQ(ErrorCodes::IllegalOperation, splitStatus);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkSplit(operationContext(),
+                                         NamespaceString("TestDB.NonExistingColl"),
+                                         origVersion.epoch(),
+                                         ChunkRange(chunkMin, chunkMax),
+                                         splitPoints,
+                                         "shard0000"),
+                  ExceptionFor<ErrorCodes::IllegalOperation>);
 }
 
 TEST_F(SplitChunkTest, NonMatchingEpochsOfChunkAndRequestErrors) {
@@ -312,14 +312,14 @@ TEST_F(SplitChunkTest, NonMatchingEpochsOfChunkAndRequestErrors) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    auto splitStatus = ShardingCatalogManager::get(operationContext())
-                           ->commitChunkSplit(operationContext(),
-                                              kNamespace,
-                                              OID::gen(),
-                                              ChunkRange(chunkMin, chunkMax),
-                                              splitPoints,
-                                              "shard0000");
-    ASSERT_EQ(ErrorCodes::StaleEpoch, splitStatus);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkSplit(operationContext(),
+                                         kNamespace,
+                                         OID::gen(),
+                                         ChunkRange(chunkMin, chunkMax),
+                                         splitPoints,
+                                         "shard0000"),
+                  ExceptionFor<ErrorCodes::StaleEpoch>);
 }
 
 TEST_F(SplitChunkTest, SplitPointsOutOfOrderShouldFail) {
@@ -339,14 +339,14 @@ TEST_F(SplitChunkTest, SplitPointsOutOfOrderShouldFail) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    auto splitStatus = ShardingCatalogManager::get(operationContext())
-                           ->commitChunkSplit(operationContext(),
-                                              kNamespace,
-                                              origVersion.epoch(),
-                                              ChunkRange(chunkMin, chunkMax),
-                                              splitPoints,
-                                              "shard0000");
-    ASSERT_EQ(ErrorCodes::InvalidOptions, splitStatus);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkSplit(operationContext(),
+                                         kNamespace,
+                                         origVersion.epoch(),
+                                         ChunkRange(chunkMin, chunkMax),
+                                         splitPoints,
+                                         "shard0000"),
+                  ExceptionFor<ErrorCodes::InvalidOptions>);
 }
 
 TEST_F(SplitChunkTest, SplitPointsOutOfRangeAtMinShouldFail) {
@@ -366,14 +366,14 @@ TEST_F(SplitChunkTest, SplitPointsOutOfRangeAtMinShouldFail) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    auto splitStatus = ShardingCatalogManager::get(operationContext())
-                           ->commitChunkSplit(operationContext(),
-                                              kNamespace,
-                                              origVersion.epoch(),
-                                              ChunkRange(chunkMin, chunkMax),
-                                              splitPoints,
-                                              "shard0000");
-    ASSERT_EQ(ErrorCodes::InvalidOptions, splitStatus);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkSplit(operationContext(),
+                                         kNamespace,
+                                         origVersion.epoch(),
+                                         ChunkRange(chunkMin, chunkMax),
+                                         splitPoints,
+                                         "shard0000"),
+                  ExceptionFor<ErrorCodes::InvalidOptions>);
 }
 
 TEST_F(SplitChunkTest, SplitPointsOutOfRangeAtMaxShouldFail) {
@@ -393,14 +393,14 @@ TEST_F(SplitChunkTest, SplitPointsOutOfRangeAtMaxShouldFail) {
 
     ASSERT_OK(setupChunks({chunk}));
 
-    auto splitStatus = ShardingCatalogManager::get(operationContext())
-                           ->commitChunkSplit(operationContext(),
-                                              kNamespace,
-                                              origVersion.epoch(),
-                                              ChunkRange(chunkMin, chunkMax),
-                                              splitPoints,
-                                              "shard0000");
-    ASSERT_EQ(ErrorCodes::InvalidOptions, splitStatus);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkSplit(operationContext(),
+                                         kNamespace,
+                                         origVersion.epoch(),
+                                         ChunkRange(chunkMin, chunkMax),
+                                         splitPoints,
+                                         "shard0000"),
+                  ExceptionFor<ErrorCodes::InvalidOptions>);
 }
 
 TEST_F(SplitChunkTest, SplitPointsWithDollarPrefixShouldFail) {
@@ -417,20 +417,22 @@ TEST_F(SplitChunkTest, SplitPointsWithDollarPrefixShouldFail) {
     chunk.setMax(chunkMax);
     ASSERT_OK(setupChunks({chunk}));
 
-    ASSERT_NOT_OK(ShardingCatalogManager::get(operationContext())
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                       ->commitChunkSplit(operationContext(),
                                          kNamespace,
                                          origVersion.epoch(),
                                          ChunkRange(chunkMin, chunkMax),
                                          {BSON("a" << BSON("$minKey" << 1))},
-                                         "shard0000"));
-    ASSERT_NOT_OK(ShardingCatalogManager::get(operationContext())
+                                         "shard0000"),
+                  DBException);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
                       ->commitChunkSplit(operationContext(),
                                          kNamespace,
                                          origVersion.epoch(),
                                          ChunkRange(chunkMin, chunkMax),
                                          {BSON("a" << BSON("$maxKey" << 1))},
-                                         "shard0000"));
+                                         "shard0000"),
+                  DBException);
 }
 
 }  // namespace

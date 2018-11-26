@@ -132,6 +132,14 @@
                                  ASSERT_EQ(::mongo::StringData(ex.what()),               \
                                            ::mongo::StringData(EXPECTED_WHAT));          \
                              }))
+/**
+ * Behaves like ASSERT_THROWS, above, but also fails if calling what() on the thrown exception
+ * does not return a string containing the EXPECTED_WHAT.
+ */
+#define ASSERT_THROWS_WHAT_CONTAINS(STATEMENT, EXCEPTION_TYPE, EXPECTED_TEXT)            \
+    ASSERT_THROWS_WITH_CHECK(STATEMENT, EXCEPTION_TYPE, ([&](const EXCEPTION_TYPE& ex) { \
+                                 ASSERT_STRING_CONTAINS(ex.what(), EXPECTED_TEXT);       \
+                             }))
 
 /**
  * Behaves like ASSERT_THROWS, above, but also fails if calling getCode() on the thrown exception

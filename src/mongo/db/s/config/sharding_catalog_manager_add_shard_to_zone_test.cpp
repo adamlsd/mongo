@@ -52,8 +52,8 @@ TEST_F(AddShardToZoneTest, AddSingleZoneToExistingShardShouldSucceed) {
 
     setupShards({shard}).transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->addShardToZone(operationContext(), shard.getName(), "z"));
+    ShardingCatalogManager::get(operationContext())
+        ->addShardToZone(operationContext(), shard.getName(), "z");
     auto shardDocStatus = getShardDoc(operationContext(), shard.getName());
     ASSERT_OK(shardDocStatus.getStatus());
 
@@ -71,8 +71,8 @@ TEST_F(AddShardToZoneTest, AddZoneToShardWithSameTagShouldSucceed) {
 
     setupShards({shard}).transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->addShardToZone(operationContext(), shard.getName(), "x"));
+    ShardingCatalogManager::get(operationContext())
+        ->addShardToZone(operationContext(), shard.getName(), "x");
 
     auto shardDocStatus = getShardDoc(operationContext(), shard.getName());
     ASSERT_OK(shardDocStatus.getStatus());
@@ -92,8 +92,8 @@ TEST_F(AddShardToZoneTest, AddZoneToShardWithNewTagShouldAppend) {
 
     setupShards({shard}).transitional_ignore();
 
-    ASSERT_OK(ShardingCatalogManager::get(operationContext())
-                  ->addShardToZone(operationContext(), shard.getName(), "y"));
+    ShardingCatalogManager::get(operationContext())
+        ->addShardToZone(operationContext(), shard.getName(), "y");
 
     auto shardDocStatus = getShardDoc(operationContext(), shard.getName());
     ASSERT_OK(shardDocStatus.getStatus());
@@ -112,9 +112,9 @@ TEST_F(AddShardToZoneTest, AddSingleZoneToNonExistingShardShouldFail) {
 
     setupShards({shard}).transitional_ignore();
 
-    auto status = ShardingCatalogManager::get(operationContext())
-                      ->addShardToZone(operationContext(), "b", "z");
-    ASSERT_EQ(ErrorCodes::ShardNotFound, status);
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->addShardToZone(operationContext(), "b", "z"),
+                  ExceptionFor<ErrorCodes::ShardNotFound>);
 }
 
 }  // unnamed namespace

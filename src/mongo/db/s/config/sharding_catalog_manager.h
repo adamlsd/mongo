@@ -190,13 +190,13 @@ public:
      * If 'validAfter' is not set, this means the commit request came from an older server version,
      * which is not history-aware.
      */
-    StatusWith<BSONObj> commitChunkMigration(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const ChunkType& migratedChunk,
-                                             const OID& collectionEpoch,
-                                             const ShardId& fromShard,
-                                             const ShardId& toShard,
-                                             const boost::optional<Timestamp>& validAfter);
+    BSONObj commitChunkMigration(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const ChunkType& migratedChunk,
+                                 const OID& collectionEpoch,
+                                 const ShardId& fromShard,
+                                 const ShardId& toShard,
+                                 const boost::optional<Timestamp>& validAfter);
 
     //
     // Database Operations

@@ -93,19 +93,16 @@ TEST_F(CommitChunkMigrate, CheckCorrectOpsCommandWithCtl) {
 
     Timestamp validAfter{101, 0};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0cref,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_OK(resultBSON.getStatus());
+    BSONObj versions = ShardingCatalogManager::get(operationContext())
+                           ->commitChunkMigration(operationContext(),
+                                                  chunk0.getNS(),
+                                                  chunk0cref,
+                                                  origVersion.epoch(),
+                                                  ShardId(shard0.getName()),
+                                                  ShardId(shard1.getName()),
+                                                  validAfter);
 
     // Verify the versions returned match expected values.
-    BSONObj versions = resultBSON.getValue();
     auto mver = ChunkVersion::parseWithField(versions, "migratedChunkVersion");
     ASSERT_OK(mver.getStatus());
     ASSERT_EQ(ChunkVersion(origMajorVersion + 1, 0, origVersion.epoch()), mver.getValue());
@@ -163,19 +160,16 @@ TEST_F(CommitChunkMigrate, CheckCorrectOpsCommandNoCtl) {
 
     Timestamp validAfter{101, 0};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_OK(resultBSON.getStatus());
+    BSONObj versions = ShardingCatalogManager::get(operationContext())
+                           ->commitChunkMigration(operationContext(),
+                                                  chunk0.getNS(),
+                                                  chunk0,
+                                                  origVersion.epoch(),
+                                                  ShardId(shard0.getName()),
+                                                  ShardId(shard1.getName()),
+                                                  validAfter);
 
     // Verify the version returned matches expected value.
-    BSONObj versions = resultBSON.getValue();
     auto mver = ChunkVersion::parseWithField(versions, "migratedChunkVersion");
     ASSERT_OK(mver.getStatus());
     ASSERT_EQ(ChunkVersion(origMajorVersion + 1, 0, origVersion.epoch()), mver.getValue());
@@ -224,19 +218,16 @@ TEST_F(CommitChunkMigrate, CheckCorrectOpsCommandNoCtlTrimHistory) {
     // Make the time distance between the last history element large enough.
     Timestamp validAfter{200, 0};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_OK(resultBSON.getStatus());
+    BSONObj versions = ShardingCatalogManager::get(operationContext())
+                           ->commitChunkMigration(operationContext(),
+                                                  chunk0.getNS(),
+                                                  chunk0,
+                                                  origVersion.epoch(),
+                                                  ShardId(shard0.getName()),
+                                                  ShardId(shard1.getName()),
+                                                  validAfter);
 
     // Verify the version returned matches expected value.
-    BSONObj versions = resultBSON.getValue();
     auto mver = ChunkVersion::parseWithField(versions, "migratedChunkVersion");
     ASSERT_OK(mver.getStatus());
     ASSERT_EQ(ChunkVersion(origMajorVersion + 1, 0, origVersion.epoch()), mver.getValue());
@@ -285,16 +276,15 @@ TEST_F(CommitChunkMigrate, RejectOutOfOrderHistory) {
     // Make the time before the last change to trigger the failure.
     Timestamp validAfter{99, 0};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_EQ(ErrorCodes::IncompatibleShardingMetadata, resultBSON.getStatus());
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkMigration(operationContext(),
+                                             chunk0.getNS(),
+                                             chunk0,
+                                             origVersion.epoch(),
+                                             ShardId(shard0.getName()),
+                                             ShardId(shard1.getName()),
+                                             validAfter),
+                  ExceptionFor<ErrorCodes::IncompatibleShardingMetadata>);
 }
 
 TEST_F(CommitChunkMigrate, RejectWrongCollectionEpoch0) {
@@ -336,16 +326,15 @@ TEST_F(CommitChunkMigrate, RejectWrongCollectionEpoch0) {
 
     Timestamp validAfter{1};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                OID::gen(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_EQ(ErrorCodes::StaleEpoch, resultBSON.getStatus());
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkMigration(operationContext(),
+                                             chunk0.getNS(),
+                                             chunk0,
+                                             OID::gen(),
+                                             ShardId(shard0.getName()),
+                                             ShardId(shard1.getName()),
+                                             validAfter),
+                  ExceptionFor<ErrorCodes::StaleEpoch>);
 }
 
 TEST_F(CommitChunkMigrate, RejectWrongCollectionEpoch1) {
@@ -389,16 +378,15 @@ TEST_F(CommitChunkMigrate, RejectWrongCollectionEpoch1) {
 
     Timestamp validAfter{1};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_EQ(ErrorCodes::StaleEpoch, resultBSON.getStatus());
+    ASSERT_THROWS(ShardingCatalogManager::get(operationContext())
+                      ->commitChunkMigration(operationContext(),
+                                             chunk0.getNS(),
+                                             chunk0,
+                                             origVersion.epoch(),
+                                             ShardId(shard0.getName()),
+                                             ShardId(shard1.getName()),
+                                             validAfter),
+                  ExceptionFor<ErrorCodes::StaleEpoch>);
 }
 
 TEST_F(CommitChunkMigrate, RejectChunkMissing0) {
@@ -440,16 +428,16 @@ TEST_F(CommitChunkMigrate, RejectChunkMissing0) {
 
     Timestamp validAfter{1};
 
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_EQ(40165, resultBSON.getStatus().code());
+    ASSERT_THROWS_CODE(ShardingCatalogManager::get(operationContext())
+                           ->commitChunkMigration(operationContext(),
+                                                  chunk0.getNS(),
+                                                  chunk0,
+                                                  origVersion.epoch(),
+                                                  ShardId(shard0.getName()),
+                                                  ShardId(shard1.getName()),
+                                                  validAfter),
+                       DBException,
+                       40165);
 }
 
 TEST_F(CommitChunkMigrate, CommitWithLastChunkOnShardShouldNotAffectOtherChunks) {
@@ -494,19 +482,16 @@ TEST_F(CommitChunkMigrate, CommitWithLastChunkOnShardShouldNotAffectOtherChunks)
     setupChunks({chunk0, chunk1}).transitional_ignore();
 
     Timestamp validAfter{101, 0};
-    StatusWith<BSONObj> resultBSON = ShardingCatalogManager::get(operationContext())
-                                         ->commitChunkMigration(operationContext(),
-                                                                chunk0.getNS(),
-                                                                chunk0,
-                                                                origVersion.epoch(),
-                                                                ShardId(shard0.getName()),
-                                                                ShardId(shard1.getName()),
-                                                                validAfter);
-
-    ASSERT_OK(resultBSON.getStatus());
+    BSONObj versions = ShardingCatalogManager::get(operationContext())
+                           ->commitChunkMigration(operationContext(),
+                                                  chunk0.getNS(),
+                                                  chunk0,
+                                                  origVersion.epoch(),
+                                                  ShardId(shard0.getName()),
+                                                  ShardId(shard1.getName()),
+                                                  validAfter);
 
     // Verify the versions returned match expected values.
-    BSONObj versions = resultBSON.getValue();
     auto mver = ChunkVersion::parseWithField(versions, "migratedChunkVersion");
     ASSERT_OK(mver.getStatus());
     ASSERT_EQ(ChunkVersion(origMajorVersion + 1, 0, origVersion.epoch()), mver.getValue());

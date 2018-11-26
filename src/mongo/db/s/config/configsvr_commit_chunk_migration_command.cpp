@@ -128,7 +128,7 @@ public:
         auto commitRequest =
             uassertStatusOK(CommitChunkMigrationRequest::createFromCommand(nss, cmdObj));
 
-        StatusWith<BSONObj> response = ShardingCatalogManager::get(opCtx)->commitChunkMigration(
+        BSONObj response = ShardingCatalogManager::get(opCtx)->commitChunkMigration(
             opCtx,
             nss,
             commitRequest.getMigratedChunk(),
@@ -136,8 +136,7 @@ public:
             commitRequest.getFromShard(),
             commitRequest.getToShard(),
             commitRequest.getValidAfter());
-        uassertStatusOK(response.getStatus());
-        result.appendElements(response.getValue());
+        result.appendElements(std::move(response));
         return true;
     }
 

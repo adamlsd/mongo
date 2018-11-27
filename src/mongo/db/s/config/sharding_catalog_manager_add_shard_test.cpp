@@ -381,8 +381,7 @@ TEST_F(AddShardTest, CreateShardIdentityUpsertForAddShard) {
 }
 
 TEST_F(AddShardTest, StandaloneBasicSuccess) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     HostAndPort shardTarget("StandaloneHost:12345");
     targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     targeter->setFindHostReturnValue(shardTarget);
@@ -454,8 +453,7 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
 }
 
 TEST_F(AddShardTest, StandaloneGenerateName) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     HostAndPort shardTarget("StandaloneHost:12345");
     targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     targeter->setFindHostReturnValue(shardTarget);
@@ -536,8 +534,7 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
 }
 
 TEST_F(AddShardTest, AddSCCCConnectionStringAsShard) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     auto invalidConn =
         ConnectionString("host1:12345,host2:12345,host3:12345", ConnectionString::INVALID);
     targeter->setConnectionStringReturnValue(invalidConn);
@@ -555,8 +552,7 @@ TEST_F(AddShardTest, AddSCCCConnectionStringAsShard) {
 }
 
 TEST_F(AddShardTest, EmptyShardName) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     std::string expectedShardName = "";
 
     auto future = launchAsync([this, expectedShardName] {
@@ -575,8 +571,7 @@ TEST_F(AddShardTest, EmptyShardName) {
 
 // Host is unreachable, cannot verify host.
 TEST_F(AddShardTest, UnreachableHost) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     HostAndPort shardTarget("StandaloneHost:12345");
     targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     targeter->setFindHostReturnValue(shardTarget);
@@ -603,8 +598,7 @@ TEST_F(AddShardTest, UnreachableHost) {
 
 // Cannot add mongos as a shard.
 TEST_F(AddShardTest, AddMongosAsShard) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     HostAndPort shardTarget("StandaloneHost:12345");
     targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     targeter->setFindHostReturnValue(shardTarget);
@@ -631,8 +625,7 @@ TEST_F(AddShardTest, AddMongosAsShard) {
 
 // A replica set name was found for the host but no name was provided with the host.
 TEST_F(AddShardTest, AddReplicaSetShardAsStandalone) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     HostAndPort shardTarget = HostAndPort("host1:12345");
     targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     targeter->setFindHostReturnValue(shardTarget);
@@ -662,8 +655,7 @@ TEST_F(AddShardTest, AddReplicaSetShardAsStandalone) {
 
 // A replica set name was provided with the host but no name was found for the host.
 TEST_F(AddShardTest, AddStandaloneHostShardAsReplicaSet) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     HostAndPort shardTarget = connString.getServers().front();
@@ -692,8 +684,7 @@ TEST_F(AddShardTest, AddStandaloneHostShardAsReplicaSet) {
 
 // Provided replica set name does not match found replica set name.
 TEST_F(AddShardTest, ReplicaSetMistmatchedReplicaSetName) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     targeter->setConnectionStringReturnValue(connString);
@@ -724,8 +715,7 @@ TEST_F(AddShardTest, ReplicaSetMistmatchedReplicaSetName) {
 
 // Cannot add config server as a shard.
 TEST_F(AddShardTest, ShardIsCSRSConfigServer) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("config/host1:12345,host2:12345"));
     targeter->setConnectionStringReturnValue(connString);
@@ -758,8 +748,7 @@ TEST_F(AddShardTest, ShardIsCSRSConfigServer) {
 
 // One of the hosts is not part of the found replica set.
 TEST_F(AddShardTest, ReplicaSetMissingHostsProvidedInSeedList) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     targeter->setConnectionStringReturnValue(connString);
@@ -794,8 +783,7 @@ TEST_F(AddShardTest, ReplicaSetMissingHostsProvidedInSeedList) {
 
 // Cannot add a shard with the shard name "config".
 TEST_F(AddShardTest, AddShardWithNameConfigFails) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     targeter->setConnectionStringReturnValue(connString);
@@ -830,8 +818,7 @@ TEST_F(AddShardTest, AddShardWithNameConfigFails) {
 }
 
 TEST_F(AddShardTest, ShardContainsExistingDatabase) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     targeter->setConnectionStringReturnValue(connString);
@@ -879,8 +866,7 @@ TEST_F(AddShardTest, ShardContainsExistingDatabase) {
 }
 
 TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     targeter->setConnectionStringReturnValue(connString);
@@ -944,8 +930,7 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
 }
 
 TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString seedString =
         assertGet(ConnectionString::parse("mySet/host1:12345,host2:12345"));
     ConnectionString fullConnString =
@@ -1014,8 +999,7 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
 }
 
 TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
-    std::unique_ptr<RemoteCommandTargeterMock> targeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     HostAndPort shardTarget("StandaloneHost:12345");
     targeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     targeter->setFindHostReturnValue(shardTarget);
@@ -1106,15 +1090,13 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
 // options succeeds.
 TEST_F(AddShardTest, AddExistingShardStandalone) {
     HostAndPort shardTarget("StandaloneHost:12345");
-    std::unique_ptr<RemoteCommandTargeterMock> standaloneTargeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto standaloneTargeter = std::make_unique<RemoteCommandTargeterMock>();
     standaloneTargeter->setConnectionStringReturnValue(ConnectionString(shardTarget));
     standaloneTargeter->setFindHostReturnValue(shardTarget);
     targeterFactory()->addTargeterToReturn(ConnectionString(shardTarget),
                                            std::move(standaloneTargeter));
 
-    std::unique_ptr<RemoteCommandTargeterMock> replsetTargeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto replsetTargeter = std::make_unique<RemoteCommandTargeterMock>();
     replsetTargeter->setConnectionStringReturnValue(
         ConnectionString::forReplicaSet("mySet", {shardTarget}));
     replsetTargeter->setFindHostReturnValue(shardTarget);
@@ -1222,8 +1204,7 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
 // different options fails, and that adding a shard with the same replica set as an existing shard
 // with the *same* options succeeds.
 TEST_F(AddShardTest, AddExistingShardReplicaSet) {
-    std::unique_ptr<RemoteCommandTargeterMock> replsetTargeter(
-        stdx::make_unique<RemoteCommandTargeterMock>());
+    auto replsetTargeter = std::make_unique<RemoteCommandTargeterMock>();
     ConnectionString connString = assertGet(ConnectionString::parse("mySet/host1:12345"));
     replsetTargeter->setConnectionStringReturnValue(connString);
     HostAndPort shardTarget = connString.getServers().front();
@@ -1349,8 +1330,7 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     ConnectionString otherHostConnString = assertGet(ConnectionString::parse("mySet/host2:12345"));
     {
         // Add a targeter for the different seed string this addShard request will use.
-        std::unique_ptr<RemoteCommandTargeterMock> otherHostTargeter(
-            stdx::make_unique<RemoteCommandTargeterMock>());
+        auto otherHostTargeter = std::make_unique<RemoteCommandTargeterMock>();
         otherHostTargeter->setConnectionStringReturnValue(otherHostConnString);
         otherHostTargeter->setFindHostReturnValue(otherHost);
         targeterFactory()->addTargeterToReturn(otherHostConnString, std::move(otherHostTargeter));

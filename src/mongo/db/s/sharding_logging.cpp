@@ -68,10 +68,10 @@ ShardingLogging* ShardingLogging::get(OperationContext* operationContext) {
     return get(operationContext->getServiceContext());
 }
 
-Status ShardingLogging::logAction(OperationContext* opCtx,
-                                  const StringData what,
-                                  const StringData ns,
-                                  const BSONObj& detail) {
+Status ShardingLogging::logActionChecked(OperationContext* opCtx,
+                                         const StringData what,
+                                         const StringData ns,
+                                         const BSONObj& detail) {
     if (_actionLogCollectionCreated.load() == 0) {
         Status result = _createCappedConfigCollection(opCtx,
                                                       kActionLogCollectionName,

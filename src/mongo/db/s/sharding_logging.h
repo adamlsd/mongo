@@ -48,10 +48,19 @@ public:
     static ShardingLogging* get(ServiceContext* serviceContext);
     static ShardingLogging* get(OperationContext* operationContext);
 
-    Status logAction(OperationContext* opCtx,
-                     const StringData what,
-                     const StringData ns,
-                     const BSONObj& detail);
+    Status logActionChecked(OperationContext* opCtx,
+                            const StringData what,
+                            const StringData ns,
+                            const BSONObj& detail);
+
+    void logAction(OperationContext* opCtx,
+                   const StringData what,
+                   const StringData ns,
+                   const BSONObj& detail) {
+        // It is safe to ignore the results of `logActionChecked` in many cases, as the
+        // failure to log a change is often of no consequence.
+        logActionChecked(opCtx, what, ns, detail).ignore();
+    }
 
     Status logChangeChecked(OperationContext* opCtx,
                             const StringData what,

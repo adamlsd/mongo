@@ -385,8 +385,7 @@ void Balancer::_mainThread() {
                                               _balancedLastTime);
 
                     ShardingLogging::get(opCtx.get())
-                        ->logAction(opCtx.get(), "balancer.round", "", roundDetails.toBSON())
-                        .transitional_ignore();
+                        ->logAction(opCtx.get(), "balancer.round", "", roundDetails.toBSON());
                 }
 
                 LOG(1) << "*** End of balancing round";
@@ -405,8 +404,7 @@ void Balancer::_mainThread() {
             roundDetails.setFailed(e.what());
 
             ShardingLogging::get(opCtx.get())
-                ->logAction(opCtx.get(), "balancer.round", "", roundDetails.toBSON())
-                .transitional_ignore();
+                ->logAction(opCtx.get(), "balancer.round", "", roundDetails.toBSON());
 
             // Sleep a fair amount before retrying because of the error
             _endRound(opCtx.get(), kBalanceRoundDefaultInterval);

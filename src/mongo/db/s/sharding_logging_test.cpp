@@ -74,7 +74,7 @@ public:
 protected:
     void noRetryAfterSuccessfulCreate() {
         auto future = launchAsync([this] {
-            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4)).transitional_ignore();
+            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4));
         });
 
         expectConfigCollectionCreate(configHost, getConfigCollName(), _cappedSize, BSON("ok" << 1));
@@ -90,8 +90,7 @@ protected:
 
         // Now log another change and confirm that we don't re-attempt to create the collection
         future = launchAsync([this] {
-            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5))
-                .transitional_ignore();
+            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5));
         });
 
         expectConfigCollectionInsert(configHost,
@@ -107,7 +106,7 @@ protected:
 
     void noRetryCreateIfAlreadyExists() {
         auto future = launchAsync([this] {
-            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4)).transitional_ignore();
+            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4));
         });
 
         BSONObjBuilder createResponseBuilder;
@@ -127,8 +126,7 @@ protected:
 
         // Now log another change and confirm that we don't re-attempt to create the collection
         future = launchAsync([this] {
-            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5))
-                .transitional_ignore();
+            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5));
         });
 
         expectConfigCollectionInsert(configHost,
@@ -144,7 +142,7 @@ protected:
 
     void createFailure() {
         auto future = launchAsync([this] {
-            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4)).transitional_ignore();
+            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4));
         });
 
         BSONObjBuilder createResponseBuilder;
@@ -158,8 +156,7 @@ protected:
 
         // Now log another change and confirm that we *do* attempt to create the collection
         future = launchAsync([this] {
-            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5))
-                .transitional_ignore();
+            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5));
         });
 
         expectConfigCollectionCreate(configHost, getConfigCollName(), _cappedSize, BSON("ok" << 1));
@@ -178,16 +175,16 @@ protected:
         return (_configCollType == ChangeLog ? "changelog" : "actionlog");
     }
 
-    Status log(const std::string& what, const std::string& ns, const BSONObj& detail) {
+    void log(const std::string& what, const std::string& ns, const BSONObj& detail) {
         if (_configCollType == ChangeLog) {
-            return ShardingLogging::get(operationContext())
-                ->logChangeChecked(operationContext(),
+            ShardingLogging::get(operationContext())
+                ->logChange(operationContext(),
                                    what,
                                    ns,
                                    detail,
                                    ShardingCatalogClient::kMajorityWriteConcern);
         } else {
-            return ShardingLogging::get(operationContext())
+            ShardingLogging::get(operationContext())
                 ->logAction(operationContext(), what, ns, detail);
         }
     }

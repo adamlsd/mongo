@@ -166,24 +166,18 @@ void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss)
             numChunks == 0);
 }
 
-Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
-    const Status logStatus =
-        ShardingLogging::get(opCtx)->logChangeChecked(opCtx,
-                                                      "dropCollection.start",
-                                                      nss.ns(),
-                                                      BSONObj(),
-                                                      ShardingCatalogClient::kMajorityWriteConcern);
-    if (!logStatus.isOK()) {
-        return logStatus;
-    }
+void ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
+    uassertStatusOK(ShardingLogging::get(opCtx)->logChangeChecked(
+        opCtx,
+        "dropCollection.start",
+        nss.ns(),
+        BSONObj(),
+        ShardingCatalogClient::kMajorityWriteConcern));
 
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
-    const auto shardsStatus =
-        catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
-    if (!shardsStatus.isOK()) {
-        return shardsStatus.getStatus();
-    }
-    vector<ShardType> allShards = std::move(shardsStatus.getValue().value);
+    auto shards = uassertStatusOK(
+        catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern));
+    vector<ShardType> allShards = std::move(shards.value);
 
     LOG(1) << "dropCollection " << nss.ns() << " started";
 

@@ -723,8 +723,8 @@ std::string ShardingCatalogManager::addShard(
     return shardType.getName();
 }
 
-StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationContext* opCtx,
-                                                                    const ShardId& shardId) try {
+ShardDrainingStatus ShardingCatalogManager::removeShard(OperationContext* opCtx,
+                                                                    const ShardId& shardId) {
     // Check preconditions for removing the shard
     std::string name = shardId.toString();
     if (_runCountCommandOnConfig(
@@ -816,8 +816,6 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
         opCtx, "removeShard", "", BSON("shard" << name), ShardingCatalogClient::kLocalWriteConcern);
 
     return ShardDrainingStatus::COMPLETED;
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
 void ShardingCatalogManager::appendConnectionStats(executor::ConnectionPoolStats* stats) {

@@ -123,7 +123,7 @@ public:
         const auto shardingCatalogManager = ShardingCatalogManager::get(opCtx);
 
         const auto shardDrainingStatus =
-            uassertStatusOK(shardingCatalogManager->removeShard(opCtx, shard->getId()));
+            shardingCatalogManager->removeShard(opCtx, shard->getId());
 
         std::vector<std::string> databases =
             shardingCatalogManager->getDatabasesForShard(opCtx, shard->getId());

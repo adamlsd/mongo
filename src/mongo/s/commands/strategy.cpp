@@ -77,6 +77,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/cluster_find.h"
+#include "mongo/s/session_catalog_router.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/util/fail_point_service.h"
@@ -302,8 +303,8 @@ void execCommandClient(OperationContext* opCtx,
         auto body = result->getBodyBuilder();
 
         MONGO_FAIL_POINT_BLOCK_IF(failCommand, data, [&](const BSONObj& data) {
-            return CommandHelpers::shouldActivateFailCommandFailPoint(data,
-                                                                      request.getCommandName()) &&
+            return CommandHelpers::shouldActivateFailCommandFailPoint(
+                       data, request.getCommandName(), opCtx->getClient()) &&
                 data.hasField("writeConcernError");
         }) {
             body.append(data.getData()["writeConcernError"]);
@@ -403,11 +404,11 @@ void runCommand(OperationContext* opCtx,
                 !readConcernArgs.getArgsAtClusterTime());
     }
 
-    boost::optional<ScopedRouterSession> scopedSession;
+    boost::optional<RouterOperationContextSession> routerSession;
     try {
         CommandHelpers::evaluateFailCommandFailPoint(opCtx, commandName);
         if (osi.getAutocommit()) {
-            scopedSession.emplace(opCtx);
+            routerSession.emplace(opCtx);
 
             auto txnRouter = TransactionRouter::get(opCtx);
             invariant(txnRouter);
@@ -527,7 +528,7 @@ void runCommand(OperationContext* opCtx,
     } catch (const DBException& e) {
         command->incrementCommandsFailed();
         LastError::get(opCtx->getClient()).setLastError(e.code(), e.reason());
-        auto errorLabels = getErrorLabels(osi, command->getName(), e.code());
+        auto errorLabels = getErrorLabels(osi, command->getName(), e.code(), false);
         errorBuilder->appendElements(errorLabels);
         throw;
     }

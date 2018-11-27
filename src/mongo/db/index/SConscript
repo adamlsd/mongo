@@ -38,6 +38,8 @@ env.CppUnitTest(
         ],
         LIBDEPS=[
             '$BUILD_DIR/mongo/db/auth/authmocks',
+            '$BUILD_DIR/mongo/db/catalog/multi_index_block',
+            '$BUILD_DIR/mongo/db/catalog_raii',
             '$BUILD_DIR/mongo/db/repl/replmocks',
             '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
             '$BUILD_DIR/mongo/db/storage/ephemeral_for_test/storage_ephemeral_for_test_core',
@@ -142,5 +144,20 @@ env.Library(
         '$BUILD_DIR/mongo/db/query_exec',
         'index_access_method',
         'key_generator',
+    ],
+)
+
+env.Library(
+    target="index_build_interceptor",
+    source=[
+        "index_build_interceptor.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/multi_key_path_tracker',
+        '$BUILD_DIR/mongo/db/s/sharding_api_d',
+        'index_access_methods',
     ],
 )

@@ -44,9 +44,17 @@ namespace biggie {
 RecoveryUnit::RecoveryUnit(KVEngine* parentKVEngine, stdx::function<void()> cb)
     : _waitUntilDurableCallback(cb), _KVEngine(parentKVEngine) {}
 
-void RecoveryUnit::beginUnitOfWork(OperationContext* opCtx) {}
+RecoveryUnit::~RecoveryUnit() {
+    invariant(!_inUnitOfWork);
+}
+
+void RecoveryUnit::beginUnitOfWork(OperationContext* opCtx) {
+    invariant(!_inUnitOfWork);
+    _inUnitOfWork = true;
+}
 
 void RecoveryUnit::commitUnitOfWork() {
+    invariant(_inUnitOfWork);
     if (_dirty) {
         invariant(_forked);
         while (true) {
@@ -67,7 +75,15 @@ void RecoveryUnit::commitUnitOfWork() {
         }
         _forked = false;
         _dirty = false;
+    } else if (_forked) {
+        DEV {
+            std::pair<uint64_t, StringStore> masterInfo = _KVEngine->getMasterInfo();
+            invariant(masterInfo.second == _workingCopy);
+        }
     }
+
+    _inUnitOfWork = false;
+
     try {
         for (Changes::iterator it = _changes.begin(), end = _changes.end(); it != end; ++it) {
             (*it)->commit(boost::none);
@@ -79,6 +95,8 @@ void RecoveryUnit::commitUnitOfWork() {
 }
 
 void RecoveryUnit::abortUnitOfWork() {
+    invariant(_inUnitOfWork);
+    _inUnitOfWork = false;
     _forked = false;
     _dirty = false;
     try {
@@ -95,10 +113,12 @@ void RecoveryUnit::abortUnitOfWork() {
 }
 
 bool RecoveryUnit::waitUntilDurable() {
+    invariant(!_inUnitOfWork);
     return true;  // This is an in-memory storage engine.
 }
 
 void RecoveryUnit::abandonSnapshot() {
+    invariant(!_inUnitOfWork);
     _forked = false;
     _dirty = false;
 }

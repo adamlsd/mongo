@@ -166,12 +166,6 @@ public:
     void shutdown();
 
     /**
-     * Called for speculative transactions to fix the optime of the snapshot to read from.
-     */
-    void setSpeculativeTransactionOpTime(OperationContext* opCtx,
-                                         SpeculativeTransactionOpTime opTimeChoice);
-
-    /**
      * Transfers management of transaction resources from the OperationContext to the Session.
      */
     void stashTransactionResources(OperationContext* opCtx);
@@ -286,12 +280,11 @@ public:
 
     std::string transactionInfoForLogForTest(const SingleThreadedLockStats* lockStats,
                                              bool committed,
-                                             repl::ReadConcernArgs readConcernArgs,
-                                             bool wasPrepared) {
+                                             repl::ReadConcernArgs readConcernArgs) {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         TransactionState::StateFlag terminationCause =
             committed ? TransactionState::kCommitted : TransactionState::kAborted;
-        return _transactionInfoForLog(lockStats, terminationCause, readConcernArgs, wasPrepared);
+        return _transactionInfoForLog(lockStats, terminationCause, readConcernArgs);
     }
 
     /**
@@ -645,6 +638,11 @@ private:
                                       std::vector<StmtId> stmtIdsWritten,
                                       const repl::OpTime& lastStmtIdWriteTs);
 
+    // Called for speculative transactions to fix the optime of the snapshot to read from.
+    void _setSpeculativeTransactionOpTime(WithLock,
+                                          OperationContext* opCtx,
+                                          SpeculativeTransactionOpTime opTimeChoice);
+
     // Finishes committing the multi-document transaction after the storage-transaction has been
     // committed, the oplog entry has been inserted into the oplog, and the transactions table has
     // been updated.
@@ -696,8 +694,7 @@ private:
     // passed in order for this method to be called.
     std::string _transactionInfoForLog(const SingleThreadedLockStats* lockStats,
                                        TransactionState::StateFlag terminationCause,
-                                       repl::ReadConcernArgs readConcernArgs,
-                                       bool wasPrepared);
+                                       repl::ReadConcernArgs readConcernArgs);
 
     // Reports transaction stats for both active and inactive transactions using the provided
     // builder.  The lock may be either a lock on _mutex or a lock on _metricsMutex.

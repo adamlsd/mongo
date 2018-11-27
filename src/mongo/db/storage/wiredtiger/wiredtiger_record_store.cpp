@@ -622,7 +622,10 @@ StatusWith<std::string> WiredTigerRecordStore::generateCreateString(
 
     bool replicatedWrites = getGlobalReplSettings().usingReplSets() ||
         repl::ReplSettings::shouldRecoverFromOplogAsStandalone();
-    if (WiredTigerUtil::useTableLogging(NamespaceString(ns), replicatedWrites)) {
+
+    // Do not journal writes when 'ns' is an empty string, which is the case for internal-only
+    // temporary tables.
+    if (ns.size() && WiredTigerUtil::useTableLogging(NamespaceString(ns), replicatedWrites)) {
         ss << ",log=(enabled=true)";
     } else {
         ss << ",log=(enabled=false)";
@@ -669,6 +672,13 @@ WiredTigerRecordStore::WiredTigerRecordStore(WiredTigerKVEngine* kvEngine,
     } else {
         invariant(_cappedMaxSize == -1);
         invariant(_cappedMaxDocs == -1);
+    }
+
+    if (!params.isReadOnly) {
+        bool replicatedWrites = getGlobalReplSettings().usingReplSets() ||
+            repl::ReplSettings::shouldRecoverFromOplogAsStandalone();
+        uassertStatusOK(WiredTigerUtil::setTableLogging(
+            ctx, _uri, WiredTigerUtil::useTableLogging(NamespaceString(ns()), replicatedWrites)));
     }
 
     if (_isOplog) {

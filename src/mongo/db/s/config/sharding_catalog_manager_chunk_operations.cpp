@@ -43,6 +43,7 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/s/sharding_logging.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
@@ -436,7 +437,7 @@ void ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
         appendShortVersion(&logDetail.subobjStart("left"), newChunks[0]);
         appendShortVersion(&logDetail.subobjStart("right"), newChunks[1]);
 
-        Grid::get(opCtx)->catalogClient()->logChange(
+        ShardingLogging::get(opCtx)->logChange(
             opCtx, "split", nss.ns(), logDetail.obj(), WriteConcernOptions());
     } else {
         BSONObj beforeDetailObj = logDetail.obj();
@@ -450,7 +451,7 @@ void ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
             chunkDetail.append("of", newChunksSize);
             appendShortVersion(&chunkDetail.subobjStart("chunk"), newChunks[i]);
 
-            Grid::get(opCtx)->catalogClient()->logChange(
+            ShardingLogging::get(opCtx)->logChange(
                 opCtx, "multi-split", nss.ns(), chunkDetail.obj(), WriteConcernOptions());
         }
     }
@@ -555,7 +556,7 @@ void ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
     collVersion.appendLegacyWithField(&logDetail, "prevShardVersion");
     mergeVersion.appendLegacyWithField(&logDetail, "mergedVersion");
 
-    Grid::get(opCtx)->catalogClient()->logChange(
+    ShardingLogging::get(opCtx)->logChange(
         opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions());
 }
 

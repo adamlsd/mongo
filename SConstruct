@@ -143,8 +143,12 @@ add_option('disable-minimum-compiler-version-enforcement',
 )
 
 add_option('ssl',
-    help='Enable SSL',
-    nargs=0
+    help='Enable or Disable SSL',
+    choices=['on', 'off'],
+    default='on',
+    const='on',
+    nargs='?',
+    type='choice',
 )
 
 add_option('ssl-provider',
@@ -320,6 +324,11 @@ add_option('use-system-wiredtiger',
 
 add_option('system-boost-lib-search-suffixes',
     help='Comma delimited sequence of boost library suffixes to search',
+)
+
+add_option('use-system-abseil-cpp',
+    help='use system version of abseil-cpp libraries',
+    nargs=0,
 )
 
 add_option('use-system-boost',
@@ -521,9 +530,9 @@ add_option('git-decider',
     type="choice",
 )
 
-add_option('android-toolchain-path',
+add_option('toolchain-root',
     default=None,
-    help="Android NDK standalone toolchain path. Required when using --variables-files=etc/scons/android_ndk.vars",
+    help="Names a toolchain root for use with toolchain selection Variables files in etc/scons",
 )
 
 add_option('msvc-debugging-format',
@@ -2669,6 +2678,9 @@ def doConfigure(myenv):
         elif using_lsan:
             myenv.FatalError("Using the leak sanitizer requires a valid symbolizer")
 
+        if using_asan:
+            myenv.AppendUnique(CCFLAGS=['-DADDRESS_SANITIZER'])
+
         if using_tsan:
             tsan_options += "suppressions=\"%s\" " % myenv.File("#etc/tsan.suppressions").abspath
             myenv['ENV']['TSAN_OPTIONS'] = tsan_options
@@ -3083,7 +3095,7 @@ def doConfigure(myenv):
 
         conf.AddTest("CheckOpenSSL_EC_DH", CheckOpenSSL_EC_DH)
         if conf.CheckOpenSSL_EC_DH():
-            conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAS_SSL_SET_ECDH_AUTO')
+            conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAVE_SSL_SET_ECDH_AUTO')
 
         conf.AddTest("CheckOpenSSL_EC_KEY_new", CheckOpenSSL_EC_KEY_new)
         if conf.CheckOpenSSL_EC_KEY_new():
@@ -3111,8 +3123,11 @@ def doConfigure(myenv):
                 'Security',
             ])
 
+    # We require ssl by default unless the user has specified --ssl=off
+    require_ssl = get_option("ssl") != "off"
+
     if ssl_provider == 'openssl':
-        if has_option("ssl"):
+        if require_ssl:
             checkOpenSSL(conf)
             # Working OpenSSL available, use it.
             env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_OPENSSL")
@@ -3122,7 +3137,7 @@ def doConfigure(myenv):
             # If we don't need an SSL build, we can get by with TomCrypt.
             conf.env.Append( MONGO_CRYPTO=["tom"] )
 
-    if has_option( "ssl" ):
+    if require_ssl:
         # Either crypto engine is native,
         # or it's OpenSSL and has been checked to be working.
         conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL")

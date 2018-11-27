@@ -57,6 +57,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/add_shard_cmd_gen.h"
 #include "mongo/db/s/add_shard_util.h"
+#include "mongo/db/s/sharding_logging.h"
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/task_executor.h"
@@ -504,11 +505,10 @@ std::vector<std::string> ShardingCatalogManager::_getDBNamesListFromShard(
     return dbNames;
 }
 
-std::string ShardingCatalogManager::addShard(
-    OperationContext* opCtx,
-    const std::string* shardProposedName,
-    const ConnectionString& shardConnectionString,
-    const long long maxSize) {
+std::string ShardingCatalogManager::addShard(OperationContext* opCtx,
+                                             const std::string* shardProposedName,
+                                             const ConnectionString& shardConnectionString,
+                                             const long long maxSize) {
     if (shardConnectionString.type() == ConnectionString::INVALID) {
         uasserted(ErrorCodes::BadValue, "Invalid connection string");
     }
@@ -680,7 +680,7 @@ std::string ShardingCatalogManager::addShard(
             ShardingCatalogClient::kLocalWriteConcern);
         if (!result.isOK()) {
             log() << "error adding shard: " << shardType.toBSON() << " err: " << result.reason();
-            uassertStatusOK( result);
+            uassertStatusOK(result);
         }
     }
 
@@ -708,15 +708,15 @@ std::string ShardingCatalogManager::addShard(
     shardDetails.append("name", shardType.getName());
     shardDetails.append("host", shardConnectionString.toString());
 
-    Grid::get(opCtx)->catalogClient()->logChange(
+    ShardingLogging::get(opCtx)->logChange(
         opCtx, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern);
 
     // Ensure the added shard is visible to this process.
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
     if (!shardRegistry->getShard(opCtx, shardType.getName()).isOK()) {
-        uasserted (ErrorCodes::OperationFailed,
-                "Could not find shard metadata for shard after adding it. This most likely "
-                "indicates that the shard was removed immediately after it was added.");
+        uasserted(ErrorCodes::OperationFailed,
+                  "Could not find shard metadata for shard after adding it. This most likely "
+                  "indicates that the shard was removed immediately after it was added.");
     }
     stopMonitoringGuard.Dismiss();
 
@@ -724,7 +724,7 @@ std::string ShardingCatalogManager::addShard(
 }
 
 ShardDrainingStatus ShardingCatalogManager::removeShard(OperationContext* opCtx,
-                                                                    const ShardId& shardId) {
+                                                        const ShardId& shardId) {
     // Check preconditions for removing the shard
     std::string name = shardId.toString();
     if (_runCountCommandOnConfig(
@@ -750,7 +750,7 @@ ShardDrainingStatus ShardingCatalogManager::removeShard(OperationContext* opCtx,
         log() << "going to start draining shard: " << name;
 
         // Record start in changelog
-        uassertStatusOK(Grid::get(opCtx)->catalogClient()->logChangeChecked(
+        uassertStatusOK(ShardingLogging::get(opCtx)->logChangeChecked(
             opCtx,
             "removeShard.start",
             "",
@@ -812,7 +812,7 @@ ShardDrainingStatus ShardingCatalogManager::removeShard(OperationContext* opCtx,
     shardRegistry->reload(opCtx);
 
     // Record finish in changelog
-    Grid::get(opCtx)->catalogClient()->logChange(
+    ShardingLogging::get(opCtx)->logChange(
         opCtx, "removeShard", "", BSON("shard" << name), ShardingCatalogClient::kLocalWriteConcern);
 
     return ShardDrainingStatus::COMPLETED;

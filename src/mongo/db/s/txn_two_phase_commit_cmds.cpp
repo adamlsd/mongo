@@ -35,9 +35,9 @@
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
-#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/sharding_state.h"
+#include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/transaction_coordinator_service.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/executor/task_executor.h"
@@ -75,6 +75,19 @@ public:
                 serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
                 uassertStatusOK(ShardingState::get(opCtx)->canAcceptShardedCommands());
             }
+
+            // We automatically fail 'prepareTransaction' against a primary that has
+            // 'enableMajorityReadConcern' set to 'false'.
+            uassert(50993,
+                    "'prepareTransaction' is not supported with 'enableMajorityReadConcern=false'",
+                    serverGlobalParams.enableMajorityReadConcern);
+
+            // We do not allow preparing a transaction if the replica set has any arbiters.
+            auto replCoord =
+                repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+            uassert(50995,
+                    "'prepareTransaction' is not supported for replica sets with arbiters",
+                    !replCoord->setContainsArbiter());
 
             auto txnParticipant = TransactionParticipant::get(opCtx);
             uassert(ErrorCodes::CommandFailed,

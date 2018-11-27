@@ -59,7 +59,6 @@
 #include "mongo/db/index_names.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
-#include "mongo/db/ops/update_lifecycle.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/canonical_query_encoder.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
@@ -188,10 +187,10 @@ void fillOutPlannerParams(OperationContext* opCtx,
                           QueryPlannerParams* plannerParams) {
     invariant(canonicalQuery);
     // If it's not NULL, we may have indices.  Access the catalog and fill out IndexEntry(s)
-    IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(opCtx, false);
-    while (ii.more()) {
-        const IndexDescriptor* desc = ii.next();
-        IndexCatalogEntry* ice = ii.catalogEntry(desc);
+    std::unique_ptr<IndexCatalog::IndexIterator> ii =
+        collection->getIndexCatalog()->getIndexIterator(opCtx, false);
+    while (ii->more()) {
+        IndexCatalogEntry* ice = ii->next();
         plannerParams->indices.push_back(
             indexEntryFromIndexCatalogEntry(opCtx, *ice, canonicalQuery));
     }
@@ -226,8 +225,8 @@ void fillOutPlannerParams(OperationContext* opCtx,
 
     // If the caller wants a shard filter, make sure we're actually sharded.
     if (plannerParams->options & QueryPlannerParams::INCLUDE_SHARD_FILTER) {
-        auto collMetadata =
-            CollectionShardingState::get(opCtx, canonicalQuery->nss())->getMetadata(opCtx);
+        auto collMetadata = CollectionShardingState::get(opCtx, canonicalQuery->nss())
+                                ->getMetadataForOperation(opCtx);
         if (collMetadata->isSharded()) {
             plannerParams->shardKey = collMetadata->getKeyPattern();
         } else {
@@ -349,7 +348,8 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
         if (plannerParams.options & QueryPlannerParams::INCLUDE_SHARD_FILTER) {
             root = make_unique<ShardFilterStage>(
                 opCtx,
-                CollectionShardingState::get(opCtx, canonicalQuery->nss())->getMetadata(opCtx),
+                CollectionShardingState::get(opCtx, canonicalQuery->nss())
+                    ->getMetadataForOperation(opCtx),
                 ws,
                 root.release());
         }
@@ -821,21 +821,19 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDelete(
     unique_ptr<WorkingSet> ws = make_unique<WorkingSet>();
     const PlanExecutor::YieldPolicy policy = parsedDelete->yieldPolicy();
 
-    if (!parsedDelete->hasParsedQuery()) {
-        // This is the idhack fast-path for getting a PlanExecutor without doing the work
-        // to create a CanonicalQuery.
-        const BSONObj& unparsedQuery = request->getQuery();
+    if (!collection) {
+        // Treat collections that do not exist as empty collections. Return a PlanExecutor which
+        // contains an EOF stage.
+        LOG(2) << "Collection " << nss.ns() << " does not exist."
+               << " Using EOF stage: " << redact(request->getQuery());
+        return PlanExecutor::make(
+            opCtx, std::move(ws), std::make_unique<EOFStage>(opCtx), nss, policy);
+    }
 
-        if (!collection) {
-            // Treat collections that do not exist as empty collections.  Note that the explain
-            // reporting machinery always assumes that the root stage for a delete operation is
-            // a DeleteStage, so in this case we put a DeleteStage on top of an EOFStage.
-            LOG(2) << "Collection " << nss.ns() << " does not exist."
-                   << " Using EOF stage: " << redact(unparsedQuery);
-            auto deleteStage = make_unique<DeleteStage>(
-                opCtx, deleteStageParams, ws.get(), nullptr, new EOFStage(opCtx));
-            return PlanExecutor::make(opCtx, std::move(ws), std::move(deleteStage), nss, policy);
-        }
+    if (!parsedDelete->hasParsedQuery()) {
+        // This is the idhack fast-path for getting a PlanExecutor without doing the work to create
+        // a CanonicalQuery.
+        const BSONObj& unparsedQuery = request->getQuery();
 
         const IndexDescriptor* descriptor = collection->getIndexCatalog()->findIdIndex(opCtx);
 
@@ -922,7 +920,6 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
     UpdateDriver* driver = parsedUpdate->getDriver();
 
     const NamespaceString& nss = request->getNamespaceString();
-    UpdateLifecycle* lifecycle = request->getLifecycle();
 
     if (nss.isSystem() && opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {
         uassert(10156,
@@ -959,31 +956,31 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
                       str::stream() << "Not primary while performing update on " << nss.ns());
     }
 
-    if (lifecycle) {
-        lifecycle->setCollection(collection);
-        driver->refreshIndexKeys(lifecycle->getIndexKeys(opCtx));
-    }
-
     const PlanExecutor::YieldPolicy policy = parsedUpdate->yieldPolicy();
 
     unique_ptr<WorkingSet> ws = make_unique<WorkingSet>();
     UpdateStageParams updateStageParams(request, driver, opDebug);
 
+    // If the collection doesn't exist, then return a PlanExecutor for a no-op EOF plan. We have
+    // should have already enforced upstream that in this case either the upsert flag is false, or
+    // we are an explain. If the collection doesn't exist, we're not an explain, and the upsert flag
+    // is true, we expect the caller to have created the collection already.
+    if (!collection) {
+        LOG(2) << "Collection " << nss.ns() << " does not exist."
+               << " Using EOF stage: " << redact(request->getQuery());
+        return PlanExecutor::make(
+            opCtx, std::move(ws), std::make_unique<EOFStage>(opCtx), nss, policy);
+    }
+
+    // Pass index information to the update driver, so that it can determine for us whether the
+    // update affects indices.
+    const auto& updateIndexData = collection->infoCache()->getIndexKeys(opCtx);
+    driver->refreshIndexKeys(&updateIndexData);
+
     if (!parsedUpdate->hasParsedQuery()) {
         // This is the idhack fast-path for getting a PlanExecutor without doing the work
         // to create a CanonicalQuery.
         const BSONObj& unparsedQuery = request->getQuery();
-
-        if (!collection) {
-            // Treat collections that do not exist as empty collections. Note that the explain
-            // reporting machinery always assumes that the root stage for an update operation is
-            // an UpdateStage, so in this case we put an UpdateStage on top of an EOFStage.
-            LOG(2) << "Collection " << nss.ns() << " does not exist."
-                   << " Using EOF stage: " << redact(unparsedQuery);
-            auto updateStage = make_unique<UpdateStage>(
-                opCtx, updateStageParams, ws.get(), collection, new EOFStage(opCtx));
-            return PlanExecutor::make(opCtx, std::move(ws), std::move(updateStage), nss, policy);
-        }
 
         const IndexDescriptor* descriptor = collection->getIndexCatalog()->findIdIndex(opCtx);
 
@@ -1495,18 +1492,19 @@ QueryPlannerParams fillOutPlannerParamsForDistinct(OperationContext* opCtx,
     QueryPlannerParams plannerParams;
     plannerParams.options = QueryPlannerParams::NO_TABLE_SCAN | plannerOptions;
 
-    IndexCatalog::IndexIterator ii = collection->getIndexCatalog()->getIndexIterator(opCtx, false);
+    std::unique_ptr<IndexCatalog::IndexIterator> ii =
+        collection->getIndexCatalog()->getIndexIterator(opCtx, false);
     auto query = parsedDistinct.getQuery()->getQueryRequest().getFilter();
-    while (ii.more()) {
-        const IndexDescriptor* desc = ii.next();
-        IndexCatalogEntry* ice = ii.catalogEntry(desc);
+    while (ii->more()) {
+        IndexCatalogEntry* ice = ii->next();
+        const IndexDescriptor* desc = ice->descriptor();
         if (desc->keyPattern().hasField(parsedDistinct.getKey())) {
             plannerParams.indices.push_back(
                 indexEntryFromIndexCatalogEntry(opCtx, *ice, parsedDistinct.getQuery()));
         } else if (desc->getIndexType() == IndexType::INDEX_WILDCARD && !query.isEmpty()) {
             // Check whether the $** projection captures the field over which we are distinct-ing.
             const auto* proj =
-                static_cast<WildcardAccessMethod*>(ii.accessMethod(desc))->getProjectionExec();
+                static_cast<WildcardAccessMethod*>(ice->accessMethod())->getProjectionExec();
             if (proj->applyProjectionToOneField(parsedDistinct.getKey())) {
                 plannerParams.indices.push_back(
                     indexEntryFromIndexCatalogEntry(opCtx, *ice, parsedDistinct.getQuery()));

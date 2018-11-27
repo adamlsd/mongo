@@ -141,8 +141,13 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFields(
-        OperationContext* opCtx, NamespaceStringOrUUID nssOrUUID) const override {
+    std::pair<std::vector<FieldPath>, bool> collectDocumentKeyFieldsForHostedCollection(
+        OperationContext*, const NamespaceString&, UUID) const override {
+        MONGO_UNREACHABLE;
+    }
+
+    std::vector<FieldPath> collectDocumentKeyFieldsActingAsRouter(
+        OperationContext*, const NamespaceString&) const override {
         MONGO_UNREACHABLE;
     }
 
@@ -164,7 +169,13 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    void closeBackupCursor(OperationContext* opCtx, std::uint64_t cursorId) final {
+    void closeBackupCursor(OperationContext* opCtx, const UUID& backupId) final {
+        MONGO_UNREACHABLE;
+    }
+
+    BackupCursorExtendState extendBackupCursor(OperationContext* opCtx,
+                                               const UUID& backupId,
+                                               const Timestamp& extendTo) final {
         MONGO_UNREACHABLE;
     }
 
@@ -180,9 +191,16 @@ public:
         return true;
     }
 
-    boost::optional<OID> refreshAndGetEpoch(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                            const NamespaceString& nss) const override {
+    boost::optional<ChunkVersion> refreshAndGetCollectionVersion(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        const NamespaceString& nss) const override {
         return boost::none;
+    }
+
+    void checkRoutingInfoEpochOrThrow(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                      const NamespaceString&,
+                                      ChunkVersion) const override {
+        uasserted(51019, "Unexpected check of routing table");
     }
 };
 }  // namespace mongo

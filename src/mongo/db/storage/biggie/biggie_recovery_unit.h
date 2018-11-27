@@ -44,6 +44,7 @@ namespace biggie {
 class RecoveryUnit : public ::mongo::RecoveryUnit {
 public:
     RecoveryUnit(KVEngine* parentKVEngine, stdx::function<void()> cb = nullptr);
+    ~RecoveryUnit();
 
     void beginUnitOfWork(OperationContext* opCtx) override final;
     void commitUnitOfWork() override final;
@@ -81,13 +82,15 @@ private:
     stdx::function<void()> _waitUntilDurableCallback;
     // Official master is kept by KVEngine
     KVEngine* _KVEngine;
-    bool _forked = false;
-    bool _dirty = false;  // Whether or not we have written to this _workingCopy.
     StringStore _mergeBase;
     StringStore _workingCopy;
+
+    bool _forked = false;
+    bool _dirty = false;  // Whether or not we have written to this _workingCopy.
+    bool _inUnitOfWork = false;
+
     typedef std::shared_ptr<Change> ChangePtr;
     typedef std::vector<ChangePtr> Changes;
-
     Changes _changes;
 };
 

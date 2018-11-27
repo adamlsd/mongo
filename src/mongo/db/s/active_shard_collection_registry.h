@@ -42,8 +42,6 @@ namespace mongo {
 
 class OperationContext;
 class ScopedShardCollection;
-template <typename T>
-class StatusWith;
 
 /**
  * Thread-safe object that keeps track of any active shardCollection commands running. There is only

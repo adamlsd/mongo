@@ -30,10 +30,11 @@
 
 #pragma once
 
+#include "mongo/base/status.h"
+
 namespace mongo {
 
 class OperationContext;
-class Status;
 
 /**
  * Manages the persistence and recovery of the sharding config metadata's min opTime.

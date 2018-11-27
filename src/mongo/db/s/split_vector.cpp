@@ -58,16 +58,16 @@ BSONObj prettyKey(const BSONObj& keyPattern, const BSONObj& key) {
 
 }  // namespace
 
-StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const BSONObj& keyPattern,
-                                             const BSONObj& min,
-                                             const BSONObj& max,
-                                             bool force,
-                                             boost::optional<long long> maxSplitPoints,
-                                             boost::optional<long long> maxChunkObjects,
-                                             boost::optional<long long> maxChunkSize,
-                                             boost::optional<long long> maxChunkSizeBytes) {
+std::vector<BSONObj> splitVector(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const BSONObj& keyPattern,
+                                 const BSONObj& min,
+                                 const BSONObj& max,
+                                 bool force,
+                                 boost::optional<long long> maxSplitPoints,
+                                 boost::optional<long long> maxChunkObjects,
+                                 boost::optional<long long> maxChunkSize,
+                                 boost::optional<long long> maxChunkSizeBytes) {
     std::vector<BSONObj> splitKeys;
 
     // Always have a default value for maxChunkObjects
@@ -80,7 +80,7 @@ StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
 
         Collection* const collection = autoColl.getCollection();
         if (!collection) {
-            return {ErrorCodes::NamespaceNotFound, "ns not found"};
+            uasserted(ErrorCodes::NamespaceNotFound, "ns not found");
         }
 
         // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
@@ -88,9 +88,9 @@ StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
         IndexDescriptor* idx =
             collection->getIndexCatalog()->findShardKeyPrefixedIndex(opCtx, keyPattern, false);
         if (idx == NULL) {
-            return {ErrorCodes::IndexNotFound,
-                    "couldn't find index over splitting key " +
-                        keyPattern.clientReadable().toString()};
+            uasserted(ErrorCodes::IndexNotFound,
+                      "couldn't find index over splitting key " +
+                          keyPattern.clientReadable().toString());
         }
 
         // extend min to get (min, MinKey, MinKey, ....)
@@ -127,13 +127,13 @@ StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
 
         // We need a maximum size for the chunk.
         if (!maxChunkSize || maxChunkSize.get() <= 0) {
-            return {ErrorCodes::InvalidOptions, "need to specify the desired max chunk size"};
+            uasserted(ErrorCodes::InvalidOptions, "need to specify the desired max chunk size");
         }
 
         // If there's not enough data for more than one chunk, no point continuing.
         if (dataSize < maxChunkSize.get() || recCount == 0) {
             std::vector<BSONObj> emptyVector;
-            return emptyVector;
+            return {};
         }
 
         log() << "request split points lookup for chunk " << nss.toString() << " " << redact(minKey)
@@ -174,8 +174,8 @@ StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
         BSONObj currKey;
         PlanExecutor::ExecState state = exec->getNext(&currKey, NULL);
         if (PlanExecutor::ADVANCED != state) {
-            return {ErrorCodes::OperationFailed,
-                    "can't open a cursor to scan the range (desired range is possibly empty)"};
+            uasserted(ErrorCodes::OperationFailed,
+                      "can't open a cursor to scan the range (desired range is possibly empty)");
         }
 
         // Use every 'keyCount'-th key as a split point. We add the initial key as a sentinel,
@@ -216,8 +216,8 @@ StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
             }
 
             if (PlanExecutor::DEAD == state || PlanExecutor::FAILURE == state) {
-                return WorkingSetCommon::getMemberObjectStatus(currKey).withContext(
-                    "Executor error during splitVector command");
+                uassertStatusOK(WorkingSetCommon::getMemberObjectStatus(currKey).withContext(
+                    "Executor error during splitVector command"));
             }
 
             if (!force)

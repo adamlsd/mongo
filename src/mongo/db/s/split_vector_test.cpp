@@ -73,16 +73,16 @@ private:
 };
 
 TEST_F(SplitVectorTest, SplitVectorInHalf) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 100LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 boost::none,
+                                                 boost::none,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 100LL);
     std::vector<BSONObj> expected = {BSON(kPattern << 50)};
     ASSERT_EQ(splitKeys.size(), expected.size());
 
@@ -94,16 +94,16 @@ TEST_F(SplitVectorTest, SplitVectorInHalf) {
 }
 
 TEST_F(SplitVectorTest, ForceSplit) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     true,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 6LL,
-                                                                     getDocSizeBytes() * 6LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 true,
+                                                 boost::none,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 6LL,
+                                                 getDocSizeBytes() * 6LL);
     std::vector<BSONObj> expected = {BSON(kPattern << 50)};
     ASSERT_EQ(splitKeys.size(), expected.size());
 
@@ -115,16 +115,16 @@ TEST_F(SplitVectorTest, ForceSplit) {
 }
 
 TEST_F(SplitVectorTest, MaxChunkObjectsSet) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     boost::none,
-                                                                     10,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 100LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 boost::none,
+                                                 10,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 100LL);
     // Unlike the SplitVectorInHalf test, should split at every 10th key.
     std::vector<BSONObj> expected = {BSON(kPattern << 10),
                                      BSON(kPattern << 21),
@@ -145,16 +145,16 @@ TEST_F(SplitVectorTest, MaxChunkObjectsSet) {
 }
 
 TEST_F(SplitVectorTest, SplitEveryThird) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 6LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 boost::none,
+                                                 boost::none,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 6LL);
     std::vector<BSONObj> expected = {
         BSON(kPattern << 3),  BSON(kPattern << 7),  BSON(kPattern << 11), BSON(kPattern << 15),
         BSON(kPattern << 19), BSON(kPattern << 23), BSON(kPattern << 27), BSON(kPattern << 31),
@@ -173,16 +173,16 @@ TEST_F(SplitVectorTest, SplitEveryThird) {
 }
 
 TEST_F(SplitVectorTest, MaxSplitPointsSet) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     3,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 6LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 3,
+                                                 boost::none,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 6LL);
     // Unlike the SplitEveryThird test, should only return the first 3 split points since
     // maxSplitPoints is 3.
     std::vector<BSONObj> expected = {
@@ -197,16 +197,16 @@ TEST_F(SplitVectorTest, MaxSplitPointsSet) {
 }
 
 TEST_F(SplitVectorTest, IgnoreMaxChunkObjects) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     boost::none,
-                                                                     10,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 6LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 boost::none,
+                                                 10,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 6LL);
     // The "maxChunkObjects"th key (10) is larger than the key count at half the maxChunkSize (3),
     // so it should be ignored.
     std::vector<BSONObj> expected = {
@@ -227,38 +227,38 @@ TEST_F(SplitVectorTest, IgnoreMaxChunkObjects) {
 }
 
 TEST_F(SplitVectorTest, NoSplit) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     getDocSizeBytes() * 1000LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 boost::none,
+                                                 boost::none,
+                                                 boost::none,
+                                                 getDocSizeBytes() * 1000LL);
 
     ASSERT_EQUALS(splitKeys.size(), 0UL);
 }
 
 TEST_F(SplitVectorTest, MaxChunkSizeSpecified) {
-    std::vector<BSONObj> splitKeys = unittest::assertGet(splitVector(operationContext(),
-                                                                     kNss,
-                                                                     BSON(kPattern << 1),
-                                                                     BSON(kPattern << 0),
-                                                                     BSON(kPattern << 100),
-                                                                     false,
-                                                                     boost::none,
-                                                                     boost::none,
-                                                                     1LL,
-                                                                     getDocSizeBytes() * 6LL));
+    std::vector<BSONObj> splitKeys = splitVector(operationContext(),
+                                                 kNss,
+                                                 BSON(kPattern << 1),
+                                                 BSON(kPattern << 0),
+                                                 BSON(kPattern << 100),
+                                                 false,
+                                                 boost::none,
+                                                 boost::none,
+                                                 1LL,
+                                                 getDocSizeBytes() * 6LL);
     // If both maxChunkSize and maxChunkSizeBytes are specified, maxChunkSize takes precedence.
     // Since the size of the collection is not yet a megabyte, should not split.
     ASSERT_EQ(splitKeys.size(), 0UL);
 }
 
 TEST_F(SplitVectorTest, NoCollection) {
-    auto status = splitVector(operationContext(),
+    ASSERT_THROWS(splitVector(operationContext(),
                               NamespaceString("dummy", "collection"),
                               BSON(kPattern << 1),
                               BSON(kPattern << 0),
@@ -267,13 +267,12 @@ TEST_F(SplitVectorTest, NoCollection) {
                               boost::none,
                               boost::none,
                               boost::none,
-                              boost::none)
-                      .getStatus();
-    ASSERT_EQUALS(status.code(), ErrorCodes::NamespaceNotFound);
+                              boost::none),
+                  ExceptionFor<ErrorCodes::NamespaceNotFound>);
 }
 
 TEST_F(SplitVectorTest, NoIndex) {
-    auto status = splitVector(operationContext(),
+    ASSERT_THROWS(splitVector(operationContext(),
                               kNss,
                               BSON("foo" << 1),
                               BSON(kPattern << 0),
@@ -282,13 +281,12 @@ TEST_F(SplitVectorTest, NoIndex) {
                               boost::none,
                               boost::none,
                               boost::none,
-                              boost::none)
-                      .getStatus();
-    ASSERT_EQUALS(status.code(), ErrorCodes::IndexNotFound);
+                              boost::none),
+                  ExceptionFor<ErrorCodes::IndexNotFound>);
 }
 
 TEST_F(SplitVectorTest, NoMaxChunkSize) {
-    auto status = splitVector(operationContext(),
+    ASSERT_THROWS(splitVector(operationContext(),
                               kNss,
                               BSON(kPattern << 1),
                               BSON(kPattern << 0),
@@ -297,9 +295,8 @@ TEST_F(SplitVectorTest, NoMaxChunkSize) {
                               boost::none,
                               boost::none,
                               boost::none,
-                              boost::none)
-                      .getStatus();
-    ASSERT_EQUALS(status.code(), ErrorCodes::InvalidOptions);
+                              boost::none),
+                  ExceptionFor<ErrorCodes::InvalidOptions>);
 }
 
 }  // namespace

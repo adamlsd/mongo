@@ -33,13 +33,13 @@
 #include <boost/optional.hpp>
 #include <vector>
 
+#include "mongo/base/status_with.h"
+
 namespace mongo {
 
 class BSONObj;
 class NamespaceString;
 class OperationContext;
-template <typename T>
-class StatusWith;
 
 /**
  * Given a chunk, determines whether it can be split and returns the split points if so. This
@@ -57,7 +57,7 @@ class StatusWith;
  * If force is set, split at the halfway point of the chunk. This also effectively
  * makes maxChunkSize equal the size of the chunk.
  */
-StatusWith<std::vector<BSONObj>> splitVector(OperationContext* opCtx,
+std::vector<BSONObj> splitVector(OperationContext* opCtx,
                                              const NamespaceString& nss,
                                              const BSONObj& keyPattern,
                                              const BSONObj& min,

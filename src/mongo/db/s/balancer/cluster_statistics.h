@@ -42,8 +42,6 @@ namespace mongo {
 
 class BSONObj;
 class OperationContext;
-template <typename T>
-class StatusWith;
 
 /**
  * This interface serves as means for obtaining data distribution and shard utilization statistics

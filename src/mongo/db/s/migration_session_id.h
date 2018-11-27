@@ -34,14 +34,13 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 
 namespace mongo {
 
 class BSONObj;
 class BSONObjBuilder;
-template <typename T>
-class StatusWith;
 
 /**
  * Encapsulates the logic for generating, parsing and comparing migration sessions. The migration

@@ -34,6 +34,8 @@
 #include <string>
 #include <vector>
 
+#include "mongo/base/status_with.h"
+
 namespace mongo {
 
 class BSONObj;
@@ -42,8 +44,6 @@ class KeyPattern;
 class NamespaceString;
 class OID;
 class OperationContext;
-template <typename T>
-class StatusWith;
 
 /**
  * Attempts to split a chunk with the specified parameters. If the split fails, then the StatusWith

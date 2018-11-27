@@ -41,7 +41,6 @@ namespace mongo {
 class OperationContext;
 class Shard;
 struct ShardingStatistics;
-class Status;
 
 /**
  * The donor-side movePrimary state machine. This object must be created and owned by a single

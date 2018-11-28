@@ -34,6 +34,8 @@
 
 #include "mongo/db/catalog/multi_index_block_impl.h"
 
+#include <ostream>
+
 #include "mongo/base/error_codes.h"
 #include "mongo/base/init.h"
 #include "mongo/db/audit.h"
@@ -50,6 +52,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/logger/redaction.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/fail_point.h"
@@ -61,6 +64,8 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+MONGO_EXPORT_SERVER_PARAMETER(useReadOnceCursorsForIndexBuilds, bool, true);
 
 using std::unique_ptr;
 using std::string;
@@ -207,6 +212,19 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const BSONObj& spec) 
 }
 
 StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSONObj>& indexSpecs) {
+    if (State::kAborted == _getState()) {
+        return {ErrorCodes::IndexBuildAborted,
+                str::stream() << "Index build aborted: " << _abortReason
+                              << ". Cannot initialize index builder: "
+                              << _collection->ns().ns()
+                              << "("
+                              << *_collection->uuid()
+                              << "): "
+                              << indexSpecs.size()
+                              << " provided. First index spec: "
+                              << (indexSpecs.empty() ? BSONObj() : indexSpecs[0])};
+    }
+
     WriteUnitOfWork wunit(_opCtx);
 
     invariant(_indexes.empty());
@@ -311,6 +329,8 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
         }
     }
 
+    _setState(State::kRunning);
+
     return indexInfoObjs;
 }
 
@@ -325,7 +345,7 @@ void failPointHangDuringBuild(FailPoint* fp, StringData where, const BSONObj& do
 }
 
 Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
-    invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
+    invariant(_opCtx->lockState()->isNoop() || !_opCtx->lockState()->inAWriteUnitOfWork());
 
     // Refrain from persisting any multikey updates as a result from building the index. Instead,
     // accumulate them in the `MultikeyPathTracker` and do the write as part of the update that
@@ -357,6 +377,15 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
     }
     auto exec =
         _collection->makePlanExecutor(_opCtx, yieldPolicy, Collection::ScanDirection::kForward);
+
+    // Hint to the storage engine that this collection scan should not keep data in the cache.
+    // Do not use read-once cursors for background builds because saveState/restoreState is called
+    // with every insert into the index, which resets the collection scan cursor between every call
+    // to getNextSnapshotted(). With read-once cursors enabled, this can evict data we may need to
+    // read again, incurring a significant performance penalty.
+    // TODO: Enable this for all index builds when SERVER-37268 is complete.
+    bool readOnce = !_buildInBackground && useReadOnceCursorsForIndexBuilds.load();
+    _opCtx->recoveryUnit()->setReadOnce(readOnce);
 
     Snapshotted<BSONObj> objToIndex;
     RecordId loc;
@@ -467,32 +496,68 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection() {
     return Status::OK();
 }
 
-Status MultiIndexBlockImpl::insert(const BSONObj& doc, const RecordId& loc) {
+Status MultiIndexBlockImpl::insert(const BSONObj& doc,
+                                   const RecordId& loc,
+                                   std::vector<BSONObj>* const dupKeysInserted) {
+    if (State::kAborted == _getState()) {
+        return {ErrorCodes::IndexBuildAborted,
+                str::stream() << "Index build aborted: " << _abortReason
+                              << ". Cannot insert document into index builder: "
+                              << _collection->ns().ns()
+                              << "("
+                              << *_collection->uuid()
+                              << "): "
+                              << redact(doc)};
+    }
+
     for (size_t i = 0; i < _indexes.size(); i++) {
         if (_indexes[i].filterExpression && !_indexes[i].filterExpression->matchesBSON(doc)) {
             continue;
         }
 
-        int64_t unused;
+        InsertResult result;
         Status idxStatus(ErrorCodes::InternalError, "");
         if (_indexes[i].bulk) {
             idxStatus = _indexes[i].bulk->insert(_opCtx, doc, loc, _indexes[i].options);
         } else {
-            idxStatus = _indexes[i].real->insert(_opCtx, doc, loc, _indexes[i].options, &unused);
+            idxStatus = _indexes[i].real->insert(_opCtx, doc, loc, _indexes[i].options, &result);
         }
 
         if (!idxStatus.isOK())
             return idxStatus;
+
+        if (dupKeysInserted) {
+            dupKeysInserted->insert(
+                dupKeysInserted->end(), result.dupsInserted.begin(), result.dupsInserted.end());
+        }
     }
     return Status::OK();
 }
 
 Status MultiIndexBlockImpl::doneInserting() {
-    return doneInserting(nullptr);
+    return _doneInserting(nullptr, nullptr);
 }
 
-Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
-    invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
+Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupRecords) {
+    return _doneInserting(dupRecords, nullptr);
+}
+
+Status MultiIndexBlockImpl::doneInserting(std::vector<BSONObj>* dupKeysInserted) {
+    return _doneInserting(nullptr, dupKeysInserted);
+}
+Status MultiIndexBlockImpl::_doneInserting(std::set<RecordId>* dupRecords,
+                                           std::vector<BSONObj>* dupKeysInserted) {
+    if (State::kAborted == _getState()) {
+        return {ErrorCodes::IndexBuildAborted,
+                str::stream() << "Index build aborted: " << _abortReason
+                              << ". Cannot complete insertion phase: "
+                              << _collection->ns().ns()
+                              << "("
+                              << *_collection->uuid()
+                              << ")"};
+    }
+
+    invariant(_opCtx->lockState()->isNoop() || !_opCtx->lockState()->inAWriteUnitOfWork());
     for (size_t i = 0; i < _indexes.size(); i++) {
         if (_indexes[i].bulk == NULL)
             continue;
@@ -502,25 +567,39 @@ Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
                                                      _indexes[i].bulk.get(),
                                                      _allowInterruption,
                                                      _indexes[i].options.dupsAllowed,
-                                                     dupsOut);
+                                                     dupRecords,
+                                                     dupKeysInserted);
         if (!status.isOK()) {
             return status;
         }
     }
 
+    _setState(State::kPreCommit);
+
     return Status::OK();
 }
 
 void MultiIndexBlockImpl::abortWithoutCleanup() {
+    _setStateToAbortedIfNotCommitted("aborted without cleanup"_sd);
     _indexes.clear();
     _needToCleanup = false;
 }
 
-void MultiIndexBlockImpl::commit() {
-    commit({});
+Status MultiIndexBlockImpl::commit() {
+    return commit({});
 }
 
-void MultiIndexBlockImpl::commit(stdx::function<void(const BSONObj& spec)> onCreateFn) {
+Status MultiIndexBlockImpl::commit(stdx::function<void(const BSONObj& spec)> onCreateFn) {
+    if (State::kAborted == _getState()) {
+        return {ErrorCodes::IndexBuildAborted,
+                str::stream() << "Index build aborted: " << _abortReason
+                              << ". Cannot commit index builder: "
+                              << _collection->ns().ns()
+                              << "("
+                              << *_collection->uuid()
+                              << ")"};
+    }
+
     // Do not interfere with writing multikey information when committing index builds.
     auto restartTracker =
         MakeGuard([this] { MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo(); });
@@ -554,7 +633,66 @@ void MultiIndexBlockImpl::commit(stdx::function<void(const BSONObj& spec)> onCre
         }
     }
 
+    // The state of this index build is set to Committed only when the WUOW commits.
+    // It is possible for abort() to be called after the check at the beginning of this function and
+    // before the WUOW is committed. If the WUOW commits, the final state of this index builder will
+    // be Committed. Otherwise, the index builder state will remain as Aborted and further attempts
+    // to commit this index build will fail.
     _opCtx->recoveryUnit()->registerChange(new SetNeedToCleanupOnRollback(this));
+    _opCtx->recoveryUnit()->onCommit(
+        [this](boost::optional<Timestamp> commitTime) { this->_setState(State::kCommitted); });
     _needToCleanup = false;
+
+    return Status::OK();
 }
+
+bool MultiIndexBlockImpl::isCommitted() const {
+    return State::kCommitted == _getState();
+}
+
+void MultiIndexBlockImpl::abort(StringData reason) {
+    _setStateToAbortedIfNotCommitted(reason);
+}
+
+
+MultiIndexBlockImpl::State MultiIndexBlockImpl::getState_forTest() const {
+    return _getState();
+}
+
+MultiIndexBlockImpl::State MultiIndexBlockImpl::_getState() const {
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    return _state;
+}
+
+void MultiIndexBlockImpl::_setState(State newState) {
+    invariant(State::kAborted != newState);
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    _state = newState;
+}
+
+void MultiIndexBlockImpl::_setStateToAbortedIfNotCommitted(StringData reason) {
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    if (State::kCommitted == _state) {
+        return;
+    }
+    _state = State::kAborted;
+    _abortReason = reason.toString();
+}
+
+std::ostream& operator<<(std::ostream& os, const MultiIndexBlockImpl::State& state) {
+    switch (state) {
+        case MultiIndexBlockImpl::State::kUninitialized:
+            return os << "Uninitialized";
+        case MultiIndexBlockImpl::State::kRunning:
+            return os << "Running";
+        case MultiIndexBlockImpl::State::kPreCommit:
+            return os << "PreCommit";
+        case MultiIndexBlockImpl::State::kCommitted:
+            return os << "Committed";
+        case MultiIndexBlockImpl::State::kAborted:
+            return os << "Aborted";
+    }
+    MONGO_UNREACHABLE;
+}
+
 }  // namespace mongo

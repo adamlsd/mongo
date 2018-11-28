@@ -1,7 +1,7 @@
 # -*- mode: python; -*-
 
 Import('env')
-Import("has_option")
+Import("get_option")
 Import('http_client')
 Import('ssl_provider')
 
@@ -106,8 +106,9 @@ env.Library(
         "private/ssl_expiration.cpp",
         "ssl_manager.cpp",
         "ssl_parameters.cpp",
-        "ssl_manager_%s.cpp" % (ssl_provider) if not ssl_provider == "none" else [],
+        "ssl_manager_%s.cpp" % (ssl_provider),
         "ssl_stream.cpp",
+        env.Idlc('ssl_parameters.idl')[0],
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -120,12 +121,12 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/base/secure_allocator',
+        '$BUILD_DIR/mongo/client/authentication',
         '$BUILD_DIR/mongo/crypto/sha_block_${MONGO_CRYPTO}',
-        '$BUILD_DIR/mongo/db/auth/internal_user_auth',
         '$BUILD_DIR/mongo/db/commands/server_status',
         '$BUILD_DIR/mongo/db/server_options_core',
-        '$BUILD_DIR/mongo/db/server_parameters',
         '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/idl/server_parameter',
         '$BUILD_DIR/mongo/util/background_job',
         '$BUILD_DIR/mongo/util/winutil',
     ],
@@ -149,7 +150,7 @@ env.Library(
         "ssl_dummy.cpp",
     ],
     LIBDEPS=[
-        'ssl_manager_impl' if has_option('ssl') else 'ssl_manager_none',
+        'ssl_manager_impl' if get_option('ssl') == 'on' else 'ssl_manager_none',
     ],
 )
 
@@ -188,7 +189,7 @@ env.CppUnitTest(
     ],
 )
 
-if has_option('ssl'):
+if get_option('ssl') == 'on':
     env.CppUnitTest(
         target='ssl_manager_test',
         source=[

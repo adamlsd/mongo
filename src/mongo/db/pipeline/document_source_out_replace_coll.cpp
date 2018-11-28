@@ -29,6 +29,7 @@
  */
 
 #include "mongo/platform/basic.h"
+#include "mongo/rpc/get_status_from_command_result.h"
 
 #include "mongo/db/pipeline/document_source_out_replace_coll.h"
 
@@ -37,6 +38,8 @@ namespace mongo {
 static AtomicUInt32 aggOutCounter;
 
 void DocumentSourceOutReplaceColl::initializeWriteNs() {
+    LocalReadConcernBlock readLocal(pExpCtx->opCtx);
+
     DBClientBase* conn = pExpCtx->mongoProcessInterface->directClient();
 
     const auto& outputNs = getOutputNs();
@@ -72,7 +75,7 @@ void DocumentSourceOutReplaceColl::initializeWriteNs() {
         uassert(16994,
                 str::stream() << "failed to create temporary $out collection '" << _tempNs.ns()
                               << "': "
-                              << info.toString(),
+                              << getStatusFromCommandResult(info).reason(),
                 conn->runCommand(outputNs.db().toString(), cmd.done(), info));
     }
 
@@ -96,6 +99,8 @@ void DocumentSourceOutReplaceColl::initializeWriteNs() {
 };
 
 void DocumentSourceOutReplaceColl::finalize() {
+    LocalReadConcernBlock readLocal(pExpCtx->opCtx);
+
     const auto& outputNs = getOutputNs();
     auto renameCommandObj =
         BSON("renameCollection" << _tempNs.ns() << "to" << outputNs.ns() << "dropTarget" << true);

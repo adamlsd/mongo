@@ -179,9 +179,7 @@ public:
     }
 
     virtual void run() {
-        Client::initThread(name().c_str());
-        ON_BLOCK_EXIT([] { Client::destroy(); });
-
+        ThreadClient tc(name(), getGlobalServiceContext());
         LOG(1) << "starting " << name() << " thread";
 
         while (!_shuttingDown.load()) {
@@ -227,9 +225,7 @@ public:
     }
 
     virtual void run() {
-        Client::initThread(name().c_str());
-        ON_BLOCK_EXIT([] { Client::destroy(); });
-
+        ThreadClient tc(name(), getGlobalServiceContext());
         LOG(1) << "starting " << name() << " thread";
 
         while (!_shuttingDown.load()) {
@@ -648,22 +644,26 @@ void WiredTigerKVEngine::_openWiredTiger(const std::string& path, const std::str
             severe() << kWTRepairMsg;
             fassertFailedNoTrace(50944);
         }
-
-        warning() << "Attempting to salvage WiredTiger metadata";
-        configStr = wtOpenConfig + ",salvage=true";
-        ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
-        if (!ret) {
-            StorageRepairObserver::get(getGlobalServiceContext())
-                ->onModification("WiredTiger metadata salvaged");
-            return;
-        }
-
-        severe() << "Failed to salvage WiredTiger metadata: " + wtRCToStatus(ret).reason();
-        fassertFailedNoTrace(50947);
     }
 
     severe() << "Reason: " << wtRCToStatus(ret).reason();
-    fassertFailedNoTrace(28595);
+    if (!_inRepairMode) {
+        fassertFailedNoTrace(28595);
+    }
+
+    // Always attempt to salvage metadata regardless of error code when in repair mode.
+
+    warning() << "Attempting to salvage WiredTiger metadata";
+    configStr = wtOpenConfig + ",salvage=true";
+    ret = wiredtiger_open(path.c_str(), wtEventHandler, configStr.c_str(), &_conn);
+    if (!ret) {
+        StorageRepairObserver::get(getGlobalServiceContext())
+            ->onModification("WiredTiger metadata salvaged");
+        return;
+    }
+
+    severe() << "Failed to salvage WiredTiger metadata: " + wtRCToStatus(ret).reason();
+    fassertFailedNoTrace(50947);
 }
 
 void WiredTigerKVEngine::cleanShutdown() {
@@ -1055,7 +1055,7 @@ std::unique_ptr<RecordStore> WiredTigerKVEngine::getGroupedRecordStore(
         if (options.cappedSize) {
             params.cappedMaxSize = options.cappedSize;
         } else {
-            params.cappedMaxSize = 4096;
+            params.cappedMaxSize = kDefaultCappedSizeBytes;
         }
     }
     params.cappedMaxDocs = -1;
@@ -1122,6 +1122,47 @@ SortedDataInterface* WiredTigerKVEngine::getGroupedSortedDataInterface(Operation
     }
 
     return new WiredTigerIndexStandard(opCtx, _uri(ident), desc, prefix, _readOnly);
+}
+
+std::unique_ptr<RecordStore> WiredTigerKVEngine::makeTemporaryRecordStore(OperationContext* opCtx,
+                                                                          StringData ident) {
+    invariant(!_readOnly);
+
+    _ensureIdentPath(ident);
+    WiredTigerSession wtSession(_conn);
+
+    CollectionOptions noOptions;
+    StatusWith<std::string> swConfig = WiredTigerRecordStore::generateCreateString(
+        _canonicalName, "" /* internal table */, noOptions, _rsOptions, false /* prefixed */);
+    uassertStatusOK(swConfig.getStatus());
+
+    std::string config = swConfig.getValue();
+
+    std::string uri = _uri(ident);
+    WT_SESSION* session = wtSession.getSession();
+    LOG(2) << "WiredTigerKVEngine::createTemporaryRecordStore uri: " << uri
+           << " config: " << config;
+    uassertStatusOK(wtRCToStatus(session->create(session, uri.c_str(), config.c_str())));
+
+    WiredTigerRecordStore::Params params;
+    params.ns = "";
+    params.uri = _uri(ident);
+    params.engineName = _canonicalName;
+    params.isCapped = false;
+    params.isEphemeral = _ephemeral;
+    params.cappedCallback = nullptr;
+    // Temporary collections do not need to persist size information to the size storer.
+    params.sizeStorer = nullptr;
+    params.isReadOnly = false;
+
+    params.cappedMaxSize = -1;
+    params.cappedMaxDocs = -1;
+
+    std::unique_ptr<WiredTigerRecordStore> rs;
+    rs = stdx::make_unique<StandardWiredTigerRecordStore>(this, opCtx, params);
+    rs->postConstructorInit(opCtx);
+
+    return std::move(rs);
 }
 
 void WiredTigerKVEngine::alterIdentMetadata(OperationContext* opCtx,

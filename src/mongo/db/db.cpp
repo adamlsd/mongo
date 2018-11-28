@@ -120,7 +120,6 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_entry_point_mongod.h"
-#include "mongo/db/session_catalog.h"
 #include "mongo/db/session_killer.h"
 #include "mongo/db/startup_warnings_mongod.h"
 #include "mongo/db/stats/counters.h"
@@ -865,7 +864,10 @@ MONGO_INITIALIZER_GENERAL(setSSLManagerType, MONGO_NO_PREREQUISITES, ("SSLManage
 // NOTE: This function may be called at any time after registerShutdownTask is called below. It
 // must not depend on the prior execution of mongo initializers or the existence of threads.
 void shutdownTask() {
-    Client::initThreadIfNotAlready();
+    // This client initiation pattern is only to be used here, with plans to eliminate this pattern
+    // down the line.
+    if (!haveClient())
+        Client::initThread(getThreadName());
 
     auto const client = Client::getCurrent();
     auto const serviceContext = client->getServiceContext();

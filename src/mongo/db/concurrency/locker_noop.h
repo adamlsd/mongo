@@ -116,18 +116,17 @@ public:
     virtual void endWriteUnitOfWork() {}
 
     virtual bool inAWriteUnitOfWork() const {
-        MONGO_UNREACHABLE;
+        return false;
     }
 
     virtual LockResult lock(OperationContext* opCtx,
                             ResourceId resId,
                             LockMode mode,
-                            Date_t deadline,
-                            bool checkDeadlock) {
+                            Date_t deadline) {
         return LockResult::LOCK_OK;
     }
 
-    virtual LockResult lock(ResourceId resId, LockMode mode, Date_t deadline, bool checkDeadlock) {
+    virtual LockResult lock(ResourceId resId, LockMode mode, Date_t deadline) {
         return LockResult::LOCK_OK;
     }
 

@@ -49,6 +49,7 @@
 #include "mongo/db/s/config/initial_split_policy.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
+#include "mongo/db/s/sharding_logging.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/balancer_configuration.h"
@@ -408,7 +409,6 @@ void shardCollection(OperationContext* opCtx,
                      const bool fromMapReduce,
                      const ShardId& dbPrimaryShardId,
                      const int numContiguousChunksPerShard) {
-    const auto catalogClient = Grid::get(opCtx)->catalogClient();
     const auto shardRegistry = Grid::get(opCtx)->shardRegistry();
 
     const auto primaryShard = uassertStatusOK(shardRegistry->getShard(opCtx, dbPrimaryShardId));
@@ -428,12 +428,12 @@ void shardCollection(OperationContext* opCtx,
         }
         collectionDetail.append("primary", primaryShard->toString());
         collectionDetail.append("numChunks", static_cast<int>(splitPoints.size() + 1));
-        uassertStatusOK(
-            catalogClient->logChangeChecked(opCtx,
-                                            "shardCollection.start",
-                                            nss.ns(),
-                                            collectionDetail.obj(),
-                                            ShardingCatalogClient::kMajorityWriteConcern));
+        uassertStatusOK(ShardingLogging::get(opCtx)->logChangeChecked(
+            opCtx,
+            "shardCollection.start",
+            nss.ns(),
+            collectionDetail.obj(),
+            ShardingCatalogClient::kMajorityWriteConcern));
     }
 
     // Construct the collection default collator.
@@ -538,48 +538,12 @@ void shardCollection(OperationContext* opCtx,
         shardsRefreshed.emplace_back(chunk.getShard());
     }
 
-    catalogClient->logChange(opCtx,
-                             "shardCollection.end",
-                             nss.ns(),
-                             BSON("version" << initialChunks.collVersion().toString()),
-                             ShardingCatalogClient::kMajorityWriteConcern);
-}
-
-std::vector<TagsType> getExistingTags(OperationContext* opCtx, const NamespaceString& nss) {
-    auto configServer = Grid::get(opCtx)->shardRegistry()->getConfigShard();
-    auto tagStatus =
-        configServer->exhaustiveFindOnConfig(opCtx,
-                                             kConfigReadSelector,
-                                             repl::ReadConcernLevel::kMajorityReadConcern,
-                                             TagsType::ConfigNS,
-                                             BSON(TagsType::ns(nss.ns())),
-                                             BSONObj(),
-                                             0);
-    uassertStatusOK(tagStatus);
-
-    const auto& tagDocList = tagStatus.getValue().docs;
-    std::vector<TagsType> tags;
-    for (const auto& tagDoc : tagDocList) {
-        auto tagParseStatus = TagsType::fromBSON(tagDoc);
-        uassertStatusOK(tagParseStatus);
-        const auto& parsedTag = tagParseStatus.getValue();
-        uassert(ErrorCodes::InvalidOptions,
-                str::stream() << "the min and max of the existing zone " << parsedTag.getMinKey()
-                              << " -->> "
-                              << parsedTag.getMaxKey()
-                              << " have non-matching number of keys",
-                parsedTag.getMinKey().nFields() == parsedTag.getMaxKey().nFields());
-
-        const auto& rangeMin = parsedTag.getMinKey();
-        const auto& rangeMax = parsedTag.getMaxKey();
-        uassert(ErrorCodes::InvalidOptions,
-                str::stream() << "zone " << rangeMin << " -->> " << rangeMax
-                              << " has min greater than max",
-                rangeMin.woCompare(rangeMax) < 0);
-
-        tags.push_back(parsedTag);
-    }
-    return tags;
+    ShardingLogging::get(opCtx)->logChange(
+        opCtx,
+        "shardCollection.end",
+        nss.ns(),
+        BSON("version" << initialChunks.collVersion().toString()),
+        ShardingCatalogClient::kMajorityWriteConcern);
 }
 
 /**
@@ -623,6 +587,7 @@ public:
              const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
+        auto const grid = Grid::get(opCtx);
         auto const shardingState = ShardingState::get(opCtx);
         uassertStatusOK(shardingState->canAcceptShardedCommands());
 
@@ -650,7 +615,8 @@ public:
                     opCtx, nss, proposedKey, shardKeyPattern, request);
 
                 // Read zone info
-                auto tags = getExistingTags(opCtx, nss);
+                const auto catalogClient = grid->catalogClient();
+                auto tags = uassertStatusOK(catalogClient->getTagsForCollection(opCtx, nss));
 
                 if (!tags.empty()) {
                     validateShardKeyAgainstExistingZones(opCtx, proposedKey, shardKeyPattern, tags);
@@ -663,7 +629,7 @@ public:
                     uuid = UUID::gen();
                 }
 
-                auto shardRegistry = Grid::get(opCtx)->shardRegistry();
+                const auto shardRegistry = grid->shardRegistry();
                 shardRegistry->reload(opCtx);
 
                 DBDirectClient localClient(opCtx);

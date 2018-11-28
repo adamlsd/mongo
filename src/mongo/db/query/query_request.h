@@ -33,6 +33,8 @@
 #include <boost/optional.hpp>
 #include <string>
 
+#include "mongo/base/status.h"
+#include "mongo/base/status_with.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
@@ -43,9 +45,6 @@
 namespace mongo {
 
 class QueryMessage;
-class Status;
-template <typename T>
-class StatusWith;
 
 /**
  * Parses the QueryMessage or find command received from the user and makes the various fields
@@ -389,6 +388,14 @@ public:
             : rpc::UseDocumentSequencesChoice::kDoNotUse;
     }
 
+    bool isReadOnce() const {
+        return _readOnce;
+    }
+
+    void setReadOnce(bool readOnce) {
+        _readOnce = readOnce;
+    }
+
     /**
      * Return options as a bit vector.
      */
@@ -513,6 +520,8 @@ private:
     bool _noCursorTimeout = false;
     bool _exhaust = false;
     bool _allowPartialResults = false;
+    bool _readOnce = false;
+
     rpc::UseDocumentSequencesChoice _tempOptInToDocumentSequences =
         rpc::UseDocumentSequencesChoice::kDoNotUse;
 

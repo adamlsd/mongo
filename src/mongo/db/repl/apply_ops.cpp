@@ -49,10 +49,10 @@
 #include "mongo/db/matcher/matcher.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/operation_context_session_mongod.h"
 #include "mongo/db/query/collation/collation_spec.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/fail_point_service.h"
@@ -130,9 +130,6 @@ Status _applyOps(OperationContext* opCtx,
         Status status(ErrorCodes::InternalError, "");
 
         if (haveWrappingWUOW) {
-            // Atomic applyOps command already acquired the global write lock.
-            invariant(opCtx->lockState()->isW() ||
-                      oplogApplicationMode != repl::OplogApplication::Mode::kApplyOpsCmd);
             // Only CRUD operations are allowed in atomic mode.
             invariant(*opType != 'c');
 
@@ -316,7 +313,7 @@ Status _applyPrepareTransaction(OperationContext* opCtx,
     // The write on transaction table may be applied concurrently, so refreshing state
     // from disk may read that write, causing starting a new transaction on an existing
     // txnNumber. Thus, we start a new transaction without refreshing state from disk.
-    OperationContextSessionMongodWithoutRefresh sessionCheckout(opCtx);
+    MongoDOperationContextSessionWithoutRefresh sessionCheckout(opCtx);
 
     auto transaction = TransactionParticipant::get(opCtx);
     transaction->unstashTransactionResources(opCtx, "prepareTransaction");
@@ -554,7 +551,7 @@ Status applyOps(OperationContext* opCtx,
         result->append("codeName", ErrorCodes::errorString(ex.code()));
         result->append("errmsg", ex.what());
         result->append("results", ab.arr());
-        return Status(ex.code(), ex.what());
+        return ex.toStatus();
     }
 
     return Status::OK();

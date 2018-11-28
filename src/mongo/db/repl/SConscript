@@ -10,6 +10,7 @@ env.Library(
         'apply_ops.cpp',
         'do_txn.cpp',
         'oplog.cpp',
+        'transaction_oplog_application.cpp',
         env.Idlc('apply_ops.idl')[0],
     ],
     LIBDEPS_PRIVATE=[
@@ -48,7 +49,6 @@ env.Library(
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/client/clientdriver_network',
-        '$BUILD_DIR/mongo/db/auth/internal_user_auth',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
         '$BUILD_DIR/mongo/util/net/network',
     ],
@@ -346,6 +346,7 @@ env.CppUnitTest(
         'replmocks',
         'storage_interface_impl',
         '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/db/op_observer',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
     ],
 )
@@ -546,7 +547,6 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
-        '$BUILD_DIR/mongo/db/auth/internal_user_auth',
     ],
 )
 
@@ -601,13 +601,13 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
-        '$BUILD_DIR/mongo/db/repair_database_and_check_version',
         '$BUILD_DIR/mongo/db/s/sharding_runtime_d',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/write_ops',
         '$BUILD_DIR/mongo/util/net/network',
         'optime',
         'repl_coordinator_interface',
+        'repl_state_transition_lock_guard',
         'roll_back_local_operations',
     ],
     LIBDEPS_PRIVATE=[
@@ -685,6 +685,7 @@ env.Library(
         'oplogreader',
         'repl_coordinator_interface',
         'repl_settings',
+        'repl_state_transition_lock_guard',
         'storage_interface',
     ],
     LIBDEPS_PRIVATE=[
@@ -817,6 +818,16 @@ env.CppUnitTest(
 )
 
 env.Library(
+    target='repl_state_transition_lock_guard',
+    source=[
+        'replication_state_transition_lock_guard.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/kill_sessions_local',
+    ]
+)
+
+env.Library(
     target='repl_coordinator_impl',
     source=[
         'check_quorum_for_config_change.cpp',
@@ -824,7 +835,6 @@ env.Library(
         'replication_coordinator_impl.cpp',
         'replication_coordinator_impl_elect_v1.cpp',
         'replication_coordinator_impl_heartbeat.cpp',
-        'replication_state_transition_lock_guard.cpp',
         'vote_requester.cpp',
     ],
     LIBDEPS=[
@@ -844,6 +854,7 @@ env.Library(
         'data_replicator_external_state_initial_sync',
         'repl_coordinator_interface',
         'repl_settings',
+        'repl_state_transition_lock_guard',
         'replica_set_messages',
         'replication_process',
         'reporter',
@@ -1043,7 +1054,6 @@ env.CppUnitTest('isself_test',
                 ],
                 LIBDEPS=[
                     '$BUILD_DIR/mongo/db/auth/authmocks',
-                    '$BUILD_DIR/mongo/db/serveronly',
                     '$BUILD_DIR/mongo/db/service_context_d',
                     '$BUILD_DIR/mongo/db/service_context_test_fixture',
                     'isself',
@@ -1596,7 +1606,6 @@ env.Library(
         '$BUILD_DIR/mongo/db/logical_time',
         '$BUILD_DIR/mongo/db/op_observer',
         '$BUILD_DIR/mongo/db/query_exec',
-        '$BUILD_DIR/mongo/db/repair_database',
         '$BUILD_DIR/mongo/db/repl/oplog_buffer_proxy',
         '$BUILD_DIR/mongo/db/s/balancer',
         '$BUILD_DIR/mongo/db/s/sharding_runtime_d',

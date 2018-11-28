@@ -120,8 +120,7 @@ std::string IndexBuilder::name() const {
 }
 
 void IndexBuilder::run() {
-    Client::initThread(name().c_str());
-    ON_BLOCK_EXIT([] { Client::destroy(); });
+    ThreadClient tc(name(), getGlobalServiceContext());
     LOG(2) << "IndexBuilder building index " << _index;
 
     auto opCtx = cc().makeOperationContext();
@@ -247,9 +246,12 @@ Status IndexBuilder::_build(OperationContext* opCtx,
     if (allowBackgroundBuilding) {
         dbLock->relockWithMode(MODE_X);
     }
-    writeConflictRetry(opCtx, "Commit index build", ns.ns(), [opCtx, &indexer, &ns] {
+    status = writeConflictRetry(opCtx, "Commit index build", ns.ns(), [this, opCtx, &indexer, &ns] {
         WriteUnitOfWork wunit(opCtx);
-        indexer.commit();
+        auto status = indexer.commit();
+        if (!status.isOK()) {
+            return status;
+        }
 
         if (requiresGhostCommitTimestamp(opCtx, ns)) {
 
@@ -272,7 +274,11 @@ Status IndexBuilder::_build(OperationContext* opCtx,
             }
         }
         wunit.commit();
+        return Status::OK();
     });
+    if (!status.isOK()) {
+        return _failIndexBuild(indexer, status, allowBackgroundBuilding);
+    }
 
     if (allowBackgroundBuilding) {
         dbLock->relockWithMode(MODE_X);

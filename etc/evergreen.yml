@@ -1094,6 +1094,35 @@ functions:
         done
         fi
 
+  "setup gradle signing keys":
+    command: shell.exec
+    params:
+      silent: true
+      script: |
+        cd src/src/mongo/embedded/mongo_embedded/java
+
+        echo -n "${mongodb_mobile_release_signing_secret_key}" > mobile-release-signing-key.secret
+        echo -n "${mongodb_mobile_release_signing_public_key}" > mobile-release-signing-key.public
+
+        gpg --homedir ${workingdir}/.gnupg --allow-secret-key-import --import mobile-release-signing-key.secret
+        gpg --homedir ${workingdir}/.gnupg --import mobile-release-signing-key.public
+        # Required for gradle to pick up the keys
+        gpg --homedir ${workingdir}/.gnupg --keyring secring.gpg --export-secret-keys secring.gpg
+
+        echo -n <<EOF
+        signing.keyId=${mongodb_mobile_release_signing_keyid}
+        signing.password=${mongodb_mobile_release_signing_password}
+        signing.secretKeyRingFile=${mongodb_mobile_release_signing_secretkeyringfile}
+
+        ossrhUsername=${mongodb_mobile_ossrh_username}
+        ossrhPassword=${mongodb_mobile_ossrh_password}
+        EOF > local.properties
+
+        echo <<EOF
+        export artifactory_mobile_user=${artifactory_mobile_user}
+        export artifactory_mobile_pass=${artifactory_mobile_pass}
+        EOF > artifactory_mobile_creds.sh
+
   "setup android toolchain" :
     command: shell.exec
     params:
@@ -1103,6 +1132,67 @@ functions:
         if [ "${setup_android_toolchain|}" = "true" ]; then
             ${activate_virtualenv}
             PYTHON=$python ${compile_env|} src/buildscripts/setup-android-toolchain.sh ${android_toolchain_target_arch} ${android_toolchain_api_version}
+        fi
+
+  "build java embedded sdk":
+    command: shell.exec
+    params:
+      script: |
+        set -o errexit
+        set -o verbose
+
+        # If the android toolchain has not been setup the android sdk will not
+        # be available and we should not build the android version of mongodb
+        # embedded.
+        if [ "${setup_android_toolchain|}" = "true" ]; then
+            export ANDROID_HOME=$(pwd)/android_sdk
+
+            cd src/src/mongo/embedded/mongo_embedded/java
+
+            # TODO: Clean this up later where we can remove duplication
+            if [ ${package_type|embedded-android} = "embedded-jar" ]; then
+                tar zxvf ../../../../../../embedded-sdk-java-linux-x86-64.tgz
+                mkdir -p jniLibs/linux-x86-64
+                cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.so jniLibs/linux-x86-64
+                rm -rf ./mongo-embedded-sdk-${version}
+
+                tar zxvf ../../../../../../embedded-sdk-java-darwin.tgz
+                mkdir -p jniLibs/darwin
+                cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.dylib jniLibs/darwin
+                rm -rf ./mongo-embedded-sdk-${version}
+
+                ./gradlew clean :embedded-jar:build :embedded-jar:publishMavenPublicationToLocalRepository
+
+                # Is this a release?
+                echo "${version|-g}" | grep -q -- "-g"
+                if [ $? -eq 1 ]; then
+                    echo "Releases disabled on master."
+                    #source ./artifactory_mobile_creds.sh
+                    #./gradlew --info :embedded-jar:artifactoryPublish
+                fi
+
+
+                mkdir -p ../../../../../build/mongo-embedded-sdk-${version}/java
+                cp -r embedded-jar/build/repo/* ../../../../../build/mongo-embedded-sdk-${version}/java
+            else
+                for arch in arm64-v8a armeabi-v7a x86_64 ; do
+                    tar zxvf ../../../../../../embedded-sdk-android-$arch.tgz
+                    mkdir -p jniLibs/$arch
+                    cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.so jniLibs/$arch
+                    rm -rf ./mongo-embedded-sdk-${version}
+                done
+
+                ./gradlew clean :embedded-android:build
+                # Is this a release?
+                echo "${version|-g}" | grep -q -- "-g"
+                if [ $? -eq 1 ]; then
+                    echo "Releases disabled on master."
+                    #./gradlew :embedded-android:uploadArchives closeAndReleaseRepository
+                fi
+
+                mkdir -p ../../../../../build/mongo-embedded-sdk-${version}/android
+                cp -r embedded-android/build/repo/* ../../../../../build/mongo-embedded-sdk-${version}/android
+            fi
         fi
 
   "shared scons cache pruning" :
@@ -3742,6 +3832,7 @@ tasks:
           --dbg=off
           --opt=size
           --enable-free-mon=off
+          --ssl=off
           --enable-http-client=off
           --use-system-mongo-c=on
           --wiredtiger=off
@@ -3961,37 +4052,8 @@ tasks:
         remote_file: ${project}/embedded-sdk/embedded-sdk-android-x86_64/${revision}/mongo-embedded-sdk-${version}.tgz
         bucket: mciuploads
         local_file: "embedded-sdk-android-x86_64.tgz"
-    - command: shell.exec
-      params:
-        script: |
-          set -o errexit
-          set -o verbose
-
-          if [ "${setup_android_toolchain|}" = "true" ]; then
-            export ANDROID_HOME=$(pwd)/android_sdk
-
-            cd src/src/mongo/embedded/mongo_embedded/java
-
-            chmod +x gradlew
-
-            for arch in arm64-v8a armeabi-v7a x86_64 ; do
-                tar zxvf ../../../../../../embedded-sdk-android-$arch.tgz
-                mkdir -p jniLibs/$arch
-                cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.so jniLibs/$arch
-                rm -rf ./mongo-embedded-sdk-${version}
-            done
-
-            ./gradlew clean :aar:build :aar:publishMavenAarPublicationToLocalRepository
-            # Is this a release?
-            echo "${version|-g}" | grep -q -- "-g"
-            if [ $? -eq 1 ]; then
-                echo "Mobile publishing disable in master for now"
-                #./gradlew --info :aar:artifactoryPublish
-            fi
-
-            mkdir -p ../../../../../build/mongo-embedded-sdk-${version}/android
-            cp -r aar/build/repo/* ../../../../../build/mongo-embedded-sdk-${version}/android
-          fi
+    - func: "setup gradle signing keys"
+    - func: "build java embedded sdk"
     - command: shell.exec
       params:
         script: |
@@ -4066,40 +4128,10 @@ tasks:
         remote_file: ${project}/embedded-sdk/embedded-sdk-macosx-10.10/${revision}/mongo-embedded-sdk-${version}.tgz
         bucket: mciuploads
         local_file: "embedded-sdk-java-darwin.tgz"
-    - command: shell.exec
-      params:
-        script: |
-          set -o errexit
-          set -o verbose
-
-          if [ "${setup_android_toolchain|}" = "true" ]; then
-            export ANDROID_HOME=$(pwd)/android_sdk
-
-            cd src/src/mongo/embedded/mongo_embedded/java
-
-            chmod +x gradlew
-
-            tar zxvf ../../../../../../embedded-sdk-java-linux-x86-64.tgz
-            mkdir -p jniLibs/linux-x86-64
-            cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.so jniLibs/linux-x86-64
-            rm -rf ./mongo-embedded-sdk-${version}
-
-            tar zxvf ../../../../../../embedded-sdk-java-darwin.tgz
-            mkdir -p jniLibs/darwin
-            cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.dylib jniLibs/darwin
-            rm -rf ./mongo-embedded-sdk-${version}
-
-            ./gradlew clean :jar:build :jar:publishMavenPublicationToLocalRepository
-            # Is this a release?
-            echo "${version|-g}" | grep -q -- "-g"
-            if [ $? -eq 1 ]; then
-                echo "Mobile publishing disable in master for now"
-                #./gradlew --info :jar:artifactoryPublish
-            fi
-
-            mkdir -p ../../../../../build/mongo-embedded-sdk-${version}/java
-            cp -r jar/build/repo/* ../../../../../build/mongo-embedded-sdk-${version}/java
-          fi
+    - func: "setup gradle signing keys"
+    - func: "build java embedded sdk"
+      vars:
+        package_type: embedded-jar
     - command: shell.exec
       params:
         script: |
@@ -5679,12 +5711,30 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: sharded_core_txns_sharded_collections
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=sharded_core_txns_sharded_collections --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: causally_consistent_jscore_txns_passthrough
   commands:
   - func: "do setup"
   - func: "run tests"
     vars:
       resmoke_args: --suites=causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: sharded_causally_consistent_jscore_txns_passthrough
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=sharded_causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -5707,6 +5757,39 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=replica_sets_multi_stmt_txn_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=replica_sets_multi_stmt_txn_stepdown_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -5882,6 +5965,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=sharding_jscore_passthrough --storageEngine=wiredTiger --shellReadMode=legacy --shellWriteMode=compatibility --excludeWithAnyTags=requires_find_command
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: sharded_multi_stmt_txn_jscore_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=sharded_multi_stmt_txn_jscore_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -8468,7 +8562,7 @@ buildvariants:
     push_bucket: downloads.mongodb.org
     push_name: linux
     push_arch: x86_64
-    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off --enable-http-client=off --release
+    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --ssl=off --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off --enable-http-client=off --release
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     scons_cache_scope: shared
     gorootvars: 'PATH="/opt/golang/go1.10/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/golang/go1.10'
@@ -8523,8 +8617,6 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_replication
@@ -8540,6 +8632,7 @@ buildvariants:
   - name: aggregation_multiversion_fuzzer_7
   - name: aggregation_multiversion_fuzzer_8
   - name: aggregation_multiversion_fuzzer_9
+  - name: aggregation_wildcard_fuzzer
   - name: jstestfuzz_sharded
   - name: mongosTest
   - name: multiversion_auth
@@ -8573,8 +8666,10 @@ buildvariants:
   - name: sharding_auth
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -8750,6 +8845,9 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_primary_jscore_passthrough
   - name: replica_sets_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
@@ -8758,8 +8856,11 @@ buildvariants:
   - name: serial_run
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
+  - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding_0
   - name: sharding_1
   - name: sharding_2
@@ -8991,7 +9092,9 @@ buildvariants:
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9085,7 +9188,9 @@ buildvariants:
   - name: sharding_auth
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9350,7 +9455,9 @@ buildvariants:
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9439,7 +9546,9 @@ buildvariants:
   - name: sharding_auth
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9564,7 +9673,9 @@ buildvariants:
   - name: sharding_auth
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9662,8 +9773,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -9754,8 +9867,10 @@ buildvariants:
   - name: sharding_ese
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -9854,8 +9969,10 @@ buildvariants:
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -9938,8 +10055,10 @@ buildvariants:
   - name: sharding_ese
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -10042,8 +10161,10 @@ buildvariants:
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -10095,7 +10216,6 @@ buildvariants:
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: auth
   - name: causally_consistent_jscore_passthrough
   - name: causally_consistent_jscore_passthrough_auth
@@ -10194,6 +10314,15 @@ buildvariants:
     distros:
     - windows-64-vs2015-large
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
+    distros:
+    - windows-64-vs2015-large
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+    distros:
+    - windows-64-vs2015-large
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+    distros:
+    - windows-64-vs2015-large
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
     distros:
     - windows-64-vs2015-large
   - name: replica_sets_kill_primary_jscore_passthrough
@@ -10316,7 +10445,9 @@ buildvariants:
   - name: replica_sets_ese_misc
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_auth_0
     distros:
     - windows-64-vs2015-large
@@ -10646,7 +10777,9 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_auth
     distros:
     - windows-64-vs2015-large
@@ -10759,8 +10892,10 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_jscore_passthrough
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
     distros:
     - windows-64-vs2015-large
@@ -10919,8 +11054,10 @@ buildvariants:
   - name: rollback_fuzzer_unclean_shutdowns
   - name: serial_run
   - name: session_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_gle_auth_basics_passthrough
   - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: sharding_jscore_passthrough
@@ -11013,6 +11150,101 @@ buildvariants:
   - name: push
     distros:
     - rhel70-small
+
+- name: enterprise-osx-1011-xcode-10
+  display_name: ~ Enterprise macOS 10.11 (XCode 10)
+  modules:
+  - enterprise
+  run_on:
+  - macos-1014
+  batchtime: 1440 # 1 day
+  expansions:
+    test_flags: --excludeWithAnyTags=requires_ssl_mongo_tools
+    compile_env: DEVELOPER_DIR=/Applications/Xcode10.0.app
+    compile_flags: >-
+      --ssl
+      -j$(sysctl -n hw.logicalcpu)
+      --libc++
+      --variables-files=etc/scons/xcode_macosx.vars
+    num_jobs_available: 1
+    gorootvars: 'PATH="/opt/golang/go1.10/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/golang/go1.10 CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.11 CGO_LDFLAGS=-mmacosx-version-min=10.11'
+    tooltags: "-tags 'ssl sasl openssl_pre_1.0'"
+    build_mongoreplay: true
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+  - name: audit
+  - name: auth_audit
+  - name: ese
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: jstestfuzz
+  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_concurrent_replication
+  - name: jstestfuzz_concurrent_sharded
+  - name: jstestfuzz_replication
+  - name: jstestfuzz_sharded
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: sasl
+  - name: ssl
+  - name: sslSpecial
+
+- name: enterprise-osx-1011-xcode-10-cxx17
+  display_name: ~ Enterprise macOS 10.11 (XCode 10 C++17)
+  modules:
+  - enterprise
+  run_on:
+  - macos-1014
+  batchtime: 1440 # 1 day
+  expansions:
+    test_flags: --excludeWithAnyTags=requires_ssl_mongo_tools
+    compile_env: DEVELOPER_DIR=/Applications/Xcode10.0.app
+    compile_flags: >-
+      --ssl
+      -j$(sysctl -n hw.logicalcpu)
+      --libc++
+      --variables-files=etc/scons/xcode_macosx.vars
+      --cxx-std=17
+      CPPDEFINES=_LIBCPP_ENABLE_CXX17_REMOVED_AUTO_PTR
+      CXXFLAGS="-Wno-register"
+    num_jobs_available: 1
+    gorootvars: 'PATH="/opt/golang/go1.10/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/golang/go1.10 CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.11 CGO_LDFLAGS=-mmacosx-version-min=10.11'
+    tooltags: "-tags 'ssl sasl openssl_pre_1.0'"
+    build_mongoreplay: true
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+  - name: audit
+  - name: auth_audit
+  - name: ese
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: jstestfuzz
+  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_concurrent_replication
+  - name: jstestfuzz_concurrent_sharded
+  - name: jstestfuzz_replication
+  - name: jstestfuzz_sharded
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: sasl
+  - name: ssl
+  - name: sslSpecial
 
 - name: enterprise-osx-1010-openssl
   display_name: ~ Enterprise macOS 10.10 OpenSSL
@@ -11339,7 +11571,7 @@ buildvariants:
     compile_env: JAVA_HOME=/opt/java/jdk8/
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
-      --android-toolchain-path=$(dirname $(pwd))/android_toolchain-arm-21
+      --toolchain-root=$(dirname $(pwd))/android_toolchain-arm-21
       --variables-files=etc/scons/android_toolchain.vars
       --cxx-std=17
       LIBS=clang_rt.builtins-arm-android
@@ -11382,7 +11614,7 @@ buildvariants:
     compile_env: JAVA_HOME=/opt/java/jdk8/
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
-      --android-toolchain-path=$(dirname $(pwd))/android_toolchain-arm64-21
+      --toolchain-root=$(dirname $(pwd))/android_toolchain-arm64-21
       --variables-files=etc/scons/android_toolchain.vars
       --cxx-std=17
       LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
@@ -11424,7 +11656,7 @@ buildvariants:
     compile_env: JAVA_HOME=/opt/java/jdk8/
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
-      --android-toolchain-path=$(dirname $(pwd))/android_toolchain-x86_64-21
+      --toolchain-root=$(dirname $(pwd))/android_toolchain-x86_64-21
       --variables-files=etc/scons/android_toolchain.vars
       --cxx-std=17
       LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
@@ -11729,6 +11961,15 @@ buildvariants:
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
+    distros:
+    - rhel62-large
   - name: replica_sets_kill_primary_jscore_passthrough
     distros:
     - rhel62-large
@@ -11746,8 +11987,13 @@ buildvariants:
     - rhel62-large
   - name: sasl
   - name: session_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
+  - name: sharded_multi_stmt_txn_jscore_passthrough
+    distros:
+    - rhel62-large
   - name: sharding_0
     distros:
     - rhel62-large
@@ -12684,8 +12930,6 @@ buildvariants:
   - name: aggregation_ese
   - name: aggregation_auth
   - name: aggregation_mongos_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
   - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
@@ -12759,14 +13003,20 @@ buildvariants:
   - name: replica_sets_initsync_jscore_passthrough
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_primary_jscore_passthrough
   - name: replica_sets_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
   - name: retryable_writes_jscore_passthrough
   - name: sasl
   - name: session_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
+  - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -12996,7 +13246,9 @@ buildvariants:
   - name: sharding_auth
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: ssl
@@ -13100,7 +13352,9 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -13207,8 +13461,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13321,8 +13577,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13357,7 +13615,6 @@ buildvariants:
   expansions:
     compile_flags: --ssl MONGO_DISTMOD=rhel67 --release -j3 CCFLAGS="-march=z9-109 -mtune=z10" --variables-files=etc/scons/mongodbtoolchain_gcc.vars --use-hardware-crc32=off
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    test_flags: --excludeWithAnyTags=blacklist_from_rhel_67_s390x
     has_packages: true
     packager_script: packager_enterprise.py
     packager_arch: s390x
@@ -13428,8 +13685,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13461,7 +13720,6 @@ buildvariants:
   expansions:
     compile_flags: --ssl MONGO_DISTMOD=rhel67 --release -j3 CCFLAGS="-march=z9-109 -mtune=z10" --variables-files=etc/scons/mongodbtoolchain_gcc.vars --use-hardware-crc32=off
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    test_flags: --excludeWithAnyTags=blacklist_from_rhel_67_s390x
     has_packages: true
     packager_script: packager.py
     packager_arch: s390x
@@ -13825,8 +14083,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13936,7 +14196,9 @@ buildvariants:
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -14256,8 +14518,10 @@ buildvariants:
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -14398,7 +14662,9 @@ buildvariants:
   - name: rollback_fuzzer
   - name: sasl
   - name: session_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharded_collections_jscore_passthrough
   - name: sharding
   - name: sharding_auth
@@ -14461,6 +14727,7 @@ buildvariants:
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
       --mobile-se=on
+      --ssl=off
       --variables-files=etc/scons/mongodbtoolchain_gcc.vars
       MONGO_DISTMOD=rhel62
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
@@ -14541,6 +14808,7 @@ buildvariants:
     compile_flags: >-
         -j$(grep -c ^processor /proc/cpuinfo)
         --mobile-se=on
+        --ssl=off
         --release
         --variables-files=etc/scons/mongodbtoolchain_gcc.vars
         CCFLAGS="-march=armv8-a+crc -mtune=generic"
@@ -14622,6 +14890,7 @@ buildvariants:
       -j$(sysctl -n hw.logicalcpu)
       --libc++
       --mobile-se=on
+      --ssl=off
       --release
       CCFLAGS="-mmacosx-version-min=10.10"
       CPPPATH=/opt/mongodbtoolchain/v2/include
@@ -14742,8 +15011,10 @@ buildvariants:
   - name: sharding_op_query
   - name: slow1
   - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -14819,8 +15090,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_auth
   - name: sharding_auth_audit
@@ -14922,8 +15195,10 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_auth
   - name: sharding_auth_audit
@@ -15069,6 +15344,9 @@ buildvariants:
   - name: replica_sets_initsync_jscore_passthrough
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_primary_jscore_passthrough
   - name: replica_sets_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
@@ -15076,8 +15354,11 @@ buildvariants:
   - name: retryable_writes_jscore_stepdown_passthrough
   - name: sasl
   - name: session_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
+  - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -15257,6 +15538,9 @@ buildvariants:
   - name: replica_sets_initsync_jscore_passthrough
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_primary_jscore_passthrough
   - name: replica_sets_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
@@ -15264,8 +15548,11 @@ buildvariants:
   - name: retryable_writes_jscore_stepdown_passthrough
   - name: sasl
   - name: session_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
+  - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -15410,8 +15697,10 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
   - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_core_txns
+  - name: sharded_core_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -15475,3 +15764,42 @@ buildvariants:
   stepback: false
   tasks:
   - name: shared_scons_cache_pruning
+
+- name: enterprise-ubuntu1804-64-v3-toolchain-canary-debug
+  display_name: Enterprise Ubuntu 18.04 (Toolchain V3 Canary Builder) DEBUG
+  modules:
+  - enterprise
+  run_on:
+  - ubuntu1804-test
+  batchtime: 1440 # 1 day
+  expansions:
+    compile_flags: >-
+      --ssl MONGO_DISTMOD=ubuntu1804
+      -j$(grep -c ^processor /proc/cpuinfo)
+      --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
+      --dbg=on
+    multiversion_platform: ubuntu1804
+    multiversion_edition: enterprise
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    scons_cache_scope: shared
+    gorootvars: 'PATH="/opt/golang/go1.10/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/golang/go1.10'
+    tooltags: "-tags 'ssl sasl'"
+    build_mongoreplay: true
+    has_packages: false
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - ubuntu1804-build
+  - name: audit
+  - name: ese
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: sasl
+  - name: snmp
+  - name: ssl
+  - name: sslSpecial

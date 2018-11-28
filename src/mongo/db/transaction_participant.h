@@ -156,13 +156,6 @@ public:
     static TransactionParticipant* getFromNonCheckedOutSession(Session* session);
 
     /**
-     * Apply `abortTransaction` oplog entry.
-     */
-    static Status applyAbortTransaction(OperationContext* opCtx,
-                                        const repl::OplogEntry& entry,
-                                        repl::OplogApplication::Mode mode);
-
-    /**
      * Kills the transaction if it is running, ensuring that it releases all resources, even if the
      * transaction is in prepare().  Avoids writing any oplog entries or making any changes to the
      * transaction table.  State for prepared transactions will be re-constituted at startup.
@@ -171,12 +164,6 @@ public:
      * continue using the TransactionParticipant once we are in shutdown.
      */
     void shutdown();
-
-    /**
-     * Called for speculative transactions to fix the optime of the snapshot to read from.
-     */
-    void setSpeculativeTransactionOpTime(OperationContext* opCtx,
-                                         SpeculativeTransactionOpTime opTimeChoice);
 
     /**
      * Transfers management of transaction resources from the OperationContext to the Session.
@@ -304,8 +291,10 @@ public:
      * If this session is not holding stashed locks in _txnResourceStash (transaction is active),
      * reports the current state of the session using the provided builder. Locks the session
      * object's mutex while running.
+     * If this is called from a thread other than the owner of the opCtx, that thread must be
+     * holding the client lock.
      */
-    void reportUnstashedState(repl::ReadConcernArgs readConcernArgs, BSONObjBuilder* builder) const;
+    void reportUnstashedState(OperationContext* opCtx, BSONObjBuilder* builder) const;
 
     /**
      * Convenience method which creates and populates a BSONObj containing the stashed state.
@@ -648,6 +637,11 @@ private:
                                       TxnNumber newTxnNumber,
                                       std::vector<StmtId> stmtIdsWritten,
                                       const repl::OpTime& lastStmtIdWriteTs);
+
+    // Called for speculative transactions to fix the optime of the snapshot to read from.
+    void _setSpeculativeTransactionOpTime(WithLock,
+                                          OperationContext* opCtx,
+                                          SpeculativeTransactionOpTime opTimeChoice);
 
     // Finishes committing the multi-document transaction after the storage-transaction has been
     // committed, the oplog entry has been inserted into the oplog, and the transactions table has

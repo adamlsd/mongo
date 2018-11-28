@@ -86,9 +86,14 @@ public:
 
     /**
      * Add a sub section to this section.  Used mainly to keep track of section headers for when
-     * we need generate the help std::string for the command line
+     * we need generate the help std::string for the command line.
+     *
+     * Note that while the structure of this class allows for a nested hierarchy of sections,
+     * our actual use-case enforces a maximum depth of 2.
+     * The base node plus one level of subsections.
+     * This means that subsections being added must not contain subsections of their own.
      */
-    Status addSection(const OptionSection& subSection);
+    Status addSection(const OptionSection& newSection);
 
     /**
      * Add an option to this section, and returns a reference to an OptionDescription to allow
@@ -139,6 +144,11 @@ public:
     Status countOptions(int* numOptions, bool visibleOnly, OptionSources sources) const;
 
     /**
+     * Returns the number of subsections which have been added to this OptionSection.
+     */
+    size_t countSubSections() const;
+
+    /**
      * Populates the given map with all the default values for any options in this option
      * section and all sub sections.
      */
@@ -160,6 +170,17 @@ private:
     std::string _name;
     std::list<OptionSection> _subSections;
     std::list<OptionDescription> _options;
+
+    /**
+     * Internal accumulator of all dotted names (incl. deprecated) in _options and all _subSections.
+     * Used for ensuring duplicate entries don't find their way into different parts of the tree.
+     */
+    std::set<std::string> _allDottedNames;
+
+    /**
+     * Internal accumulator for all single names. See _allDottedNames for further info.
+     */
+    std::set<std::string> _allSingleNames;
 };
 
 }  // namespace optionenvironment

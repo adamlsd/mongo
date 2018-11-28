@@ -378,7 +378,7 @@ BSONObj InitialSyncer::_getInitialSyncProgress_inlock() const {
     return bob.obj();
 }
 
-void InitialSyncer::setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& work) {
+void InitialSyncer::setScheduleDbWorkFn_forTest(const DatabaseCloner::ScheduleDbWorkFn& work) {
     LockGuard lk(_mutex);
     _scheduleDbWorkFn = work;
 }
@@ -685,6 +685,13 @@ void InitialSyncer::_lastOplogEntryFetcherCallbackForBeginTimestamp(
     auto filterBob = BSONObjBuilder(queryBob.subobjStart("filter"));
     filterBob.append("_id", FeatureCompatibilityVersionParser::kParameterName);
     filterBob.done();
+    // As part of reading the FCV, we ensure the source node "all committed" timestamp has advanced
+    // to at least the timestamp of the last optime that we found in the lastOplogEntryFetcher.
+    // When document locking is used, there could be oplog "holes" which would result in
+    // inconsistent initial sync data if we didn't do this.
+    auto readConcernBob = BSONObjBuilder(queryBob.subobjStart("readConcern"));
+    readConcernBob.append("afterClusterTime", lastOpTimeWithHash.opTime.getTimestamp());
+    readConcernBob.done();
 
     _fCVFetcher = stdx::make_unique<Fetcher>(
         _exec,
@@ -1424,7 +1431,7 @@ Status InitialSyncer::_checkForShutdownAndConvertStatus_inlock(const Status& sta
 }
 
 Status InitialSyncer::_scheduleWorkAndSaveHandle_inlock(
-    const executor::TaskExecutor::CallbackFn& work,
+    executor::TaskExecutor::CallbackFn work,
     executor::TaskExecutor::CallbackHandle* handle,
     const std::string& name) {
     invariant(handle);
@@ -1433,7 +1440,7 @@ Status InitialSyncer::_scheduleWorkAndSaveHandle_inlock(
                       str::stream() << "failed to schedule work " << name
                                     << ": initial syncer is shutting down");
     }
-    auto result = _exec->scheduleWork(work);
+    auto result = _exec->scheduleWork(std::move(work));
     if (!result.isOK()) {
         return result.getStatus().withContext(str::stream() << "failed to schedule work " << name);
     }
@@ -1443,7 +1450,7 @@ Status InitialSyncer::_scheduleWorkAndSaveHandle_inlock(
 
 Status InitialSyncer::_scheduleWorkAtAndSaveHandle_inlock(
     Date_t when,
-    const executor::TaskExecutor::CallbackFn& work,
+    executor::TaskExecutor::CallbackFn work,
     executor::TaskExecutor::CallbackHandle* handle,
     const std::string& name) {
     invariant(handle);
@@ -1453,7 +1460,7 @@ Status InitialSyncer::_scheduleWorkAtAndSaveHandle_inlock(
                                     << when.toString()
                                     << ": initial syncer is shutting down");
     }
-    auto result = _exec->scheduleWorkAt(when, work);
+    auto result = _exec->scheduleWorkAt(when, std::move(work));
     if (!result.isOK()) {
         return result.getStatus().withContext(
             str::stream() << "failed to schedule work " << name << " at " << when.toString());

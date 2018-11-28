@@ -232,8 +232,7 @@ public:
                 }
                 case PlanExecutor::IS_EOF:
                     // This causes the reported latest oplog timestamp to advance even when there
-                    // are
-                    // no results for this particular query.
+                    // are no results for this particular query.
                     nextBatch->setLatestOplogTimestamp(exec->getLatestOplogTimestamp());
                 default:
                     return Status::OK();
@@ -284,8 +283,11 @@ public:
                         ? _request.nss.getTargetNSForGloballyManagedNamespace()
                         : _request.nss) {
                     const boost::optional<int> dbProfilingLevel = boost::none;
-                    statsTracker.emplace(
-                        opCtx, *nssForCurOp, Top::LockType::NotLocked, dbProfilingLevel);
+                    statsTracker.emplace(opCtx,
+                                         *nssForCurOp,
+                                         Top::LockType::NotLocked,
+                                         AutoStatsTracker::LogMode::kUpdateTopAndCurop,
+                                         dbProfilingLevel);
                 }
             } else {
                 readLock.emplace(opCtx, _request.nss);
@@ -293,6 +295,7 @@ public:
                 statsTracker.emplace(opCtx,
                                      _request.nss,
                                      Top::LockType::ReadLocked,
+                                     AutoStatsTracker::LogMode::kUpdateTopAndCurop,
                                      readLock->getDb() ? readLock->getDb()->getProfilingLevel()
                                                        : doNotChangeProfilingLevel);
 
@@ -372,7 +375,8 @@ public:
             const auto replicationMode =
                 repl::ReplicationCoordinator::get(opCtx)->getReplicationMode();
             if (replicationMode == repl::ReplicationCoordinator::modeReplSet &&
-                cursor->getReadConcernLevel() == repl::ReadConcernLevel::kMajorityReadConcern) {
+                cursor->getReadConcernArgs().getLevel() ==
+                    repl::ReadConcernLevel::kMajorityReadConcern) {
                 opCtx->recoveryUnit()->setTimestampReadSource(
                     RecoveryUnit::ReadSource::kMajorityCommitted);
                 uassertStatusOK(opCtx->recoveryUnit()->obtainMajorityCommittedSnapshot());
@@ -402,6 +406,12 @@ public:
             }
 
             PlanExecutor* exec = cursor->getExecutor();
+            const auto* cq = exec->getCanonicalQuery();
+            if (cq && cq->getQueryRequest().isReadOnce()) {
+                // The readOnce option causes any storage-layer cursors created during plan
+                // execution to assume read data will not be needed again and need not be cached.
+                opCtx->recoveryUnit()->setReadOnce(true);
+            }
             exec->reattachToOperationContext(opCtx);
             exec->restoreState();
 
@@ -499,11 +509,10 @@ public:
                 cursorFreer.Dismiss();
             }
 
-            // We're about to unpin the cursor as the ClientCursorPin goes out of scope (or delete
-            // it, if it has been exhausted). If the
-            // 'waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch' failpoint is active, set the
-            // 'msg' field of this operation's CurOp to signal that we've hit this point and then
-            // spin until the failpoint is released.
+            // We're about to unpin or delete the cursor as the ClientCursorPin goes out of scope.
+            // If the 'waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch' failpoint is active, we
+            // set the 'msg' field of this operation's CurOp to signal that we've hit this point and
+            // then spin until the failpoint is released.
             if (MONGO_FAIL_POINT(waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch)) {
                 CurOpFailpointHelpers::waitWhileFailPointEnabled(
                     &waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch,

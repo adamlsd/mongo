@@ -45,7 +45,6 @@ class ClusterStatistics;
 class MigrationSecondaryThrottleOptions;
 class OperationContext;
 class ServiceContext;
-class Status;
 
 /**
  * The balancer is a background task that tries to keep the number of chunks across all
@@ -119,20 +118,20 @@ public:
     /**
      * Blocking call, which requests the balancer to move a single chunk to a more appropriate
      * shard, in accordance with the active balancer policy. It is not guaranteed that the chunk
-     * will actually move because it may already be at the best shard. An error will be returned if
+     * will actually move because it may already be at the best shard. An error will be thrown if
      * the attempt to find a better shard or the actual migration fail for any reason.
      */
-    Status rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& chunk);
+    void rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& chunk);
 
     /**
      * Blocking call, which requests the balancer to move a single chunk to the specified location
-     * in accordance with the active balancer policy. An error will be returned if the attempt to
+     * in accordance with the active balancer policy. An error will be thrown if the attempt to
      * move fails for any reason.
      *
      * NOTE: This call disregards the balancer enabled/disabled status and will proceed with the
      *       move regardless. If should be used only for user-initiated moves.
      */
-    Status moveSingleChunk(OperationContext* opCtx,
+    void moveSingleChunk(OperationContext* opCtx,
                            const ChunkType& chunk,
                            const ShardId& newShardId,
                            uint64_t maxChunkSizeBytes,

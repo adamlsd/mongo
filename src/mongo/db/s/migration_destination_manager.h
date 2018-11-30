@@ -33,6 +33,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
@@ -54,7 +55,6 @@ namespace mongo {
 
 class OperationContext;
 class StartChunkCloneRequest;
-class Status;
 struct WriteConcernOptions;
 
 namespace repl {

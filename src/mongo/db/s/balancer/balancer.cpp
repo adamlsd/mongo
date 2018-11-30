@@ -240,41 +240,37 @@ void Balancer::joinCurrentRound(OperationContext* opCtx) {
     });
 }
 
-Status Balancer::rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& chunk) try {
+void Balancer::rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& chunk) {
     auto migrateInfo = _chunkSelectionPolicy->selectSpecificChunkToMove(opCtx, chunk);
 
     if (!migrateInfo) {
         LOG(1) << "Unable to find more appropriate location for chunk " << redact(chunk.toString());
-        return Status::OK();
+        return;
     }
 
     auto balancerConfig = Grid::get(opCtx)->getBalancerConfiguration();
-    Status refreshStatus = balancerConfig->refreshAndCheck(opCtx);
-    if (!refreshStatus.isOK()) {
-        return refreshStatus;
-    }
+    uassertStatusOK(balancerConfig->refreshAndCheck(opCtx));
 
-    return _migrationManager.executeManualMigration(opCtx,
-                                                    *migrateInfo,
-                                                    balancerConfig->getMaxChunkSizeBytes(),
-                                                    balancerConfig->getSecondaryThrottle(),
-                                                    balancerConfig->waitForDelete());
-} catch (const DBException& ex) {
-    return ex.toStatus();
+    uassertStatusOK(_migrationManager.executeManualMigration(opCtx,
+                                                             *migrateInfo,
+                                                             balancerConfig->getMaxChunkSizeBytes(),
+                                                             balancerConfig->getSecondaryThrottle(),
+                                                             balancerConfig->waitForDelete()));
 }
 
-Status Balancer::moveSingleChunk(OperationContext* opCtx,
-                                 const ChunkType& chunk,
-                                 const ShardId& newShardId,
-                                 uint64_t maxChunkSizeBytes,
-                                 const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                                 bool waitForDelete) try {
+void Balancer::moveSingleChunk(OperationContext* opCtx,
+                               const ChunkType& chunk,
+                               const ShardId& newShardId,
+                               uint64_t maxChunkSizeBytes,
+                               const MigrationSecondaryThrottleOptions& secondaryThrottle,
+                               bool waitForDelete) {
     _chunkSelectionPolicy->checkMoveAllowed(opCtx, chunk, newShardId);
 
-    return _migrationManager.executeManualMigration(
-        opCtx, MigrateInfo(newShardId, chunk), maxChunkSizeBytes, secondaryThrottle, waitForDelete);
-} catch (const DBException& ex) {
-    return ex.toStatus();
+    uassertStatusOK(_migrationManager.executeManualMigration(opCtx,
+                                                             MigrateInfo(newShardId, chunk),
+                                                             maxChunkSizeBytes,
+                                                             secondaryThrottle,
+                                                             waitForDelete));
 }
 
 void Balancer::report(OperationContext* opCtx, BSONObjBuilder* builder) {

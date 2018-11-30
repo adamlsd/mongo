@@ -96,14 +96,14 @@ public:
         auto request = uassertStatusOK(BalanceChunkRequest::parseFromConfigCommand(cmdObj));
 
         if (request.hasToShardId()) {
-            uassertStatusOK(Balancer::get(opCtx)->moveSingleChunk(opCtx,
-                                                                  request.getChunk(),
-                                                                  request.getToShardId(),
-                                                                  request.getMaxChunkSizeBytes(),
-                                                                  request.getSecondaryThrottle(),
-                                                                  request.getWaitForDelete()));
+            Balancer::get(opCtx)->moveSingleChunk(opCtx,
+                                                  request.getChunk(),
+                                                  request.getToShardId(),
+                                                  request.getMaxChunkSizeBytes(),
+                                                  request.getSecondaryThrottle(),
+                                                  request.getWaitForDelete());
         } else {
-            uassertStatusOK(Balancer::get(opCtx)->rebalanceSingleChunk(opCtx, request.getChunk()));
+            Balancer::get(opCtx)->rebalanceSingleChunk(opCtx, request.getChunk());
         }
 
         return true;

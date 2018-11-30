@@ -62,8 +62,9 @@ namespace {
  * Does a linear pass over the information cached in the specified chunk manager and extracts chunk
  * distribution and chunk placement information which is needed by the balancer policy.
  */
-StatusWith<DistributionStatus> createCollectionDistributionStatus(
-    OperationContext* opCtx, const ShardStatisticsVector& allShards, ChunkManager* chunkMgr) {
+DistributionStatus createCollectionDistributionStatus(OperationContext* opCtx,
+                                                      const ShardStatisticsVector& allShards,
+                                                      ChunkManager* chunkMgr) {
     ShardToChunksMap shardToChunksMap;
 
     // Makes sure there is an entry in shardToChunksMap for every shard, so empty shards will also
@@ -84,13 +85,9 @@ StatusWith<DistributionStatus> createCollectionDistributionStatus(
         shardToChunksMap[chunkEntry.getShardId()].push_back(chunk);
     }
 
-    const auto swCollectionTags =
-        Grid::get(opCtx)->catalogClient()->getTagsForCollection(opCtx, chunkMgr->getns());
-    if (!swCollectionTags.isOK()) {
-        return swCollectionTags.getStatus().withContext(
-            str::stream() << "Unable to load tags for collection " << chunkMgr->getns().ns());
-    }
-    const auto& collectionTags = swCollectionTags.getValue();
+    const auto collectionTags = uassertStatusOKWithContext(
+        Grid::get(opCtx)->catalogClient()->getTagsForCollection(opCtx, chunkMgr->getns()),
+        str::stream() << "Unable to load tags for collection " << chunkMgr->getns().ns());
 
     DistributionStatus distribution(chunkMgr->getns(), std::move(shardToChunksMap));
 
@@ -98,17 +95,13 @@ StatusWith<DistributionStatus> createCollectionDistributionStatus(
     const auto& keyPattern = chunkMgr->getShardKeyPattern().getKeyPattern();
 
     for (const auto& tag : collectionTags) {
-        auto status = distribution.addRangeToZone(
+        uassertStatusOK(distribution.addRangeToZone(
             ZoneRange(keyPattern.extendRangeBound(tag.getMinKey(), false),
                       keyPattern.extendRangeBound(tag.getMaxKey(), false),
-                      tag.getTag()));
-
-        if (!status.isOK()) {
-            return status;
-        }
+                      tag.getTag())));
     }
 
-    return {std::move(distribution)};
+    return distribution;
 }
 
 /**
@@ -281,7 +274,7 @@ boost::optional<MigrateInfo> BalancerChunkSelectionPolicyImpl::selectSpecificChu
     const auto cm = routingInfo.cm().get();
 
     const DistributionStatus distribution =
-        uassertStatusOK(createCollectionDistributionStatus(opCtx, shardStats, cm));
+        createCollectionDistributionStatus(opCtx, shardStats, cm);
 
     return BalancerPolicy::balanceSingleChunk(chunk, shardStats, distribution);
 }
@@ -297,8 +290,8 @@ void BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCtx,
 
     const auto cm = routingInfo.cm().get();
 
-    const DistributionStatus& distribution =
-        uassertStatusOK(createCollectionDistributionStatus(opCtx, shardStats, cm));
+    const DistributionStatus distribution =
+        createCollectionDistributionStatus(opCtx, shardStats, cm);
 
     auto newShardIterator =
         std::find_if(shardStats.begin(),
@@ -317,23 +310,18 @@ void BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCtx,
 }
 
 StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidatesForCollection(
-    OperationContext* opCtx, const NamespaceString& nss, const ShardStatisticsVector& shardStats) {
-    auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx, nss);
-    if (!routingInfoStatus.isOK()) {
-        return routingInfoStatus.getStatus();
-    }
+    OperationContext* opCtx,
+    const NamespaceString& nss,
+    const ShardStatisticsVector& shardStats) try {
+    auto routingInfo = uassertStatusOK(
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx, nss));
 
-    const auto cm = routingInfoStatus.getValue().cm().get();
+    const auto cm = routingInfo.cm().get();
 
     const auto& shardKeyPattern = cm->getShardKeyPattern().getKeyPattern();
 
-    const auto collInfoStatus = createCollectionDistributionStatus(opCtx, shardStats, cm);
-    if (!collInfoStatus.isOK()) {
-        return collInfoStatus.getStatus();
-    }
-
-    const DistributionStatus& distribution = collInfoStatus.getValue();
+    const DistributionStatus distribution =
+        createCollectionDistributionStatus(opCtx, shardStats, cm);
 
     // Accumulate split points for the same chunk together
     SplitCandidatesBuffer splitCandidates(nss, cm->getVersion());
@@ -363,13 +351,15 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidate
     }
 
     return splitCandidates.done();
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandidatesForCollection(
     OperationContext* opCtx,
     const NamespaceString& nss,
     const ShardStatisticsVector& shardStats,
-    std::set<ShardId>* usedShards) {
+    std::set<ShardId>* usedShards) try {
     auto routingInfoStatus =
         Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx, nss);
     if (!routingInfoStatus.isOK()) {
@@ -380,12 +370,8 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
 
     const auto& shardKeyPattern = cm->getShardKeyPattern().getKeyPattern();
 
-    const auto collInfoStatus = createCollectionDistributionStatus(opCtx, shardStats, cm);
-    if (!collInfoStatus.isOK()) {
-        return collInfoStatus.getStatus();
-    }
-
-    const DistributionStatus& distribution = collInfoStatus.getValue();
+    const DistributionStatus distribution =
+        createCollectionDistributionStatus(opCtx, shardStats, cm);
 
     for (const auto& tagRangeEntry : distribution.tagRanges()) {
         const auto& tagRange = tagRangeEntry.second;
@@ -427,6 +413,9 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
     }
 
     return BalancerPolicy::balance(shardStats, distribution, usedShards);
+}
+catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 }  // namespace mongo

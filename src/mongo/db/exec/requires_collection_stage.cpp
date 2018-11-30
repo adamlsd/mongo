@@ -37,10 +37,10 @@ namespace mongo {
 
 template <typename CollectionT>
 void RequiresCollectionStageBase<CollectionT>::doSaveState() {
+    doSaveStateRequiresCollection();
+
     // A stage may not access storage while in a saved state.
     _collection = nullptr;
-
-    saveState(RequiresCollTag{});
 }
 
 template <typename CollectionT>
@@ -53,7 +53,7 @@ void RequiresCollectionStageBase<CollectionT>::doRestoreState() {
             str::stream() << "UUID " << _collectionUUID << " no longer exists.",
             _collection);
 
-    restoreState(RequiresCollTag{});
+    doRestoreStateRequiresCollection();
 }
 
 template class RequiresCollectionStageBase<const Collection*>;

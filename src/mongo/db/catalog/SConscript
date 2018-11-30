@@ -103,6 +103,28 @@ env.Library(
 );
 
 env.Library(
+    target='index_builds_manager',
+    source=[
+        'index_builds_manager.cpp',
+    ],
+    LIBDEPS=[
+        'multi_index_block',
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
+env.CppUnitTest(
+    target='index_builds_manager_test',
+    source=[
+        'index_builds_manager_test.cpp',
+    ],
+    LIBDEPS=[
+        'catalog_test_fixture',
+        'index_builds_manager',
+    ]
+)
+
+env.Library(
     target='index_key_validate',
     source=[
         "index_key_validate.cpp",
@@ -224,6 +246,9 @@ env.Library(
         '$BUILD_DIR/mongo/util/fail_point',
         '$BUILD_DIR/mongo/util/progress_meter',
     ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/index/index_build_interceptor',
+    ]
 )
 
 env.CppUnitTest(

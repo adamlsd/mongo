@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -28,27 +27,21 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/db/dbmain.h"
+#include "mongo/base/string_data.h"
+#include "mongo/logger/log_component.h"
+#include "mongo/logger/log_severity.h"
 
-#include "mongo/util/quick_exit.h"
-#include "mongo/util/text.h"
+namespace mongo {
 
-#if defined(_WIN32)
-// In Windows, wmain() is an alternate entry point for main(), and receives the same parameters
-// as main() but encoded in Windows Unicode (UTF-16); "wide" 16-bit wchar_t characters.  The
-// WindowsCommandLine object converts these wide character strings to a UTF-8 coded equivalent
-// and makes them available through the argv() and envp() members.  This enables mongoDbMain()
-// to process UTF-8 encoded arguments and environment variables without regard to platform.
-int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {
-    mongo::WindowsCommandLine wcl(argc, argvW, envpW);
-    int exitCode = mongo::mongoDbMain(argc, wcl.argv(), wcl.envp());
-    mongo::quickExit(exitCode);
-}
-#else
-int main(int argc, char* argv[], char** envp) {
-    int exitCode = mongo::mongoDbMain(argc, argv, envp);
-    mongo::quickExit(exitCode);
-}
-#endif
+/**
+ * Will log a message at 'logLevel' for the given 'logComponent' and will perform truncated
+ * exponential backoff, with the backoff period based on 'numAttempts'.
+ */
+void logAndBackoff(logger::LogComponent logComponent,
+                   logger::LogSeverity logLevel,
+                   size_t numAttempts,
+                   StringData message);
+
+}  // namespace mongo

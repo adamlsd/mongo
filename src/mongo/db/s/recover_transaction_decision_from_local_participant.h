@@ -32,5 +32,26 @@
 
 namespace mongo {
 
-int mongoDbMain(int argc, char* argv[], char** envp);
+class OperationContext;
+
+/**
+ * Examines the local participant's decision for the transaction number on the OperationContext and
+ * returns without throwing if the local participant's decision was commit. Otherwise, throws one of
+ * the following errors:
+ *
+ * - If the local participant has a higher transaction number, throws TransactionTooOld.
+ * - If the local participant is in prepare, throws an anonymous error code, because either the
+ * request to recover the decision was a delayed message or a byzantine message.
+ * - If the local participant has a lower transaction number, starts a transaction at the
+ * transaction number on the OperationContext, aborts it, and throws NoSuchTransaction.
+ * - If the local participant has the same transaction number and:
+ *    -- the transaction number corresponds to a retryable write, throws NoSuchTransaction
+ *    -- is already aborted, throws NoSuchTransaction
+ *    -- is in progress, aborts the transaction and throws NoSuchTransaction
+ *
+ * Sets the Client last OpTime to the system last OpTime to ensure the caller waits for writeConcern
+ * of the decision.
+ */
+void recoverDecisionFromLocalParticipantOrAbortLocalParticipant(OperationContext* opCtx);
+
 }  // namespace mongo

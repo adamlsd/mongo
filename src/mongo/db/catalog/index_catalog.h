@@ -280,9 +280,17 @@ public:
                                                 const IndexDescriptor* const oldDesc) = 0;
 
     /**
-     * Never returns nullptr.
+     * Returns a pointer to the index catalog entry associated with 'desc'. Throws if there is no
+     * such index. Never returns nullptr.
      */
     virtual const IndexCatalogEntry* getEntry(const IndexDescriptor* const desc) const = 0;
+
+    /**
+     * Returns a pointer to the index catalog entry associated with 'desc', where the caller assumes
+     * shared ownership of the entry. Returns null if the entry does not exist.
+     */
+    virtual std::shared_ptr<const IndexCatalogEntry> getEntryShared(
+        const IndexDescriptor*) const = 0;
 
     virtual IndexAccessMethod* getIndex(const IndexDescriptor* const desc) = 0;
 
@@ -360,6 +368,19 @@ public:
     virtual Status indexRecords(OperationContext* const opCtx,
                                 const std::vector<BsonRecord>& bsonRecords,
                                 int64_t* const keysInsertedOut) = 0;
+
+    /**
+     * Both 'keysInsertedOut' and 'keysDeletedOut' are required and will be set to the number of
+     * index keys inserted and deleted by this operation, respectively.
+     *
+     * This method may throw.
+     */
+    virtual Status updateRecord(OperationContext* const opCtx,
+                                const BSONObj& oldDoc,
+                                const BSONObj& newDoc,
+                                const RecordId& recordId,
+                                int64_t* const keysInsertedOut,
+                                int64_t* const keysDeletedOut) = 0;
 
     /**
      * When 'keysDeletedOut' is not null, it will be set to the number of index keys removed by

@@ -108,6 +108,8 @@ variables:
       <<: *jepsen_config_vars
 
 - &jstestfuzz_config_vars
+  num_files: 15
+  num_tasks: 10
   resmoke_args: --help # resmoke_args needs to be overridden to specify one of the jstestfuzz suites
   should_shuffle: false
   continue_on_failure: false
@@ -117,21 +119,13 @@ variables:
   # Note that timeout_secs is different from exec_timeout_secs, which applies to a task and times out regardless of whether output has been written to stdout.
   timeout_secs: 1800
 
-- &run_jstestfuzz_tests
-  func: "run tests"
-  vars:
-    <<: *jstestfuzz_config_vars
-
 # Used for tests that invoke 'resmoke.py --suites=jstestfuzz*'.
 - &jstestfuzz_template
   name: jstestfuzz_template
   exec_timeout_secs: 14400 # Time out the task if it runs for more than 4 hours.
-  depends_on:
-  - name: compile
+  depends_on: []
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-  - *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
 
 # Templates used by powercycle
 - &powercycle_remote_credentials
@@ -365,20 +359,6 @@ variables:
   - compile_dbtest
   - dbtest
 
-- &aggregation_multiversion_fuzzer_burn_in
-  name: aggregation_multiversion_fuzzer_burn_in
-  execution_tasks:
-  - aggregation_multiversion_fuzzer_0
-  - aggregation_multiversion_fuzzer_1
-  - aggregation_multiversion_fuzzer_2
-  - aggregation_multiversion_fuzzer_3
-  - aggregation_multiversion_fuzzer_4
-  - aggregation_multiversion_fuzzer_5
-  - aggregation_multiversion_fuzzer_6
-  - aggregation_multiversion_fuzzer_7
-  - aggregation_multiversion_fuzzer_8
-  - aggregation_multiversion_fuzzer_9
-
 - &compile_task_group_template
   name: compile_task_group_template
   max_hosts: 1
@@ -489,8 +469,8 @@ variables:
     distros:
     - windows-64-vs2015-large
   - name: burn_in_tests
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
   - name: audit
   - name: auth_audit
   - name: benchmarks_orphaned
@@ -506,12 +486,12 @@ variables:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
@@ -950,6 +930,20 @@ functions:
         build_num=${builder_num}
         build_phase='${task_name}_${execution}'
         END_OF_CREDS
+
+  "set up notary client credentials" : &set_up_notary_client_credentials
+    command: shell.exec
+    params:
+      working_dir: src
+      silent: true
+      script: |
+        set -o errexit
+
+        cat <<EOF > notary_env.sh
+        export NOTARY_TOKEN=${signing_auth_token_42}
+        EOF
+
+        echo "${signing_auth_token_42}" > signing_auth_token
 
   "set up remote credentials": &set_up_remote_credentials
     command: shell.exec
@@ -1844,6 +1838,47 @@ functions:
             exit $(cat jepsen_system_failure_${task_name}_${execution})
           fi
 
+  "generate fuzzer tasks":
+    - *git_get_project
+
+    - command: expansions.write
+      params:
+        file: src/expansions.yml
+
+    - command: shell.exec
+      params:
+        working_dir: src
+        script: |
+          set -o errexit
+          set -o verbose
+
+          ${activate_virtualenv}
+          $python -m pip install git+https://github.com/evergreen-ci/shrub.py
+          $python buildscripts/evergreen_gen_fuzzer_tests.py --expansion-file expansions.yml
+
+    - command: archive.targz_pack
+      params:
+        target: generate_tasks_config.tgz
+        source_dir: src/generated_resmoke_config
+        include:
+          - "*"
+
+    - command: s3.put
+      params:
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        local_file: generate_tasks_config.tgz
+        remote_file: ${project}/${build_variant}/${revision}/generate_tasks/${task_id}-${execution}.tgz
+        bucket: mciuploads
+        permissions: public-read
+        content_type: ${content_type|application/gzip}
+        display_name: Generated Task Config - Execution ${execution}
+
+    - command: generate.tasks
+      params:
+        files:
+          - src/generated_resmoke_config/${name}.json
+
   "run jstestfuzz":
     - command: shell.exec
       params:
@@ -1884,7 +1919,7 @@ functions:
 
           echo "jstestfuzz self-tests are starting"
           set +o errexit
-          npm test > npm_test-${task_id}.log 2>&1
+          npm test > npm_test.log 2>&1
           if [ $? -ne 0 ]; then
             echo "jstestfuzz self-tests failure"
             branch=$(git symbolic-ref --short HEAD)
@@ -1894,10 +1929,10 @@ functions:
             node --version
             which npm
             npm --version
-            cat npm_test-${task_id}.log
+            cat npm_test.log
             exit 1
           fi
-          rm -f npm_test-${task_id}.log
+          rm -f npm_test.log
           set -o errexit
           echo "jstestfuzz self-tests finished"
 
@@ -4834,375 +4869,321 @@ tasks:
       jepsen_write_concern: --write-concern w1
 
 ## Standalone generational fuzzer for aggregation pipelines ##
-- &aggregation_multiversion_fuzzer_template
-  <<: *jstestfuzz_template
-  name: aggregation_multiversion_fuzzer
+- <<: *jstestfuzz_template
+  name: aggregation_multiversion_fuzzer_gen
   commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 5
-      npm_command: agg-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
-      task_path_suffix: /data/multiversion
+      num_files: 5
+      num_tasks: 10
       resmoke_args: --suites=generational_fuzzer
-
-# Define multiple fuzzer tasks so they can be run in parallel.
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_0
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_1
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_2
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_3
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_4
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_5
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_6
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_7
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_8
-
-- <<: *aggregation_multiversion_fuzzer_template
-  name: aggregation_multiversion_fuzzer_9
+      npm_command: agg-fuzzer
+      name: aggregation_multiversion_fuzzer
+      task_path_suffix: "/data/multiversion"
 
 ## Standalone generational fuzzer for aggregation expressions ##
 - <<: *jstestfuzz_template
-  name: aggregation_expression_multiversion_fuzzer
+  name: aggregation_expression_multiversion_fuzzer_gen
   commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 50
-      npm_command: agg-expr-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
-      task_path_suffix: /data/multiversion
+      num_files: 5
+      num_tasks: 10
       resmoke_args: --suites=generational_fuzzer
+      npm_command: agg-expr-fuzzer
+      name: aggregation_expression_multiversion_fuzzer
+      task_path_suffix: "/data/multiversion"
 
 ## Standalone fuzzer for checking wildcard index correctness ##
 - <<: *jstestfuzz_template
-  name: aggregation_wildcard_fuzzer
+  name: aggregation_wildcard_fuzzer_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 50 --diffTestingMode wildcard
-      npm_command: agg-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: 5
+      num_tasks: 10
+      jstestfuzz_vars: --diffTestingMode wildcard
+      npm_command: agg-fuzzer
       resmoke_args: --suites=generational_fuzzer
+      name: aggregation_wildcard_fuzzer
 
 ## jstestfuzz standalone update generational fuzzer ##
 - <<: *jstestfuzz_template
-  name: update_fuzzer
+  name: update_fuzzer_gen
   commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run jstestfuzz"
-    vars:
-      npm_command: update-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
-      task_path_suffix: /data/multiversion
+      num_files: 5
+      num_tasks: 10
+      npm_command: update-fuzzer
       resmoke_args: --suites=generational_fuzzer
+      name: update_fuzzer
+      task_path_suffix: "/data/multiversion"
 
 ## jstestfuzz replication update generational fuzzer ##
 - <<: *jstestfuzz_template
-  name: update_fuzzer_replication
+  name: update_fuzzer_replication_gen
   commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run jstestfuzz"
-    vars:
-      npm_command: update-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
-      task_path_suffix: /data/multiversion
+      num_files: 5
+      num_tasks: 10
+      npm_command: update-fuzzer
       resmoke_args: --suites=generational_fuzzer_replication
+      name: update_fuzzer_replication
+      task_path_suffix: "/data/multiversion"
 
 ## rollback generational fuzzer ##
 - <<: *jstestfuzz_template
-  name: rollback_fuzzer
+  name: rollback_fuzzer_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 15
-      npm_command: rollback-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: 3
+      num_tasks: 5
+      npm_command: rollback-fuzzer
       resmoke_args: --suites=rollback_fuzzer
+      name: rollback_fuzzer
 
 ## rollback generational fuzzer with clean shutdowns ##
 - <<: *jstestfuzz_template
-  name: rollback_fuzzer_clean_shutdowns
+  name: rollback_fuzzer_clean_shutdowns_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 4 --numLinesPerFile 300 --maxLinesBetweenEvents 50
-      npm_command: rollback-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: 1
+      num_tasks: 4
+      jstestfuzz_vars: --numLinesPerFile 300 --maxLinesBetweenEvents 50
+      npm_command: rollback-fuzzer
       resmoke_args: --suites=rollback_fuzzer_clean_shutdowns
+      name: rollback_fuzzer_clean_shutdowns
 
 ## rollback generational fuzzer with unclean shutdowns ##
 - <<: *jstestfuzz_template
-  name: rollback_fuzzer_unclean_shutdowns
+  name: rollback_fuzzer_unclean_shutdowns_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --numGeneratedFiles 2 --numLinesPerFile 300 --maxLinesBetweenEvents 50
-      npm_command: rollback-fuzzer
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: 1
+      num_tasks: 4
+      jstestfuzz_vars: --numLinesPerFile 300 --maxLinesBetweenEvents 50
+      npm_command: rollback-fuzzer
       resmoke_args: --suites=rollback_fuzzer_unclean_shutdowns
+      name: rollback_fuzzer_unclean_shutdowns
 
 ## jstestfuzz ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz
+  name: jstestfuzz_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz --storageEngine=wiredTiger
+      npm_command: jstestfuzz
+      name: jstestfuzz
 
 ## jstestfuzz concurrent ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent
+  name: jstestfuzz_concurrent_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles ${jstestfuzz_num_generated_files|75}
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 15
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent
 
 ## jstestfuzz concurrent replica set ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent_replication
+  name: jstestfuzz_concurrent_replication_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles ${jstestfuzz_num_generated_files|75}
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 15
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_replication --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent_replication
 
 ## jstestfuzz concurrent replica set with logical session ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent_replication_session
+  name: jstestfuzz_concurrent_replication_session_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles ${jstestfuzz_num_generated_files|75}
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 15
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_replication_session --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent_replication_session
 
 ## jstestfuzz concurrent sharded cluster ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent_sharded
+  name: jstestfuzz_concurrent_sharded_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles ${jstestfuzz_num_generated_files|75}
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 15
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent_sharded
 
 ## jstestfuzz concurrent sharded cluster causal consistency ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent_sharded_causal_consistency
+  name: jstestfuzz_concurrent_sharded_causal_consistency_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles ${jstestfuzz_num_generated_files|75}
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 15
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded_causal_consistency --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent_sharded_causal_consistency
 
 ## jstestfuzz concurrent sharded cluster continuous stepdown ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent_sharded_continuous_stepdown
+  name: jstestfuzz_concurrent_sharded_continuous_stepdown_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles 25
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 2
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded_continuous_stepdown --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent_sharded_continuous_stepdown
 
 ## jstestfuzz concurrent sharded cluster with logical session ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_concurrent_sharded_session
+  name: jstestfuzz_concurrent_sharded_session_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles ${jstestfuzz_num_generated_files|75}
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: ${jstestfuzz_concurrent_num_files|10}
+      num_tasks: 15
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded_session --storageEngine=wiredTiger --numClientsPerFixture=10
+      name: jstestfuzz_concurrent_sharded_session
 
 # jstestfuzz interrupt #
 - <<: *jstestfuzz_template
-  name: jstestfuzz_interrupt
+  name: jstestfuzz_interrupt_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_interrupt --storageEngine=wiredTiger
+      name: jstestfuzz_interrupt
 
 # jstestfuzz interrupt #
 - <<: *jstestfuzz_template
-  name: jstestfuzz_interrupt_replication
+  name: jstestfuzz_interrupt_replication_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_interrupt_replication --storageEngine=wiredTiger
+      name: jstestfuzz_interrupt_replication
 
 ## jstestfuzz replica set ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_replication
+  name: jstestfuzz_replication_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_replication --storageEngine=wiredTiger
+      name: jstestfuzz_replication
 
 ## jstestfuzz initial sync replica set ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_replication_initsync
+  name: jstestfuzz_replication_initsync_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles 75
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: 8
+      num_tasks: 10
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_replication_initsync --storageEngine=wiredTiger
+      name: jstestfuzz_replication_initsync
 
 ## jstestfuzz replica set with logical session ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_replication_session
+  name: jstestfuzz_replication_session_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_replication_session --storageEngine=wiredTiger
+      name: jstestfuzz_replication_session
 
 ## jstestfuzz sharded cluster ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_sharded
+  name: jstestfuzz_sharded_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded --storageEngine=wiredTiger
+      name: jstestfuzz_sharded
 
 ## jstestfuzz sharded cluster causal consistency ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_sharded_causal_consistency
+  name: jstestfuzz_sharded_causal_consistency_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded_causal_consistency --storageEngine=wiredTiger
+      name: jstestfuzz_sharded_causal_consistency
 
 ## jstestfuzz sharded cluster continuous stepdown ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_sharded_continuous_stepdown
+  name: jstestfuzz_sharded_continuous_stepdown_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests --numGeneratedFiles 50
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      num_files: 5
+      num_tasks: 10
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded_continuous_stepdown --storageEngine=wiredTiger
+      name: jstestfuzz_sharded_continuous_stepdown
 
 ## jstestfuzz sharded cluster with logical session ##
 - <<: *jstestfuzz_template
-  name: jstestfuzz_sharded_session
+  name: jstestfuzz_sharded_session_gen
   commands:
-  - func: "do setup"
-  - func: "run jstestfuzz"
-    vars:
-      jstestfuzz_vars: --jsTestsDir ../jstests
-  - <<: *run_jstestfuzz_tests
+  - func: "generate fuzzer tasks"
     vars:
       <<: *jstestfuzz_config_vars
+      jstestfuzz_vars: --jsTestsDir ../jstests
       resmoke_args: --suites=jstestfuzz_sharded_session --storageEngine=wiredTiger
+      name: jstestfuzz_sharded_session
 
 ## integration test suites ##
 
@@ -5691,21 +5672,21 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: sharded_core_txns
+  name: sharded_jscore_txns
   commands:
   - func: "do setup"
   - func: "run tests"
     vars:
-      resmoke_args: --suites=sharded_core_txns --storageEngine=wiredTiger
+      resmoke_args: --suites=sharded_jscore_txns --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: sharded_core_txns_sharded_collections
+  name: sharded_jscore_txns_sharded_collections
   commands:
   - func: "do setup"
   - func: "run tests"
     vars:
-      resmoke_args: --suites=sharded_core_txns_sharded_collections --storageEngine=wiredTiger
+      resmoke_args: --suites=sharded_jscore_txns_sharded_collections --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -5724,6 +5705,15 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=sharded_causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=sharded_collections_causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -7940,6 +7930,39 @@ tasks:
         aws_secret_remote: ${kitchen_aws_secret}
     - func: "run kitchen"
 
+- name: publish_packages
+  # This should prevent this task from running in patch builds, where we
+  # don't want to publish packages.
+  patchable: false
+  stepback: false
+  # Same dependencies as "push" below
+  depends_on:
+  - name: compile
+  - name: jsCore
+  - name: dbtest
+  - name: replica_sets_jscore_passthrough
+  commands:
+    - func: "fetch artifacts"
+    - func: "apply compile expansions"
+    - func: "set up remote credentials"
+      vars:
+        aws_key_remote: ${repo_aws_key}
+        aws_secret_remote: ${repo_aws_secret}
+    - func: "set up notary client credentials"
+    - command: shell.exec
+      params:
+        working_dir: src
+        script: |
+          . ./notary_env.sh
+
+          set -o errexit
+          set -o verbose
+
+          CURATOR_RELEASE=${curator_release|"latest"}
+          curl -L -O http://boxes.10gen.com/build/curator/curator-dist-rhel70-$CURATOR_RELEASE.tar.gz
+          tar -zxvf curator-dist-rhel70-$CURATOR_RELEASE.tar.gz
+          ./curator repo --config ./etc/repo_config.yaml --distro ${packager_distro} --edition ${repo_edition} --version ${version} --arch ${packager_arch} --packages repo
+
 - name: push
   patchable: false
   depends_on:
@@ -7950,6 +7973,7 @@ tasks:
   commands:
     - func: "fetch artifacts"
     - func: "fetch binaries"
+    # Fetch the shell
     - command: s3.get
       params:
         aws_key: ${aws_key}
@@ -7957,6 +7981,7 @@ tasks:
         remote_file: ${mongo_shell}
         bucket: mciuploads
         local_file: src/mongo-shell.tgz
+    # Fetch the sources (on relevant variants only)
     - command: s3.get
       params:
         aws_key: ${aws_key}
@@ -7971,19 +7996,7 @@ tasks:
       vars:
         aws_key_remote: ${repo_aws_key}
         aws_secret_remote: ${repo_aws_secret}
-    - command: shell.exec
-      params:
-        working_dir: src
-        silent: true
-        script: |
-          set -o errexit
-
-          cat <<EOF > notary_env.sh
-          export NOTARY_TOKEN=${signing_auth_token_42}
-          EOF
-
-          echo "${signing_auth_token_42}" > signing_auth_token
-
+    - func: "set up notary client credentials"
     - command: shell.exec
       params:
         working_dir: src
@@ -8000,13 +8013,6 @@ tasks:
           /usr/bin/find build/ -type f | grep msi$ | xargs -I original_filename cp original_filename mongodb-win32-${push_arch}-${suffix}.msi || true
 
           /usr/local/bin/notary-client.py --key-name "server-4.2" --auth-token-file ${workdir}/src/signing_auth_token --comment "Evergreen Automatic Signing ${revision} - ${build_variant} - ${branch_name}" --notary-url http://notary-service.build.10gen.cc:5000 --skip-missing mongodb-${push_name}-${push_arch}-${suffix}.${ext|tgz} mongodb-shell-${push_name}-${push_arch}-${suffix}.${ext|tgz} mongodb-${push_name}-${push_arch}-debugsymbols-${suffix}.${ext|tgz} mongodb-win32-${push_arch}-${suffix}.msi mongodb-src-${src_suffix}.${ext|tar.gz}
-
-          if [ "${has_packages|}" = "true" ]; then
-             CURATOR_RELEASE=${curator_release|"latest"}
-             curl -L -O http://boxes.10gen.com/build/curator/curator-dist-rhel70-$CURATOR_RELEASE.tar.gz
-             tar -zxvf curator-dist-rhel70-$CURATOR_RELEASE.tar.gz
-             ./curator repo --config ./etc/repo_config.yaml --distro ${packager_distro} --edition ${repo_edition} --version ${version} --arch ${packager_arch} --packages repo
-          fi
 
     # Put the binaries tarball/zipfile
     - command: s3.put
@@ -8561,7 +8567,6 @@ buildvariants:
   display_tasks:
   - *dbtest
   - *unittests
-  - *aggregation_multiversion_fuzzer_burn_in
   tasks:
   - name: compile_all_run_unittests_TG
     distros:
@@ -8605,23 +8610,13 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: aggregation_multiversion_fuzzer_0
-  - name: aggregation_multiversion_fuzzer_1
-  - name: aggregation_multiversion_fuzzer_2
-  - name: aggregation_multiversion_fuzzer_3
-  - name: aggregation_multiversion_fuzzer_4
-  - name: aggregation_multiversion_fuzzer_5
-  - name: aggregation_multiversion_fuzzer_6
-  - name: aggregation_multiversion_fuzzer_7
-  - name: aggregation_multiversion_fuzzer_8
-  - name: aggregation_multiversion_fuzzer_9
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -8655,15 +8650,17 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: tool
   - name: write_concern_majority_passthrough
+  - name: publish_packages
   - name: push
 
 - name: linux-64-repeated-execution
@@ -8844,9 +8841,10 @@ buildvariants:
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding_0
   - name: sharding_1
@@ -8947,12 +8945,12 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9035,14 +9033,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -9078,8 +9076,9 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9087,6 +9086,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: ubuntu1804
@@ -9137,14 +9137,14 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -9173,8 +9173,9 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9182,6 +9183,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-ubuntu1804-64
@@ -9222,14 +9224,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -9245,6 +9247,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-ubuntu1804-64-gcc-cxx17
@@ -9402,14 +9405,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -9439,8 +9442,9 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -9448,6 +9452,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-ubuntu1604-arm64
@@ -9496,14 +9501,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9529,12 +9534,16 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: publish_packages
+    distros:
+    - ubuntu1604-test
   - name: push
     distros:
     - ubuntu1604-test
@@ -9570,6 +9579,9 @@ buildvariants:
   - name: free_monitoring
   - name: jsCore
   - name: replica_sets_jscore_passthrough
+  - name: publish_packages
+    distros:
+    - ubuntu1604-test
   - name: push
     distros:
     - ubuntu1604-test
@@ -9622,14 +9634,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9655,12 +9667,16 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: publish_packages
+    distros:
+    - ubuntu1604-test
   - name: push
     distros:
     - ubuntu1604-test
@@ -9732,12 +9748,12 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -9754,9 +9770,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -9775,6 +9792,9 @@ buildvariants:
   - name: sslSpecial
   - name: tool
   - name: write_concern_majority_passthrough
+  - name: publish_packages
+    distros:
+    - ubuntu1604-test
   - name: push
     distros:
     - ubuntu1604-test
@@ -9823,14 +9843,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -9848,9 +9868,10 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -9860,6 +9881,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: amazon
@@ -9912,14 +9934,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -9949,9 +9971,10 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -9961,6 +9984,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-amazon2
@@ -10011,14 +10035,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -10035,9 +10059,10 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -10047,6 +10072,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: amazon2
@@ -10103,14 +10129,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -10140,9 +10166,10 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -10152,6 +10179,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 ###########################################
@@ -10193,7 +10221,7 @@ buildvariants:
   - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
-  - name: aggregation_expression_multiversion_fuzzer
+  - name: aggregation_expression_multiversion_fuzzer_gen
   - name: auth
   - name: causally_consistent_jscore_passthrough
   - name: causally_consistent_jscore_passthrough_auth
@@ -10226,9 +10254,9 @@ buildvariants:
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: bulk_gle_passthrough
   - name: parallel
   - name: parallel_compatibility
@@ -10393,15 +10421,15 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_expression_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: noPassthrough
   - name: noPassthroughWithMongod
   - name: replica_sets_auth_0
@@ -10423,8 +10451,9 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_auth_0
     distros:
     - windows-64-vs2015-large
@@ -10739,14 +10768,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -10755,8 +10784,9 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_auth
     distros:
     - windows-64-vs2015-large
@@ -10830,24 +10860,24 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_replication_session
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_concurrent_sharded_causal_consistency
-  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
-  - name: jstestfuzz_concurrent_sharded_session
-  - name: jstestfuzz_interrupt
-  - name: jstestfuzz_interrupt_replication
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_replication_session
-  - name: jstestfuzz_sharded
-  - name: jstestfuzz_sharded_causal_consistency
-  - name: jstestfuzz_sharded_continuous_stepdown
-  - name: jstestfuzz_sharded_session
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_replication_session_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_concurrent_sharded_causal_consistency_gen
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_concurrent_sharded_session_gen
+  - name: jstestfuzz_interrupt_gen
+  - name: jstestfuzz_interrupt_replication_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_replication_session_gen
+  - name: jstestfuzz_sharded_gen
+  - name: jstestfuzz_sharded_causal_consistency_gen
+  - name: jstestfuzz_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_sharded_session_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -10869,9 +10899,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
     distros:
     - windows-64-vs2015-large
@@ -10887,8 +10918,8 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
   - name: push
     distros:
@@ -10997,20 +11028,20 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_replication_session
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_concurrent_sharded_causal_consistency
-  - name: jstestfuzz_concurrent_sharded_session
-  - name: jstestfuzz_interrupt
-  - name: jstestfuzz_interrupt_replication
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_replication_session
-  - name: jstestfuzz_sharded
-  - name: jstestfuzz_sharded_causal_consistency
-  - name: jstestfuzz_sharded_session
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_replication_session_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_concurrent_sharded_causal_consistency_gen
+  - name: jstestfuzz_concurrent_sharded_session_gen
+  - name: jstestfuzz_interrupt_gen
+  - name: jstestfuzz_interrupt_replication_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_replication_session_gen
+  - name: jstestfuzz_sharded_gen
+  - name: jstestfuzz_sharded_causal_consistency_gen
+  - name: jstestfuzz_sharded_session_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -11024,15 +11055,16 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
   - name: retryable_writes_jscore_passthrough
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: serial_run
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_gle_auth_basics_passthrough
   - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: sharding_jscore_passthrough
@@ -11107,12 +11139,12 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -11156,12 +11188,12 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -11205,12 +11237,12 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -11254,12 +11286,12 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: replica_sets_auth
   - name: sasl
   - name: ssl
@@ -11722,6 +11754,7 @@ buildvariants:
     tooltags: "-tags 'ssl sasl'"
     build_mongoreplay: true
     jstestfuzz_num_generated_files: 40
+    jstestfuzz_concurrent_num_files: 10
   display_tasks:
   - *dbtest
   - *replica_sets_auth
@@ -11749,9 +11782,9 @@ buildvariants:
     distros:
     - rhel62-large
   - name: verify_pip
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: aggregation
   - name: aggregation_ese
   - name: aggregation_auth
@@ -11824,26 +11857,26 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_replication_session
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_concurrent_sharded_causal_consistency
-  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
-  - name: jstestfuzz_concurrent_sharded_session
-  - name: jstestfuzz_interrupt
-  - name: jstestfuzz_interrupt_replication
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_replication_initsync
-  - name: jstestfuzz_replication_session
-  - name: jstestfuzz_sharded
-  - name: jstestfuzz_sharded_causal_consistency
-  - name: jstestfuzz_sharded_continuous_stepdown
-  - name: jstestfuzz_sharded_session
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_expression_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_replication_session_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_concurrent_sharded_causal_consistency_gen
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_concurrent_sharded_session_gen
+  - name: jstestfuzz_interrupt_gen
+  - name: jstestfuzz_interrupt_replication_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_replication_initsync_gen
+  - name: jstestfuzz_replication_session_gen
+  - name: jstestfuzz_sharded_gen
+  - name: jstestfuzz_sharded_causal_consistency_gen
+  - name: jstestfuzz_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_sharded_session_gen
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
@@ -11961,9 +11994,10 @@ buildvariants:
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
@@ -12296,8 +12330,8 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
     distros:
     - rhel62-large
@@ -12307,6 +12341,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-rhel-62-64-bit-majority-read-concern-off
@@ -12348,9 +12383,9 @@ buildvariants:
   - name: compile_all_run_unittests_TG
     distros:
     - rhel62-large
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: aggregation
   - name: aggregation_ese
   - name: aggregation_auth
@@ -12400,25 +12435,25 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_expression_multiversion_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_replication_session
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_concurrent_sharded_causal_consistency
-  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
-  - name: jstestfuzz_concurrent_sharded_session
-  - name: jstestfuzz_interrupt
-  - name: jstestfuzz_interrupt_replication
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_replication_initsync
-  - name: jstestfuzz_replication_session
-  - name: jstestfuzz_sharded
-  - name: jstestfuzz_sharded_causal_consistency
-  - name: jstestfuzz_sharded_continuous_stepdown
-  - name: jstestfuzz_sharded_session
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_expression_multiversion_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_replication_session_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_concurrent_sharded_causal_consistency_gen
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_concurrent_sharded_session_gen
+  - name: jstestfuzz_interrupt_gen
+  - name: jstestfuzz_interrupt_replication_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_replication_initsync_gen
+  - name: jstestfuzz_replication_session_gen
+  - name: jstestfuzz_sharded_gen
+  - name: jstestfuzz_sharded_causal_consistency_gen
+  - name: jstestfuzz_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_sharded_session_gen
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
@@ -12834,8 +12869,8 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
     distros:
     - rhel62-large
@@ -12895,9 +12930,9 @@ buildvariants:
   - *unittests
   tasks:
   - name: compile_all_run_unittests_TG
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: aggregation
   - name: aggregation_ese
   - name: aggregation_auth
@@ -12985,9 +13020,10 @@ buildvariants:
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding
   - name: sharding_ese
@@ -13006,8 +13042,8 @@ buildvariants:
   - name: snmp
   - name: ssl
   - name: sslSpecial
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
 
@@ -13054,15 +13090,15 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_expression_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_expression_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13078,6 +13114,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 # This variant is to intentionally test uncommon features nightly
@@ -13170,14 +13207,14 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
@@ -13218,8 +13255,9 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: ssl
@@ -13228,6 +13266,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: rhel70
@@ -13279,12 +13318,12 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13323,8 +13362,9 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -13337,6 +13377,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-rhel-71-ppc64le
@@ -13407,14 +13448,14 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13431,9 +13472,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13453,6 +13495,9 @@ buildvariants:
   - name: tool
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
+  - name: publish_packages
+    distros:
+    - rhel70-small
   - name: push
     distros:
     - rhel70-small
@@ -13524,12 +13569,12 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13546,9 +13591,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13568,6 +13614,9 @@ buildvariants:
   - name: tool
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
+  - name: publish_packages
+    distros:
+    - rhel70-small
   - name: push
     distros:
     - rhel70-small
@@ -13653,9 +13702,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -13675,6 +13725,9 @@ buildvariants:
   - name: tool
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
+  - name: publish_packages
+    distros:
+    - rhel62-large
   - name: push
     distros:
     - rhel62-large
@@ -13709,6 +13762,9 @@ buildvariants:
   - name: jsCore
   - name: replica_sets_jscore_passthrough
   - name: ssl
+  - name: publish_packages
+    distros:
+    - rhel62-large
   - name: push
     distros:
     - rhel62-large
@@ -13753,14 +13809,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13774,6 +13830,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 
@@ -13829,14 +13886,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13852,6 +13909,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 
@@ -13937,14 +13995,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -13958,6 +14016,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 
@@ -14028,12 +14087,12 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -14050,9 +14109,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -14072,6 +14132,9 @@ buildvariants:
   - name: tool
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
+  - name: publish_packages
+    distros:
+    - suse12-test
   - name: push
     distros:
     - suse12-test
@@ -14125,14 +14188,14 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -14162,8 +14225,9 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: ssl
   - name: sslSpecial
@@ -14171,6 +14235,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 ###########################################
@@ -14213,14 +14278,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -14234,6 +14299,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: debian81
@@ -14284,14 +14350,14 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -14330,6 +14396,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: enterprise-debian92-64
@@ -14371,14 +14438,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -14392,6 +14459,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 - name: debian92
@@ -14445,14 +14513,14 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: mongosTest
   - name: multiversion
   - name: noPassthrough
@@ -14482,9 +14550,10 @@ buildvariants:
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
@@ -14494,6 +14563,7 @@ buildvariants:
   - name: package
     distros:
     - ubuntu1604-packer
+  - name: publish_packages
   - name: push
 
 ################################
@@ -14579,24 +14649,24 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
-  - name: jstestfuzz_sharded_continuous_stepdown
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_replication_session
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_concurrent_sharded_causal_consistency
-  - name: jstestfuzz_concurrent_sharded_session
-  - name: jstestfuzz_interrupt
-  - name: jstestfuzz_interrupt_replication
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_replication_session
-  - name: jstestfuzz_sharded
-  - name: jstestfuzz_sharded_session
-  - name: jstestfuzz_sharded_causal_consistency
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_replication_session_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_concurrent_sharded_causal_consistency_gen
+  - name: jstestfuzz_concurrent_sharded_session_gen
+  - name: jstestfuzz_interrupt_gen
+  - name: jstestfuzz_interrupt_replication_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_replication_session_gen
+  - name: jstestfuzz_sharded_gen
+  - name: jstestfuzz_sharded_session_gen
+  - name: jstestfuzz_sharded_causal_consistency_gen
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
@@ -14621,12 +14691,13 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: retryable_writes_jscore_passthrough
   - name: retryable_writes_jscore_stepdown_passthrough
-  - name: rollback_fuzzer
+  - name: rollback_fuzzer_gen
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_collections_jscore_passthrough
   - name: sharding
   - name: sharding_auth
@@ -14643,8 +14714,8 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
     distros:
@@ -14659,13 +14730,24 @@ buildvariants:
   expansions:
     <<: *enterprise-rhel-62-64-bit-inmem-expansions
     burn_in_tests_build_variant: enterprise-rhel-62-64-bit-inmem
+  display_tasks:
+  - *dbtest
   tasks:
   # This build variant exists specifically to test that newly added or modified JavaScript tests
   # properly tag non-persistent storage tests using "requires_persistence", "requires_journaling" or
   # "uses_transactions".
+  #
   # It uses the task list from the enterprise-rhel-62-64-bit-inmem build variant to
   # determine the resmoke.py YAML suite configurations to run the tests under. Do not add more tasks
   # to this list.
+  #
+  # It also runs dbtest, since at least one time we have broken the
+  # connection bewteen the in-mem storage engine and the dbtest, but
+  # didn't notice since no other required builders tested that
+  # combination.
+  - name: dbtest_TG
+    distros:
+    - rhel62-large
   - name: compile_TG
     requires:
     - name: burn_in_tests
@@ -14684,7 +14766,7 @@ buildvariants:
     # mobile storage engine.
     test_flags: >-
       --storageEngine=mobile
-      --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact
+      --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact,requires_document_locking
       --excludeWithAnyTags=SERVER-32709,SERVER-32869
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
@@ -14747,8 +14829,8 @@ buildvariants:
   - name: jsCore_mobile
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
   - name: noPassthrough
   - name: noPassthroughWithMongod
   - name: powercycle_mobile
@@ -14764,7 +14846,7 @@ buildvariants:
   expansions:
     test_flags: >-
       --storageEngine=mobile
-      --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact
+      --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact,requires_document_locking
       --excludeWithAnyTags=SERVER-32709,SERVER-32869
     compile_flags: >-
         -j$(grep -c ^processor /proc/cpuinfo)
@@ -14801,8 +14883,8 @@ buildvariants:
   - name: jsCore_mobile
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
   - name: noPassthrough
   - name: noPassthroughWithMongod
   - name: serial_run
@@ -14843,7 +14925,7 @@ buildvariants:
     # mobile storage engine.
     test_flags: >-
       --storageEngine=mobile
-      --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact
+      --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact,requires_document_locking
       --excludeWithAnyTags=SERVER-32709,SERVER-32869
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: >-
@@ -14881,8 +14963,8 @@ buildvariants:
   - name: jsCore_mobile
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
   - name: noPassthrough
   - name: noPassthroughWithMongod
   - name: serial_run
@@ -14940,14 +15022,14 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_op_query
   - name: jsCore_compatibility
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
@@ -14963,22 +15045,23 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: rollback_fuzzer
+  - name: rollback_fuzzer_gen
   - name: sharding
   - name: sharding_auth
   - name: sharding_op_query
   - name: slow1
   - name: serial_run
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
 
 - name: enterprise-rhel-71-ppc64le-inmem
   display_name: Enterprise RHEL 7.1 PPC64LE (inMemory) DEBUG
@@ -15048,9 +15131,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_auth
   - name: sharding_auth_audit
@@ -15152,9 +15236,10 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_auth
   - name: sharding_auth_audit
@@ -15205,9 +15290,9 @@ buildvariants:
   - *unittests
   tasks:
   - name: compile_all_run_unittests_TG
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: aggregation
   - name: aggregation_ese
   - name: aggregation_auth
@@ -15310,9 +15395,10 @@ buildvariants:
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding
   - name: sharding_ese
@@ -15331,8 +15417,8 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
 
@@ -15360,24 +15446,24 @@ buildvariants:
   tasks:
   - name: compile_all_run_unittests_TG
   - name: free_monitoring
-  - name: aggregation_multiversion_fuzzer
-  - name: aggregation_wildcard_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_replication_session
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_concurrent_sharded_causal_consistency
-  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
-  - name: jstestfuzz_concurrent_sharded_session
-  - name: jstestfuzz_interrupt
-  - name: jstestfuzz_interrupt_replication
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_replication_session
-  - name: jstestfuzz_sharded
-  - name: jstestfuzz_sharded_causal_consistency
-  - name: jstestfuzz_sharded_continuous_stepdown
-  - name: jstestfuzz_sharded_session
+  - name: aggregation_multiversion_fuzzer_gen
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_replication_session_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_concurrent_sharded_causal_consistency_gen
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_concurrent_sharded_session_gen
+  - name: jstestfuzz_interrupt_gen
+  - name: jstestfuzz_interrupt_replication_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_replication_session_gen
+  - name: jstestfuzz_sharded_gen
+  - name: jstestfuzz_sharded_causal_consistency_gen
+  - name: jstestfuzz_sharded_continuous_stepdown_gen
+  - name: jstestfuzz_sharded_session_gen
 
 - name: ubuntu1604-debug-ubsan
   display_name: ~ UBSAN Enterprise Ubuntu 16.04 DEBUG
@@ -15407,9 +15493,9 @@ buildvariants:
   - name: compile_all_run_unittests_TG
   - name: aggregation
   - name: aggregation_ese
-  - name: rollback_fuzzer
-  - name: rollback_fuzzer_clean_shutdowns
-  - name: rollback_fuzzer_unclean_shutdowns
+  - name: rollback_fuzzer_gen
+  - name: rollback_fuzzer_clean_shutdowns_gen
+  - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
   - name: aggregation_mongos_passthrough
@@ -15503,9 +15589,10 @@ buildvariants:
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding
   - name: sharding_ese
@@ -15524,8 +15611,8 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
-  - name: update_fuzzer
-  - name: update_fuzzer_replication
+  - name: update_fuzzer_gen
+  - name: update_fuzzer_replication_gen
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
 
@@ -15651,9 +15738,10 @@ buildvariants:
   - name: replica_sets_kill_secondaries_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
-  - name: sharded_core_txns
-  - name: sharded_core_txns_sharded_collections
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
   - name: sharding
   - name: sharding_ese
   - name: sharding_auth
@@ -15746,6 +15834,90 @@ buildvariants:
   - name: compile_all_run_unittests_TG
     distros:
     - ubuntu1804-build
+  - name: audit
+  - name: ese
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: sasl
+  - name: snmp
+  - name: ssl
+  - name: sslSpecial
+
+- name: windows-64-vs2017
+  display_name: "Windows VS2017 Canary C++14 Builder"
+  run_on:
+  - windows-64-vs2017-test
+  modules:
+  - enterprise
+  expansions:
+    platform_decompress: unzip
+    exe: ".exe"
+    content_type: application/zip
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    compile_flags: CPPPATH="c:/sasl/include c:/snmp/include" LIBPATH="c:/sasl/lib c:/snmp/lib" MSVC_VERSION=14.1 --cxx-std=14 --dynamic-windows --dbg=off --opt=on -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 ))
+    # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
+    # spawning a large number of linker processes.
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    python: python
+    python3: '/cygdrive/c/python/python36/python.exe'
+    ext: zip
+    use_scons_cache: true
+    multiversion_platform: windows
+    multiversion_edition: enterprise
+    gorootvars: 'PATH="/cygdrive/c/golang/go1.10/bin:/cygdrive/c/mingw-w64/x86_64-4.9.1-posix-seh-rt_v3-rev1/mingw64/bin:$PATH" GOROOT="c:/golang/go1.10"'
+    tooltags: ""
+    build_mongoreplay: false
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - windows-64-vs2017-compile
+  - name: audit
+  - name: ese
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: sasl
+  - name: snmp
+  - name: ssl
+  - name: sslSpecial
+
+- name: windows-64-vs2017-cxx17
+  display_name: "Windows VS2017 Canary C++17 Builder"
+  run_on:
+  - windows-64-vs2017-test
+  modules:
+  - enterprise
+  expansions:
+    platform_decompress: unzip
+    exe: ".exe"
+    content_type: application/zip
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    compile_flags: CPPPATH="c:/sasl/include c:/snmp/include" LIBPATH="c:/sasl/lib c:/snmp/lib" MSVC_VERSION=14.1 CXXFLAGS="/wd4834 /wd5033 /wd5041" CPPDEFINES="_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS _HAS_AUTO_PTR_ETC=1" --cxx-std=17 --dynamic-windows --dbg=off --opt=on -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 ))
+    # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
+    # spawning a large number of linker processes.
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    python: python
+    python3: '/cygdrive/c/python/python36/python.exe'
+    ext: zip
+    use_scons_cache: true
+    multiversion_platform: windows
+    multiversion_edition: enterprise
+    gorootvars: 'PATH="/cygdrive/c/golang/go1.10/bin:/cygdrive/c/mingw-w64/x86_64-4.9.1-posix-seh-rt_v3-rev1/mingw64/bin:$PATH" GOROOT="c:/golang/go1.10"'
+    tooltags: ""
+    build_mongoreplay: false
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - windows-64-vs2017-compile
   - name: audit
   - name: ese
   - name: jsCore

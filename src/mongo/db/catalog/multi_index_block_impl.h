@@ -56,9 +56,6 @@ class MultiIndexBlockImpl : public MultiIndexBlock {
     MONGO_DISALLOW_COPYING(MultiIndexBlockImpl);
 
 public:
-    /**
-     * Neither pointer is owned.
-     */
     MultiIndexBlockImpl(OperationContext* opCtx, Collection* collection);
     ~MultiIndexBlockImpl() override;
 
@@ -85,9 +82,14 @@ public:
                   const RecordId& loc,
                   std::vector<BSONObj>* const dupKeysInserted = nullptr) override;
 
-    Status doneInserting() override;
-    Status doneInserting(std::set<RecordId>* dupRecords) override;
-    Status doneInserting(std::vector<BSONObj>* dupKeysInserted) override;
+    Status dumpInsertsFromBulk() override;
+    Status dumpInsertsFromBulk(std::set<RecordId>* dupRecords) override;
+    Status dumpInsertsFromBulk(std::vector<BSONObj>* dupKeysInserted) override;
+
+    /**
+     * See MultiIndexBlock::drainBackgroundWritesIfNeeded()
+     */
+    Status drainBackgroundWritesIfNeeded() override;
 
     Status commit() override;
     Status commit(stdx::function<void(const BSONObj& spec)> onCreateFn) override;
@@ -137,7 +139,8 @@ private:
         InsertDeleteOptions options;
     };
 
-    Status _doneInserting(std::set<RecordId>* dupRecords, std::vector<BSONObj>* dupKeysInserted);
+    Status _dumpInsertsFromBulk(std::set<RecordId>* dupRecords,
+                                std::vector<BSONObj>* dupKeysInserted);
 
     /**
      * Returns the current state.

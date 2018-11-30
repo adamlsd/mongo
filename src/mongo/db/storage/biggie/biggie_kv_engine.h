@@ -75,6 +75,12 @@ public:
                                                                StringData ident,
                                                                const IndexDescriptor* desc);
 
+    virtual Status beginBackup(OperationContext* opCtx) {
+        return Status::OK();
+    }
+
+    virtual void endBackup(OperationContext* opCtx) {}
+
     virtual Status dropIdent(OperationContext* opCtx, StringData ident);
 
     virtual bool supportsDocLocking() const {
@@ -132,6 +138,10 @@ public:
     void setJournalListener(mongo::JournalListener* jl) final {}
 
     virtual Timestamp getAllCommittedTimestamp() const override {
+        return Timestamp();
+    }
+
+    virtual Timestamp getOldestOpenReadTimestamp() const override {
         return Timestamp();
     }
 

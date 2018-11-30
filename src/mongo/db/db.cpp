@@ -32,8 +32,6 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/dbmain.h"
-
 #include <boost/filesystem/operations.hpp>
 #include <boost/optional.hpp>
 #include <fstream>
@@ -74,6 +72,7 @@
 #include "mongo/db/free_mon/free_mon_mongod.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
 #include "mongo/db/global_settings.h"
+#include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/index_rebuilder.h"
 #include "mongo/db/initialize_server_global_state.h"
@@ -910,6 +909,11 @@ void shutdownTask() {
         killSessionsLocalShutdownAllTransactions(opCtx);
     }
 
+    // Interrupts all index builds, leaving the state intact to be recovered when the server
+    // restarts. This should be done after replication oplog application finishes, so foreground
+    // index builds begun by replication on secondaries do not invariant.
+    IndexBuildsCoordinator::get(serviceContext)->shutdown();
+
     serviceContext->setKillAllOperations();
 
     ReplicaSetMonitor::shutdown();
@@ -985,9 +989,6 @@ void shutdownTask() {
     audit::logShutdown(client);
 }
 
-
-}  // namespace
-
 int mongoDbMain(int argc, char* argv[], char** envp) {
     registerShutdownTask(shutdownTask);
 
@@ -1038,4 +1039,23 @@ int mongoDbMain(int argc, char* argv[], char** envp) {
     return 0;
 }
 
+}  // namespace
 }  // namespace mongo
+
+#if defined(_WIN32)
+// In Windows, wmain() is an alternate entry point for main(), and receives the same parameters
+// as main() but encoded in Windows Unicode (UTF-16); "wide" 16-bit wchar_t characters.  The
+// WindowsCommandLine object converts these wide character strings to a UTF-8 coded equivalent
+// and makes them available through the argv() and envp() members.  This enables mongoDbMain()
+// to process UTF-8 encoded arguments and environment variables without regard to platform.
+int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {
+    mongo::WindowsCommandLine wcl(argc, argvW, envpW);
+    int exitCode = mongo::mongoDbMain(argc, wcl.argv(), wcl.envp());
+    mongo::quickExit(exitCode);
+}
+#else
+int main(int argc, char* argv[], char** envp) {
+    int exitCode = mongo::mongoDbMain(argc, argv, envp);
+    mongo::quickExit(exitCode);
+}
+#endif

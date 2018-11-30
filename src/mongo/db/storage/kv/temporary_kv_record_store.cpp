@@ -1,5 +1,3 @@
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -29,18 +27,19 @@
  *    it in the license file.
  */
 
-#pragma once
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include "mongo/platform/basic.h"
-
-#include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/client.h"
-#include "mongo/db/curop.h"
+#include "mongo/db/storage/kv/temporary_kv_record_store.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 
-namespace repl {
-class ReplSettings;
-}  // namespace repl
+TemporaryKVRecordStore::~TemporaryKVRecordStore() {
+    auto status = _kvEngine->dropIdent(_opCtx, _rs->getIdent());
+    invariant(status.isOK(),
+              str::stream() << "failed to drop temporary ident: " << _rs->getIdent()
+                            << " with status: "
+                            << status);
+}
 
 }  // namespace mongo

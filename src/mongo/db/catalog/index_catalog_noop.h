@@ -115,6 +115,10 @@ public:
         return nullptr;
     }
 
+    std::shared_ptr<const IndexCatalogEntry> getEntryShared(const IndexDescriptor*) const override {
+        return nullptr;
+    }
+
     IndexAccessMethod* getIndex(const IndexDescriptor* const desc) override {
         return nullptr;
     }
@@ -170,6 +174,15 @@ public:
                         int64_t* const keysInsertedOut) override {
         return Status::OK();
     }
+
+    Status updateRecord(OperationContext* const opCtx,
+                        const BSONObj& oldDoc,
+                        const BSONObj& newDoc,
+                        const RecordId& recordId,
+                        int64_t* const keysInsertedOut,
+                        int64_t* const keysDeletedOut) override {
+        return Status::OK();
+    };
 
     void unindexRecord(OperationContext* const opCtx,
                        const BSONObj& obj,

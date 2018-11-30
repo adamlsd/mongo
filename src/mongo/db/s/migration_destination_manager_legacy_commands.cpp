@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -95,7 +94,7 @@ public:
 
         auto nss = NamespaceString(parseNs(dbname, cmdObj));
 
-        auto cloneRequest = uassertStatusOK(StartChunkCloneRequest::createFromCommand(nss, cmdObj));
+        auto cloneRequest = StartChunkCloneRequest::createFromCommand(nss, cmdObj);
 
         const auto chunkRange = uassertStatusOK(ChunkRange::fromBSON(cmdObj));
 
@@ -106,9 +105,9 @@ public:
                 opCtx, cloneRequest.getSecondaryThrottle()));
 
         // Ensure this shard is not currently receiving or donating any chunks.
-        auto scopedReceiveChunk(
+        auto scopedReceiveChunk =
             uassertStatusOK(ActiveMigrationsRegistry::get(opCtx).registerReceiveChunk(
-                nss, chunkRange, cloneRequest.getFromShardId())));
+                nss, chunkRange, cloneRequest.getFromShardId()));
 
         uassertStatusOK(
             MigrationDestinationManager::get(opCtx)->start(opCtx,

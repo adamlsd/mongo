@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -58,14 +57,14 @@ class OperationContext;
  * makes maxChunkSize equal the size of the chunk.
  */
 std::vector<BSONObj> splitVector(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const BSONObj& keyPattern,
-                                             const BSONObj& min,
-                                             const BSONObj& max,
-                                             bool force,
-                                             boost::optional<long long> maxSplitPoints,
-                                             boost::optional<long long> maxChunkObjects,
-                                             boost::optional<long long> maxChunkSize,
-                                             boost::optional<long long> maxChunkSizeBytes);
+                                 const NamespaceString& nss,
+                                 const BSONObj& keyPattern,
+                                 const BSONObj& min,
+                                 const BSONObj& max,
+                                 bool force,
+                                 boost::optional<long long> maxSplitPoints,
+                                 boost::optional<long long> maxChunkObjects,
+                                 boost::optional<long long> maxChunkSize,
+                                 boost::optional<long long> maxChunkSizeBytes);
 
 }  // namespace mongo

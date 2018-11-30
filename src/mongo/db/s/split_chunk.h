@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -34,8 +33,6 @@
 #include <string>
 #include <vector>
 
-#include "mongo/base/status_with.h"
-
 namespace mongo {
 
 class BSONObj;
@@ -46,21 +43,20 @@ class OID;
 class OperationContext;
 
 /**
- * Attempts to split a chunk with the specified parameters. If the split fails, then the StatusWith
- * object returned will contain a Status with an ErrorCode regarding the cause of failure. If the
- * split succeeds, then the StatusWith object returned will contain Status::Ok().
+ * Attempts to split a chunk with the specified parameters. If the split fails, then an
+ * exception containing an ErrorCode regarding the cause of failure will be thrown.
  *
  * Additionally, splitChunk will attempt to perform top-chunk optimization. If top-chunk
- * optimization is performed, then the function will also return a ChunkRange, which contains the
+ * optimization is performed, then the function will return a ChunkRange, which contains the
  * range for the top chunk. Note that this ChunkRange is boost::optional, meaning that if top-chunk
- * optimization is not performed, boost::none will be returned inside of the StatusWith instead.
+ * optimization is not performed, boost::none will be returned instead.
  */
-StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
-                                                   const NamespaceString& nss,
-                                                   const BSONObj& keyPatternObj,
-                                                   const ChunkRange& chunkRange,
-                                                   const std::vector<BSONObj>& splitKeys,
-                                                   const std::string& shardName,
-                                                   const OID& expectedCollectionEpoch);
+boost::optional<ChunkRange> splitChunk(OperationContext* opCtx,
+                                       const NamespaceString& nss,
+                                       const BSONObj& keyPatternObj,
+                                       const ChunkRange& chunkRange,
+                                       const std::vector<BSONObj>& splitKeys,
+                                       const std::string& shardName,
+                                       const OID& expectedCollectionEpoch);
 
 }  // namespace mongo

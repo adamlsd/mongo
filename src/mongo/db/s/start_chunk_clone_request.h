@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -41,8 +40,6 @@
 namespace mongo {
 
 class BSONObjBuilder;
-template <typename T>
-class StatusWith;
 
 /**
  * Parses the arguments for a start chunk clone operation.
@@ -52,8 +49,7 @@ public:
     /**
      * Parses the input command and produces a request corresponding to its arguments.
      */
-    static StatusWith<StartChunkCloneRequest> createFromCommand(NamespaceString nss,
-                                                                const BSONObj& obj);
+    static StartChunkCloneRequest createFromCommand(NamespaceString nss, const BSONObj& obj);
 
     /**
      * Constructs a start chunk clone command with the specified parameters and writes it to the

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -56,95 +55,66 @@ StartChunkCloneRequest::StartChunkCloneRequest(NamespaceString nss,
       _sessionId(std::move(sessionId)),
       _secondaryThrottle(std::move(secondaryThrottle)) {}
 
-StatusWith<StartChunkCloneRequest> StartChunkCloneRequest::createFromCommand(NamespaceString nss,
-                                                                             const BSONObj& obj) {
-    auto secondaryThrottleStatus = MigrationSecondaryThrottleOptions::createFromCommand(obj);
-    if (!secondaryThrottleStatus.isOK()) {
-        return secondaryThrottleStatus.getStatus();
-    }
+StartChunkCloneRequest StartChunkCloneRequest::createFromCommand(NamespaceString nss,
+                                                                 const BSONObj& obj) {
+    auto secondaryThrottle =
+        uassertStatusOK(MigrationSecondaryThrottleOptions::createFromCommand(obj));
 
-    auto sessionIdStatus = MigrationSessionId::extractFromBSON(obj);
-    if (!sessionIdStatus.isOK()) {
-        return sessionIdStatus.getStatus();
-    }
+    auto sessionId = uassertStatusOK(MigrationSessionId::extractFromBSON(obj));
 
-    StartChunkCloneRequest request(std::move(nss),
-                                   std::move(sessionIdStatus.getValue()),
-                                   std::move(secondaryThrottleStatus.getValue()));
+    StartChunkCloneRequest request(
+        std::move(nss), std::move(sessionId), std::move(secondaryThrottle));
 
     {
         std::string fromShardConnectionString;
-        Status status =
-            bsonExtractStringField(obj, kFromShardConnectionString, &fromShardConnectionString);
-        if (!status.isOK()) {
-            return status;
-        }
+        uassertStatusOK(
+            bsonExtractStringField(obj, kFromShardConnectionString, &fromShardConnectionString));
 
-        auto fromShardConnectionStringStatus = ConnectionString::parse(fromShardConnectionString);
-        if (!fromShardConnectionStringStatus.isOK()) {
-            return fromShardConnectionStringStatus.getStatus();
-        }
-
-        request._fromShardCS = std::move(fromShardConnectionStringStatus.getValue());
+        request._fromShardCS = uassertStatusOK(ConnectionString::parse(fromShardConnectionString));
     }
 
     {
         std::string fromShard;
-        Status status = bsonExtractStringField(obj, kFromShardId, &fromShard);
-        request._fromShardId = fromShard;
-        if (!status.isOK()) {
-            return status;
-        }
+        uassertStatusOK(bsonExtractStringField(obj, kFromShardId, &fromShard));
+        request._fromShardId = std::move(fromShard);
     }
 
     {
         std::string toShard;
-        Status status = bsonExtractStringField(obj, kToShardId, &toShard);
-        request._toShardId = toShard;
-        if (!status.isOK()) {
-            return status;
-        }
+        uassertStatusOK(bsonExtractStringField(obj, kToShardId, &toShard));
+        request._toShardId = std::move(toShard);
     }
 
     {
         BSONElement elem;
-        Status status = bsonExtractTypedField(obj, kChunkMinKey, BSONType::Object, &elem);
-        if (!status.isOK()) {
-            return status;
-        }
+        uassertStatusOK(bsonExtractTypedField(obj, kChunkMinKey, BSONType::Object, &elem));
 
         request._minKey = elem.Obj().getOwned();
 
         if (request._minKey.isEmpty()) {
-            return Status(ErrorCodes::UnsupportedFormat, "The chunk min key cannot be empty");
+            uasserted(ErrorCodes::UnsupportedFormat, "The chunk min key cannot be empty");
         }
     }
 
     {
         BSONElement elem;
-        Status status = bsonExtractTypedField(obj, kChunkMaxKey, BSONType::Object, &elem);
-        if (!status.isOK()) {
-            return status;
-        }
+        uassertStatusOK(bsonExtractTypedField(obj, kChunkMaxKey, BSONType::Object, &elem));
 
         request._maxKey = elem.Obj().getOwned();
 
         if (request._maxKey.isEmpty()) {
-            return Status(ErrorCodes::UnsupportedFormat, "The chunk max key cannot be empty");
+            uasserted(ErrorCodes::UnsupportedFormat, "The chunk max key cannot be empty");
         }
     }
 
     {
         BSONElement elem;
-        Status status = bsonExtractTypedField(obj, kShardKeyPattern, BSONType::Object, &elem);
-        if (!status.isOK()) {
-            return status;
-        }
+        uassertStatusOK(bsonExtractTypedField(obj, kShardKeyPattern, BSONType::Object, &elem));
 
         request._shardKeyPattern = elem.Obj().getOwned();
 
         if (request._shardKeyPattern.isEmpty()) {
-            return Status(ErrorCodes::UnsupportedFormat, "The shard key pattern cannot be empty");
+            uasserted(ErrorCodes::UnsupportedFormat, "The shard key pattern cannot be empty");
         }
     }
 

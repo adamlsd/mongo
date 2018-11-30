@@ -62,8 +62,8 @@ TEST(StartChunkCloneRequest, CreateAsCommandComplete) {
 
     BSONObj cmdObj = builder.obj();
 
-    auto request = assertGet(StartChunkCloneRequest::createFromCommand(
-        NamespaceString(cmdObj["_recvChunkStart"].String()), cmdObj));
+    auto request = StartChunkCloneRequest::createFromCommand(
+        NamespaceString(cmdObj["_recvChunkStart"].String()), cmdObj);
 
     ASSERT_EQ("TestDB.TestColl", request.getNss().ns());
     ASSERT_EQ(sessionId.toString(), request.getSessionId().toString());

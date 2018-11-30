@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -128,27 +127,25 @@ bool checkMetadataForSuccessfulSplitChunk(OperationContext* opCtx,
 
 }  // namespace
 
-StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
-                                                   const NamespaceString& nss,
-                                                   const BSONObj& keyPatternObj,
-                                                   const ChunkRange& chunkRange,
-                                                   const std::vector<BSONObj>& splitKeys,
-                                                   const std::string& shardName,
-                                                   const OID& expectedCollectionEpoch) {
+boost::optional<ChunkRange> splitChunk(OperationContext* opCtx,
+                                       const NamespaceString& nss,
+                                       const BSONObj& keyPatternObj,
+                                       const ChunkRange& chunkRange,
+                                       const std::vector<BSONObj>& splitKeys,
+                                       const std::string& shardName,
+                                       const OID& expectedCollectionEpoch) {
     //
     // Lock the collection's metadata and get highest version for the current shard
     // TODO(SERVER-25086): Remove distLock acquisition from split chunk
     //
     const std::string whyMessage(
         str::stream() << "splitting chunk " << chunkRange.toString() << " in " << nss.toString());
-    auto scopedDistLock = Grid::get(opCtx)->catalogClient()->getDistLockManager()->lock(
-        opCtx, nss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
-    if (!scopedDistLock.isOK()) {
-        return scopedDistLock.getStatus().withContext(
-            str::stream() << "could not acquire collection lock for " << nss.toString()
-                          << " to split chunk "
-                          << chunkRange.toString());
-    }
+    auto scopedDistLock = uassertStatusOKWithContext(
+        Grid::get(opCtx)->catalogClient()->getDistLockManager()->lock(
+            opCtx, nss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout),
+        str::stream() << "could not acquire collection lock for " << nss.toString()
+                      << " to split chunk "
+                      << chunkRange.toString());
 
     // If the shard key is hashed, then we must make sure that the split points are of type
     // NumberLong.
@@ -158,13 +155,13 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
             while (it.more()) {
                 BSONElement splitKeyElement = it.next();
                 if (splitKeyElement.type() != NumberLong) {
-                    return {ErrorCodes::CannotSplit,
-                            str::stream() << "splitChunk cannot split chunk "
-                                          << chunkRange.toString()
-                                          << ", split point "
-                                          << splitKeyElement.toString()
-                                          << " must be of type "
-                                             "NumberLong for hashed shard key patterns"};
+                    uasserted(ErrorCodes::CannotSplit,
+                              str::stream() << "splitChunk cannot split chunk "
+                                            << chunkRange.toString()
+                                            << ", split point "
+                                            << splitKeyElement.toString()
+                                            << " must be of type "
+                                               "NumberLong for hashed shard key patterns");
                 }
             }
         }
@@ -177,27 +174,24 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
     auto configCmdObj =
         request.toConfigCommandBSON(ShardingCatalogClient::kMajorityWriteConcern.toBSON());
 
-    auto cmdResponseStatus =
+    // If we failed to get any response from the config server at all, despite retries, then we
+    // should just go ahead and fail the whole operation.
+    auto cmdResponse = uassertStatusOK(
         Grid::get(opCtx)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
             opCtx,
             kPrimaryOnlyReadPreference,
             "admin",
             configCmdObj,
-            Shard::RetryPolicy::kIdempotent);
+            Shard::RetryPolicy::kIdempotent));
 
-    // If we failed to get any response from the config server at all, despite retries, then we
-    // should just go ahead and fail the whole operation.
-    if (!cmdResponseStatus.isOK()) {
-        return cmdResponseStatus.getStatus();
-    }
 
     // Check commandStatus and writeConcernStatus
-    auto commandStatus = cmdResponseStatus.getValue().commandStatus;
-    auto writeConcernStatus = cmdResponseStatus.getValue().writeConcernStatus;
+    auto commandStatus = cmdResponse.commandStatus;
+    auto writeConcernStatus = cmdResponse.writeConcernStatus;
 
     // Send stale epoch if epoch of request did not match epoch of collection
     if (commandStatus == ErrorCodes::StaleEpoch) {
-        return commandStatus;
+        uassertStatusOK(commandStatus);
     }
 
     //
@@ -212,10 +206,9 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
         if (checkMetadataForSuccessfulSplitChunk(
                 opCtx, nss, expectedCollectionEpoch, chunkRange, splitKeys)) {
             // Split was committed.
-        } else if (!commandStatus.isOK()) {
-            return commandStatus;
-        } else if (!writeConcernStatus.isOK()) {
-            return writeConcernStatus;
+        } else {
+            uassertStatusOK(commandStatus);
+            uassertStatusOK(writeConcernStatus);
         }
     }
 
@@ -225,7 +218,7 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
     if (!collection) {
         warning() << "will not perform top-chunk checking since " << nss.toString()
                   << " does not exist after splitting";
-        return boost::optional<ChunkRange>(boost::none);
+        return boost::none;
     }
 
     // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
@@ -233,7 +226,7 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
     IndexDescriptor* idx =
         collection->getIndexCatalog()->findShardKeyPrefixedIndex(opCtx, keyPatternObj, false);
     if (!idx) {
-        return boost::optional<ChunkRange>(boost::none);
+        return boost::none;
     }
 
     auto backChunk = ChunkType();
@@ -247,13 +240,13 @@ StatusWith<boost::optional<ChunkRange>> splitChunk(OperationContext* opCtx,
     KeyPattern shardKeyPattern(keyPatternObj);
     if (shardKeyPattern.globalMax().woCompare(backChunk.getMax()) == 0 &&
         checkIfSingleDoc(opCtx, collection, idx, &backChunk)) {
-        return boost::optional<ChunkRange>(ChunkRange(backChunk.getMin(), backChunk.getMax()));
+        return ChunkRange(backChunk.getMin(), backChunk.getMax());
     } else if (shardKeyPattern.globalMin().woCompare(frontChunk.getMin()) == 0 &&
                checkIfSingleDoc(opCtx, collection, idx, &frontChunk)) {
-        return boost::optional<ChunkRange>(ChunkRange(frontChunk.getMin(), frontChunk.getMax()));
+        return ChunkRange(frontChunk.getMin(), frontChunk.getMax());
     }
 
-    return boost::optional<ChunkRange>(boost::none);
+    return boost::none;
 }
 
 }  // namespace mongo

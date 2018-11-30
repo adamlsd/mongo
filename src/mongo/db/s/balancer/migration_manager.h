@@ -93,9 +93,9 @@ public:
      * waits for it to complete. Takes the distributed lock for the namespace which is being
      * migrated.
      *
-     * Returns the status of the migration.
+     * Throws the an exception on failure containing the status of the migration.
      */
-    Status executeManualMigration(OperationContext* opCtx,
+    void executeManualMigration(OperationContext* opCtx,
                                   const MigrateInfo& migrateInfo,
                                   uint64_t maxChunkSizeBytes,
                                   const MigrationSecondaryThrottleOptions& secondaryThrottle,

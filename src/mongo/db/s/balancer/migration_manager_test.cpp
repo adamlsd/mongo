@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -518,9 +517,9 @@ TEST_F(MigrationManagerTest, InterruptMigration) {
         // up a dummy host for kShardHost0.
         shardTargeterMock(opCtx.get(), kShardId0)->setFindHostReturnValue(kShardHost0);
 
-        ASSERT_EQ(ErrorCodes::BalancerInterrupted,
-                  _migrationManager->executeManualMigration(
-                      opCtx.get(), {kShardId1, chunk}, 0, kDefaultSecondaryThrottle, false));
+        ASSERT_THROWS(_migrationManager->executeManualMigration(
+                          opCtx.get(), {kShardId1, chunk}, 0, kDefaultSecondaryThrottle, false),
+                      ExceptionFor<ErrorCodes::BalancerInterrupted>);
     });
 
     // Wait till the move chunk request gets sent and pretend that it is stuck by never responding
@@ -542,9 +541,9 @@ TEST_F(MigrationManagerTest, InterruptMigration) {
     future.timed_get(kFutureTimeout);
 
     // Ensure that no new migrations can be scheduled
-    ASSERT_EQ(ErrorCodes::BalancerInterrupted,
-              _migrationManager->executeManualMigration(
-                  operationContext(), {kShardId1, chunk}, 0, kDefaultSecondaryThrottle, false));
+    ASSERT_THROWS(_migrationManager->executeManualMigration(
+                      operationContext(), {kShardId1, chunk}, 0, kDefaultSecondaryThrottle, false),
+                  ExceptionFor<ErrorCodes::BalancerInterrupted>);
 
     // Ensure that the migration manager is no longer handling any migrations.
     _migrationManager->drainActiveMigrations();
@@ -606,8 +605,8 @@ TEST_F(MigrationManagerTest, RestartMigrationManager) {
         // up a dummy host for kShardHost0.
         shardTargeterMock(opCtx.get(), kShardId0)->setFindHostReturnValue(kShardHost0);
 
-        ASSERT_OK(_migrationManager->executeManualMigration(
-            opCtx.get(), {kShardId1, chunk1}, 0, kDefaultSecondaryThrottle, false));
+        _migrationManager->executeManualMigration(
+            opCtx.get(), {kShardId1, chunk1}, 0, kDefaultSecondaryThrottle, false);
     });
 
     // Expect only one moveChunk command to be called.

@@ -251,11 +251,11 @@ void Balancer::rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& ch
     auto balancerConfig = Grid::get(opCtx)->getBalancerConfiguration();
     uassertStatusOK(balancerConfig->refreshAndCheck(opCtx));
 
-    uassertStatusOK(_migrationManager.executeManualMigration(opCtx,
-                                                             *migrateInfo,
-                                                             balancerConfig->getMaxChunkSizeBytes(),
-                                                             balancerConfig->getSecondaryThrottle(),
-                                                             balancerConfig->waitForDelete()));
+    _migrationManager.executeManualMigration(opCtx,
+                                             *migrateInfo,
+                                             balancerConfig->getMaxChunkSizeBytes(),
+                                             balancerConfig->getSecondaryThrottle(),
+                                             balancerConfig->waitForDelete());
 }
 
 void Balancer::moveSingleChunk(OperationContext* opCtx,
@@ -266,11 +266,8 @@ void Balancer::moveSingleChunk(OperationContext* opCtx,
                                bool waitForDelete) {
     _chunkSelectionPolicy->checkMoveAllowed(opCtx, chunk, newShardId);
 
-    uassertStatusOK(_migrationManager.executeManualMigration(opCtx,
-                                                             MigrateInfo(newShardId, chunk),
-                                                             maxChunkSizeBytes,
-                                                             secondaryThrottle,
-                                                             waitForDelete));
+    _migrationManager.executeManualMigration(
+        opCtx, MigrateInfo(newShardId, chunk), maxChunkSizeBytes, secondaryThrottle, waitForDelete);
 }
 
 void Balancer::report(OperationContext* opCtx, BSONObjBuilder* builder) {

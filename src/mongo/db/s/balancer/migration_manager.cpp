@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -167,7 +166,7 @@ MigrationStatuses MigrationManager::executeMigrationsForAutoBalance(
     return migrationStatuses;
 }
 
-Status MigrationManager::executeManualMigration(
+void MigrationManager::executeManualMigration(
     OperationContext* opCtx,
     const MigrateInfo& migrateInfo,
     uint64_t maxChunkSizeBytes,
@@ -177,39 +176,31 @@ Status MigrationManager::executeManualMigration(
 
     // Write a document to the config.migrations collection, in case this migration must be
     // recovered by the Balancer. Fail if the chunk is already moving.
-    auto statusWithScopedMigrationRequest =
-        ScopedMigrationRequest::writeMigration(opCtx, migrateInfo, waitForDelete);
-    if (!statusWithScopedMigrationRequest.isOK()) {
-        return statusWithScopedMigrationRequest.getStatus();
-    }
+    auto scopedMigrationRequest =
+        uassertStatusOK(ScopedMigrationRequest::writeMigration(opCtx, migrateInfo, waitForDelete));
 
     RemoteCommandResponse remoteCommandResponse =
         _schedule(opCtx, migrateInfo, maxChunkSizeBytes, secondaryThrottle, waitForDelete)->get();
 
-    auto routingInfoStatus =
+    auto routingInfo = uassertStatusOK(
         Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
-            opCtx, migrateInfo.nss);
-    if (!routingInfoStatus.isOK()) {
-        return routingInfoStatus.getStatus();
-    }
-
-    auto& routingInfo = routingInfoStatus.getValue();
+            opCtx, migrateInfo.nss));
 
     const auto chunk =
         routingInfo.cm()->findIntersectingChunkWithSimpleCollation(migrateInfo.minKey);
 
-    Status commandStatus = _processRemoteCommandResponse(
-        remoteCommandResponse, &statusWithScopedMigrationRequest.getValue());
+    Status commandStatus =
+        _processRemoteCommandResponse(remoteCommandResponse, &scopedMigrationRequest);
 
     // Migration calls can be interrupted after the metadata is committed but before the command
     // finishes the waitForDelete stage. Any failovers, therefore, must always cause the moveChunk
     // command to be retried so as to assure that the waitForDelete promise of a successful command
     // has been fulfilled.
     if (chunk.getShardId() == migrateInfo.to && commandStatus != ErrorCodes::BalancerInterrupted) {
-        return Status::OK();
+        return;
     }
 
-    return commandStatus;
+    uassertStatusOK(commandStatus);
 }
 
 void MigrationManager::startRecoveryAndAcquireDistLocks(OperationContext* opCtx) {

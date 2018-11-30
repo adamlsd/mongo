@@ -82,8 +82,11 @@ Status extractMigrationStatusFromCommandResponse(const BSONObj& commandResponse)
 
     if (!commandStatus.isOK()) {
         bool chunkTooBig = false;
-        bsonExtractBooleanFieldWithDefault(commandResponse, kChunkTooBig, false, &chunkTooBig)
-            .transitional_ignore();
+        const auto status =
+            bsonExtractBooleanFieldWithDefault(commandResponse, kChunkTooBig, false, &chunkTooBig);
+        if (!status.isOK())
+            return status;
+
         if (chunkTooBig) {
             commandStatus = {ErrorCodes::ChunkTooBig, commandStatus.reason()};
         }

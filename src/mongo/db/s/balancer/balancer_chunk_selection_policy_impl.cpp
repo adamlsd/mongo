@@ -181,24 +181,14 @@ BalancerChunkSelectionPolicyImpl::BalancerChunkSelectionPolicyImpl(ClusterStatis
 
 BalancerChunkSelectionPolicyImpl::~BalancerChunkSelectionPolicyImpl() = default;
 
-StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSplit(
-    OperationContext* opCtx) {
-    auto shardStatsStatus = _clusterStats->getStats(opCtx);
-    if (!shardStatsStatus.isOK()) {
-        return shardStatsStatus.getStatus();
-    }
+SplitInfoVector BalancerChunkSelectionPolicyImpl::selectChunksToSplit(OperationContext* opCtx) {
+    const auto shardStats = uassertStatusOK(_clusterStats->getStats(opCtx));
 
-    const auto shardStats = std::move(shardStatsStatus.getValue());
-
-    auto swCollections = Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr);
-    if (!swCollections.isOK()) {
-        return swCollections.getStatus();
-    }
-
-    auto& collections = swCollections.getValue();
+    auto collections =
+        uassertStatusOK(Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr));
 
     if (collections.empty()) {
-        return SplitInfoVector{};
+        return {};
     }
 
     SplitInfoVector splitCandidates;
@@ -230,29 +220,19 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSpli
     return splitCandidates;
 }
 
-StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMove(
-    OperationContext* opCtx) {
-    auto shardStatsStatus = _clusterStats->getStats(opCtx);
-    if (!shardStatsStatus.isOK()) {
-        return shardStatsStatus.getStatus();
-    }
-
-    const auto shardStats = std::move(shardStatsStatus.getValue());
+MigrateInfoVector BalancerChunkSelectionPolicyImpl::selectChunksToMove(OperationContext* opCtx) {
+    const auto shardStats = uassertStatusOK(_clusterStats->getStats(opCtx));
 
     if (shardStats.size() < 2) {
-        return MigrateInfoVector{};
+        return {};
     }
 
 
-    auto swCollections = Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr);
-    if (!swCollections.isOK()) {
-        return swCollections.getStatus();
-    }
-
-    auto& collections = swCollections.getValue();
+    auto collections =
+        uassertStatusOK(Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr));
 
     if (collections.empty()) {
-        return MigrateInfoVector{};
+        return {};
     }
 
     MigrateInfoVector candidateChunks;
@@ -291,60 +271,34 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
     return candidateChunks;
 }
 
-StatusWith<boost::optional<MigrateInfo>>
-BalancerChunkSelectionPolicyImpl::selectSpecificChunkToMove(OperationContext* opCtx,
-                                                            const ChunkType& chunk) {
-    auto shardStatsStatus = _clusterStats->getStats(opCtx);
-    if (!shardStatsStatus.isOK()) {
-        return shardStatsStatus.getStatus();
-    }
+boost::optional<MigrateInfo> BalancerChunkSelectionPolicyImpl::selectSpecificChunkToMove(
+    OperationContext* opCtx, const ChunkType& chunk) {
+    const auto shardStats = uassertStatusOK(_clusterStats->getStats(opCtx));
 
-    const auto& shardStats = shardStatsStatus.getValue();
+    auto routingInfo = uassertStatusOK(
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
+            opCtx, chunk.getNS()));
+    const auto cm = routingInfo.cm().get();
 
-    auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
-                                                                                     chunk.getNS());
-    if (!routingInfoStatus.isOK()) {
-        return routingInfoStatus.getStatus();
-    }
-
-    const auto cm = routingInfoStatus.getValue().cm().get();
-
-    const auto collInfoStatus = createCollectionDistributionStatus(opCtx, shardStats, cm);
-    if (!collInfoStatus.isOK()) {
-        return collInfoStatus.getStatus();
-    }
-
-    const DistributionStatus& distribution = collInfoStatus.getValue();
+    const DistributionStatus distribution =
+        uassertStatusOK(createCollectionDistributionStatus(opCtx, shardStats, cm));
 
     return BalancerPolicy::balanceSingleChunk(chunk, shardStats, distribution);
 }
 
-Status BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCtx,
-                                                          const ChunkType& chunk,
-                                                          const ShardId& newShardId) {
-    auto shardStatsStatus = _clusterStats->getStats(opCtx);
-    if (!shardStatsStatus.isOK()) {
-        return shardStatsStatus.getStatus();
-    }
+void BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCtx,
+                                                        const ChunkType& chunk,
+                                                        const ShardId& newShardId) {
+    auto shardStats = uassertStatusOK(_clusterStats->getStats(opCtx));
 
-    auto shardStats = std::move(shardStatsStatus.getValue());
+    auto routingInfo = uassertStatusOK(
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
+            opCtx, chunk.getNS()));
 
-    auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
-                                                                                     chunk.getNS());
-    if (!routingInfoStatus.isOK()) {
-        return routingInfoStatus.getStatus();
-    }
+    const auto cm = routingInfo.cm().get();
 
-    const auto cm = routingInfoStatus.getValue().cm().get();
-
-    const auto collInfoStatus = createCollectionDistributionStatus(opCtx, shardStats, cm);
-    if (!collInfoStatus.isOK()) {
-        return collInfoStatus.getStatus();
-    }
-
-    const DistributionStatus& distribution = collInfoStatus.getValue();
+    const DistributionStatus& distribution =
+        uassertStatusOK(createCollectionDistributionStatus(opCtx, shardStats, cm));
 
     auto newShardIterator =
         std::find_if(shardStats.begin(),
@@ -353,13 +307,13 @@ Status BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCt
                          return stat.shardId == newShardId;
                      });
     if (newShardIterator == shardStats.end()) {
-        return {ErrorCodes::ShardNotFound,
-                str::stream() << "Unable to find constraints information for shard " << newShardId
-                              << ". Move to this shard will be disallowed."};
+        uasserted(ErrorCodes::ShardNotFound,
+                  str::stream() << "Unable to find constraints information for shard " << newShardId
+                                << ". Move to this shard will be disallowed.");
     }
 
-    return BalancerPolicy::isShardSuitableReceiver(*newShardIterator,
-                                                   distribution.getTagForChunk(chunk));
+    uassertStatusOK(BalancerPolicy::isShardSuitableReceiver(*newShardIterator,
+                                                            distribution.getTagForChunk(chunk)));
 }
 
 StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidatesForCollection(

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -241,13 +240,9 @@ void Balancer::joinCurrentRound(OperationContext* opCtx) {
     });
 }
 
-Status Balancer::rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& chunk) {
-    auto migrateStatus = _chunkSelectionPolicy->selectSpecificChunkToMove(opCtx, chunk);
-    if (!migrateStatus.isOK()) {
-        return migrateStatus.getStatus();
-    }
+Status Balancer::rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& chunk) try {
+    auto migrateInfo = _chunkSelectionPolicy->selectSpecificChunkToMove(opCtx, chunk);
 
-    auto migrateInfo = std::move(migrateStatus.getValue());
     if (!migrateInfo) {
         LOG(1) << "Unable to find more appropriate location for chunk " << redact(chunk.toString());
         return Status::OK();
@@ -264,6 +259,8 @@ Status Balancer::rebalanceSingleChunk(OperationContext* opCtx, const ChunkType& 
                                                     balancerConfig->getMaxChunkSizeBytes(),
                                                     balancerConfig->getSecondaryThrottle(),
                                                     balancerConfig->waitForDelete());
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 Status Balancer::moveSingleChunk(OperationContext* opCtx,
@@ -271,14 +268,13 @@ Status Balancer::moveSingleChunk(OperationContext* opCtx,
                                  const ShardId& newShardId,
                                  uint64_t maxChunkSizeBytes,
                                  const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                                 bool waitForDelete) {
-    auto moveAllowedStatus = _chunkSelectionPolicy->checkMoveAllowed(opCtx, chunk, newShardId);
-    if (!moveAllowedStatus.isOK()) {
-        return moveAllowedStatus;
-    }
+                                 bool waitForDelete) try {
+    _chunkSelectionPolicy->checkMoveAllowed(opCtx, chunk, newShardId);
 
     return _migrationManager.executeManualMigration(
         opCtx, MigrateInfo(newShardId, chunk), maxChunkSizeBytes, secondaryThrottle, waitForDelete);
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 void Balancer::report(OperationContext* opCtx, BSONObjBuilder* builder) {
@@ -372,8 +368,7 @@ void Balancer::_mainThread() {
                     LOG(1) << "Done enforcing tag range boundaries.";
                 }
 
-                const auto candidateChunks =
-                    uassertStatusOK(_chunkSelectionPolicy->selectChunksToMove(opCtx.get()));
+                const auto candidateChunks = _chunkSelectionPolicy->selectChunksToMove(opCtx.get());
 
                 if (candidateChunks.empty()) {
                     LOG(1) << "no need to move any chunk";
@@ -524,13 +519,10 @@ bool Balancer::_checkOIDs(OperationContext* opCtx) {
     return true;
 }
 
-Status Balancer::_enforceTagRanges(OperationContext* opCtx) {
-    auto chunksToSplitStatus = _chunkSelectionPolicy->selectChunksToSplit(opCtx);
-    if (!chunksToSplitStatus.isOK()) {
-        return chunksToSplitStatus.getStatus();
-    }
+Status Balancer::_enforceTagRanges(OperationContext* opCtx) try {
+    auto chunksToSplit = _chunkSelectionPolicy->selectChunksToSplit(opCtx);
 
-    for (const auto& splitInfo : chunksToSplitStatus.getValue()) {
+    for (const auto& splitInfo : chunksToSplit) {
         auto routingInfoStatus =
             Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
                 opCtx, splitInfo.nss);
@@ -555,6 +547,8 @@ Status Balancer::_enforceTagRanges(OperationContext* opCtx) {
     }
 
     return Status::OK();
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 int Balancer::_moveChunks(OperationContext* opCtx,

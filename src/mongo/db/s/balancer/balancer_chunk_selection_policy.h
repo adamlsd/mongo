@@ -43,8 +43,6 @@ namespace mongo {
 class ChunkType;
 class NamespaceString;
 class OperationContext;
-template <typename T>
-class StatusWith;
 
 /**
  * Interface used by the balancer for selecting chunks, which need to be moved around in order for
@@ -89,12 +87,12 @@ public:
      * they violate the policy for some reason. The reason is decided by the policy and may include
      * chunk is too big or chunk straddles a tag range.
      */
-    virtual StatusWith<SplitInfoVector> selectChunksToSplit(OperationContext* opCtx) = 0;
+    virtual SplitInfoVector selectChunksToSplit(OperationContext* opCtx) = 0;
 
     /**
      * Potentially blocking method, which gives out a set of chunks to be moved.
      */
-    virtual StatusWith<MigrateInfoVector> selectChunksToMove(OperationContext* opCtx) = 0;
+    virtual MigrateInfoVector selectChunksToMove(OperationContext* opCtx) = 0;
 
     /**
      * Requests a single chunk to be relocated to a different shard, if possible. If some error
@@ -102,17 +100,17 @@ public:
      * returned. If the chunk is already at the best shard that it can be, returns boost::none.
      * Otherwise returns migration information for where the chunk should be moved.
      */
-    virtual StatusWith<boost::optional<MigrateInfo>> selectSpecificChunkToMove(
-        OperationContext* opCtx, const ChunkType& chunk) = 0;
+    virtual boost::optional<MigrateInfo> selectSpecificChunkToMove(OperationContext* opCtx,
+                                                                   const ChunkType& chunk) = 0;
 
     /**
      * Asks the chunk selection policy to validate that the specified chunk migration is allowed
-     * given the current rules. Returns OK if the migration won't violate any rules or any other
-     * failed status otherwise.
+     * given the current rules. Succeeds if the migration won't violate any rules and throws an
+     * exception otherwise.
      */
-    virtual Status checkMoveAllowed(OperationContext* opCtx,
-                                    const ChunkType& chunk,
-                                    const ShardId& newShardId) = 0;
+    virtual void checkMoveAllowed(OperationContext* opCtx,
+                                  const ChunkType& chunk,
+                                  const ShardId& newShardId) = 0;
 
 protected:
     BalancerChunkSelectionPolicy();

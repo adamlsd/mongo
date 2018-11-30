@@ -42,16 +42,16 @@ public:
     BalancerChunkSelectionPolicyImpl(ClusterStatistics* clusterStats, BalancerRandomSource& random);
     ~BalancerChunkSelectionPolicyImpl();
 
-    StatusWith<SplitInfoVector> selectChunksToSplit(OperationContext* opCtx) override;
+    SplitInfoVector selectChunksToSplit(OperationContext* opCtx) override;
 
-    StatusWith<MigrateInfoVector> selectChunksToMove(OperationContext* opCtx) override;
+    MigrateInfoVector selectChunksToMove(OperationContext* opCtx) override;
 
-    StatusWith<boost::optional<MigrateInfo>> selectSpecificChunkToMove(
-        OperationContext* opCtx, const ChunkType& chunk) override;
+    boost::optional<MigrateInfo> selectSpecificChunkToMove(OperationContext* opCtx,
+                                                           const ChunkType& chunk) override;
 
-    Status checkMoveAllowed(OperationContext* opCtx,
-                            const ChunkType& chunk,
-                            const ShardId& newShardId) override;
+    void checkMoveAllowed(OperationContext* opCtx,
+                          const ChunkType& chunk,
+                          const ShardId& newShardId) override;
 
 private:
     /**

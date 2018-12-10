@@ -63,6 +63,14 @@
 
 namespace mongo {
 
+MONGO_EXPORT_SERVER_PARAMETER(rangeDeleterBatchSize, int, 0)
+    ->withValidator([](const int& newVal) {
+        if (newVal < 0) {
+            return Status(ErrorCodes::BadValue, "rangeDeleterBatchSize must not be negative");
+        }
+        return Status::OK();
+    });
+
 MONGO_EXPORT_SERVER_PARAMETER(rangeDeleterBatchDelayMS, int, 20)
     ->withValidator([](const int& newVal) {
         if (newVal < 0) {
@@ -108,6 +116,13 @@ boost::optional<Date_t> CollectionRangeDeleter::cleanUpNextRange(
     OID const& epoch,
     int maxToDelete,
     CollectionRangeDeleter* forTestOnly) {
+
+    if (maxToDelete <= 0) {
+        maxToDelete = rangeDeleterBatchSize.load();
+        if (maxToDelete <= 0) {
+            maxToDelete = std::max(int(internalQueryExecYieldIterations.load()), 1);
+        }
+    }
 
     StatusWith<int> wrote = 0;
 
@@ -291,7 +306,7 @@ boost::optional<Date_t> CollectionRangeDeleter::cleanUpNextRange(
                    << redact(self->_orphans.front().range.toString()) << " next.";
         }
 
-        return Date_t::now() + stdx::chrono::milliseconds{rangeDeleterBatchDelayMS.load()};
+        return Date_t::now() + Milliseconds(rangeDeleterBatchDelayMS.load());
     }
 
     invariant(range);
@@ -299,7 +314,7 @@ boost::optional<Date_t> CollectionRangeDeleter::cleanUpNextRange(
     invariant(wrote.getValue() > 0);
 
     notification.abandon();
-    return Date_t::now() + stdx::chrono::milliseconds{rangeDeleterBatchDelayMS.load()};
+    return Date_t::now() + Milliseconds(rangeDeleterBatchDelayMS.load());
 }
 
 StatusWith<int> CollectionRangeDeleter::_doDeletion(OperationContext* opCtx,

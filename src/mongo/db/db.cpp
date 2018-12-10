@@ -72,7 +72,7 @@
 #include "mongo/db/free_mon/free_mon_mongod.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
 #include "mongo/db/global_settings.h"
-#include "mongo/db/index_builds_coordinator.h"
+#include "mongo/db/index_builds_coordinator_mongod.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/index_rebuilder.h"
 #include "mongo/db/initialize_server_global_state.h"
@@ -561,6 +561,8 @@ ExitCode _initAndListen(int listenPort) {
             ShardingCatalogManager::create(
                 startupOpCtx->getServiceContext(),
                 makeShardingTaskExecutor(executor::makeNetworkInterface("AddShard-TaskExecutor")));
+
+            Grid::get(startupOpCtx.get())->setShardingInitialized();
         } else if (replSettings.usingReplSets()) {  // standalone replica set
             auto keysCollectionClient = stdx::make_unique<KeysCollectionClientDirect>();
             auto keyManager = std::make_shared<KeysCollectionManager>(
@@ -846,6 +848,8 @@ void setUpReplication(ServiceContext* serviceContext) {
         static_cast<int64_t>(curTimeMillis64()));
     repl::ReplicationCoordinator::set(serviceContext, std::move(replCoord));
     repl::setOplogCollectionName(serviceContext);
+
+    IndexBuildsCoordinator::set(serviceContext, std::make_unique<IndexBuildsCoordinatorMongod>());
 }
 
 #ifdef MONGO_CONFIG_SSL
@@ -907,12 +911,12 @@ void shutdownTask() {
 
         // Destroy all stashed transaction resources, in order to release locks.
         killSessionsLocalShutdownAllTransactions(opCtx);
-    }
 
-    // Interrupts all index builds, leaving the state intact to be recovered when the server
-    // restarts. This should be done after replication oplog application finishes, so foreground
-    // index builds begun by replication on secondaries do not invariant.
-    IndexBuildsCoordinator::get(serviceContext)->shutdown();
+        // Interrupts all index builds, leaving the state intact to be recovered when the server
+        // restarts. This should be done after replication oplog application finishes, so foreground
+        // index builds begun by replication on secondaries do not invariant.
+        IndexBuildsCoordinator::get(serviceContext)->shutdown();
+    }
 
     serviceContext->setKillAllOperations();
 

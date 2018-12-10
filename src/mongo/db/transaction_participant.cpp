@@ -281,16 +281,20 @@ MONGO_FAIL_POINT_DEFINE(onPrimaryTransactionalWrite);
 
 const BSONObj TransactionParticipant::kDeadEndSentinel(BSON("$incompleteOplogHistory" << 1));
 
+TransactionParticipant::TransactionParticipant() = default;
+
+TransactionParticipant::~TransactionParticipant() = default;
+
 TransactionParticipant* TransactionParticipant::get(OperationContext* opCtx) {
     auto session = OperationContextSession::get(opCtx);
     if (!session) {
         return nullptr;
     }
 
-    return &getTransactionParticipant(session);
+    return get(session);
 }
 
-TransactionParticipant* TransactionParticipant::getFromNonCheckedOutSession(Session* session) {
+TransactionParticipant* TransactionParticipant::get(Session* session) {
     return &getTransactionParticipant(session);
 }
 
@@ -355,7 +359,7 @@ void TransactionParticipant::_beginMultiDocumentTransaction(WithLock wl, TxnNumb
     auto now = getGlobalServiceContext()->getPreciseClockSource()->now();
     auto tickSource = getGlobalServiceContext()->getTickSource();
 
-    _transactionExpireDate = now + stdx::chrono::seconds{transactionLifetimeLimitSeconds.load()};
+    _transactionExpireDate = now + Seconds(transactionLifetimeLimitSeconds.load());
 
     {
         stdx::lock_guard<stdx::mutex> lm(_metricsMutex);
@@ -463,6 +467,20 @@ void TransactionParticipant::_setSpeculativeTransactionOpTime(
     _transactionMetricsObserver.onChooseReadTimestamp(readTimestamp);
 }
 
+void TransactionParticipant::_setSpeculativeTransactionReadTimestamp(WithLock,
+                                                                     OperationContext* opCtx,
+                                                                     Timestamp timestamp) {
+    // Read concern code should have already set the timestamp on the recovery unit.
+    invariant(timestamp == opCtx->recoveryUnit()->getPointInTimeReadTimestamp());
+
+    repl::ReplicationCoordinator* replCoord =
+        repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+    opCtx->recoveryUnit()->preallocateSnapshot();
+    _speculativeTransactionReadOpTime = {timestamp, replCoord->getTerm()};
+    stdx::lock_guard<stdx::mutex> lm(_metricsMutex);
+    _transactionMetricsObserver.onChooseReadTimestamp(timestamp);
+}
+
 TransactionParticipant::OplogSlotReserver::OplogSlotReserver(OperationContext* opCtx) {
     // Stash the transaction on the OperationContext on the stack. At the end of this function it
     // will be unstashed onto the OperationContext.
@@ -529,6 +547,12 @@ TransactionParticipant::TxnResources::TxnResources(OperationContext* opCtx, bool
     }
     _locker->unsetThreadId();
 
+    // On secondaries, we yield the locks for transactions.
+    if (!opCtx->writesAreReplicated()) {
+        _lockSnapshot = std::make_unique<Locker::LockSnapshot>();
+        _locker->releaseWriteUnitOfWork(_lockSnapshot.get());
+    }
+
     // This thread must still respect the transaction lock timeout, since it can prevent the
     // transaction from making progress.
     auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
@@ -553,25 +577,35 @@ TransactionParticipant::TxnResources::~TxnResources() {
         // when starting a new transaction before completing an old one.  So we should
         // be at WUOW nesting level 1 (only the top level WriteUnitOfWork).
         _recoveryUnit->abortUnitOfWork();
-        _locker->endWriteUnitOfWork();
+        // If locks are not yielded, release them.
+        if (!_lockSnapshot) {
+            _locker->endWriteUnitOfWork();
+        }
         invariant(!_locker->inAWriteUnitOfWork());
     }
 }
 
 void TransactionParticipant::TxnResources::release(OperationContext* opCtx) {
     // Perform operations that can fail the release before marking the TxnResources as released.
+
+    // Restore locks if they are yielded.
+    if (_lockSnapshot) {
+        invariant(!_locker->isLocked());
+        // opCtx is passed in to enable the restoration to be interrupted.
+        _locker->restoreWriteUnitOfWork(opCtx, *_lockSnapshot);
+        _lockSnapshot.reset(nullptr);
+    }
     _locker->reacquireTicket(opCtx);
 
     invariant(!_released);
     _released = true;
 
-    // We intentionally do not capture the return value of swapLockState(), which is just an empty
-    // locker. At the end of the operation, if the transaction is not complete, we will stash the
-    // operation context's locker and replace it with a new empty locker.
-
     // It is necessary to lock the client to change the Locker on the OperationContext.
     stdx::lock_guard<Client> lk(*opCtx->getClient());
     invariant(opCtx->lockState()->getClientState() == Locker::ClientState::kInactive);
+    // We intentionally do not capture the return value of swapLockState(), which is just an empty
+    // locker. At the end of the operation, if the transaction is not complete, we will stash the
+    // operation context's locker and replace it with a new empty locker.
     opCtx->swapLockState(std::move(_locker));
     opCtx->lockState()->updateThreadIdToCurrentThread();
 
@@ -686,20 +720,10 @@ void TransactionParticipant::unstashTransactionResources(OperationContext* opCtx
             return;
         }
 
-        // Set speculative execution.
-        const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        const bool speculative =
-            readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern &&
-            !readConcernArgs.getArgsAtClusterTime();
-        // Only set speculative on primary.
-        if (opCtx->writesAreReplicated() && speculative) {
-            _setSpeculativeTransactionOpTime(lg,
-                                             opCtx,
-                                             readConcernArgs.getOriginalLevel() ==
-                                                     repl::ReadConcernLevel::kSnapshotReadConcern
-                                                 ? SpeculativeTransactionOpTime::kAllCommitted
-                                                 : SpeculativeTransactionOpTime::kLastApplied);
-        }
+        // All locks of transactions must be acquired inside the global WUOW so that we can
+        // yield and restore all locks on state transition. Otherwise, we'd have to remember
+        // which locks are managed by WUOW.
+        invariant(!opCtx->lockState()->isLocked());
 
         // Stashed transaction resources do not exist for this in-progress multi-document
         // transaction. Set up the transaction resources on the opCtx.
@@ -727,7 +751,35 @@ void TransactionParticipant::unstashTransactionResources(OperationContext* opCtx
     // exclusive lock here because we might be doing writes in this transaction, and it is currently
     // not deadlock-safe to upgrade IS to IX.
     Lock::GlobalLock(opCtx, MODE_IX);
-    opCtx->recoveryUnit()->preallocateSnapshot();
+
+    {
+        // Set speculative execution.  This must be done after the global lock is acquired, because
+        // we need to check that we are primary.
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+        // TODO(SERVER-38203): We cannot wait for write concern on secondaries, so we do not set the
+        // speculative optime on secondaries either.  This means that reads done in transactions on
+        // secondaries will not wait for the read snapshot to become majority-committed.
+        repl::ReplicationCoordinator* replCoord =
+            repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+        if (replCoord->canAcceptWritesForDatabase(
+                opCtx, NamespaceString::kSessionTransactionsTableNamespace.db())) {
+            if (readConcernArgs.getArgsAtClusterTime()) {
+                _setSpeculativeTransactionReadTimestamp(
+                    lg, opCtx, readConcernArgs.getArgsAtClusterTime()->asTimestamp());
+            } else {
+                _setSpeculativeTransactionOpTime(
+                    lg,
+                    opCtx,
+                    readConcernArgs.getOriginalLevel() ==
+                            repl::ReadConcernLevel::kSnapshotReadConcern
+                        ? SpeculativeTransactionOpTime::kAllCommitted
+                        : SpeculativeTransactionOpTime::kLastApplied);
+            }
+        } else {
+            opCtx->recoveryUnit()->preallocateSnapshot();
+        }
+    }
 
     // The Client lock must not be held when executing this failpoint as it will block currentOp
     // execution.
@@ -1642,13 +1694,15 @@ bool TransactionParticipant::onMigrateBeginOnPrimary(OperationContext* opCtx,
             return false;
         }
     } catch (const DBException& ex) {
-        // If the transaction chain was truncated on the recipient shard, then we
-        // are most likely copying from a session that hasn't been touched on the
-        // recipient shard for a very long time but could be recent on the donor.
+        // If the transaction chain was truncated on the recipient shard, then we are most likely
+        // copying from a session that hasn't been touched on the recipient shard for a very long
+        // time but could be recent on the donor.
+        //
         // We continue copying regardless to get the entire transaction from the donor.
         if (ex.code() != ErrorCodes::IncompleteTransactionHistory) {
             throw;
         }
+
         if (stmtId == kIncompleteHistoryStmtId) {
             return false;
         }

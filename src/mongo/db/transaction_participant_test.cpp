@@ -247,30 +247,6 @@ protected:
         func(newOpCtx.get());
     }
 
-    void bumpTxnNumberFromDifferentOpCtx(const LogicalSessionId& sessionId, TxnNumber newTxnNum) {
-        auto func = [sessionId, newTxnNum](OperationContext* opCtx) {
-            auto session = SessionCatalog::get(opCtx)->getOrCreateSession(opCtx, sessionId);
-            auto txnParticipant =
-                TransactionParticipant::getFromNonCheckedOutSession(session.get());
-
-            // Check that there is a transaction in progress with a lower txnNumber.
-            ASSERT(txnParticipant->inMultiDocumentTransaction());
-            ASSERT_LT(txnParticipant->getActiveTxnNumber(), newTxnNum);
-
-            // Check that the transaction has some operations, so we can ensure they are cleared.
-            ASSERT_GT(txnParticipant->transactionOperationsForTest().size(), 0u);
-
-            // Bump the active transaction number on the txnParticipant. This should clear all state
-            // from the previous transaction.
-            txnParticipant->beginOrContinue(newTxnNum, boost::none, boost::none);
-            ASSERT_EQ(newTxnNum, txnParticipant->getActiveTxnNumber());
-            ASSERT_FALSE(txnParticipant->transactionIsAborted());
-            ASSERT_EQ(txnParticipant->transactionOperationsForTest().size(), 0u);
-        };
-
-        runFunctionFromDifferentOpCtx(func);
-    }
-
     std::unique_ptr<MongoDOperationContextSession> checkOutSession() {
         auto opCtxSession = std::make_unique<MongoDOperationContextSession>(opCtx());
         auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -643,28 +619,6 @@ TEST_F(TxnParticipantTest, ConcurrencyOfUnstashAndAbort) {
                        ErrorCodes::NoSuchTransaction);
 }
 
-TEST_F(TxnParticipantTest, ConcurrencyOfUnstashAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-
-    // The transaction machinery cannot store an empty locker.
-    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-    txnParticipant->stashTransactionResources(opCtx());
-
-    // A migration may bump the active transaction number without checking out the
-    // txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    // An unstash after a migration that bumps the active transaction number should uassert.
-    ASSERT_THROWS_CODE(txnParticipant->unstashTransactionResources(opCtx(), "insert"),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
-}
-
 TEST_F(TxnParticipantTest, ConcurrencyOfStashAndAbort) {
     auto sessionCheckout = checkOutSession();
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -675,25 +629,6 @@ TEST_F(TxnParticipantTest, ConcurrencyOfStashAndAbort) {
 
     // A stash after an abort should be a noop.
     txnParticipant->stashTransactionResources(opCtx());
-}
-
-TEST_F(TxnParticipantTest, ConcurrencyOfStashAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-
-    // A migration may bump the active transaction number without checking out the
-    // txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    // A stash after a migration that bumps the active transaction number should uassert.
-    ASSERT_THROWS_CODE(txnParticipant->stashTransactionResources(opCtx()),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
 }
 
 TEST_F(TxnParticipantTest, ConcurrencyOfAddTransactionOperationAndAbort) {
@@ -711,26 +646,6 @@ TEST_F(TxnParticipantTest, ConcurrencyOfAddTransactionOperationAndAbort) {
                        ErrorCodes::NoSuchTransaction);
 }
 
-TEST_F(TxnParticipantTest, ConcurrencyOfAddTransactionOperationAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "find");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-
-    // A migration may bump the active transaction number without checking out the
-    // txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    // An addTransactionOperation() after a migration that bumps the active transaction number
-    // should uassert.
-    ASSERT_THROWS_CODE(txnParticipant->addTransactionOperation(opCtx(), operation),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
-}
-
 TEST_F(TxnParticipantTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
     auto sessionCheckout = checkOutSession();
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -743,25 +658,6 @@ TEST_F(TxnParticipantTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAb
     ASSERT_THROWS_CODE(txnParticipant->endTransactionAndRetrieveOperations(opCtx()),
                        AssertionException,
                        ErrorCodes::NoSuchTransaction);
-}
-
-TEST_F(TxnParticipantTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-
-    // A migration may bump the active transaction number without checking out the txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    // An endTransactionAndRetrieveOperations() after a migration that bumps the active transaction
-    // number should uassert.
-    ASSERT_THROWS_CODE(txnParticipant->endTransactionAndRetrieveOperations(opCtx()),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
 }
 
 TEST_F(TxnParticipantTest, ConcurrencyOfCommitUnpreparedTransactionAndAbort) {
@@ -812,29 +708,6 @@ TEST_F(TxnParticipantTest, ConcurrencyOfActiveUnpreparedAbortAndArbitraryAbort) 
     txnParticipant->abortActiveTransaction(opCtx());
     ASSERT(txnParticipant->transactionIsAborted());
     ASSERT(opCtx()->getWriteUnitOfWork() == nullptr);
-}
-
-TEST_F(TxnParticipantTest, ConcurrencyOfActiveUnpreparedAbortAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-    ASSERT(txnParticipant->inMultiDocumentTransaction());
-
-    // A migration may bump the active transaction number without checking out the txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    ASSERT_THROWS_CODE(txnParticipant->abortActiveTransaction(opCtx()),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
-
-    // The abort fails so the OperationContext state is not cleaned up until the operation is
-    // complete. The session has already moved on to a new transaction so the transaction will not
-    // remain active beyond this operation.
-    ASSERT_FALSE(opCtx()->getWriteUnitOfWork() == nullptr);
 }
 
 TEST_F(TxnParticipantTest, ConcurrencyOfActivePreparedAbortAndArbitraryAbort) {
@@ -1032,45 +905,6 @@ TEST_F(TxnParticipantTest, ThrowDuringUnpreparedCommitLetsTheAbortAtEntryPointTo
     ASSERT_TRUE(txnParticipant->transactionIsAborted());
 }
 
-TEST_F(TxnParticipantTest, ConcurrencyOfCommitUnpreparedTransactionAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-
-    // A migration may bump the active transaction number without checking out the txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    // A commitUnpreparedTransaction() after a migration that bumps the active transaction number
-    // should uassert.
-    ASSERT_THROWS_CODE(txnParticipant->commitUnpreparedTransaction(opCtx()),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
-}
-
-TEST_F(TxnParticipantTest, ConcurrencyOfPrepareTransactionAndMigration) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-
-    // A migration may bump the active transaction number without checking out the txnParticipant.
-    const auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum);
-
-    // A prepareTransaction() after a migration that bumps the active transaction number should
-    // uassert.
-    ASSERT_THROWS_CODE(txnParticipant->prepareTransaction(opCtx(), {}),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
-    ASSERT_FALSE(_opObserver->transactionPrepared);
-}
-
 TEST_F(TxnParticipantTest, ContinuingATransactionWithNoResourcesAborts) {
     // Check out a session, start the transaction and check it in.
     checkOutSession();
@@ -1164,24 +998,28 @@ TEST_F(TxnParticipantTest, CannotStartNewTransactionWhilePreparedTransactionInPr
     ASSERT_EQ(prepareOpTime->getTimestamp(), prepareTimestamp);
 
     txnParticipant->stashTransactionResources(opCtx());
-
+    OperationContextSession::checkIn(opCtx());
     {
         // Try to start a new transaction while there is already a prepared transaction on the
         // session. This should fail with a PreparedTransactionInProgress error.
-        auto func = [&](OperationContext* newOpCtx) {
-            auto session = SessionCatalog::get(newOpCtx)->getOrCreateSession(
-                newOpCtx, *opCtx()->getLogicalSessionId());
-            auto txnParticipant =
-                TransactionParticipant::getFromNonCheckedOutSession(session.get());
+        auto func = [
+            lsid = *opCtx()->getLogicalSessionId(),
+            txnNumberToStart = *opCtx()->getTxnNumber() + 1
+        ](OperationContext * newOpCtx) {
+            newOpCtx->setLogicalSessionId(lsid);
+            newOpCtx->setTxnNumber(txnNumberToStart);
 
-            ASSERT_THROWS_CODE(
-                txnParticipant->beginOrContinue(*opCtx()->getTxnNumber() + 1, false, true),
-                AssertionException,
-                ErrorCodes::PreparedTransactionInProgress);
+            auto session = SessionCatalog::get(newOpCtx)->checkOutSession(newOpCtx);
+            auto txnParticipant = TransactionParticipant::get(session.get());
+
+            ASSERT_THROWS_CODE(txnParticipant->beginOrContinue(txnNumberToStart, false, true),
+                               AssertionException,
+                               ErrorCodes::PreparedTransactionInProgress);
         };
 
         runFunctionFromDifferentOpCtx(func);
     }
+    OperationContextSession::checkOut(opCtx());
 
     ASSERT_FALSE(txnParticipant->transactionIsAborted());
     ASSERT(_opObserver->transactionPrepared);
@@ -1203,26 +1041,6 @@ TEST_F(TxnParticipantTest, CannotInsertInPreparedTransaction) {
 
     ASSERT_FALSE(txnParticipant->transactionIsAborted());
     ASSERT(_opObserver->transactionPrepared);
-}
-
-TEST_F(TxnParticipantTest, MigrationThrowsOnPreparedTransaction) {
-    auto outerScopedSession = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
-    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-
-    txnParticipant->prepareTransaction(opCtx(), {});
-
-    // A migration may bump the active transaction number without checking out the session.
-    auto higherTxnNum = *opCtx()->getTxnNumber() + 1;
-    ASSERT_THROWS_CODE(
-        bumpTxnNumberFromDifferentOpCtx(*opCtx()->getLogicalSessionId(), higherTxnNum),
-        AssertionException,
-        ErrorCodes::PreparedTransactionInProgress);
-    // The transaction is not affected.
-    ASSERT_TRUE(_opObserver->transactionPrepared);
 }
 
 TEST_F(TxnParticipantTest, ImplictAbortDoesNotAbortPreparedTransaction) {
@@ -2787,7 +2605,7 @@ TEST_F(TransactionsMetricsTest, ReportStashedResources) {
         startTime);
     ASSERT_EQ(
         dateFromISOString(transactionDocument.getField("expiryTime").valueStringData()).getValue(),
-        startTime + stdx::chrono::seconds{transactionLifetimeLimitSeconds.load()});
+        startTime + Seconds(transactionLifetimeLimitSeconds.load()));
     ASSERT_EQ(transactionDocument.getField("timePreparedMicros").numberLong(), preparedDuration);
 
     ASSERT_EQ(stashedState.getField("client").valueStringData().toString(), "");
@@ -2868,7 +2686,7 @@ TEST_F(TransactionsMetricsTest, ReportUnstashedResources) {
         startTime);
     ASSERT_EQ(
         dateFromISOString(transactionDocument.getField("expiryTime").valueStringData()).getValue(),
-        startTime + stdx::chrono::seconds{transactionLifetimeLimitSeconds.load()});
+        startTime + Seconds(transactionLifetimeLimitSeconds.load()));
     ASSERT_EQ(transactionDocument.getField("timePreparedMicros").numberLong(), prepareDuration);
 
     // For the following time metrics, we are only verifying that the transaction sub-document is

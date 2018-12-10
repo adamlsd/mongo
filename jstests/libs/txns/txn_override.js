@@ -249,9 +249,10 @@
                                                              0);
 
                 if (createCmdRes.ok !== 1) {
-                    if (createCmdRes.code !== ErrorCodes.NamespaceExists) {
-                        // The collection still does not exist. So we just return the original
-                        // response to the caller,
+                    // If the error is retryable, we retry the entire transaction. Otherwise, we
+                    // return the original error to the caller.
+                    if (createCmdRes.code !== ErrorCodes.NamespaceExists &&
+                        !RetryableWritesUtil.isRetryableCode(createCmdRes.code)) {
                         logFailedCommandAndError(commandObj, commandName, createCmdRes);
                         return res;
                     }
@@ -421,7 +422,9 @@
         return res;
     }
 
-    function retryEntireTransaction(conn, txnNumber, lsid, func) {
+    function retryEntireTransaction(conn, lsid, func) {
+        let txnOptions = getTxnOptionsForClient(conn);
+        let txnNumber = txnOptions.txnNumber;
         jsTestLog("Retrying entire transaction on TransientTransactionError for aborted txn " +
                   "with txnNum: " + txnNumber + " and lsid " + tojson(lsid));
         // Set the transactionState to inactive so continueTransaction() will bump the
@@ -438,7 +441,7 @@
 
             if (res.hasOwnProperty('errorLabels') &&
                 res.errorLabels.includes('TransientTransactionError')) {
-                return retryEntireTransaction(conn, txnNumber, lsid, func);
+                return retryEntireTransaction(conn, op.lsid, func);
             }
         }
 
@@ -449,7 +452,7 @@
         let res;
         let retryCommit = false;
         jsTestLog("Retrying commitTransaction for txnNum: " + commandObj.txnNumber + " and lsid: " +
-                  commandObj.lsid);
+                  tojson(commandObj.lsid));
         do {
             res = runCommandInTransactionIfNeeded(
                 conn, dbName, "commitTransaction", commandObj, func, makeFuncArgs);
@@ -463,7 +466,7 @@
                 res.errorLabels.includes('TransientTransactionError')) {
                 transientErrorToLog = res;
                 retryCommit = true;
-                res = retryEntireTransaction(conn, commandObj.txnNumber, commandObj.lsid, func);
+                res = retryEntireTransaction(conn, commandObj.lsid, func);
             } else if (res.ok === 1) {
                 retryCommit = false;
             }
@@ -490,7 +493,7 @@
                 conn, dbName, commandName, commandObj, func, makeFuncArgs);
         }
 
-        return retryEntireTransaction(conn, commandObj.txnNumber, commandObj.lsid, func);
+        return retryEntireTransaction(conn, commandObj.lsid, func);
     }
 
     function runCommandWithTransactionRetries(

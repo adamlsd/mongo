@@ -51,8 +51,7 @@ void RequiresIndexStage::doRestoreStateRequiresCollection() {
     // our index is no longer valid, and the query should die.
     _indexCatalogEntry = _weakIndexCatalogEntry.lock();
     uassert(ErrorCodes::QueryPlanKilled,
-            str::stream() << "query plan killed :: index named '" << _indexName
-                          << "' is no longer valid",
+            str::stream() << "query plan killed :: index '" << _indexName << "' dropped",
             _indexCatalogEntry);
 
     _indexDescriptor = _indexCatalogEntry->descriptor();

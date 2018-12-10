@@ -95,6 +95,11 @@ MONGO_FAIL_POINT_DEFINE(hangAfterRecordingOpApplicationStartTime);
 Counter64 opsAppliedStats;
 ServerStatusMetricField<Counter64> displayOpsApplied("repl.apply.ops", &opsAppliedStats);
 
+// Tracks the oplog application batch size.
+Counter64 oplogApplicationBatchSize;
+ServerStatusMetricField<Counter64> displayOplogApplicationBatchSize("repl.apply.batchSize",
+                                                                    &oplogApplicationBatchSize);
+
 // Number of times we tried to go live as a secondary.
 Counter64 attemptsToBecomeSecondary;
 ServerStatusMetricField<Counter64> displayAttemptsToBecomeSecondary(
@@ -317,6 +322,7 @@ Status SyncTail::syncApply(OperationContext* opCtx,
 
     if (opType == OpTypeEnum::kNoop) {
         if (nss.db() == "") {
+            incrementOpsAppliedStats();
             return Status::OK();
         }
         Lock::DBLock dbLock(opCtx, nss.db(), MODE_X);
@@ -503,7 +509,7 @@ public:
     };
 
     CollectionProperties getCollectionProperties(OperationContext* opCtx,
-                                                 const StringMapTraits::HashedKey& ns) {
+                                                 const StringMapHashedKey& ns) {
         auto it = _cache.find(ns);
         if (it != _cache.end()) {
             return it->second;
@@ -559,8 +565,11 @@ void fillWriterVectors(OperationContext* opCtx,
     CachedCollectionProperties collPropertiesCache;
 
     for (auto&& op : *ops) {
-        StringMapTraits::HashedKey hashedNs(op.getNss().ns());
-        uint32_t hash = hashedNs.hash();
+        auto hashedNs = StringMapHasher().hashed_key(op.getNss().ns());
+        // Reduce the hash from 64bit down to 32bit, just to allow combinations with murmur3 later
+        // on. Bit depth not important, we end up just doing integer modulo with this in the end.
+        // The hash function should provide entropy in the lower bits as it's used in hash tables.
+        uint32_t hash = static_cast<uint32_t>(hashedNs.hash());
 
         // We need to track all types of ops, including type 'n' (these are generated from chunk
         // migrations).
@@ -752,6 +761,15 @@ private:
             // tryPopAndWaitForMore adds to ops and returns true when we need to end a batch early.
             {
                 auto opCtx = cc().makeOperationContext();
+
+                // This use of UninterruptibleLockGuard is intentional. It is undesirable to use an
+                // UninterruptibleLockGuard in client operations because stepdown requires the
+                // ability to interrupt client operations. However, it is acceptable to use an
+                // UninterruptibleLockGuard in batch application because the only cause of
+                // interruption would be shutdown, and the ReplBatcher thread has its own shutdown
+                // handling.
+                UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+
                 while (!_syncTail->tryPopAndWaitForMore(
                     opCtx.get(), _oplogBuffer, &ops, batchLimits)) {
                 }
@@ -1288,6 +1306,9 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
         return {ErrorCodes::CannotApplyOplogWhilePrimary,
                 "attempting to replicate ops while primary"};
     }
+
+    // Increment the batch size stat.
+    oplogApplicationBatchSize.increment(ops.size());
 
     std::vector<WorkerMultikeyPathInfo> multikeyVector(_writerPool->getStats().numThreads);
     {

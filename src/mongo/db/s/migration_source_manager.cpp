@@ -309,17 +309,17 @@ Status MigrationSourceManager::enterCriticalSection(OperationContext* opCtx) {
     // time inclusive of the migration config commit update from accessing secondary data.
     // Note: this write must occur after the critSec flag is set, to ensure the secondary refresh
     // will stall behind the flag.
-    Status signalStatus =
+    try {
         updateShardCollectionsEntry(opCtx,
                                     BSON(ShardCollectionType::ns() << getNss().ns()),
                                     BSONObj(),
                                     BSON(ShardCollectionType::enterCriticalSectionCounter() << 1),
                                     false /*upsert*/);
-    if (!signalStatus.isOK()) {
+    } catch (const DBException& ex) {
         return {
             ErrorCodes::OperationFailed,
             str::stream() << "Failed to persist critical section signal for secondaries due to: "
-                          << signalStatus.toString()};
+                          << ex.toStatus().toString()};
     }
 
     log() << "Migration successfully entered critical section";

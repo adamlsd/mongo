@@ -83,7 +83,7 @@ ThreadPool::Options makeDefaultThreadPoolOptions() {
  */
 Status persistCollectionAndChangedChunks(OperationContext* opCtx,
                                          const NamespaceString& nss,
-                                         const CollectionAndChangedChunks& collAndChunks) {
+                                         const CollectionAndChangedChunks& collAndChunks) try {
     // Update the collections collection entry for 'nss' in case there are any new updates.
     ShardCollectionType update = ShardCollectionType(nss,
                                                      collAndChunks.uuid,
@@ -95,47 +95,37 @@ Status persistCollectionAndChangedChunks(OperationContext* opCtx,
     // Mark the chunk metadata as refreshing, so that secondaries are aware of refresh.
     update.setRefreshing(true);
 
-    Status status = updateShardCollectionsEntry(opCtx,
-                                                BSON(ShardCollectionType::ns() << nss.ns()),
-                                                update.toBSON(),
-                                                BSONObj(),
-                                                true /*upsert*/);
-    if (!status.isOK()) {
-        return status;
-    }
+    updateShardCollectionsEntry(opCtx,
+                                BSON(ShardCollectionType::ns() << nss.ns()),
+                                update.toBSON(),
+                                BSONObj(),
+                                true /*upsert*/);
 
     // Update the chunks.
-    status = updateShardChunks(opCtx, nss, collAndChunks.changedChunks, collAndChunks.epoch);
-    if (!status.isOK()) {
-        return status;
-    }
+    updateShardChunks(opCtx, nss, collAndChunks.changedChunks, collAndChunks.epoch);
 
     // Mark the chunk metadata as done refreshing.
-    status =
-        unsetPersistedRefreshFlags(opCtx, nss, collAndChunks.changedChunks.back().getVersion());
-    if (!status.isOK()) {
-        return status;
-    }
+    unsetPersistedRefreshFlags(opCtx, nss, collAndChunks.changedChunks.back().getVersion());
 
     return Status::OK();
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 /**
  * Takes a DatabaseType object and persists the changes to the shard's metadata
  * collections.
  */
-Status persistDbVersion(OperationContext* opCtx, const DatabaseType& dbt) {
+Status persistDbVersion(OperationContext* opCtx, const DatabaseType& dbt) try {
     // Update the databases collection entry for 'dbName' in case there are any new updates.
-    Status status = updateShardDatabasesEntry(opCtx,
-                                              BSON(ShardDatabaseType::name() << dbt.getName()),
-                                              dbt.toBSON(),
-                                              BSONObj(),
-                                              true /*upsert*/);
-    if (!status.isOK()) {
-        return status;
-    }
-
+    updateShardDatabasesEntry(opCtx,
+                              BSON(ShardDatabaseType::name() << dbt.getName()),
+                              dbt.toBSON(),
+                              BSONObj(),
+                              true /*upsert*/);
     return Status::OK();
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 /**
@@ -152,36 +142,48 @@ Status persistDbVersion(OperationContext* opCtx, const DatabaseType& dbt) {
 ChunkVersion getPersistedMaxChunkVersion(OperationContext* opCtx, const NamespaceString& nss) {
     // Must read the collections entry to get the epoch to pass into ChunkType for shard's chunk
     // collection.
-    auto statusWithCollection = readShardCollectionsEntry(opCtx, nss);
-    if (statusWithCollection == ErrorCodes::NamespaceNotFound) {
-        // There is no persisted metadata.
+    auto collectionOpt = [&]() -> boost::optional<ShardCollectionType> {
+        try {
+            return readShardCollectionsEntry(opCtx, nss);
+        } catch (const ExceptionFor<ErrorCodes::NamespaceNotFound>&) {
+            // There is no persisted metadata.
+            return boost::none;
+        } catch (const DBException& ex) {
+            uasserted(ErrorCodes::OperationFailed,
+                      str::stream() << "Failed to read persisted collections entry for collection '"
+                                    << nss.ns()
+                                    << "' due to '"
+                                    << ex.toStatus().toString()
+                                    << "'.");
+        }
+    }();
+
+    if (!collectionOpt) {
         return ChunkVersion::UNSHARDED();
     }
-    uassert(ErrorCodes::OperationFailed,
-            str::stream() << "Failed to read persisted collections entry for collection '"
+
+    auto& collection = *collectionOpt;
+
+    auto chunk = [&] {
+        try {
+            return shardmetadatautil::readShardChunks(opCtx,
+                                                      nss,
+                                                      BSONObj(),
+                                                      BSON(ChunkType::lastmod() << -1),
+                                                      1LL,
+                                                      collection.getEpoch());
+        } catch (const DBException& ex) {
+            uasserted(ErrorCodes::OperationFailed,
+                      str::stream()
+                          << "Failed to read highest version persisted chunk for collection '"
                           << nss.ns()
                           << "' due to '"
-                          << statusWithCollection.getStatus().toString()
-                          << "'.",
-            statusWithCollection.isOK());
+                          << ex.toStatus().toString()
+                          << "'.");
+        }
+    }();
 
-    auto statusWithChunk =
-        shardmetadatautil::readShardChunks(opCtx,
-                                           nss,
-                                           BSONObj(),
-                                           BSON(ChunkType::lastmod() << -1),
-                                           1LL,
-                                           statusWithCollection.getValue().getEpoch());
-    uassert(ErrorCodes::OperationFailed,
-            str::stream() << "Failed to read highest version persisted chunk for collection '"
-                          << nss.ns()
-                          << "' due to '"
-                          << statusWithChunk.getStatus().toString()
-                          << "'.",
-            statusWithChunk.isOK());
-
-    return statusWithChunk.getValue().empty() ? ChunkVersion::UNSHARDED()
-                                              : statusWithChunk.getValue().front().getVersion();
+    return chunk.empty() ? ChunkVersion::UNSHARDED() : chunk.front().getVersion();
 }
 
 /**
@@ -198,8 +200,7 @@ CollectionAndChangedChunks getPersistedMetadataSinceVersion(OperationContext* op
                                                             const NamespaceString& nss,
                                                             ChunkVersion version,
                                                             const bool okToReadWhileRefreshing) {
-    ShardCollectionType shardCollectionEntry =
-        uassertStatusOK(readShardCollectionsEntry(opCtx, nss));
+    ShardCollectionType shardCollectionEntry = readShardCollectionsEntry(opCtx, nss);
 
     // If the persisted epoch doesn't match what the CatalogCache requested, read everything.
     ChunkVersion startingVersion = (shardCollectionEntry.getEpoch() == version.epoch())
@@ -208,8 +209,8 @@ CollectionAndChangedChunks getPersistedMetadataSinceVersion(OperationContext* op
 
     QueryAndSort diff = createShardChunkDiffQuery(startingVersion);
 
-    auto changedChunks = uassertStatusOK(
-        readShardChunks(opCtx, nss, diff.query, diff.sort, boost::none, startingVersion.epoch()));
+    auto changedChunks =
+        readShardChunks(opCtx, nss, diff.query, diff.sort, boost::none, startingVersion.epoch());
 
     return CollectionAndChangedChunks{shardCollectionEntry.getUUID(),
                                       shardCollectionEntry.getEpoch(),
@@ -251,7 +252,7 @@ StatusWith<CollectionAndChangedChunks> getIncompletePersistedMetadataSinceVersio
         // an epoch change between reading the collections entry and reading the chunk metadata
         // would invalidate the chunks.
 
-        auto afterShardCollectionsEntry = uassertStatusOK(readShardCollectionsEntry(opCtx, nss));
+        auto afterShardCollectionsEntry = readShardCollectionsEntry(opCtx, nss);
         if (collAndChunks.epoch != afterShardCollectionsEntry.getEpoch()) {
             // The collection was dropped and recreated since we began. Return empty results.
             return CollectionAndChangedChunks();
@@ -325,11 +326,10 @@ void forcePrimaryDatabaseRefreshAndWaitForReplication(OperationContext* opCtx, S
  * metadata for the namespace, returns ChunkVersion::UNSHARDED(), since only metadata for sharded
  * collections is persisted.
  */
-ChunkVersion getLocalVersion(OperationContext* opCtx, const NamespaceString& nss) {
-    auto swRefreshState = getPersistedRefreshFlags(opCtx, nss);
-    if (swRefreshState == ErrorCodes::NamespaceNotFound)
-        return ChunkVersion::UNSHARDED();
-    return uassertStatusOK(std::move(swRefreshState)).lastRefreshedCollectionVersion;
+ChunkVersion getLocalVersion(OperationContext* opCtx, const NamespaceString& nss) try {
+    return getPersistedRefreshFlags(opCtx, nss).lastRefreshedCollectionVersion;
+} catch (const ExceptionFor<ErrorCodes::NamespaceNotFound>&) {
+    return ChunkVersion::UNSHARDED();
 }
 
 }  // namespace
@@ -1015,11 +1015,15 @@ void ShardServerCatalogCacheLoader::_updatePersistedCollAndChunksMetadata(
     // Check if this is a drop task
     if (task.dropped) {
         // The namespace was dropped. The persisted metadata for the collection must be cleared.
-        uassertStatusOKWithContext(
-            dropChunksAndDeleteCollectionsEntry(opCtx, nss),
-            str::stream() << "Failed to clear persisted chunk metadata for collection '" << nss.ns()
-                          << "'. Will be retried.");
-        return;
+
+        try {
+            return dropChunksAndDeleteCollectionsEntry(opCtx, nss);
+        } catch (const DBException& ex) {
+            uasserted(ex.toStatus(),
+                      str::stream() << "Failed to clear persisted chunk metadata for collection '"
+                                    << nss.ns()
+                                    << "'. Will be retried.");
+        }
     }
 
     uassertStatusOKWithContext(
@@ -1054,11 +1058,13 @@ void ShardServerCatalogCacheLoader::_updatePersistedDbMetadata(OperationContext*
     // Check if this is a drop task
     if (!task.dbType) {
         // The database was dropped. The persisted metadata for the collection must be cleared.
-        uassertStatusOKWithContext(deleteDatabasesEntry(opCtx, dbName),
-                                   str::stream() << "Failed to clear persisted metadata for db '"
-                                                 << dbName.toString()
-                                                 << "'. Will be retried.");
-        return;
+        try {
+            return deleteDatabasesEntry(opCtx, dbName);
+        } catch (const DBException& ex) {
+            uassertStatusOK(ex.toStatus().withContext(
+                str::stream() << "Failed to clear persisted metadata for db '" << dbName.toString()
+                              << "'. Will be retried."));
+        }
     }
 
     uassertStatusOKWithContext(persistDbVersion(opCtx, *task.dbType),
@@ -1080,7 +1086,7 @@ ShardServerCatalogCacheLoader::_getCompletePersistedMetadataForSecondarySinceVer
             while (true) {
                 auto notif = _namespaceNotifications.createNotification(nss);
 
-                auto refreshState = uassertStatusOK(getPersistedRefreshFlags(opCtx, nss));
+                auto refreshState = getPersistedRefreshFlags(opCtx, nss);
 
                 if (!refreshState.refreshing) {
                     return refreshState;
@@ -1096,7 +1102,7 @@ ShardServerCatalogCacheLoader::_getCompletePersistedMetadataForSecondarySinceVer
 
         // Check that no updates were concurrently applied while we were loading the metadata: this
         // could cause the loaded metadata to provide an incomplete view of the chunk ranges.
-        const auto endRefreshState = uassertStatusOK(getPersistedRefreshFlags(opCtx, nss));
+        const auto endRefreshState = getPersistedRefreshFlags(opCtx, nss);
 
         if (beginRefreshState == endRefreshState) {
             return collAndChangedChunks;

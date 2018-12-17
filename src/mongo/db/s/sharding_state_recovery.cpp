@@ -150,7 +150,7 @@ private:
  */
 Status modifyRecoveryDocument(OperationContext* opCtx,
                               RecoveryDocument::ChangeType change,
-                              const WriteConcernOptions& writeConcern) {
+                              const WriteConcernOptions& writeConcern) 
     try {
         // Use boost::optional so we can release the locks early
         boost::optional<AutoGetOrCreateDb> autoGetOrCreateDb;
@@ -189,7 +189,6 @@ Status modifyRecoveryDocument(OperationContext* opCtx,
                                    &writeConcernResult);
     } catch (const DBException& ex) {
         return ex.toStatus();
-    }
 }
 
 }  // namespace

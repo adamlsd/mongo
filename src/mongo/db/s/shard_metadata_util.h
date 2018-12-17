@@ -46,8 +46,6 @@ class NamespaceString;
 class OperationContext;
 class ShardCollectionType;
 class ShardDatabaseType;
-template <typename T>
-class StatusWith;
 
 /**
  * Function helpers to locally, using a DBDirectClient, read and write sharding metadata on a shard.
@@ -111,21 +109,19 @@ QueryAndSort createShardChunkDiffQuery(const ChunkVersion& collectionVersion);
  * Note: if there is no document present in the collections collection for 'nss', nothing is
  * updated.
  */
-Status unsetPersistedRefreshFlags(OperationContext* opCtx,
-                                  const NamespaceString& nss,
-                                  const ChunkVersion& refreshedVersion);
+void unsetPersistedRefreshFlags(OperationContext* opCtx,
+                                const NamespaceString& nss,
+                                const ChunkVersion& refreshedVersion);
 
 /**
  * Reads the persisted refresh signal for 'nss' and returns those settings.
  */
-StatusWith<RefreshState> getPersistedRefreshFlags(OperationContext* opCtx,
-                                                  const NamespaceString& nss);
+RefreshState getPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& nss);
 
 /**
  * Reads the shard server's collections collection entry identified by 'nss'.
  */
-StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCtx,
-                                                          const NamespaceString& nss);
+ShardCollectionType readShardCollectionsEntry(OperationContext* opCtx, const NamespaceString& nss);
 
 /**
  * Reads the shard server's databases collection entry identified by 'dbName'.
@@ -144,11 +140,11 @@ StatusWith<ShardDatabaseType> readShardDatabasesEntry(OperationContext* opCtx, S
  * these refreshing fields should only be added to an existing document.
  * Similarly, 'inc' should not specify 'upsert' true.
  */
-Status updateShardCollectionsEntry(OperationContext* opCtx,
-                                   const BSONObj& query,
-                                   const BSONObj& update,
-                                   const BSONObj& inc,
-                                   const bool upsert);
+void updateShardCollectionsEntry(OperationContext* opCtx,
+                                 const BSONObj& query,
+                                 const BSONObj& update,
+                                 const BSONObj& inc,
+                                 const bool upsert);
 
 /**
  * Updates the databases collection entry matching 'query' with 'update' using local write
@@ -160,23 +156,23 @@ Status updateShardCollectionsEntry(OperationContext* opCtx,
  *
  * 'inc' should not specify 'upsert' true.
  */
-Status updateShardDatabasesEntry(OperationContext* opCtx,
-                                 const BSONObj& query,
-                                 const BSONObj& update,
-                                 const BSONObj& inc,
-                                 const bool upsert);
+void updateShardDatabasesEntry(OperationContext* opCtx,
+                               const BSONObj& query,
+                               const BSONObj& update,
+                               const BSONObj& inc,
+                               const bool upsert);
 
 /**
  * Reads the shard server's chunks collection corresponding to 'nss' for chunks matching 'query',
  * returning at most 'limit' chunks in 'sort' order. 'epoch' populates the returned chunks' version
  * fields, because we do not yet have UUIDs to replace epoches nor UUIDs associated with namespaces.
  */
-StatusWith<std::vector<ChunkType>> readShardChunks(OperationContext* opCtx,
-                                                   const NamespaceString& nss,
-                                                   const BSONObj& query,
-                                                   const BSONObj& sort,
-                                                   boost::optional<long long> limit,
-                                                   const OID& epoch);
+std::vector<ChunkType> readShardChunks(OperationContext* opCtx,
+                                       const NamespaceString& nss,
+                                       const BSONObj& query,
+                                       const BSONObj& sort,
+                                       boost::optional<long long> limit,
+                                       const OID& epoch);
 
 /**
  * Takes a vector of 'chunks' and updates the shard's chunks collection for 'nss'. Any chunk
@@ -191,15 +187,15 @@ StatusWith<std::vector<ChunkType>> readShardChunks(OperationContext* opCtx,
  * chunks - chunks retrieved from the config server, sorted in ascending chunk version order
  * currEpoch - what this shard server expects the collection epoch to be.
  *
- * Returns:
+ * Throws:
  * - ConflictingOperationInProgress if the chunk version epoch of any chunk in 'chunks' is different
  *   than 'currEpoch'
  * - Other errors if unable to do local writes/reads to the config.chunks.ns collection.
  */
-Status updateShardChunks(OperationContext* opCtx,
-                         const NamespaceString& nss,
-                         const std::vector<ChunkType>& chunks,
-                         const OID& currEpoch);
+void updateShardChunks(OperationContext* opCtx,
+                       const NamespaceString& nss,
+                       const std::vector<ChunkType>& chunks,
+                       const OID& currEpoch);
 
 /**
  * Deletes locally persisted chunk metadata associated with 'nss': drops the chunks collection
@@ -209,13 +205,13 @@ Status updateShardChunks(OperationContext* opCtx,
  * If the chunks were dropped first, the secondary would keep refreshing until it exceeded its
  * retries, rather than returning with a useful error message.
  */
-Status dropChunksAndDeleteCollectionsEntry(OperationContext* opCtx, const NamespaceString& nss);
+void dropChunksAndDeleteCollectionsEntry(OperationContext* opCtx, const NamespaceString& nss);
 
 /**
  * Deletes locally persisted database metadata associated with 'dbName': removes the databases
  * collection entry.
  */
-Status deleteDatabasesEntry(OperationContext* opCtx, StringData dbName);
+void deleteDatabasesEntry(OperationContext* opCtx, StringData dbName);
 
 }  // namespace shardmetadatautil
 }  // namespace mongo

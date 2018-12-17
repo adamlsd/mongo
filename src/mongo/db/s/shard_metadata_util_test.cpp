@@ -73,11 +73,11 @@ struct ShardMetadataUtilTest : public ShardServerTestFixture {
 
         shardCollectionType.setRefreshing(true);
 
-        ASSERT_OK(updateShardCollectionsEntry(operationContext(),
-                                              BSON(ShardCollectionType::ns(kNss.ns())),
-                                              shardCollectionType.toBSON(),
-                                              BSONObj(),
-                                              true /*upsert*/));
+        updateShardCollectionsEntry(operationContext(),
+                                    BSON(ShardCollectionType::ns(kNss.ns())),
+                                    shardCollectionType.toBSON(),
+                                    BSONObj(),
+                                    true /*upsert*/);
         return shardCollectionType;
     }
 
@@ -87,7 +87,7 @@ struct ShardMetadataUtilTest : public ShardServerTestFixture {
     void setUpChunks(const NamespaceString& nss, const std::vector<ChunkType> chunks) {
         NamespaceString chunkMetadataNss(ChunkType::ShardNSPrefix + nss.ns());
 
-        ASSERT_OK(updateShardChunks(operationContext(), kNss, chunks, maxCollVersion.epoch()));
+        updateShardChunks(operationContext(), kNss, chunks, maxCollVersion.epoch());
     }
 
     /**
@@ -174,7 +174,7 @@ struct ShardMetadataUtilTest : public ShardServerTestFixture {
 TEST_F(ShardMetadataUtilTest, UpdateAndReadCollectionsEntry) {
     ShardCollectionType updateShardCollectionType = setUpCollection();
     ShardCollectionType readShardCollectionType =
-        assertGet(readShardCollectionsEntry(operationContext(), kNss));
+        readShardCollectionsEntry(operationContext(), kNss);
 
     ASSERT_TRUE(readShardCollectionType.getUUID());
     ASSERT_EQUALS(*updateShardCollectionType.getUUID(), *readShardCollectionType.getUUID());
@@ -196,8 +196,7 @@ TEST_F(ShardMetadataUtilTest, UpdateAndReadCollectionsEntry) {
 TEST_F(ShardMetadataUtilTest, PersistedRefreshSignalStartAndFinish) {
     setUpCollection();
 
-    ShardCollectionType shardCollectionsEntry =
-        assertGet(readShardCollectionsEntry(operationContext(), kNss));
+    ShardCollectionType shardCollectionsEntry = readShardCollectionsEntry(operationContext(), kNss);
 
     ASSERT_EQUALS(*shardCollectionsEntry.getUUID(), uuid);
     ASSERT_EQUALS(shardCollectionsEntry.getNss().ns(), kNss.ns());
@@ -209,22 +208,22 @@ TEST_F(ShardMetadataUtilTest, PersistedRefreshSignalStartAndFinish) {
     ASSERT(!shardCollectionsEntry.hasLastRefreshedCollectionVersion());
 
     // Signal refresh start again to make sure nothing changes
-    ASSERT_OK(updateShardCollectionsEntry(operationContext(),
-                                          BSON(ShardCollectionType::ns() << kNss.ns()),
-                                          BSON(ShardCollectionType::refreshing() << true),
-                                          BSONObj(),
-                                          false));
+    updateShardCollectionsEntry(operationContext(),
+                                BSON(ShardCollectionType::ns() << kNss.ns()),
+                                BSON(ShardCollectionType::refreshing() << true),
+                                BSONObj(),
+                                false);
 
-    RefreshState state = assertGet(getPersistedRefreshFlags(operationContext(), kNss));
+    RefreshState state = getPersistedRefreshFlags(operationContext(), kNss);
 
     ASSERT_EQUALS(state.epoch, maxCollVersion.epoch());
     ASSERT_EQUALS(state.refreshing, true);
     ASSERT_EQUALS(state.lastRefreshedCollectionVersion, ChunkVersion(0, 0, maxCollVersion.epoch()));
 
     // Signal refresh finish
-    ASSERT_OK(unsetPersistedRefreshFlags(operationContext(), kNss, maxCollVersion));
+    unsetPersistedRefreshFlags(operationContext(), kNss, maxCollVersion);
 
-    state = assertGet(getPersistedRefreshFlags(operationContext(), kNss));
+    state = getPersistedRefreshFlags(operationContext(), kNss);
 
     ASSERT_EQUALS(state.epoch, maxCollVersion.epoch());
     ASSERT_EQUALS(state.refreshing, false);
@@ -233,18 +232,18 @@ TEST_F(ShardMetadataUtilTest, PersistedRefreshSignalStartAndFinish) {
 
 TEST_F(ShardMetadataUtilTest, WriteAndReadChunks) {
     std::vector<ChunkType> chunks = makeFourChunks();
-    ASSERT_OK(updateShardChunks(operationContext(), kNss, chunks, maxCollVersion.epoch()));
+    updateShardChunks(operationContext(), kNss, chunks, maxCollVersion.epoch());
     checkChunks(kChunkMetadataNss, chunks);
 
     // read all the chunks
     QueryAndSort allChunkDiff =
         createShardChunkDiffQuery(ChunkVersion(0, 0, maxCollVersion.epoch()));
-    std::vector<ChunkType> readChunks = assertGet(readShardChunks(operationContext(),
-                                                                  kNss,
-                                                                  allChunkDiff.query,
-                                                                  allChunkDiff.sort,
-                                                                  boost::none,
-                                                                  maxCollVersion.epoch()));
+    std::vector<ChunkType> readChunks = readShardChunks(operationContext(),
+                                                        kNss,
+                                                        allChunkDiff.query,
+                                                        allChunkDiff.sort,
+                                                        boost::none,
+                                                        maxCollVersion.epoch());
     for (auto chunkIt = chunks.begin(), readChunkIt = readChunks.begin();
          chunkIt != chunks.end() && readChunkIt != readChunks.end();
          ++chunkIt, ++readChunkIt) {
@@ -253,12 +252,12 @@ TEST_F(ShardMetadataUtilTest, WriteAndReadChunks) {
 
     // read only the highest version chunk
     QueryAndSort oneChunkDiff = createShardChunkDiffQuery(maxCollVersion);
-    readChunks = assertGet(readShardChunks(operationContext(),
-                                           kNss,
-                                           oneChunkDiff.query,
-                                           oneChunkDiff.sort,
-                                           boost::none,
-                                           maxCollVersion.epoch()));
+    readChunks = readShardChunks(operationContext(),
+                                 kNss,
+                                 oneChunkDiff.query,
+                                 oneChunkDiff.sort,
+                                 boost::none,
+                                 maxCollVersion.epoch());
 
     ASSERT_TRUE(readChunks.size() == 1);
     ASSERT_BSONOBJ_EQ(chunks.back().toShardBSON(), readChunks.front().toShardBSON());
@@ -268,7 +267,7 @@ TEST_F(ShardMetadataUtilTest, UpdateWithWriteNewChunks) {
     // Load some chunk metadata.
 
     std::vector<ChunkType> chunks = makeFourChunks();
-    ASSERT_OK(updateShardChunks(operationContext(), kNss, chunks, maxCollVersion.epoch()));
+    updateShardChunks(operationContext(), kNss, chunks, maxCollVersion.epoch());
     checkChunks(kChunkMetadataNss, chunks);
 
     // Load some changes and make sure it's applied correctly.
@@ -312,7 +311,7 @@ TEST_F(ShardMetadataUtilTest, UpdateWithWriteNewChunks) {
     frontChunkControl.setVersion(collVersion);
     newChunks.push_back(frontChunkControl);
 
-    ASSERT_OK(updateShardChunks(operationContext(), kNss, newChunks, collVersion.epoch()));
+    updateShardChunks(operationContext(), kNss, newChunks, collVersion.epoch());
 
     chunks.push_back(splitChunkOne);
     chunks.push_back(splitChunkTwoMoved);
@@ -322,7 +321,7 @@ TEST_F(ShardMetadataUtilTest, UpdateWithWriteNewChunks) {
 
 TEST_F(ShardMetadataUtilTest, DropChunksAndDeleteCollectionsEntry) {
     setUpShardChunkMetadata();
-    ASSERT_OK(dropChunksAndDeleteCollectionsEntry(operationContext(), kNss));
+    dropChunksAndDeleteCollectionsEntry(operationContext(), kNss);
     checkCollectionIsEmpty(kChunkMetadataNss);
     // Collections collection should be empty because it only had one entry.
     checkCollectionIsEmpty(NamespaceString::kShardConfigCollectionsNamespace);

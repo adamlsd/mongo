@@ -106,6 +106,8 @@ Status splitChunkAtMultiplePoints(OperationContext* opCtx,
     } catch (const DBException& ex) {
         return ex.toStatus().withContext("split failed");
     }
+
+    return Status::OK();
 }
 
 /**

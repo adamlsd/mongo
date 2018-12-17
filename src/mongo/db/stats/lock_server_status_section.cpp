@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -41,18 +40,17 @@
 namespace mongo {
 namespace {
 
-class GlobalLockServerStatusSection : public ServerStatusSection {
+class GlobalLockServerStatusSection final : public ServerStatusSection {
 public:
     GlobalLockServerStatusSection() : ServerStatusSection("globalLock") {
         _started = curTimeMillis64();
     }
 
-    virtual bool includeByDefault() const {
+    bool includeByDefault() const final {
         return true;
     }
 
-    virtual BSONObj generateSection(OperationContext* opCtx,
-                                    const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         std::valarray<int> clientStatusCounts(5);
 
         // This returns the blocked lock states
@@ -106,16 +104,15 @@ private:
 } globalLockServerStatusSection;
 
 
-class LockStatsServerStatusSection : public ServerStatusSection {
+class LockStatsServerStatusSection final : public ServerStatusSection {
 public:
     LockStatsServerStatusSection() : ServerStatusSection("locks") {}
 
-    virtual bool includeByDefault() const {
+    bool includeByDefault() const final {
         return true;
     }
 
-    virtual BSONObj generateSection(OperationContext* opCtx,
-                                    const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         BSONObjBuilder ret;
 
         SingleThreadedLockStats stats;

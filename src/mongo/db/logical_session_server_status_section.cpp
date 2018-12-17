@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -39,18 +38,17 @@ namespace mongo {
 
 namespace {
 
-class LogicalSessionSSS : public ServerStatusSection {
+class LogicalSessionSSS final : public ServerStatusSection {
 public:
     LogicalSessionSSS() : ServerStatusSection("logicalSessionRecordCache") {}
 
-    virtual ~LogicalSessionSSS() {}
+    ~LogicalSessionSSS() final = default;
 
-    virtual bool includeByDefault() const {
+    bool includeByDefault() const final {
         return true;
     }
 
-    virtual BSONObj generateSection(OperationContext* opCtx,
-                                    const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         auto lsCache = LogicalSessionCache::get(opCtx);
         return lsCache ? lsCache->getStats().toBSON() : BSONObj();
     }

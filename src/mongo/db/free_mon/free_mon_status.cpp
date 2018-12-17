@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -37,7 +36,7 @@
 namespace mongo {
 namespace {
 
-class FreeMonServerStatus : public ServerStatusSection {
+class FreeMonServerStatus final : public ServerStatusSection {
 public:
     FreeMonServerStatus() : ServerStatusSection("freeMonitoring") {}
 

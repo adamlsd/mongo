@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -646,12 +645,11 @@ class HeapProfilerServerStatusSection final : public ServerStatusSection {
 public:
     HeapProfilerServerStatusSection() : ServerStatusSection("heapProfile") {}
 
-    bool includeByDefault() const override {
+    bool includeByDefault() const final {
         return HeapProfiler::enabledParameter;
     }
 
-    BSONObj generateSection(OperationContext* opCtx,
-                            const BSONElement& configElement) const override {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         BSONObjBuilder builder;
         HeapProfiler::generateServerStatusSection(builder);
         return builder.obj();

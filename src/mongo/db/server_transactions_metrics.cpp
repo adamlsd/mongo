@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -304,18 +303,18 @@ void ServerTransactionsMetrics::updateStats(TransactionsStats* stats, OperationC
     stats->setOldestActiveOplogEntryTimestamp(oldestActiveOplogEntryTimestamp);
 }
 
-class TransactionsSSS : public ServerStatusSection {
+namespace {
+class TransactionsSSS final : public ServerStatusSection {
 public:
     TransactionsSSS() : ServerStatusSection("transactions") {}
 
-    virtual ~TransactionsSSS() {}
+    ~TransactionsSSS() final = default;
 
-    virtual bool includeByDefault() const {
+    bool includeByDefault() const final {
         return true;
     }
 
-    virtual BSONObj generateSection(OperationContext* opCtx,
-                                    const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         TransactionsStats stats;
 
         // Retryable writes and multi-document transactions metrics are both included in the same
@@ -328,5 +327,6 @@ public:
     }
 
 } transactionsSSS;
+}  // namespace
 
 }  // namespace mongo

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -52,12 +51,11 @@ class ShardingServerStatus final : public ServerStatusSection {
 public:
     ShardingServerStatus() : ServerStatusSection("sharding") {}
 
-    bool includeByDefault() const override {
+    bool includeByDefault() const final {
         return isClusterNode();
     }
 
-    BSONObj generateSection(OperationContext* opCtx,
-                            const BSONElement& configElement) const override {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         if (!isClusterNode())
             return {};
 
@@ -97,12 +95,11 @@ class ShardingStatisticsServerStatus final : public ServerStatusSection {
 public:
     ShardingStatisticsServerStatus() : ServerStatusSection("shardingStatistics") {}
 
-    bool includeByDefault() const override {
+    bool includeByDefault() const final {
         return isClusterNode();
     }
 
-    BSONObj generateSection(OperationContext* opCtx,
-                            const BSONElement& configElement) const override {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         if (!isClusterNode())
             return {};
 

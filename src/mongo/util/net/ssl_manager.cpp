@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -645,13 +644,14 @@ std::string escapeRfc2253(StringData str) {
     return ret;
 }
 
+namespace {
 /**
  * Status section of which tls versions connected to MongoDB and completed an SSL handshake.
  * Note: Clients are only not counted if they try to connect to the server with a unsupported TLS
  * version. They are still counted if the server rejects them for certificate issues in
  * parseAndValidatePeerCertificate.
  */
-class TLSVersionSatus : public ServerStatusSection {
+class TLSVersionSatus final : public ServerStatusSection {
 public:
     TLSVersionSatus() : ServerStatusSection("transportSecurity") {}
 
@@ -671,6 +671,8 @@ public:
         return builder.obj();
     }
 } tlsVersionStatus;
+
+}  // namespace
 
 void recordTLSVersion(TLSVersion version, const HostAndPort& hostForLogging) {
     StringData versionString;

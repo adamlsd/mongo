@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -226,14 +225,15 @@ namespace {
 
 // some universal sections
 
-class ExtraInfo : public ServerStatusSection {
+class ExtraInfo final : public ServerStatusSection {
 public:
     ExtraInfo() : ServerStatusSection("extra_info") {}
-    virtual bool includeByDefault() const {
+
+    bool includeByDefault() const final {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         BSONObjBuilder bb;
 
         bb.append("note", "fields vary by platform");
@@ -245,15 +245,15 @@ public:
 
 } extraInfo;
 
-
-class Asserts : public ServerStatusSection {
+class Asserts final : public ServerStatusSection {
 public:
     Asserts() : ServerStatusSection("asserts") {}
-    virtual bool includeByDefault() const {
+
+    bool includeByDefault() const final {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
         BSONObjBuilder asserts;
         asserts.append("regular", assertionCount.regular.loadRelaxed());
         asserts.append("warning", assertionCount.warning.loadRelaxed());

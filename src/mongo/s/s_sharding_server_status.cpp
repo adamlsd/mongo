@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -44,7 +43,7 @@ class ShardingServerStatus final : public ServerStatusSection {
 public:
     ShardingServerStatus() : ServerStatusSection("sharding") {}
 
-    bool includeByDefault() const override {
+    bool includeByDefault() const final {
         return true;
     }
 

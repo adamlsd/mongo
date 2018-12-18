@@ -40,17 +40,18 @@
 namespace mongo {
 namespace {
 
-class GlobalLockServerStatusSection final : public ServerStatusSection {
+class GlobalLockServerStatusSection : public ServerStatusSection {
 public:
     GlobalLockServerStatusSection() : ServerStatusSection("globalLock") {
         _started = curTimeMillis64();
     }
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         std::valarray<int> clientStatusCounts(5);
 
         // This returns the blocked lock states
@@ -104,15 +105,16 @@ private:
 } globalLockServerStatusSection;
 
 
-class LockStatsServerStatusSection final : public ServerStatusSection {
+class LockStatsServerStatusSection : public ServerStatusSection {
 public:
     LockStatsServerStatusSection() : ServerStatusSection("locks") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObjBuilder ret;
 
         SingleThreadedLockStats stats;

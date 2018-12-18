@@ -645,11 +645,12 @@ class HeapProfilerServerStatusSection final : public ServerStatusSection {
 public:
     HeapProfilerServerStatusSection() : ServerStatusSection("heapProfile") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return HeapProfiler::enabledParameter;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObjBuilder builder;
         HeapProfiler::generateServerStatusSection(builder);
         return builder.obj();

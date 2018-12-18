@@ -40,17 +40,18 @@
 namespace mongo {
 namespace {
 
-class StorageSSS final : public ServerStatusSection {
+class StorageSSS : public ServerStatusSection {
 public:
     StorageSSS() : ServerStatusSection("storageEngine") {}
 
     ~StorageSSS() override = default;
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         auto svcCtx = opCtx->getClient()->getServiceContext();
         auto engine = svcCtx->getStorageEngine();
         auto backupCursorHooks = BackupCursorHooks::get(svcCtx);

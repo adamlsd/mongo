@@ -651,15 +651,16 @@ namespace {
  * version. They are still counted if the server rejects them for certificate issues in
  * parseAndValidatePeerCertificate.
  */
-class TLSVersionSatus final : public ServerStatusSection {
+class TLSVersionSatus : public ServerStatusSection {
 public:
     TLSVersionSatus() : ServerStatusSection("transportSecurity") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         auto& counts = TLSVersionCounts::get(opCtx->getServiceContext());
 
         BSONObjBuilder builder;

@@ -43,11 +43,11 @@ class GlobalHistogramServerStatusSection final : public ServerStatusSection {
 public:
     GlobalHistogramServerStatusSection() : ServerStatusSection("opLatencies") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElem) const final {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElem) const override {
         BSONObjBuilder latencyBuilder;
         bool includeHistograms = false;
         if (configElem.type() == BSONType::Object) {

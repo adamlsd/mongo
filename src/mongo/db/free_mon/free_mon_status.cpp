@@ -36,7 +36,7 @@
 namespace mongo {
 namespace {
 
-class FreeMonServerStatus final : public ServerStatusSection {
+class FreeMonServerStatus : public ServerStatusSection {
 public:
     FreeMonServerStatus() : ServerStatusSection("freeMonitoring") {}
 

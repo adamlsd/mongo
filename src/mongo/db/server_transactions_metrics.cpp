@@ -304,17 +304,18 @@ void ServerTransactionsMetrics::updateStats(TransactionsStats* stats, OperationC
 }
 
 namespace {
-class TransactionsSSS final : public ServerStatusSection {
+class TransactionsSSS : public ServerStatusSection {
 public:
     TransactionsSSS() : ServerStatusSection("transactions") {}
 
-    ~TransactionsSSS() final = default;
+    ~TransactionsSSS() override = default;
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         TransactionsStats stats;
 
         // Retryable writes and multi-document transactions metrics are both included in the same

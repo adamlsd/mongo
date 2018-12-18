@@ -100,15 +100,16 @@ MONGO_INITIALIZER(TCMallocThreadIdleListener)(InitializerContext*) {
     return Status::OK();
 }
 
-class TCMallocServerStatusSection final : public ServerStatusSection {
+class TCMallocServerStatusSection : public ServerStatusSection {
 public:
     TCMallocServerStatusSection() : ServerStatusSection("tcmalloc") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         long long verbosity = 1;
         if (configElement) {
             // Relies on the fact that safeNumberLong turns non-numbers into 0.

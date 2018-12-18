@@ -38,17 +38,18 @@ namespace mongo {
 
 namespace {
 
-class LogicalSessionSSS final : public ServerStatusSection {
+class LogicalSessionSSS : public ServerStatusSection {
 public:
     LogicalSessionSSS() : ServerStatusSection("logicalSessionRecordCache") {}
 
-    ~LogicalSessionSSS() final = default;
+    ~LogicalSessionSSS() override = default;
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         auto lsCache = LogicalSessionCache::get(opCtx);
         return lsCache ? lsCache->getStats().toBSON() : BSONObj();
     }

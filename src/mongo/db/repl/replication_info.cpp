@@ -151,15 +151,16 @@ void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int 
 
 namespace {
 
-class ReplicationInfoServerStatus final : public ServerStatusSection {
+class ReplicationInfoServerStatus : public ServerStatusSection {
 public:
     ReplicationInfoServerStatus() : ServerStatusSection("repl") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         if (!ReplicationCoordinator::get(opCtx)->isReplEnabled()) {
             return BSONObj();
         }
@@ -179,15 +180,16 @@ public:
 
 } replicationInfoServerStatus;
 
-class OplogInfoServerStatus final : public ServerStatusSection {
+class OplogInfoServerStatus : public ServerStatusSection {
 public:
     OplogInfoServerStatus() : ServerStatusSection("oplog") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return false;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
         if (!replCoord->isReplEnabled()) {
             return BSONObj();

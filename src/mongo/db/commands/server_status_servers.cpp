@@ -50,15 +50,16 @@ namespace {
 
 // some universal sections
 
-class Connections final : public ServerStatusSection {
+class Connections : public ServerStatusSection {
 public:
     Connections() : ServerStatusSection("connections") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObjBuilder bb;
 
         auto serviceEntryPoint = opCtx->getServiceContext()->getServiceEntryPoint();
@@ -70,15 +71,16 @@ public:
 
 } connections;
 
-class Network final : public ServerStatusSection {
+class Network : public ServerStatusSection {
 public:
     Network() : ServerStatusSection("network") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObjBuilder b;
         networkCounter.append(b);
         appendMessageCompressionStats(&b);
@@ -94,15 +96,16 @@ public:
 } network;
 
 #ifdef MONGO_CONFIG_SSL
-class Security final : public ServerStatusSection {
+class Security : public ServerStatusSection {
 public:
     Security() : ServerStatusSection("security") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObj result;
         if (getSSLManager()) {
             result = getSSLManager()->getSSLConfiguration().getServerStatusBSON();
@@ -117,13 +120,13 @@ class AdvisoryHostFQDNs final : public ServerStatusSection {
 public:
     AdvisoryHostFQDNs() : ServerStatusSection("advisoryHostFQDNs") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return false;
     }
 
     void appendSection(OperationContext* opCtx,
                        const BSONElement& configElement,
-                       BSONObjBuilder* out) const final {
+                       BSONObjBuilder* out) const override {
         out->append(
             "advisoryHostFQDNs",
             getHostFQDNs(getHostNameCached(), HostnameCanonicalizationMode::kForwardAndReverse));

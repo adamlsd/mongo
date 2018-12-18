@@ -43,7 +43,7 @@ class ShardingServerStatus final : public ServerStatusSection {
 public:
     ShardingServerStatus() : ServerStatusSection("sharding") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 

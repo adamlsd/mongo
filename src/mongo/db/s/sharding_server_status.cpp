@@ -51,11 +51,12 @@ class ShardingServerStatus final : public ServerStatusSection {
 public:
     ShardingServerStatus() : ServerStatusSection("sharding") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return isClusterNode();
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         if (!isClusterNode())
             return {};
 
@@ -95,11 +96,12 @@ class ShardingStatisticsServerStatus final : public ServerStatusSection {
 public:
     ShardingStatisticsServerStatus() : ServerStatusSection("shardingStatistics") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return isClusterNode();
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         if (!isClusterNode())
             return {};
 

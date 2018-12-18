@@ -225,15 +225,16 @@ namespace {
 
 // some universal sections
 
-class ExtraInfo final : public ServerStatusSection {
+class ExtraInfo : public ServerStatusSection {
 public:
     ExtraInfo() : ServerStatusSection("extra_info") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObjBuilder bb;
 
         bb.append("note", "fields vary by platform");
@@ -245,15 +246,16 @@ public:
 
 } extraInfo;
 
-class Asserts final : public ServerStatusSection {
+class Asserts : public ServerStatusSection {
 public:
     Asserts() : ServerStatusSection("asserts") {}
 
-    bool includeByDefault() const final {
+    bool includeByDefault() const override {
         return true;
     }
 
-    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const final {
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
         BSONObjBuilder asserts;
         asserts.append("regular", assertionCount.regular.loadRelaxed());
         asserts.append("warning", assertionCount.warning.loadRelaxed());

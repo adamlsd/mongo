@@ -26,6 +26,7 @@ env.Library(
         'framework_options_init.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/catalog/catalog_impl',
         '$BUILD_DIR/mongo/db/dbdirectclient',
         '$BUILD_DIR/mongo/db/op_observer',
         '$BUILD_DIR/mongo/db/service_context_d',
@@ -99,6 +100,7 @@ dbtest = env.Program(
         'query_stage_sort_key_generator.cpp',
         'query_stage_subplan.cpp',
         'query_stage_tests.cpp',
+        'query_stage_trial.cpp',
         'query_stage_update.cpp',
         'querytests.cpp',
         'replica_set_monitor_test.cpp',

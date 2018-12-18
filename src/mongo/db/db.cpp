@@ -246,8 +246,6 @@ void logStartup(OperationContext* opCtx) {
  *          --replset.
  */
 unsigned long long checkIfReplMissingFromCommandLine(OperationContext* opCtx) {
-    // This is helpful for the query below to work as you can't open files when readlocked
-    Lock::GlobalWrite lk(opCtx);
     if (!repl::ReplicationCoordinator::get(opCtx)->getSettings().usingReplSets()) {
         DBDirectClient c(opCtx);
         return c.count(kSystemReplSetCollection.ns());
@@ -331,6 +329,13 @@ ExitCode _initAndListen(int listenPort) {
         }
         serviceContext->setTransportLayer(std::move(tl));
     }
+
+    // Set up the periodic runner for background job execution. This is required to be running
+    // before the storage engine is initialized.
+    auto runner = makePeriodicRunner(serviceContext);
+    runner->startup();
+    serviceContext->setPeriodicRunner(std::move(runner));
+
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kNone);
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
@@ -515,11 +520,6 @@ ExitCode _initAndListen(int listenPort) {
                  "data."
               << startupWarningsLog;
     }
-
-    // Set up the periodic runner for background job execution
-    auto runner = makePeriodicRunner(serviceContext);
-    runner->startup();
-    serviceContext->setPeriodicRunner(std::move(runner));
 
     // This function may take the global lock.
     auto shardingInitialized = ShardingInitializationMongoD::get(startupOpCtx.get())
@@ -890,7 +890,8 @@ void shutdownTask() {
     // Shut down the global dbclient pool so callers stop waiting for connections.
     globalConnPool.shutdown();
 
-    // Shut down the background periodic task runner
+    // Shut down the background periodic task runner. This must be done before shutting down the
+    // storage engine.
     if (auto runner = serviceContext->getPeriodicRunner()) {
         runner->shutdown();
     }

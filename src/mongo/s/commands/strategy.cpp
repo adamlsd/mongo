@@ -416,10 +416,20 @@ void runCommand(OperationContext* opCtx,
             auto txnNumber = opCtx->getTxnNumber();
             invariant(txnNumber);
 
-            auto startTxnSetting = osi.getStartTransaction();
-            bool startTransaction = startTxnSetting ? *startTxnSetting : false;
+            auto transactionAction = ([&] {
+                auto startTxnSetting = osi.getStartTransaction();
+                if (startTxnSetting && *startTxnSetting) {
+                    return TransactionRouter::TransactionActions::kStart;
+                }
 
-            txnRouter->beginOrContinueTxn(opCtx, *txnNumber, startTransaction);
+                if (command->getName() == CommitTransaction::kCommandName) {
+                    return TransactionRouter::TransactionActions::kCommit;
+                }
+
+                return TransactionRouter::TransactionActions::kContinue;
+            })();
+
+            txnRouter->beginOrContinueTxn(opCtx, *txnNumber, transactionAction);
         }
 
         for (int tries = 0;; ++tries) {
@@ -437,6 +447,12 @@ void runCommand(OperationContext* opCtx,
             replyBuilder->reset();
             try {
                 execCommandClient(opCtx, invocation.get(), request, replyBuilder);
+
+                auto responseBuilder = replyBuilder->getBodyBuilder();
+                if (auto txnRouter = TransactionRouter::get(opCtx)) {
+                    txnRouter->appendRecoveryToken(&responseBuilder);
+                }
+
                 return;
             } catch (const ExceptionForCat<ErrorCategory::NeedRetargettingError>& ex) {
                 const auto staleNs = [&] {
@@ -478,7 +494,7 @@ void runCommand(OperationContext* opCtx,
                     auto abortGuard =
                         MakeGuard([&] { txnRouter->implicitlyAbortTransaction(opCtx); });
                     handleCanRetryInTransaction(opCtx, txnRouter, canRetry, ex);
-                    txnRouter->onStaleShardOrDbError(commandName);
+                    txnRouter->onStaleShardOrDbError(commandName, ex.toStatus());
                     abortGuard.Dismiss();
                 }
 
@@ -497,7 +513,7 @@ void runCommand(OperationContext* opCtx,
                     auto abortGuard =
                         MakeGuard([&] { txnRouter->implicitlyAbortTransaction(opCtx); });
                     handleCanRetryInTransaction(opCtx, txnRouter, canRetry, ex);
-                    txnRouter->onStaleShardOrDbError(commandName);
+                    txnRouter->onStaleShardOrDbError(commandName, ex.toStatus());
                     abortGuard.Dismiss();
                 }
 
@@ -514,7 +530,7 @@ void runCommand(OperationContext* opCtx,
                     auto abortGuard =
                         MakeGuard([&] { txnRouter->implicitlyAbortTransaction(opCtx); });
                     handleCanRetryInTransaction(opCtx, txnRouter, canRetry, ex);
-                    txnRouter->onSnapshotError();
+                    txnRouter->onSnapshotError(ex.toStatus());
                     abortGuard.Dismiss();
                 }
 

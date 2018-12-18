@@ -734,6 +734,20 @@ functions:
           fi
         done
 
+  "configure evergreen api credentials" : &configure_evergreen_api_credentials
+    command: shell.exec
+    type: test
+    params:
+      working_dir: src
+      silent: true
+      script: |
+        # Create the Evergreen API credentials
+        cat > .evergreen.yml <<END_OF_CREDS
+        api_server_host: https://evergreen.mongodb.com/api
+        api_key: "${evergreen_api_key}"
+        user: "${evergreen_api_user}"
+        END_OF_CREDS
+
   "git get project" : &git_get_project
     command: git.get_project
     params:
@@ -1090,30 +1104,25 @@ functions:
     command: shell.exec
     params:
       silent: true
+      shell: bash
       script: |
         cd src/src/mongo/embedded/mongo_embedded/java
 
-        echo -n "${mongodb_mobile_release_signing_secret_key}" > mobile-release-signing-key.secret
-        echo -n "${mongodb_mobile_release_signing_public_key}" > mobile-release-signing-key.public
+        echo '${mongodb_mobile_release_secring}' | base64 -d > embedded-android/secring.gpg
 
-        gpg --homedir ${workingdir}/.gnupg --allow-secret-key-import --import mobile-release-signing-key.secret
-        gpg --homedir ${workingdir}/.gnupg --import mobile-release-signing-key.public
-        # Required for gradle to pick up the keys
-        gpg --homedir ${workingdir}/.gnupg --keyring secring.gpg --export-secret-keys secring.gpg
-
-        echo -n <<EOF
+        cat <<EOF > local.properties
         signing.keyId=${mongodb_mobile_release_signing_keyid}
         signing.password=${mongodb_mobile_release_signing_password}
         signing.secretKeyRingFile=${mongodb_mobile_release_signing_secretkeyringfile}
 
         ossrhUsername=${mongodb_mobile_ossrh_username}
         ossrhPassword=${mongodb_mobile_ossrh_password}
-        EOF > local.properties
+        EOF
 
-        echo <<EOF
+        cat <<EOF > artifactory_mobile_creds.sh
         export artifactory_mobile_user=${artifactory_mobile_user}
         export artifactory_mobile_pass=${artifactory_mobile_pass}
-        EOF > artifactory_mobile_creds.sh
+        EOF
 
   "setup android toolchain" :
     command: shell.exec
@@ -1129,6 +1138,7 @@ functions:
   "build java embedded sdk":
     command: shell.exec
     params:
+      shell: bash
       script: |
         set -o errexit
         set -o verbose
@@ -1156,8 +1166,7 @@ functions:
                 ./gradlew clean :embedded-jar:build :embedded-jar:publishMavenPublicationToLocalRepository
 
                 # Is this a release?
-                echo "${version|-g}" | grep -q -- "-g"
-                if [ $? -eq 1 ]; then
+                if [ "${is_release|false}" = "true" ]; then
                     echo "Releases disabled on master."
                     #source ./artifactory_mobile_creds.sh
                     #./gradlew --info :embedded-jar:artifactoryPublish
@@ -1176,8 +1185,7 @@ functions:
 
                 ./gradlew clean :embedded-android:build
                 # Is this a release?
-                echo "${version|-g}" | grep -q -- "-g"
-                if [ $? -eq 1 ]; then
+                if [ "${is_release|false}" = "true" ]; then
                     echo "Releases disabled on master."
                     #./gradlew :embedded-android:uploadArchives closeAndReleaseRepository
                 fi
@@ -1313,6 +1321,18 @@ functions:
             popd
           fi
         fi
+
+  "install pip requirements" : &install_pip_requirements
+    command: shell.exec
+    params:
+      working_dir: src
+      shell: bash
+      script: |
+        set -o verbose
+        set -o errexit
+
+        ${activate_virtualenv}
+        python2 -m pip install -r etc/pip/evgtest-requirements.txt
 
   "determine resmoke jobs" : &determine_resmoke_jobs
     command: shell.exec
@@ -1461,7 +1481,232 @@ functions:
           if [[ ! -f $venv2_bin/python2 ]]; then ln -sfv "$py2_exe" "$venv2_bin/python2"; fi
           if [[ ! -f $venv2_bin/python3 ]]; then ln -sfv "$py3_exe" "$venv2_bin/python3"; fi
 
+  "execute resmoke tests" : &execute_resmoke_tests
+    command: shell.exec
+    type: test
+    params:
+      working_dir: src
+      shell: bash
+      script: |
+        set -o errexit
+        set -o verbose
+
+        if [[ ${disable_unit_tests|false} = "false" && ! -f ${skip_tests|/dev/null} ]]; then
+
+        # activate the virtualenv if it has been set up
+        ${activate_virtualenv}
+
+        # Set the TMPDIR environment variable to be a directory in the task's working
+        # directory so that temporary files created by processes spawned by resmoke.py get
+        # cleaned up after the task completes. This also ensures the spawned processes
+        # aren't impacted by limited space in the mount point for the /tmp directory.
+        export TMPDIR="${workdir}/tmp"
+        mkdir -p $TMPDIR
+
+        if [ -f /proc/self/coredump_filter ]; then
+          # Set the shell process (and its children processes) to dump ELF headers (bit 4),
+          # anonymous shared mappings (bit 1), and anonymous private mappings (bit 0).
+          echo 0x13 > /proc/self/coredump_filter
+
+          if [ -f /sbin/sysctl ]; then
+            # Check that the core pattern is set explicitly on our distro image instead
+            # of being the OS's default value. This ensures that coredump names are consistent
+            # across distros and can be picked up by Evergreen.
+            core_pattern=$(/sbin/sysctl -n "kernel.core_pattern")
+            if [ "$core_pattern" = "dump_%e.%p.core" ]; then
+              echo "Enabling coredumps"
+              ulimit -c unlimited
+            fi
+          fi
+        fi
+
+        extra_args="$extra_args --jobs=${resmoke_jobs|1}"
+
+        if [ ${should_shuffle|true} = true ]; then
+          extra_args="$extra_args --shuffle"
+        fi
+
+        if [ ${continue_on_failure|true} = true ]; then
+          extra_args="$extra_args --continueOnFailure"
+        fi
+
+        # Default storageEngineCacheSizeGB to 1. Override on individual test config if needed.
+        # resmoke will assign to the appropriate parameter on storage engines that support it.
+        set +o errexit
+        echo "${resmoke_args}" | grep -q storageEngineCacheSizeGB
+        if [ $? -eq 1 ]; then
+          extra_args="$extra_args --storageEngineCacheSizeGB=1"
+        fi
+        set -o errexit
+
+
+        # Reduce the JSHeapLimit for the serial_run task task on Code Coverage builder variant.
+        if [[ "${build_variant}" = "enterprise-rhel-62-64-bit-coverage" && "${task_name}" = "serial_run" ]]; then
+          extra_args="$extra_args --mongodSetParameter {'jsHeapLimitMB':10}"
+        fi
+
+        path_value="$PATH"
+        if [ ${variant_path_suffix} ]; then
+          path_value="$path_value:${variant_path_suffix}"
+        fi
+        if [ ${task_path_suffix} ]; then
+          path_value="$path_value:${task_path_suffix}"
+        fi
+
+        if [ "${is_patch}" = "true" ]; then
+          extra_args="$extra_args --tagFile=etc/test_lifecycle.yml --patchBuild"
+        else
+          extra_args="$extra_args --tagFile=etc/test_retrial.yml"
+        fi
+
+        # The "resmoke_wrapper" expansion is used by the 'burn_in_tests' task to wrap the resmoke.py
+        # invocation. It doesn't set any environment variables and should therefore come last in
+        # this list of expansions.
+        set +o errexit
+        PATH="$path_value"                              \
+            AWS_PROFILE=${aws_profile_remote}           \
+            ${gcov_environment}                         \
+            ${lang_environment}                         \
+            ${san_options}                              \
+            ${san_symbolizer}                           \
+            ${snmp_config_path}                         \
+            ${resmoke_wrapper}                          \
+            $python buildscripts/evergreen_run_tests.py \
+                ${resmoke_args}                         \
+                $extra_args                             \
+                ${test_flags}                           \
+                --log=buildlogger                       \
+                --staggerJobs=on                        \
+                --buildId=${build_id}                   \
+                --distroId=${distro_id}                 \
+                --executionNumber=${execution}          \
+                --projectName=${project}                \
+                --gitRevision=${revision}               \
+                --revisionOrderId=${revision_order_id}  \
+                --taskId=${task_id}                     \
+                --taskName=${task_name}                 \
+                --variantName=${build_variant}          \
+                --versionId=${version_id}               \
+                --archiveFile=archive.json              \
+                --reportFile=report.json                \
+                --perfReportFile=perf.json
+        resmoke_exit_code=$?
+        set -o errexit
+
+        # 74 is exit code for IOError on POSIX systems, which is raised when the machine is
+        # shutting down.
+        #
+        # 75 is exit code resmoke.py uses when the log output would be incomplete due to failing
+        # to communicate with logkeeper.
+        if [[ $resmoke_exit_code = 74 || $resmoke_exit_code = 75 ]]; then
+          echo $resmoke_exit_code > run_tests_infrastructure_failure
+          exit 0
+        elif [ $resmoke_exit_code != 0 ]; then
+          # On failure save the resmoke exit code.
+          echo $resmoke_exit_code > resmoke_error_code
+        fi
+        exit $resmoke_exit_code
+        fi # end if [[ ${disable_unit_tests} && ! -f ${skip_tests|/dev/null} ]]
+
+  "retrieve generated test configuration": &retrieve_generated_test_configuration
+    command: s3.get
+    params:
+      aws_key: ${aws_key}
+      aws_secret: ${aws_secret}
+      bucket: mciuploads
+      remote_file: ${project}/${build_variant}/${revision}/generate_tasks/${task}_gen-${build_id}.tgz
+      local_file: "generate_tasks_config.tgz"
+
+  "extract generated test configuration": &extract_generated_test_configuration
+    command: shell.exec
+    type: test
+    params:
+      shell: bash
+      script: |
+        set -o verbose
+        set -o errexit
+
+        target_dir="src/generated_resmoke_config"
+        mkdir -p $target_dir
+        mv generate_tasks_config.tgz $target_dir
+
+        cd $target_dir
+        tar xzf generate_tasks_config.tgz
+        ls
+
+  "generate resmoke tasks":
+    - *git_get_project
+    - *configure_evergreen_api_credentials
+    - command: expansions.write
+      params:
+        file: src/expansions.yml
+
+    - command: shell.exec
+      params:
+        working_dir: src
+        script: |
+          set -o errexit
+          set -o verbose
+
+          ${activate_virtualenv}
+          $python -m pip install -r etc/pip/evgtest-requirements.txt
+          $python buildscripts/evergreen_generate_resmoke_tasks.py --expansion-file expansions.yml
+
+    - command: archive.targz_pack
+      params:
+        target: generate_tasks_config.tgz
+        source_dir: src/generated_resmoke_config
+        include:
+          - "*"
+
+    - command: s3.put
+      params:
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        local_file: generate_tasks_config.tgz
+        remote_file: ${project}/${build_variant}/${revision}/generate_tasks/${task_name}-${build_id}.tgz
+        bucket: mciuploads
+        permissions: public-read
+        content_type: ${content_type|application/gzip}
+        display_name: Generated Task Config - Execution ${execution}
+
+    - command: generate.tasks
+      params:
+        files:
+          - src/generated_resmoke_config/${task}.json
+
+  "run generated tests" :
+  - *install_pip_requirements
+  - *retrieve_generated_test_configuration
+  - *extract_generated_test_configuration
+  - command: expansions.update
+    params:
+      updates:
+      - key: aws_key_remote
+        value: ${mongodatafiles_aws_key}
+      - key: aws_profile_remote
+        value: mongodata_aws
+      - key: aws_secret_remote
+        value: ${mongodatafiles_aws_secret}
+  - *set_up_remote_credentials
+  - *determine_resmoke_jobs
+  - *update_resmoke_jobs_expansions
+  - *execute_resmoke_tests
+    # The existence of the "run_tests_infrastructure_failure" file indicates this failure isn't
+    # directly actionable. We use type=setup rather than type=system or type=test for this command
+    # because we don't intend for any human to look at this failure.
+  - command: shell.exec
+    type: setup
+    params:
+      working_dir: src
+      script: |
+        set -o verbose
+        if [ -f run_tests_infrastructure_failure ]; then
+          exit $(cat run_tests_infrastructure_failure)
+        fi
+
   "run tests" :
+    - *install_pip_requirements
     - *determine_task_timeout
     - *update_task_timeout_expansions
     - *update_task_timeout
@@ -1477,133 +1722,7 @@ functions:
     - *set_up_remote_credentials
     - *determine_resmoke_jobs
     - *update_resmoke_jobs_expansions
-    - command: shell.exec
-      type: test
-      params:
-        working_dir: src
-        shell: bash
-        script: |
-          set -o errexit
-          set -o verbose
-
-          if [[ ${disable_unit_tests|false} = "false" && ! -f ${skip_tests|/dev/null} ]]; then
-
-          # activate the virtualenv if it has been set up
-          ${activate_virtualenv}
-          python2 -m pip install -r etc/pip/evgtest-requirements.txt
-
-          # Set the TMPDIR environment variable to be a directory in the task's working
-          # directory so that temporary files created by processes spawned by resmoke.py get
-          # cleaned up after the task completes. This also ensures the spawned processes
-          # aren't impacted by limited space in the mount point for the /tmp directory.
-          export TMPDIR="${workdir}/tmp"
-          mkdir -p $TMPDIR
-
-          if [ -f /proc/self/coredump_filter ]; then
-            # Set the shell process (and its children processes) to dump ELF headers (bit 4),
-            # anonymous shared mappings (bit 1), and anonymous private mappings (bit 0).
-            echo 0x13 > /proc/self/coredump_filter
-
-            if [ -f /sbin/sysctl ]; then
-              # Check that the core pattern is set explicitly on our distro image instead
-              # of being the OS's default value. This ensures that coredump names are consistent
-              # across distros and can be picked up by Evergreen.
-              core_pattern=$(/sbin/sysctl -n "kernel.core_pattern")
-              if [ "$core_pattern" = "dump_%e.%p.core" ]; then
-                echo "Enabling coredumps"
-                ulimit -c unlimited
-              fi
-            fi
-          fi
-
-          extra_args="$extra_args --jobs=${resmoke_jobs|1}"
-
-          if [ ${should_shuffle|true} = true ]; then
-            extra_args="$extra_args --shuffle"
-          fi
-
-          if [ ${continue_on_failure|true} = true ]; then
-            extra_args="$extra_args --continueOnFailure"
-          fi
-
-          # Default storageEngineCacheSizeGB to 1. Override on individual test config if needed.
-          # resmoke will assign to the appropriate parameter on storage engines that support it.
-          set +o errexit
-          echo "${resmoke_args}" | grep -q storageEngineCacheSizeGB
-          if [ $? -eq 1 ]; then
-            extra_args="$extra_args --storageEngineCacheSizeGB=1"
-          fi
-          set -o errexit
-
-
-          # Reduce the JSHeapLimit for the serial_run task task on Code Coverage builder variant.
-          if [[ "${build_variant}" = "enterprise-rhel-62-64-bit-coverage" && "${task_name}" = "serial_run" ]]; then
-            extra_args="$extra_args --mongodSetParameter {'jsHeapLimitMB':10}"
-          fi
-
-          path_value="$PATH"
-          if [ ${variant_path_suffix} ]; then
-            path_value="$path_value:${variant_path_suffix}"
-          fi
-          if [ ${task_path_suffix} ]; then
-            path_value="$path_value:${task_path_suffix}"
-          fi
-
-          if [ "${is_patch}" = "true" ]; then
-            extra_args="$extra_args --tagFile=etc/test_lifecycle.yml --patchBuild"
-          else
-            extra_args="$extra_args --tagFile=etc/test_retrial.yml"
-          fi
-
-          # The "resmoke_wrapper" expansion is used by the 'burn_in_tests' task to wrap the resmoke.py
-          # invocation. It doesn't set any environment variables and should therefore come last in
-          # this list of expansions.
-          set +o errexit
-          PATH="$path_value"                              \
-              AWS_PROFILE=${aws_profile_remote}           \
-              ${gcov_environment}                         \
-              ${lang_environment}                         \
-              ${san_options}                              \
-              ${san_symbolizer}                           \
-              ${snmp_config_path}                         \
-              ${resmoke_wrapper}                          \
-              $python buildscripts/evergreen_run_tests.py \
-                  ${resmoke_args}                         \
-                  $extra_args                             \
-                  ${test_flags}                           \
-                  --log=buildlogger                       \
-                  --staggerJobs=on                        \
-                  --buildId=${build_id}                   \
-                  --distroId=${distro_id}                 \
-                  --executionNumber=${execution}          \
-                  --projectName=${project}                \
-                  --gitRevision=${revision}               \
-                  --revisionOrderId=${revision_order_id}  \
-                  --taskId=${task_id}                     \
-                  --taskName=${task_name}                 \
-                  --variantName=${build_variant}          \
-                  --versionId=${version_id}               \
-                  --archiveFile=archive.json              \
-                  --reportFile=report.json                \
-                  --perfReportFile=perf.json
-          resmoke_exit_code=$?
-          set -o errexit
-
-          # 74 is exit code for IOError on POSIX systems, which is raised when the machine is
-          # shutting down.
-          #
-          # 75 is exit code resmoke.py uses when the log output would be incomplete due to failing
-          # to communicate with logkeeper.
-          if [[ $resmoke_exit_code = 74 || $resmoke_exit_code = 75 ]]; then
-            echo $resmoke_exit_code > run_tests_infrastructure_failure
-            exit 0
-          elif [ $resmoke_exit_code != 0 ]; then
-            # On failure save the resmoke exit code.
-            echo $resmoke_exit_code > resmoke_error_code
-          fi
-          exit $resmoke_exit_code
-          fi # end if [[ ${disable_unit_tests} && ! -f ${skip_tests|/dev/null} ]]
-
+    - *execute_resmoke_tests
       # The existence of the "run_tests_infrastructure_failure" file indicates this failure isn't
       # directly actionable. We use type=setup rather than type=system or type=test for this command
       # because we don't intend for any human to look at this failure.
@@ -1957,6 +2076,7 @@ functions:
           set -o errexit
 
           ${activate_virtualenv}
+          $python -m pip install -r etc/pip/evgtest-requirements.txt
           $python buildscripts/idl/run_tests.py
 
   "run powercycle test" :
@@ -5653,7 +5773,6 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=sharded_collections_causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
-      resmoke_jobs_max: 0  # No cap on number of jobs.
 
 - <<: *task_template
   name: replica_sets_jscore_passthrough
@@ -6044,6 +6163,24 @@ tasks:
       resmoke_jobs_max: 1
 
 - <<: *task_template
+  name: concurrency_sharded_replication_multi_stmt_txn
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=concurrency_sharded_replication_multi_stmt_txn --storageEngine=wiredTiger
+      resmoke_jobs_max: 1
+
+- <<: *task_template
+  name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=concurrency_sharded_replication_multi_stmt_txn_with_balancer --storageEngine=wiredTiger
+      resmoke_jobs_max: 1
+
+- <<: *task_template
   name: concurrency_simultaneous
   commands:
   - func: "do setup"
@@ -6260,6 +6397,16 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=sasl --storageEngine=wiredTiger
+
+- name: sharding_gen
+  depends_on: []
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: sharding
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 15
 
 - <<: *task_template
   name: sharding
@@ -8226,6 +8373,7 @@ tasks:
   depends_on: []
   commands:
   - func: "git get project"
+  - func: "configure evergreen api credentials"
   - command: shell.exec
     timeout_secs: 14400 # Timeout if there is no output for 4 hours
     type: test
@@ -8249,13 +8397,6 @@ tasks:
         consumer_key: "${testlifecycle_jira_consumer_key}"
         key_cert: |
         $(echo "${testlifecycle_jira_key_certificate}" | sed  's/^/  /')
-        END_OF_CREDS
-
-        # Create the Evergreen API credentials
-        cat > .evergreen.yml <<END_OF_CREDS
-        api_server_host: https://evergreen.mongodb.com/api
-        api_key: "${evergreen_api_key}"
-        user: "${evergreen_api_user}"
         END_OF_CREDS
 
         set -o verbose
@@ -8433,6 +8574,12 @@ buildvariants:
   - name: concurrency_sharded_replication
     distros:
     - rhel62-large
+  - name: concurrency_sharded_replication_multi_stmt_txn
+    distros:
+    - rhel62-large
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
+    distros:
+    - rhel62-large
   - name: concurrency_sharded_replication_with_balancer
     distros:
     - rhel62-large
@@ -8491,6 +8638,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
@@ -8766,6 +8915,8 @@ buildvariants:
     - ubuntu1404-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
@@ -8868,6 +9019,8 @@ buildvariants:
     - ubuntu1804-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -9128,6 +9281,8 @@ buildvariants:
     - ubuntu1604-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -9220,6 +9375,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -9351,6 +9508,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -9411,6 +9570,222 @@ buildvariants:
   - name: compile_all_run_unittests_TG
     distros:
     - ubuntu1604-zseries-large
+  - name: aggregation
+  - name: aggregation_ese
+  - name: aggregation_auth
+  - name: aggregation_read_concern_majority_passthrough
+  - name: aggregation_sharded_collections_passthrough
+  - name: audit
+  - name: auth
+  - name: auth_audit
+  - name: bulk_gle_passthrough
+  - name: concurrency
+  - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
+  - name: concurrency_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
+  - name: concurrency_sharded_replication_with_balancer
+  - name: concurrency_simultaneous
+  - name: concurrency_simultaneous_replication
+  - name: ese
+  - name: failpoints
+  - name: failpoints_auth
+  - name: gle_auth
+  - name: gle_auth_basics_passthrough
+  - name: gle_auth_basics_passthrough_write_cmd
+  - name: gle_auth_write_cmd
+  - name: integration_tests_replset
+  - name: integration_tests_sharded
+  - name: integration_tests_standalone
+  - name: jsCore
+  - name: jsCore_ese
+  - name: jsCore_compatibility
+  - name: jsCore_decimal
+  - name: jsCore_op_query
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: mongosTest
+  - name: noPassthroughWithMongod
+  - name: noPassthrough
+  - name: parallel
+  - name: parallel_compatibility
+  - name: read_concern_linearizable_passthrough
+  - name: read_concern_majority_passthrough
+  - name: replica_sets
+  - name: replica_sets_ese
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: sasl
+  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_jscore_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
+  - name: sharding
+  - name: sharding_ese
+  - name: sharding_auth
+  - name: sharding_auth_audit
+  - name: sharding_csrs_continuous_config_stepdown
+  - name: sharding_gle_auth_basics_passthrough
+  - name: sharding_gle_auth_basics_passthrough_write_cmd
+  - name: sharding_jscore_passthrough
+  - name: sharding_jscore_op_query_passthrough
+  - name: sharding_jscore_passthrough_wire_ops
+  - name: sharding_op_query
+  - name: slow1
+  - name: serial_run
+  - name: snmp
+  - name: ssl
+  - name: sslSpecial
+  - name: tool
+  - name: write_concern_majority_passthrough
+  - name: publish_packages
+    distros:
+    - ubuntu1604-test
+  - name: push
+    distros:
+    - ubuntu1604-test
+
+- name: ubuntu1804-s390x
+  display_name: SSL Ubuntu 18.04 s390x
+  run_on:
+  - ubuntu1804-zseries-test
+  batchtime: 10080 # 7 days
+  expansions:
+    push_path: linux
+    push_bucket: downloads.mongodb.org
+    push_name: linux
+    push_arch: s390x-ubuntu1804
+    compile_flags: --ssl MONGO_DISTMOD=ubuntu1804 --release --jlink=3 -j$(grep -c ^processor /proc/cpuinfo) CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    multiversion_platform: ubuntu1804
+    multiversion_edition: targeted
+    multiversion_architecture: s390x
+    has_packages: true
+    packager_script: packager.py
+    packager_arch: s390x
+    packager_distro: ubuntu1804
+    repo_edition: org
+    scons_cache_scope: local
+    tooltags: "ssl"
+    build_mongoreplay: true
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - ubuntu1804-zseries-build
+  - name: aggregation
+  - name: aggregation_auth
+  - name: auth
+  - name: disk_wiredtiger
+  - name: failpoints
+  - name: failpoints_auth
+  - name: free_monitoring
+  - name: gle_auth
+  - name: gle_auth_write_cmd
+  - name: gle_auth_write_cmd
+  - name: gle_auth_basics_passthrough
+  - name: gle_auth_basics_passthrough_write_cmd
+  - name: sharding_gle_auth_basics_passthrough
+  - name: sharding_gle_auth_basics_passthrough_write_cmd
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_compatibility
+  - name: jsCore_decimal
+  - name: jsCore_txns
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
+  - name: mongosTest
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
+  - name: bulk_gle_passthrough
+  - name: parallel
+  - name: parallel_compatibility
+  - name: concurrency
+  - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
+    distros:
+    - ubuntu1804-zseries-build
+  - name: concurrency_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
+  - name: concurrency_simultaneous
+  - name: concurrency_simultaneous_replication
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: replica_sets
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: sharding
+  - name: sharding_auth
+  - name: slow1
+  - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
+  - name: sharding_jscore_passthrough
+  - name: ssl
+  - name: sslSpecial
+  - name: tool
+  - name: publish_packages
+    distros:
+    - ubuntu1804-test
+  - name: push
+    distros:
+    - ubuntu1804-test
+
+- name: enterprise-ubuntu1804-s390x
+  display_name: Enterprise Ubuntu 18.04 s390x
+  modules:
+  - enterprise
+  run_on:
+  - ubuntu1804-zseries-test
+  batchtime: 10080 # 7 days
+  stepback: false
+  expansions:
+    push_path: linux
+    push_bucket: downloads.10gen.com
+    push_name: linux
+    push_arch: s390x-enterprise-ubuntu1804
+    compile_flags: --ssl MONGO_DISTMOD=ubuntu1804 --release --jlink=3 -j$(grep -c ^processor /proc/cpuinfo) CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    resmoke_jobs_max: 2
+    has_packages: true
+    packager_script: packager_enterprise.py
+    packager_arch: s390x
+    packager_distro: ubuntu1804
+    repo_edition: enterprise
+    tooltags: "ssl sasl"
+    build_mongoreplay: true
+    multiversion_platform: ubuntu1804
+    multiversion_architecture: s390x
+    multiversion_edition: enterprise
+    scons_cache_scope: local
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - ubuntu1804-zseries-build
   - name: aggregation
   - name: aggregation_ese
   - name: aggregation_auth
@@ -9491,10 +9866,10 @@ buildvariants:
   - name: write_concern_majority_passthrough
   - name: publish_packages
     distros:
-    - ubuntu1604-test
+    - ubuntu1804-test
   - name: push
     distros:
-    - ubuntu1604-test
+    - ubuntu1804-test
 
 - name: enterprise-linux-64-amazon-ami
   display_name: "Enterprise Amazon Linux"
@@ -9649,6 +10024,8 @@ buildvariants:
     - linux-64-amzn-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -9840,6 +10217,8 @@ buildvariants:
     - amazon2-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -9962,6 +10341,12 @@ buildvariants:
     distros:
     - windows-64-vs2017-compile
   - name: concurrency_sharded_replication
+    distros:
+    - windows-64-vs2017-compile
+  - name: concurrency_sharded_replication_multi_stmt_txn
+    distros:
+    - windows-64-vs2017-compile
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
     distros:
     - windows-64-vs2017-compile
   - name: concurrency_sharded_replication_with_balancer
@@ -10442,6 +10827,8 @@ buildvariants:
     - windows-64-vs2017-compile
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -10685,6 +11072,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
@@ -11424,11 +11813,12 @@ buildvariants:
     build_mongoreplay: true
     jstestfuzz_num_generated_files: 40
     jstestfuzz_concurrent_num_files: 10
+    target_resmoke_time: 20
+    large_distro_name: rhel62-large
   display_tasks:
   - *dbtest
   - *replica_sets_auth
   - *replica_sets_ese
-  - *sharding
   - *sharding_auth
   - *sharding_auth_audit
   - *sharding_ese
@@ -11496,6 +11886,8 @@ buildvariants:
     - rhel62-large
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
@@ -11673,54 +12065,7 @@ buildvariants:
   - name: sharded_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
-  - name: sharding_0
-    distros:
-    - rhel62-large
-  - name: sharding_1
-    distros:
-    - rhel62-large
-  - name: sharding_2
-    distros:
-    - rhel62-large
-  - name: sharding_3
-    distros:
-    - rhel62-large
-  - name: sharding_4
-    distros:
-    - rhel62-large
-  - name: sharding_5
-    distros:
-    - rhel62-large
-  - name: sharding_6
-    distros:
-    - rhel62-large
-  - name: sharding_7
-    distros:
-    - rhel62-large
-  - name: sharding_8
-    distros:
-    - rhel62-large
-  - name: sharding_9
-    distros:
-    - rhel62-large
-  - name: sharding_10
-    distros:
-    - rhel62-large
-  - name: sharding_11
-    distros:
-    - rhel62-large
-  - name: sharding_12
-    distros:
-    - rhel62-large
-  - name: sharding_13
-    distros:
-    - rhel62-large
-  - name: sharding_14
-    distros:
-    - rhel62-large
-  - name: sharding_misc
-    distros:
-    - rhel62-large
+  - name: sharding_gen
   - name: sharding_auth_0
     distros:
     - rhel62-large
@@ -12023,9 +12368,12 @@ buildvariants:
   run_on:
   - rhel62-small
   expansions: &enterprise-rhel-62-64-bit-majority-read-concern-off-expansions
+  # Ban tests that run prepareTransaction or multi-shard transactions (which use
+  # prepareTransaction). prepareTransaction is rejected on nodes with
+  # enableMajorityReadConcern:"false" (SERVER-37559).
     test_flags: >-
       --majorityReadConcern=off
-      --excludeWithAnyTags=requires_majority_read_concern,uses_change_streams,uses_prepare_transaction,uses_multi_shard_transaction,uses_single_shard_transaction
+      --excludeWithAnyTags=requires_majority_read_concern,uses_change_streams,uses_prepare_transaction,uses_multi_shard_transaction
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
       --ssl
@@ -12210,6 +12558,9 @@ buildvariants:
   - name: sasl
   - name: session_jscore_passthrough
   - name: sharded_collections_jscore_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_multi_stmt_txn_jscore_passthrough
   - name: sharding_0
     distros:
     - rhel62-large
@@ -12560,10 +12911,10 @@ buildvariants:
   tasks:
   # This build variants exists specifically to test that newly added or modified JavaScript tests
   # are correctly tagged with "requires_majority_read_concern", "uses_change_streams",
-  # "uses_prepare_transaction", "uses_multi_shard_transaction", and "uses_single_shard_transaction"
-  # prior to the changes being pushed. It uses the task list from the
-  # enterprise-rhel-62-64-bit-majority-read-concern-off build variant to determine the resmoke.py
-  # YAML suite configurations to run the tests under. Do not add more tasks to this list.
+  # "uses_prepare_transaction", and "uses_multi_shard_transaction" prior to the changes being
+  # pushed. It uses the task list from the enterprise-rhel-62-64-bit-majority-read-concern-off
+  # build variant to determine the resmoke.py YAML suite configurations to run the tests under. Do
+  # not add more tasks to this list.
   - name: compile_TG
     requires:
     - name: burn_in_tests
@@ -12631,6 +12982,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
@@ -12925,6 +13278,8 @@ buildvariants:
     - rhel62-large
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -13031,6 +13386,12 @@ buildvariants:
   - name: concurrency_sharded_replication
     distros:
     - rhel70
+  - name: concurrency_sharded_replication_multi_stmt_txn
+    distros:
+    - rhel70
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
+    distros:
+    - rhel70
   - name: concurrency_sharded_replication_with_balancer
     distros:
     - rhel70
@@ -13109,6 +13470,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -13229,6 +13592,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -13343,6 +13708,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -13733,6 +14100,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -13873,6 +14242,8 @@ buildvariants:
     - suse12-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -14031,6 +14402,8 @@ buildvariants:
     - debian81-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -14190,6 +14563,8 @@ buildvariants:
     - debian92-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -14990,6 +15365,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
@@ -15354,6 +15731,8 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
@@ -15467,7 +15846,7 @@ buildvariants:
   - name: shared_scons_cache_pruning
 
 - name: enterprise-ubuntu1804-64-v3-toolchain-canary-debug
-  display_name: Enterprise Ubuntu 18.04 (Toolchain V3 Canary Builder) DEBUG
+  display_name: Enterprise Ubuntu 18.04 (Toolchain V3 GCC Canary Builder) DEBUG
   modules:
   - enterprise
   run_on:
@@ -15478,6 +15857,44 @@ buildvariants:
       --ssl MONGO_DISTMOD=ubuntu1804
       -j$(grep -c ^processor /proc/cpuinfo)
       --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
+      --dbg=on
+    multiversion_platform: ubuntu1804
+    multiversion_edition: enterprise
+    scons_cache_scope: shared
+    tooltags: "ssl sasl"
+    build_mongoreplay: true
+    has_packages: false
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - ubuntu1804-build
+  - name: audit
+  - name: ese
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: sasl
+  - name: snmp
+  - name: ssl
+  - name: sslSpecial
+
+- name: enterprise-ubuntu1804-64-v3-toolchain-canary-clang-debug
+  display_name: Enterprise Ubuntu 18.04 (Toolchain V3 Clang Canary Builder) DEBUG
+  modules:
+  - enterprise
+  run_on:
+  - ubuntu1804-test
+  batchtime: 1440 # 1 day
+  expansions:
+    compile_flags: >-
+      --ssl MONGO_DISTMOD=ubuntu1804
+      --disable-warnings-as-errors
+      -j$(grep -c ^processor /proc/cpuinfo)
+      --variables-files=etc/scons/mongodbtoolchain_v3_clang.vars
       --dbg=on
     multiversion_platform: ubuntu1804
     multiversion_edition: enterprise

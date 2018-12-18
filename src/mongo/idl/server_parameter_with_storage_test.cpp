@@ -58,7 +58,7 @@ void doStorageTest(StringData name,
                    const std::vector<std::string>& valid,
                    const std::vector<std::string>& invalid) {
     T val;
-    IDLServerParameterWithStorage<T> param(name, val, spt);
+    IDLServerParameterWithStorage<spt, T> param(name, val);
     using element_type = typename decltype(param)::element_type;
 
     // Check type coersion.
@@ -162,7 +162,7 @@ TEST(ServerParameterWithStorage, BoundsTest) {
     using idl_server_parameter_detail::LT;
 
     int val;
-    IDLServerParameterWithStorage<int> param("BoundsTest", val, SPT::kStartupOnly);
+    IDLServerParameterWithStorage<SPT::kStartupOnly, int> param("BoundsTest", val);
 
     param.addBound<GT>(10);
     auto status = param.setFromString("5");
@@ -242,6 +242,20 @@ TEST(IDLServerParameterWithStorage, startupStringRedacted) {
     auto obj = b.obj();
     ASSERT_EQ(obj.nFields(), 1);
     ASSERT_EQ(obj[sp->name()].String(), "###");
+}
+
+TEST(IDLServerParameterWithStorage, startupIntWithExpressions) {
+    auto* sp = dynamic_cast<IDLServerParameterWithStorage<SPT::kStartupOnly, std::int32_t>*>(
+        getServerParameter("startupIntWithExpressions"));
+    ASSERT_EQ(test::gStartupIntWithExpressions, test::kStartupIntWithExpressionsDefault);
+
+    ASSERT_NOT_OK(sp->setValue(test::kStartupIntWithExpressionsMinimum - 1));
+    ASSERT_OK(sp->setValue(test::kStartupIntWithExpressionsMinimum));
+    ASSERT_EQ(test::gStartupIntWithExpressions, test::kStartupIntWithExpressionsMinimum);
+
+    ASSERT_NOT_OK(sp->setValue(test::kStartupIntWithExpressionsMaximum + 1));
+    ASSERT_OK(sp->setValue(test::kStartupIntWithExpressionsMaximum));
+    ASSERT_EQ(test::gStartupIntWithExpressions, test::kStartupIntWithExpressionsMaximum);
 }
 
 }  // namespace

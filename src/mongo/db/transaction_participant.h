@@ -317,7 +317,7 @@ public:
     void abortArbitraryTransaction();
 
     /**
-     * Returns whether the transaction has exceedet its expiration time.
+     * Returns whether the transaction has exceeded its expiration time.
      */
     bool expired() const;
 
@@ -460,6 +460,14 @@ public:
      * externally, such as through a direct write to the transactions table.
      */
     void invalidate();
+
+    /**
+     * Aborts the storage transaction of the prepared transaction on this participant by releasing
+     * its resources. Also invalidates the session and the current transaction state.
+     * Avoids writing any oplog entries or making any changes to the transaction table since the
+     * state for prepared transactions will be re-constituted during replication recovery.
+     */
+    void abortPreparedTransactionForRollback();
 
     /**
      * Returns the op time of the last committed write for this session and transaction. If no write
@@ -729,6 +737,17 @@ private:
     // Attempt to continue an in-progress multi document transaction at the given transaction
     // number.
     void _continueMultiDocumentTransaction(WithLock wl, TxnNumber txnNumber);
+
+    // Helper that invalidates the session state and activeTxnNumber. Also resets the single
+    // transaction stats because the session is no longer valid.
+    void _invalidate(WithLock);
+
+    // Helper that resets the retryable writes state.
+    void _resetRetryableWriteState(WithLock);
+
+    // Helper that resets the transactional state. This is used when aborting a transaction,
+    // invalidating a transaction, or starting a new transaction.
+    void _resetTransactionState(WithLock wl, TransactionState::StateFlag state);
 
     // Protects the member variables below.
     mutable stdx::mutex _mutex;

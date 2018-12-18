@@ -115,7 +115,9 @@ class EvergreenApiV2(EvergreenApi):
             read=num_retries,
             connect=num_retries,
             backoff_factor=0.1,  # Enable backoff starting at 0.1s.
-            status_forcelist=[500, 502, 503, 504])
+            status_forcelist=[
+                500, 502, 504
+            ])  # We are not retrying 503 errors as they are used to indicate degraded service
         adapter = requests.adapters.HTTPAdapter(max_retries=retry)
         self.session.mount("{url.scheme}://".format(url=urlparse(api_server)), adapter)
         self.session.headers.update(api_headers)
@@ -145,8 +147,12 @@ class EvergreenApiV2(EvergreenApi):
     def _call_api(self, url, params=None):
         start_time = time.time()
         response = self.session.get(url=url, params=params)
-        LOGGER.debug("Request %s took %fs:", response.request.url, round(
-            time.time() - start_time, 2))
+        duration = round(time.time() - start_time, 2)
+        if duration > 10:
+            # If the request took over 10 seconds, increase the log level.
+            LOGGER.info("Request %s took %fs:", response.request.url, duration)
+        else:
+            LOGGER.debug("Request %s took %fs:", response.request.url, duration)
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as err:

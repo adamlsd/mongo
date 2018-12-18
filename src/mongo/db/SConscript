@@ -222,6 +222,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'curop',
+        '$BUILD_DIR/mongo/db/query/query_test_service_context',
     ],
 )
 
@@ -848,6 +849,8 @@ env.Library(
         'views/views_mongod',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
+        '$BUILD_DIR/mongo/s/coreshard',
+        "$BUILD_DIR/mongo/s/grid",
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/commands/mongod_fcv',
@@ -973,6 +976,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         "logical_clock",
+        "server_options_core",
     ],
 )
 
@@ -1111,6 +1115,7 @@ env.Library(
         'exec/text.cpp',
         'exec/text_match.cpp',
         'exec/text_or.cpp',
+        'exec/trial_stage.cpp',
         'exec/update.cpp',
         'exec/working_set_common.cpp',
         'exec/write_stage_common.cpp',
@@ -1838,6 +1843,7 @@ env.Library(
         'service_context_test_fixture',
     ],
     LIBDEPS_PRIVATE=[
+        'catalog/catalog_impl',
         'commands/mongod',
         'index_builds_coordinator_mongod',
         'service_context_d',

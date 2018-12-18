@@ -45,6 +45,7 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/interruptible.h"
 #include "mongo/util/time_support.h"
@@ -464,6 +465,35 @@ private:
     Timer _elapsedTime;
 
     bool _writesAreReplicated = true;
+};
+
+/**
+ * RAII-style class to temporarily swap the operation context associated with the client.
+ *
+ * Use this class to bind a new operation context to a client for the duration of the
+ * AlternativeOpCtx's lifetime and restore the prior opCtx at the end of the block.
+ */
+class AlternativeOpCtx {
+public:
+    explicit AlternativeOpCtx(mongo::OperationContext* originalOpCtx)
+        : _client(originalOpCtx->getClient()), _originalOpCtx(originalOpCtx) {
+        _client->resetOperationContext();
+        _alternateOpCtx = _client->makeOperationContext();
+    }
+
+    ~AlternativeOpCtx() {
+        _alternateOpCtx.reset();
+        _client->setOperationContext(_originalOpCtx);
+    }
+
+    mongo::OperationContext* getOperationContext() {
+        return _alternateOpCtx.get();
+    }
+
+private:
+    Client* _client = nullptr;
+    mongo::OperationContext* _originalOpCtx = nullptr;
+    ServiceContext::UniqueOperationContext _alternateOpCtx;
 };
 
 namespace repl {

@@ -297,9 +297,6 @@ public:
     virtual WriteConcernOptions populateUnsetWriteConcernOptionsSyncMode(
         WriteConcernOptions wc) override;
 
-    virtual ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const override;
-    virtual void setIndexPrefetchConfig(const ReplSettings::IndexPrefetchConfig cfg) override;
-
     virtual Status stepUpIfEligible(bool skipDryRun) override;
 
     virtual Status abortCatchupIfNeeded() override;
@@ -362,7 +359,7 @@ public:
      * Simple test wrappers that expose private methods.
      */
     boost::optional<OpTime> calculateStableOpTime_forTest(const std::set<OpTime>& candidates,
-                                                          const OpTime& commitPoint);
+                                                          const OpTime& maximumStableOpTime);
     void cleanupStableOpTimeCandidates_forTest(std::set<OpTime>* candidates, OpTime stableOpTime);
     std::set<OpTime> getStableOpTimeCandidates_forTest();
     boost::optional<OpTime> getStableOpTime_forTest();
@@ -1020,13 +1017,13 @@ private:
     boost::optional<OpTime> _getStableOpTime(WithLock lk);
 
     /**
-     * Calculates the 'stable' replication optime given a set of optime candidates and the
-     * current commit point. The stable optime is the greatest optime in 'candidates' that is
-     * also less than or equal to 'commitPoint'.
+     * Calculates the 'stable' replication optime given a set of optime candidates and a maximum
+     * stable optime. The stable optime is the greatest optime in 'candidates' that is also less
+     * than or equal to 'maximumStableOpTime'.
      */
     boost::optional<OpTime> _calculateStableOpTime(WithLock lk,
                                                    const std::set<OpTime>& candidates,
-                                                   const OpTime& commitPoint);
+                                                   OpTime maximumStableOpTime);
 
     /**
      * Removes any optimes from the optime set 'candidates' that are less than
@@ -1326,11 +1323,6 @@ private:
 
     // Source of random numbers used in setting election timeouts, etc.
     PseudoRandom _random;  // (M)
-
-    // This setting affects the Applier prefetcher behavior.
-    mutable stdx::mutex _indexPrefetchMutex;
-    ReplSettings::IndexPrefetchConfig _indexPrefetchConfig =
-        ReplSettings::IndexPrefetchConfig::PREFETCH_ALL;  // (I)
 
     // The catchup state including all catchup logic. The presence of a non-null pointer indicates
     // that the node is currently in catchup mode.

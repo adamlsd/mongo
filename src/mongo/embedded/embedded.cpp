@@ -159,7 +159,7 @@ void shutdown(ServiceContext* srvContext) {
 
             LogicalSessionCache::set(serviceContext, nullptr);
 
-            // Shut down the background periodic task runner
+            // Shut down the background periodic task runner, before the storage engine.
             if (auto runner = serviceContext->getPeriodicRunner()) {
                 runner->shutdown();
             }
@@ -220,6 +220,12 @@ ServiceContext* initialize(const char* yaml_config) {
     }
 
     DEV log(LogComponent::kControl) << "DEBUG build (which is slower)" << endl;
+
+    // The periodic runner is required by the storage engine to be running beforehand.
+    auto periodicRunner = std::make_unique<PeriodicRunnerEmbedded>(
+        serviceContext, serviceContext->getPreciseClockSource());
+    periodicRunner->startup();
+    serviceContext->setPeriodicRunner(std::move(periodicRunner));
 
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kAllowNoLockFile);
 
@@ -307,11 +313,6 @@ ServiceContext* initialize(const char* yaml_config) {
     if (!storageGlobalParams.readOnly) {
         restartInProgressIndexesFromLastShutdown(startupOpCtx.get());
     }
-
-    auto periodicRunner = std::make_unique<PeriodicRunnerEmbedded>(
-        serviceContext, serviceContext->getPreciseClockSource());
-    periodicRunner->startup();
-    serviceContext->setPeriodicRunner(std::move(periodicRunner));
 
     // Set up the logical session cache
     auto sessionCache = makeLogicalSessionCacheEmbedded();

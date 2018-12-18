@@ -73,6 +73,8 @@
 #include "mongo/db/s/shard_identity_rollback_notifier.h"
 #include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/transaction_participant.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/grid.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -1405,6 +1407,21 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
     log() << "Rollback deleted " << deletes << " documents and updated " << updates
           << " documents.";
 
+    // When majority read concern is disabled, the stable timestamp may be ahead of the common
+    // point. Force the stable timestamp back to the common point.
+    if (!serverGlobalParams.enableMajorityReadConcern) {
+        const bool force = true;
+        log() << "Forcing the stable timestamp to " << fixUpInfo.commonPoint.getTimestamp();
+        opCtx->getServiceContext()->getStorageEngine()->setStableTimestamp(
+            fixUpInfo.commonPoint.getTimestamp(), boost::none, force);
+
+        // We must wait for a checkpoint before truncating oplog, so that if we crash after
+        // truncating oplog, we are guaranteed to recover from a checkpoint that includes all of the
+        // writes performed during the rollback.
+        log() << "Waiting for a stable checkpoint";
+        opCtx->recoveryUnit()->waitUntilUnjournaledWritesDurable();
+    }
+
     log() << "Truncating the oplog at " << fixUpInfo.commonPoint.toString() << " ("
           << fixUpInfo.commonPointOurDiskloc << "), non-inclusive";
 
@@ -1438,6 +1455,19 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
 
     if (auto validator = LogicalTimeValidator::get(opCtx)) {
         validator->resetKeyManagerCache();
+    }
+
+    // The code below will force the config server to update its shard registry.
+    // Otherwise it may have the stale data that has been just rolled back.
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        if (auto shardRegistry = Grid::get(opCtx)->shardRegistry()) {
+            auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+            ON_BLOCK_EXIT([ argsCopy = readConcernArgs, &readConcernArgs ] {
+                readConcernArgs = std::move(argsCopy);
+            });
+            readConcernArgs = repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
+            shardRegistry->reload(opCtx);
+        }
     }
 
     // Reload the lastAppliedOpTime and lastDurableOpTime value in the replcoord and the

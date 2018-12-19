@@ -37,7 +37,7 @@
 #include "mongo/base/init.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/background.h"
-#include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_impl.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/namespace_uuid_cache.h"
@@ -170,7 +170,7 @@ Database* DatabaseHolderImpl::openDb(OperationContext* opCtx, StringData ns, boo
             *justCreated = true;
     }
 
-    auto newDb = stdx::make_unique<Database>(opCtx, dbname, entry);
+    auto newDb = stdx::make_unique<Database>(opCtx, dbname, entry, ++_epoch);
 
     // Finally replace our nullptr entry with the new Database pointer.
     removeDbGuard.Dismiss();
@@ -258,7 +258,7 @@ std::unique_ptr<Collection> DatabaseHolderImpl::makeCollection(
     CollectionCatalogEntry* const details,
     RecordStore* const recordStore,
     DatabaseCatalogEntry* const dbce) {
-    return std::make_unique<Collection>(opCtx, fullNS, uuid, details, recordStore, dbce);
+    return std::make_unique<CollectionImpl>(opCtx, fullNS, uuid, details, recordStore, dbce);
 }
 
 }  // namespace mongo

@@ -47,6 +47,8 @@ if [ ! -d $SRC ]; then
 
     pushd $SRC
     $GIT_EXE checkout v$VERSION
+
+    $GIT_EXE am $PATCH_DIR/0001-properly-escape-json-names-652.patch
     
     popd
 fi

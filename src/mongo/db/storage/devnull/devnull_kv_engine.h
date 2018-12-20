@@ -128,6 +128,10 @@ public:
         return Timestamp();
     }
 
+    virtual Timestamp getOldestOpenReadTimestamp() const override {
+        return Timestamp();
+    }
+
     virtual Status beginBackup(OperationContext* opCtx) override {
         return Status::OK();
     }
@@ -138,6 +142,9 @@ public:
         OperationContext* opCtx) override;
 
     virtual void endNonBlockingBackup(OperationContext* opCtx) override {}
+
+    virtual StatusWith<std::vector<std::string>> extendBackupCursor(
+        OperationContext* opCtx) override;
 
 private:
     std::shared_ptr<void> _catalogInfo;

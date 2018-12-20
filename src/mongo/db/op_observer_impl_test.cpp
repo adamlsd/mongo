@@ -44,6 +44,7 @@
 #include "mongo/db/repl/oplog_interface_local.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
+#include "mongo/db/repl/storage_interface_mock.h"
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_recovery_unit.h"
@@ -53,11 +54,10 @@
 #include "mongo/util/clock_source_mock.h"
 
 namespace mongo {
+namespace {
 
 using repl::OplogEntry;
 using unittest::assertGet;
-
-namespace {
 
 class OpObserverTest : public ServiceContextMongoDTest {
 public:
@@ -67,6 +67,7 @@ public:
 
         auto service = getServiceContext();
         auto opCtx = cc().makeOperationContext();
+        repl::StorageInterface::set(service, stdx::make_unique<repl::StorageInterfaceMock>());
 
         // Set up ReplicationCoordinator and create oplog.
         repl::ReplicationCoordinator::set(
@@ -347,9 +348,8 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
 
         // Create a session and sync it from disk
         auto session = sessionCatalog->checkOutSession(opCtx.get());
-        const auto txnParticipant =
-            TransactionParticipant::getFromNonCheckedOutSession(session.get());
-        txnParticipant->refreshFromStorageIfNeeded(opCtx.get());
+        const auto txnParticipant = TransactionParticipant::get(session.get());
+        txnParticipant->refreshFromStorageIfNeeded();
 
         // Simulate a write occurring on that session
         simulateSessionWrite(opCtx.get(), txnParticipant, nss, txnNum, stmtId);
@@ -374,8 +374,7 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
         opCtx->setLogicalSessionId(sessionId);
 
         auto session = sessionCatalog->checkOutSession(opCtx.get());
-        const auto txnParticipant =
-            TransactionParticipant::getFromNonCheckedOutSession(session.get());
+        const auto txnParticipant = TransactionParticipant::get(session.get());
         ASSERT_THROWS_CODE(txnParticipant->checkStatementExecutedNoOplogEntryFetch(txnNum, stmtId),
                            DBException,
                            ErrorCodes::ConflictingOperationInProgress);
@@ -398,9 +397,8 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
 
         // Create a session and sync it from disk
         auto session = sessionCatalog->checkOutSession(opCtx.get());
-        const auto txnParticipant =
-            TransactionParticipant::getFromNonCheckedOutSession(session.get());
-        txnParticipant->refreshFromStorageIfNeeded(opCtx.get());
+        const auto txnParticipant = TransactionParticipant::get(session.get());
+        txnParticipant->refreshFromStorageIfNeeded();
 
         // Simulate a write occurring on that session
         simulateSessionWrite(opCtx.get(), txnParticipant, nss, txnNum, stmtId);
@@ -424,8 +422,7 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
         opCtx->setLogicalSessionId(sessionId);
 
         auto session = sessionCatalog->checkOutSession(opCtx.get());
-        const auto txnParticipant =
-            TransactionParticipant::getFromNonCheckedOutSession(session.get());
+        const auto txnParticipant = TransactionParticipant::get(session.get());
         ASSERT(txnParticipant->checkStatementExecutedNoOplogEntryFetch(txnNum, stmtId));
     }
 }
@@ -520,21 +517,17 @@ public:
     void setUp() override {
         OpObserverTest::setUp();
         _opCtx = cc().makeOperationContext();
+
         _opObserver.emplace();
 
         MongoDSessionCatalog::onStepUp(opCtx());
-
-        // Create a session.
-        auto sessionCatalog = SessionCatalog::get(getServiceContext());
-        auto sessionId = makeLogicalSessionIdForTest();
-        _session = sessionCatalog->getOrCreateSession(opCtx(), sessionId);
-
         _times.emplace(opCtx());
-        opCtx()->setLogicalSessionId(session()->getSessionId());
-        opCtx()->setTxnNumber(txnNum());
 
+        opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
+        opCtx()->setTxnNumber(txnNum());
         _sessionCheckout = std::make_unique<MongoDOperationContextSession>(opCtx());
-        auto txnParticipant = TransactionParticipant::get(opCtx());
+
+        const auto txnParticipant = TransactionParticipant::get(opCtx());
         txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), false, true);
     }
 
@@ -575,7 +568,7 @@ protected:
         ASSERT_EQ(txnState != boost::none,
                   txnRecordObj.hasField(SessionTxnRecord::kStateFieldName));
 
-        const auto txnParticipant = TransactionParticipant::getFromNonCheckedOutSession(session());
+        const auto txnParticipant = TransactionParticipant::get(session());
         if (!opTime.isNull()) {
             ASSERT_EQ(opTime, txnRecord.getLastWriteOpTime());
             ASSERT_EQ(opTime, txnParticipant->getLastWriteOpTime(txnNum));
@@ -593,7 +586,7 @@ protected:
     }
 
     Session* session() {
-        return _session->get();
+        return OperationContextSession::get(opCtx());
     }
 
     OpObserverImpl& opObserver() {
@@ -614,10 +607,11 @@ private:
         typedef OpObserver::ReservedTimes ReservedTimes;
     };
 
-    boost::optional<OpObserverImpl> _opObserver;
-    boost::optional<ScopedSession> _session;
     ServiceContext::UniqueOperationContext _opCtx;
+
+    boost::optional<OpObserverImpl> _opObserver;
     boost::optional<ExposeOpObserverTimes::ReservedTimes> _times;
+
     std::unique_ptr<MongoDOperationContextSession> _sessionCheckout;
     TxnNumber _txnNum = 0;
 };

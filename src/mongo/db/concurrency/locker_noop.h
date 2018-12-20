@@ -111,12 +111,20 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    virtual void beginWriteUnitOfWork() {}
+    virtual void beginWriteUnitOfWork() override {}
 
-    virtual void endWriteUnitOfWork() {}
+    virtual void endWriteUnitOfWork() override {}
 
     virtual bool inAWriteUnitOfWork() const {
         return false;
+    }
+
+    virtual LockResult lockRSTLBegin(OperationContext* opCtx) {
+        MONGO_UNREACHABLE;
+    }
+
+    virtual LockResult lockRSTLComplete(OperationContext* opCtx, Date_t deadline) {
+        MONGO_UNREACHABLE;
     }
 
     virtual LockResult lock(OperationContext* opCtx,
@@ -179,6 +187,15 @@ public:
         MONGO_UNREACHABLE;
     }
 
+    bool releaseWriteUnitOfWork(LockSnapshot* stateOut) override {
+        MONGO_UNREACHABLE;
+    }
+
+    void restoreWriteUnitOfWork(OperationContext* opCtx,
+                                const LockSnapshot& stateToRestore) override {
+        MONGO_UNREACHABLE;
+    };
+
     virtual void releaseTicket() {
         MONGO_UNREACHABLE;
     }
@@ -210,6 +227,14 @@ public:
     }
 
     virtual bool isReadLocked() const {
+        return true;
+    }
+
+    virtual bool isRSTLExclusive() const {
+        return true;
+    }
+
+    virtual bool isRSTLLocked() const {
         return true;
     }
 

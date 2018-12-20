@@ -464,6 +464,7 @@
         saslContinue: {skip: isUnrelated},
         saslStart: {skip: isUnrelated},
         serverStatus: {command: {serverStatus: 1}, skip: isUnrelated},
+        setIndexCommitQuorum: {skip: isUnrelated},
         setCommittedSnapshot: {skip: isAnInternalCommand},
         setFeatureCompatibilityVersion: {skip: isUnrelated},
         setFreeMonitoring: {skip: isUnrelated},
@@ -519,6 +520,10 @@
             command: {touch: "view", data: true},
             expectFailure: true,
         },
+        twoPhaseCreateIndexes: {
+            command: {twoPhaseCreateIndexes: "view", indexes: [{key: {x: 1}, name: "x_1"}]},
+            expectFailure: true,
+        },
         unsetSharding: {skip: isAnInternalCommand},
         update: {command: {update: "view", updates: [{q: {x: 1}, u: {x: 2}}]}, expectFailure: true},
         updateRole: {
@@ -539,6 +544,7 @@
         usersInfo: {skip: isUnrelated},
         validate: {command: {validate: "view"}, expectFailure: true},
         waitForOngoingChunkSplits: {skip: isUnrelated},
+        voteCommitIndexBuild: {skip: isUnrelated},
         voteCommitTransaction: {skip: isUnrelated},
         voteAbortTransaction: {skip: isUnrelated},
         whatsmyuri: {skip: isUnrelated}

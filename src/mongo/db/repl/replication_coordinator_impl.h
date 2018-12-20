@@ -297,9 +297,6 @@ public:
     virtual WriteConcernOptions populateUnsetWriteConcernOptionsSyncMode(
         WriteConcernOptions wc) override;
 
-    virtual ReplSettings::IndexPrefetchConfig getIndexPrefetchConfig() const override;
-    virtual void setIndexPrefetchConfig(const ReplSettings::IndexPrefetchConfig cfg) override;
-
     virtual Status stepUpIfEligible(bool skipDryRun) override;
 
     virtual Status abortCatchupIfNeeded() override;
@@ -362,7 +359,7 @@ public:
      * Simple test wrappers that expose private methods.
      */
     boost::optional<OpTime> calculateStableOpTime_forTest(const std::set<OpTime>& candidates,
-                                                          const OpTime& commitPoint);
+                                                          const OpTime& maximumStableOpTime);
     void cleanupStableOpTimeCandidates_forTest(std::set<OpTime>* candidates, OpTime stableOpTime);
     std::set<OpTime> getStableOpTimeCandidates_forTest();
     boost::optional<OpTime> getStableOpTime_forTest();
@@ -588,17 +585,17 @@ private:
     private:
         // Flag that indicates whether writes to databases other than "local" are allowed.  Used to
         // answer canAcceptWritesForDatabase() and canAcceptWritesFor() questions. In order to read
-        // it, must have either the RSTL in some intent mode or the replication coordinator mutex.
-        // To set it, must have both the RSTL in mode X and the replication coordinator mutex.
+        // it, must have either the RSTL or the replication coordinator mutex. To set it, must have
+        // both the RSTL in mode X and the replication coordinator mutex.
         // Always true for standalone nodes.
         bool _canAcceptNonLocalWrites;
 
         // Flag that indicates whether reads from databases other than "local" are allowed. Unlike
         // _canAcceptNonLocalWrites, above, this question is about admission control on secondaries.
         // Accidentally providing the prior value for a limited period of time is acceptable, except
-        // during rollback. In order to read it, must have the RSTL in some intent mode. To set it
-        // when transitioning into RS_ROLLBACK, must have the RSTL in mode X. Otherwise, no lock or
-        // mutex is necessary to set it.
+        // during rollback. In order to read it, must have the RSTL. To set it when transitioning
+        // into RS_ROLLBACK, must have the RSTL in mode X. Otherwise, no lock or mutex is necessary
+        // to set it.
         AtomicUInt32 _canServeNonLocalReads;
     };
 
@@ -1020,13 +1017,13 @@ private:
     boost::optional<OpTime> _getStableOpTime(WithLock lk);
 
     /**
-     * Calculates the 'stable' replication optime given a set of optime candidates and the
-     * current commit point. The stable optime is the greatest optime in 'candidates' that is
-     * also less than or equal to 'commitPoint'.
+     * Calculates the 'stable' replication optime given a set of optime candidates and a maximum
+     * stable optime. The stable optime is the greatest optime in 'candidates' that is also less
+     * than or equal to 'maximumStableOpTime'.
      */
     boost::optional<OpTime> _calculateStableOpTime(WithLock lk,
                                                    const std::set<OpTime>& candidates,
-                                                   const OpTime& commitPoint);
+                                                   OpTime maximumStableOpTime);
 
     /**
      * Removes any optimes from the optime set 'candidates' that are less than
@@ -1326,11 +1323,6 @@ private:
 
     // Source of random numbers used in setting election timeouts, etc.
     PseudoRandom _random;  // (M)
-
-    // This setting affects the Applier prefetcher behavior.
-    mutable stdx::mutex _indexPrefetchMutex;
-    ReplSettings::IndexPrefetchConfig _indexPrefetchConfig =
-        ReplSettings::IndexPrefetchConfig::PREFETCH_ALL;  // (I)
 
     // The catchup state including all catchup logic. The presence of a non-null pointer indicates
     // that the node is currently in catchup mode.

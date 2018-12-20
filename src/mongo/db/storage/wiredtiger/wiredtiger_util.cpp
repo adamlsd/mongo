@@ -39,7 +39,6 @@
 #include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/snapshot_window_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
@@ -403,7 +402,6 @@ int mdb_handle_error_with_startup_suppression(WT_EVENT_HANDLER* handler,
                 return 0;
             }
         }
-
         error() << "WiredTiger error (" << errorCode << ") " << redact(message)
                 << " Raw: " << message;
 
@@ -530,10 +528,6 @@ int WiredTigerUtil::verifyTable(OperationContext* opCtx,
 bool WiredTigerUtil::useTableLogging(NamespaceString ns, bool replEnabled) {
     if (!replEnabled) {
         // All tables on standalones are logged.
-        return true;
-    }
-
-    if (!serverGlobalParams.enableMajorityReadConcern) {
         return true;
     }
 
@@ -667,6 +661,86 @@ Status WiredTigerUtil::exportTableToBSON(WT_SESSION* session,
         bob->append(s, it->second->obj());
         delete it->second;
     }
+    return Status::OK();
+}
+
+Status WiredTigerUtil::exportOperationStatsInfoToBSON(WT_SESSION* session,
+                                                      const std::string& uri,
+                                                      const std::string& config,
+                                                      BSONObjBuilder* bob) {
+    invariant(session);
+    invariant(bob);
+
+    // Map the statistics to a name and type desired for user consumption. There are two types of
+    // operation statistics - data and wait.
+    enum class Section { DATA, WAIT };
+    static std::map<int, std::pair<StringData, Section>> statNameMap = {
+        {WT_STAT_SESSION_BYTES_READ, std::make_pair("bytesRead", Section::DATA)},
+        {WT_STAT_SESSION_BYTES_WRITE, std::make_pair("bytesWritten", Section::DATA)},
+        {WT_STAT_SESSION_LOCK_DHANDLE_WAIT, std::make_pair("handleLock", Section::WAIT)},
+        {WT_STAT_SESSION_READ_TIME, std::make_pair("timeReadingMicros", Section::DATA)},
+        {WT_STAT_SESSION_WRITE_TIME, std::make_pair("timeWritingMicros", Section::DATA)},
+        {WT_STAT_SESSION_LOCK_SCHEMA_WAIT, std::make_pair("schemaLock", Section::WAIT)},
+        {WT_STAT_SESSION_CACHE_TIME, std::make_pair("cache", Section::WAIT)}};
+
+    WT_CURSOR* c = nullptr;
+    const char* cursorConfig = config.empty() ? nullptr : config.c_str();
+    int ret = session->open_cursor(session, uri.c_str(), nullptr, cursorConfig, &c);
+    if (ret != 0) {
+        return Status(ErrorCodes::CursorNotFound,
+                      str::stream() << "unable to open cursor at URI " << uri << ". reason: "
+                                    << wiredtiger_strerror(ret));
+    }
+    invariant(c);
+    ON_BLOCK_EXIT(c->close, c);
+
+    BSONObjBuilder* dataSection = nullptr;
+    BSONObjBuilder* waitSection = nullptr;
+    const char* desc;
+    uint64_t value;
+    uint64_t key;
+    while (c->next(c) == 0 && c->get_key(c, &key) == 0) {
+        fassert(51035, c->get_value(c, &desc, nullptr, &value) == 0);
+
+        StringData statName;
+        // Find the user consumable name for this statistic.
+        auto statIt = statNameMap.find(key);
+        invariant(statIt != statNameMap.end());
+        statName = statIt->second.first;
+
+        Section subs = statIt->second.second;
+        long long casted_val = _castStatisticsValue<long long>(value);
+
+        // Add this statistic only if higher than zero.
+        if (casted_val > 0) {
+            // Gather the statistic into its own subsection in the BSONObj.
+            switch (subs) {
+                case Section::DATA:
+                    if (!dataSection)
+                        dataSection = new BSONObjBuilder();
+
+                    dataSection->append(statName, casted_val);
+                    break;
+                case Section::WAIT:
+                    if (!waitSection)
+                        waitSection = new BSONObjBuilder();
+
+                    waitSection->append(statName, casted_val);
+                    break;
+                default:
+                    return Status(ErrorCodes::BadValue,
+                                  str::stream() << "Unexpected storage statistics type.");
+            }
+        }
+    }
+
+    if (dataSection)
+        bob->append("data", dataSection->obj());
+    if (waitSection)
+        bob->append("timeWaitingMicros", waitSection->obj());
+
+    // Reset the statistics so that the next fetch gives the recent values.
+    c->reset(c);
     return Status::OK();
 }
 

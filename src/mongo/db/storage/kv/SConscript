@@ -33,6 +33,17 @@ env.Library(
 
 # Should not be referenced outside this SConscript file.
 env.Library(
+    target='kv_drop_pending_ident_reaper',
+    source=['kv_drop_pending_ident_reaper.cpp'],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/storage/write_unit_of_work',
+        'kv_prefix',
+    ],
+)
+
+# Should not be referenced outside this SConscript file.
+env.Library(
     target='kv_database_catalog_entry_core',
     source=['kv_database_catalog_entry_base.cpp'],
     LIBDEPS=[
@@ -45,17 +56,23 @@ env.Library(
 # Should not be referenced outside this SConscript file.
 env.Library(
     target='kv_storage_engine',
-    source=['kv_storage_engine.cpp'],
+    source=[
+        'kv_storage_engine.cpp',
+        'temporary_kv_record_store.cpp',
+        env.Idlc('kv_storage_engine.idl')[0],
+    ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/catalog/catalog_impl',
+        '$BUILD_DIR/mongo/db/catalog/catalog_control',
         '$BUILD_DIR/mongo/db/storage/kv/kv_engine_core',
         '$BUILD_DIR/mongo/db/storage/storage_options',
         'kv_database_catalog_entry_core',
+        'kv_drop_pending_ident_reaper',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/logical_clock',
         '$BUILD_DIR/mongo/db/storage/storage_repair_observer',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
@@ -107,6 +124,17 @@ env.Library(
     )
 
 env.CppUnitTest(
+    target='kv_drop_pending_ident_reaper_test',
+    source=[
+        'kv_drop_pending_ident_reaper_test.cpp',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/service_context_test_fixture',
+        'kv_drop_pending_ident_reaper',
+    ],
+)
+
+env.CppUnitTest(
     target='kv_database_catalog_entry_test',
     source=[
         'kv_database_catalog_entry_test.cpp',
@@ -153,8 +181,10 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/replmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/db/storage/devnull/storage_devnull_core',
         '$BUILD_DIR/mongo/db/storage/ephemeral_for_test/storage_ephemeral_for_test_core',
         '$BUILD_DIR/mongo/db/storage/storage_repair_observer',
+        '$BUILD_DIR/mongo/unittest/concurrency',
         'kv_engine',
         'kv_engine_mock',
     ],

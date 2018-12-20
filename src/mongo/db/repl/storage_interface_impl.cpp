@@ -48,7 +48,7 @@
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
-#include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/uuid_catalog.h"
@@ -372,7 +372,37 @@ Status StorageInterfaceImpl::insertDocuments(OperationContext* opCtx,
 }
 
 Status StorageInterfaceImpl::dropReplicatedDatabases(OperationContext* opCtx) {
-    Database::dropAllDatabasesExceptLocal(opCtx);
+    Lock::GlobalWrite globalWriteLock(opCtx);
+
+    std::vector<std::string> dbNames;
+    opCtx->getServiceContext()->getStorageEngine()->listDatabases(&dbNames);
+    invariant(!dbNames.empty());
+    log() << "dropReplicatedDatabases - dropping " << dbNames.size() << " databases";
+
+    ReplicationCoordinator::get(opCtx)->dropAllSnapshots();
+
+    auto dbHolder = &DatabaseHolder::getDatabaseHolder();
+    auto hasLocalDatabase = false;
+    for (const auto& dbName : dbNames) {
+        if (dbName == "local") {
+            hasLocalDatabase = true;
+            continue;
+        }
+        writeConflictRetry(opCtx, "dropReplicatedDatabases", dbName, [&] {
+            if (auto db = dbHolder->get(opCtx, dbName)) {
+                dbHolder->dropDb(opCtx, db);
+            } else {
+                // This is needed since dropDatabase can't be rolled back.
+                // This is safe be replaced by "invariant(db);dropDatabase(opCtx, db);" once fixed.
+                log() << "dropReplicatedDatabases - database disappeared after retrieving list of "
+                         "database names but before drop: "
+                      << dbName;
+            }
+        });
+    }
+    invariant(hasLocalDatabase, "local database missing");
+    log() << "dropReplicatedDatabases - dropped " << dbNames.size() << " databases";
+
     return Status::OK();
 }
 
@@ -528,7 +558,7 @@ Status StorageInterfaceImpl::setIndexIsMultikey(OperationContext* opCtx,
                                         << nss.ns()
                                         << " to set to multikey.");
         }
-        collection->getIndexCatalog()->getIndex(idx)->setIndexIsMultikey(opCtx, paths);
+        collection->getIndexCatalog()->setMultikeyPaths(opCtx, idx, paths);
         wunit.commit();
         return Status::OK();
     });
@@ -609,7 +639,7 @@ StatusWith<std::vector<BSONObj>> _findOrDeleteDocuments(
                 auto indexCatalog = collection->getIndexCatalog();
                 invariant(indexCatalog);
                 bool includeUnfinishedIndexes = false;
-                IndexDescriptor* indexDescriptor =
+                const IndexDescriptor* indexDescriptor =
                     indexCatalog->findIndexByName(opCtx, *indexName, includeUnfinishedIndexes);
                 if (!indexDescriptor) {
                     return Result(ErrorCodes::IndexNotFound,
@@ -1124,8 +1154,12 @@ Status StorageInterfaceImpl::isAdminDbValid(OperationContext* opCtx) {
     return Status::OK();
 }
 
-void StorageInterfaceImpl::waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) {
+void StorageInterfaceImpl::waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx,
+                                                                   bool primaryOnly) {
     Lock::GlobalLock lk(opCtx, MODE_IS);
+    if (primaryOnly &&
+        !repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesForDatabase(opCtx, "admin"))
+        return;
     Collection* oplog;
     {
         // We don't want to be holding the collection lock while blocking, to avoid deadlocks.
@@ -1181,6 +1215,10 @@ bool StorageInterfaceImpl::supportsDocLocking(ServiceContext* serviceCtx) const 
 
 Timestamp StorageInterfaceImpl::getAllCommittedTimestamp(ServiceContext* serviceCtx) const {
     return serviceCtx->getStorageEngine()->getAllCommittedTimestamp();
+}
+
+Timestamp StorageInterfaceImpl::getOldestOpenReadTimestamp(ServiceContext* serviceCtx) const {
+    return serviceCtx->getStorageEngine()->getOldestOpenReadTimestamp();
 }
 
 Timestamp StorageInterfaceImpl::getPointInTimeReadTimestamp(OperationContext* opCtx) const {

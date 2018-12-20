@@ -35,15 +35,16 @@
 
 #include "mongo/base/shim.h"
 #include "mongo/base/string_data.h"
-#include "mongo/db/namespace_string.h"
-#include "mongo/stdx/functional.h"
-#include "mongo/stdx/mutex.h"
-#include "mongo/util/concurrency/mutex.h"
-#include "mongo/util/string_map.h"
+#include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_options.h"
 
 namespace mongo {
+
+class CollectionCatalogEntry;
 class Database;
+class DatabaseCatalogEntry;
 class OperationContext;
+class RecordStore;
 
 /**
  * Registry of opened databases.
@@ -58,11 +59,20 @@ public:
 
         virtual Database* openDb(OperationContext* opCtx, StringData ns, bool* justCreated) = 0;
 
+        virtual void dropDb(OperationContext* opCtx, Database* db) = 0;
+
         virtual void close(OperationContext* opCtx, StringData ns, const std::string& reason) = 0;
 
         virtual void closeAll(OperationContext* opCtx, const std::string& reason) = 0;
 
         virtual std::set<std::string> getNamesWithConflictingCasing(StringData name) = 0;
+
+        virtual std::unique_ptr<Collection> makeCollection(OperationContext* const opCtx,
+                                                           const StringData fullNS,
+                                                           OptionalCollectionUUID uuid,
+                                                           CollectionCatalogEntry* const details,
+                                                           RecordStore* const recordStore,
+                                                           DatabaseCatalogEntry* const dbce) = 0;
     };
 
 public:
@@ -96,6 +106,17 @@ public:
     }
 
     /**
+     * Physically drops the specified opened database and removes it from the server's metadata. It
+     * doesn't notify the replication subsystem or do any other consistency checks, so it should
+     * not be used directly from user commands.
+     *
+     * Must be called with the specified database locked in X mode.
+     */
+    inline void dropDb(OperationContext* opCtx, Database* db) {
+        return this->_impl().dropDb(opCtx, db);
+    }
+
+    /**
      * Closes the specified database. Must be called with the database locked in X-mode.
      * No background jobs must be in progress on the database when this function is called.
      */
@@ -120,6 +141,20 @@ public:
      */
     inline std::set<std::string> getNamesWithConflictingCasing(const StringData name) {
         return this->_impl().getNamesWithConflictingCasing(name);
+    }
+
+    /**
+     * Returns a new Collection.
+     * This function supports rebuilding indexes during the repair process and should not be used
+     * for any other purpose.
+     */
+    inline std::unique_ptr<Collection> makeCollection(OperationContext* const opCtx,
+                                                      const StringData fullNS,
+                                                      OptionalCollectionUUID uuid,
+                                                      CollectionCatalogEntry* const details,
+                                                      RecordStore* const recordStore,
+                                                      DatabaseCatalogEntry* const dbce) {
+        return this->_impl().makeCollection(opCtx, fullNS, uuid, details, recordStore, dbce);
     }
 
 private:
@@ -147,4 +182,5 @@ private:
 
     std::unique_ptr<Impl> _pimpl;
 };
+
 }  // namespace mongo

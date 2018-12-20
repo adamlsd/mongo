@@ -926,7 +926,7 @@ void ReplicationCoordinatorImpl::clearSyncSourceBlacklist() {
 Status ReplicationCoordinatorImpl::setFollowerModeStrict(OperationContext* opCtx,
                                                          const MemberState& newState) {
     invariant(opCtx);
-    invariant(opCtx->lockState()->isW());
+    invariant(opCtx->lockState()->isRSTLExclusive());
     return _setFollowerMode(opCtx, newState);
 }
 
@@ -1089,15 +1089,26 @@ void ReplicationCoordinatorImpl::setMyHeartbeatMessage(const std::string& msg) {
 void ReplicationCoordinatorImpl::setMyLastAppliedOpTimeForward(const OpTime& opTime,
                                                                DataConsistency consistency) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-    if (opTime > _getMyLastAppliedOpTime_inlock()) {
+    auto myLastAppliedOpTime = _getMyLastAppliedOpTime_inlock();
+    if (opTime > myLastAppliedOpTime) {
         _setMyLastAppliedOpTime(lock, opTime, false, consistency);
         _reportUpstream_inlock(std::move(lock));
-    } else if (consistency == DataConsistency::Consistent &&
-               _readWriteAbility->canAcceptNonLocalWrites(lock) &&
-               _rsConfig.getWriteMajority() == 1) {
-        // Single vote primaries may have a lagged stable timestamp due to paring back the stable
-        // timestamp to the all committed timestamp.
-        _setStableTimestampForStorage(lock);
+    } else {
+        if (opTime != myLastAppliedOpTime) {
+            // In pv1, oplog entries are ordered by non-decreasing term and strictly increasing
+            // timestamp. So, in pv1, its not possible for us to get opTime with lower term and
+            // timestamp higher than or equal to our current lastAppliedOptime.
+            invariant(opTime.getTerm() == OpTime::kUninitializedTerm ||
+                      myLastAppliedOpTime.getTerm() == OpTime::kUninitializedTerm ||
+                      opTime.getTimestamp() < myLastAppliedOpTime.getTimestamp());
+        }
+
+        if (consistency == DataConsistency::Consistent &&
+            _readWriteAbility->canAcceptNonLocalWrites(lock) && _rsConfig.getWriteMajority() == 1) {
+            // Single vote primaries may have a lagged stable timestamp due to paring back the
+            // stable timestamp to the all committed timestamp.
+            _setStableTimestampForStorage(lock);
+        }
     }
 }
 
@@ -1190,8 +1201,10 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTime(WithLock lk,
         invariant(opTime.getTimestamp().getInc() > 0,
                   str::stream() << "Impossible optime received: " << opTime.toString());
         _stableOpTimeCandidates.insert(opTime);
-        // If we are lagged behind the commit optime, set a new stable timestamp here.
-        if (opTime <= _topCoord->getLastCommittedOpTime()) {
+        // If we are lagged behind the commit optime, set a new stable timestamp here. When majority
+        // read concern is disabled, the stable timestamp is set to lastApplied.
+        if (opTime <= _topCoord->getLastCommittedOpTime() ||
+            !serverGlobalParams.enableMajorityReadConcern) {
             _setStableTimestampForStorage(lk);
         }
     } else if (_getMemberState_inlock().startup2()) {
@@ -1382,7 +1395,11 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
         // only then do we know that it will fill in all "holes" before that time.  If we do it
         // earlier, we may return when the requested optime has been reached, but other writes
         // at optimes before that time are not yet visible.
-        _storage->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+        //
+        // We wait only on primaries, because on secondaries, other mechanisms assure that the
+        // last applied optime is always hole-free, and waiting for all earlier writes to be visible
+        // can deadlock against secondary command application.
+        _storage->waitForAllEarlierOplogWritesToBeVisible(opCtx, /* primaryOnly =*/true);
     }
 
     return Status::OK();
@@ -1403,14 +1420,10 @@ Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(OperationContext
     auto targetOpTime = OpTime(clusterTime.asTimestamp(), OpTime::kUninitializedTerm);
     invariant(!readConcern.getArgsOpTime());
 
-    // TODO SERVER-34620: Re-enable speculative behavior when "atClusterTime" is specified.
-    const bool speculative = readConcern.getLevel() == ReadConcernLevel::kSnapshotReadConcern &&
-        !readConcern.getArgsAtClusterTime();
-
+    // We don't set isMajorityCommittedRead for kSnapshotReadConcern because snapshots are always
+    // speculative; we wait for majority when the transaction commits.
     const bool isMajorityCommittedRead =
-        (readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern ||
-         readConcern.getLevel() == ReadConcernLevel::kSnapshotReadConcern) &&
-        !speculative;
+        readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern;
 
     return _waitUntilOpTime(opCtx, isMajorityCommittedRead, targetOpTime, deadline);
 }
@@ -1736,7 +1749,7 @@ void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     transitionArgs.lockDeadline = force ? stepDownUntil : waitUntil;
 
     ReplicationStateTransitionLockGuard transitionGuard(opCtx, transitionArgs);
-    invariant(opCtx->lockState()->isW());
+    invariant(opCtx->lockState()->isRSTLExclusive());
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
@@ -1759,7 +1772,7 @@ void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     // Make sure that we leave _canAcceptNonLocalWrites in the proper state.
     auto updateMemberState = [&] {
         invariant(lk.owns_lock());
-        invariant(opCtx->lockState()->isW());
+        invariant(opCtx->lockState()->isRSTLExclusive());
 
         auto action = _updateMemberStateFromTopologyCoordinator(lk, opCtx);
         lk.unlock();
@@ -1802,28 +1815,26 @@ void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
         while (!_topCoord->attemptStepDown(
             termAtStart, _replExecutor->now(), waitUntil, stepDownUntil, force)) {
 
-            // The stepdown attempt failed. We now release the global lock to allow secondaries
-            // to read the oplog, then wait until enough secondaries are caught up for us to
-            // finish stepdown.
-            transitionGuard.releaseGlobalLock();
+            // The stepdown attempt failed. We now release the RSTL to allow secondaries to read the
+            // oplog, then wait until enough secondaries are caught up for us to finish stepdown.
+            transitionGuard.releaseRSTL();
             invariant(!opCtx->lockState()->isLocked());
 
-            // Make sure we re-acquire the global lock before returning so that we're always holding
-            // the global lock when the onExitGuard set up earlier runs.
+            // Make sure we re-acquire the RSTL before returning so that we're always holding the
+            // RSTL when the onExitGuard set up earlier runs.
             ON_BLOCK_EXIT([&] {
-                // Need to release _mutex before re-acquiring the global lock to preserve lock
-                // acquisition order rules.
+                // Need to release _mutex before re-acquiring the RSTL to preserve lock acquisition
+                // order rules.
                 lk.unlock();
 
-                // Need to re-acquire the global lock before re-attempting stepdown.
+                // Need to re-acquire the RSTL before re-attempting stepdown.
                 // We use no timeout here even though that means the lock acquisition could take
-                // longer than the stepdown window.  If that happens, the call to _tryToStepDown
-                // immediately after will error.  Since we'll need the global lock no matter what to
+                // longer than the stepdown window. Since we'll need the RSTL no matter what to
                 // clean up a failed stepdown attempt, we might as well spend whatever time we need
                 // to acquire it now.  For the same reason, we also disable lock acquisition
                 // interruption, to guarantee that we get the lock eventually.
-                transitionGuard.reacquireGlobalLock();
-                invariant(opCtx->lockState()->isW());
+                transitionGuard.reacquireRSTL();
+                invariant(opCtx->lockState()->isRSTLExclusive());
                 lk.lock();
             });
 
@@ -3083,14 +3094,14 @@ void ReplicationCoordinatorImpl::_updateLastCommittedOpTime(WithLock lk) {
 }
 
 boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime(
-    WithLock lk, const std::set<OpTime>& candidates, const OpTime& commitPoint) {
+    WithLock lk, const std::set<OpTime>& candidates, OpTime maximumStableOpTime) {
 
     // No optime candidates.
     if (candidates.empty()) {
         return boost::none;
     }
 
-    auto maximumStableTimestamp = commitPoint.getTimestamp();
+    auto maximumStableTimestamp = maximumStableOpTime.getTimestamp();
     if (_readWriteAbility->canAcceptNonLocalWrites(lk) && _storage->supportsDocLocking(_service)) {
         // If the storage engine supports document level locking, then it is possible for oplog
         // writes to commit out of order. In that case, we don't want to set the stable timestamp
@@ -3099,15 +3110,22 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime(
         // be behind. During oplog application the all committed timestamp can jump around since
         // we first write oplog entries to the oplog and then go back and apply them.
         //
-        // If the all committed timestamp is less than the commit point, then we are guaranteed that
-        // there are no stable timestamp candidates with a greater timestamp than the all committed
-        // timestamp and a lower term than the commit point. Thus we can consider the all committed
-        // timestamp to have the same term as the commit point. When a primary enters a new term, it
-        // first storage-commits a 'new primary' oplog entry in the new term before accepting any
-        // new writes. This will ensure that the all committed timestamp is in the new term before
-        // any writes in the new term are replication committed.
-        maximumStableTimestamp =
-            std::min(_storage->getAllCommittedTimestamp(_service), commitPoint.getTimestamp());
+        // We must construct an upper bound for the stable optime candidates such that the upper
+        // bound is at most 'maximumStableOpTime' and any candidate with a timestamp higher than the
+        // all committed is greater than the upper bound. If the timestamp of 'maximumStableOpTime'
+        // is <= the all committed, then we use 'maximumStableOpTime'. Otherwise, we construct an
+        // optime using the all committed and the term of 'maximumStableOpTime'. We must argue that
+        // there are no stable optime candidates with a timestamp greater than the all committed and
+        // a term less than that of 'maximumStableOpTime'. Suppose there were. The
+        // 'maximumStableOpTime' is either the commit point or the lastApplied, so the all committed
+        // can only be behind 'maximumStableOpTime' on a primary. If there is a candidate with a
+        // higher timestamp than the all committed but a lower term than 'maximumStableOpTime', then
+        // the all committed corresponds to a write in an earlier term than the current one. But
+        // this is not possible on a primary, since on step-up, the primary storage commits a 'new
+        // primary' oplog entry in the new term before accepting any new writes, so the all
+        // committed must be in the current term.
+        maximumStableTimestamp = std::min(_storage->getAllCommittedTimestamp(_service),
+                                          maximumStableOpTime.getTimestamp());
     }
 
     MONGO_FAIL_POINT_BLOCK(holdStableTimestampAtSpecificTimestamp, data) {
@@ -3116,7 +3134,7 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime(
         maximumStableTimestamp = std::min(maximumStableTimestamp, holdStableTimestamp);
     }
 
-    auto maximumStableOpTime = OpTime(maximumStableTimestamp, commitPoint.getTerm());
+    maximumStableOpTime = OpTime(maximumStableTimestamp, maximumStableOpTime.getTerm());
 
     // When calculating the stable optime, compare it to the oldest oplog entry timestamp across
     // transactions whose corresponding commit/abort oplog entries have not been majority committed.
@@ -3134,11 +3152,11 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime(
         }
     }
 
-    // Find the greatest optime candidate that is less than or equal to the commit point.
-    // To do this we first find the upper bound of 'commitPoint', which points to the smallest
-    // element in 'candidates' that is greater than 'commitPoint'. We then step back one element,
-    // which should give us the largest element in 'candidates' that is less than or equal to the
-    // 'commitPoint'.
+    // Find the greatest optime candidate that is less than or equal to 'maximumStableOpTime'. To do
+    // this we first find the upper bound of 'maximumStableOpTime', which points to the smallest
+    // element in 'candidates' that is greater than 'maximumStableOpTime'. We then step back one
+    // element, which should give us the largest element in 'candidates' that is less than or equal
+    // to the 'maximumStableOpTime'.
     auto upperBoundIter = candidates.upper_bound(maximumStableOpTime);
 
     // All optime candidates are greater than the commit point.
@@ -3147,7 +3165,9 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime(
     }
     // There is a valid stable optime.
     else {
-        return *std::prev(upperBoundIter);
+        auto stableOpTime = *std::prev(upperBoundIter);
+        invariant(stableOpTime.getTimestamp() <= maximumStableTimestamp);
+        return stableOpTime;
     }
 }
 
@@ -3164,9 +3184,9 @@ void ReplicationCoordinatorImpl::_cleanupStableOpTimeCandidates(std::set<OpTime>
 }
 
 boost::optional<OpTime> ReplicationCoordinatorImpl::calculateStableOpTime_forTest(
-    const std::set<OpTime>& candidates, const OpTime& commitPoint) {
+    const std::set<OpTime>& candidates, const OpTime& maximumStableOpTime) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-    return _calculateStableOpTime(lk, candidates, commitPoint);
+    return _calculateStableOpTime(lk, candidates, maximumStableOpTime);
 }
 void ReplicationCoordinatorImpl::cleanupStableOpTimeCandidates_forTest(std::set<OpTime>* candidates,
                                                                        OpTime stableOpTime) {
@@ -3200,12 +3220,18 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_getStableOpTime(WithLock lk
     auto txnMetrics = ServerTransactionsMetrics::get(getGlobalServiceContext());
     txnMetrics->removeOpTimesLessThanOrEqToCommittedOpTime(commitPoint);
 
+    // When majority read concern is disabled, the stable opTime is set to the lastApplied, rather
+    // than the commit point.
+    auto maximumStableOpTime = serverGlobalParams.enableMajorityReadConcern
+        ? commitPoint
+        : _topCoord->getMyLastAppliedOpTime();
+
     // Compute the current stable optime.
-    auto stableOpTime = _calculateStableOpTime(lk, _stableOpTimeCandidates, commitPoint);
+    auto stableOpTime = _calculateStableOpTime(lk, _stableOpTimeCandidates, maximumStableOpTime);
     if (stableOpTime) {
-        // By definition, the stable optime should never be greater than the commit point.
-        invariant(stableOpTime->getTimestamp() <= commitPoint.getTimestamp());
-        invariant(*stableOpTime <= commitPoint);
+        // Check that the selected stable optime does not exceed our maximum.
+        invariant(stableOpTime->getTimestamp() <= maximumStableOpTime.getTimestamp());
+        invariant(*stableOpTime <= maximumStableOpTime);
     }
 
     return stableOpTime;
@@ -3223,8 +3249,22 @@ void ReplicationCoordinatorImpl::_setStableTimestampForStorage(WithLock lk) {
         if (!testingSnapshotBehaviorInIsolation) {
             // Update committed snapshot and wake up any threads waiting on read concern or
             // write concern.
-            if (_updateCommittedSnapshot_inlock(stableOpTime.get())) {
-                // Update the stable timestamp for the storage engine.
+            if (serverGlobalParams.enableMajorityReadConcern) {
+                // When majority read concern is enabled, the committed snapshot is set to the new
+                // stable optime.
+                if (_updateCommittedSnapshot_inlock(stableOpTime.value())) {
+                    // Update the stable timestamp for the storage engine.
+                    _storage->setStableTimestamp(getServiceContext(), stableOpTime->getTimestamp());
+                }
+            } else {
+                // When majority read concern is disabled, the stable optime may be ahead of the
+                // commit point, so we set the committed snapshot to the commit point.
+                const auto lastCommittedOpTime = _topCoord->getLastCommittedOpTime();
+                if (!lastCommittedOpTime.isNull()) {
+                    _updateCommittedSnapshot_inlock(lastCommittedOpTime);
+                }
+                // Set the stable timestamp regardless of whether the majority commit point moved
+                // forward.
                 _storage->setStableTimestamp(getServiceContext(), stableOpTime->getTimestamp());
             }
         }
@@ -3425,12 +3465,10 @@ EventHandle ReplicationCoordinatorImpl::_updateTerm_inlock(
 
     auto now = _replExecutor->now();
     TopologyCoordinator::UpdateTermResult localUpdateTermResult = _topCoord->updateTerm(term, now);
-    {
-        if (localUpdateTermResult == TopologyCoordinator::UpdateTermResult::kUpdatedTerm) {
-            _termShadow.store(term);
-            _cancelPriorityTakeover_inlock();
-            _cancelAndRescheduleElectionTimeout_inlock();
-        }
+    if (localUpdateTermResult == TopologyCoordinator::UpdateTermResult::kUpdatedTerm) {
+        _termShadow.store(term);
+        _cancelPriorityTakeover_inlock();
+        _cancelAndRescheduleElectionTimeout_inlock();
     }
 
     if (updateTermResult) {
@@ -3598,17 +3636,6 @@ Status ReplicationCoordinatorImpl::stepUpIfEligible(bool skipDryRun) {
     return Status(ErrorCodes::CommandFailed, "Election failed.");
 }
 
-ReplSettings::IndexPrefetchConfig ReplicationCoordinatorImpl::getIndexPrefetchConfig() const {
-    stdx::lock_guard<stdx::mutex> lock(_indexPrefetchMutex);
-    return _indexPrefetchConfig;
-}
-
-void ReplicationCoordinatorImpl::setIndexPrefetchConfig(
-    const ReplSettings::IndexPrefetchConfig cfg) {
-    stdx::lock_guard<stdx::mutex> lock(_indexPrefetchMutex);
-    _indexPrefetchConfig = cfg;
-}
-
 executor::TaskExecutor::EventHandle ReplicationCoordinatorImpl::_cancelElectionIfNeeded_inlock() {
     if (_topCoord->getRole() != TopologyCoordinator::Role::kCandidate) {
         return {};
@@ -3633,9 +3660,9 @@ void ReplicationCoordinatorImpl::ReadWriteAbility::setCanAcceptNonLocalWrites(
         return;
     }
 
-    // We must be holding the global X lock to change _canAcceptNonLocalWrites.
+    // We must be holding the RSTL in mode X to change _canAcceptNonLocalWrites.
     invariant(opCtx);
-    invariant(opCtx->lockState()->isW());
+    invariant(opCtx->lockState()->isRSTLExclusive());
     _canAcceptNonLocalWrites = canAcceptWrites;
 }
 
@@ -3649,9 +3676,9 @@ bool ReplicationCoordinatorImpl::ReadWriteAbility::canAcceptNonLocalWrites_UNSAF
 
 bool ReplicationCoordinatorImpl::ReadWriteAbility::canAcceptNonLocalWrites(
     OperationContext* opCtx) const {
-    // We must be holding the global lock.
+    // We must be holding the RSTL.
     invariant(opCtx);
-    invariant(opCtx->lockState()->isLocked());
+    invariant(opCtx->lockState()->isRSTLLocked());
     return _canAcceptNonLocalWrites;
 }
 
@@ -3661,17 +3688,17 @@ bool ReplicationCoordinatorImpl::ReadWriteAbility::canServeNonLocalReads_UNSAFE(
 
 bool ReplicationCoordinatorImpl::ReadWriteAbility::canServeNonLocalReads(
     OperationContext* opCtx) const {
-    // We must be holding the global lock.
+    // We must be holding the RSTL.
     invariant(opCtx);
-    invariant(opCtx->lockState()->isLocked());
+    invariant(opCtx->lockState()->isRSTLLocked());
     return _canServeNonLocalReads.loadRelaxed();
 }
 
 void ReplicationCoordinatorImpl::ReadWriteAbility::setCanServeNonLocalReads(OperationContext* opCtx,
                                                                             unsigned int newVal) {
-    // We must be holding the global X lock to change _canServeNonLocalReads.
+    // We must be holding the RSTL in mode X to change _canServeNonLocalReads.
     invariant(opCtx);
-    invariant(opCtx->lockState()->isW());
+    invariant(opCtx->lockState()->isRSTLExclusive());
     _canServeNonLocalReads.store(newVal);
 }
 

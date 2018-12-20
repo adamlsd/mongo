@@ -1306,13 +1306,14 @@ TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
 }
 
 template <typename T>
-void dropConnectionsByTagTest(ConnectionPool& pool, T& t) {
+void dropConnectionsTest(ConnectionPool& pool, T& t) {
     auto now = Date_t::now();
     PoolImpl::setNow(now);
 
     HostAndPort hap1("a");
     HostAndPort hap2("b");
     HostAndPort hap3("c");
+    HostAndPort hap4("d");
 
     // Successfully get connections to two hosts
     ConnectionImpl::pushSetup(Status::OK());
@@ -1361,22 +1362,95 @@ void dropConnectionsByTagTest(ConnectionPool& pool, T& t) {
     ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap1));
     ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap2));
     ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap3));
+
+    ConnectionImpl::pushSetup(Status::OK());
+    pool.get(hap4, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        doneWith(swConn.getValue());
+    });
+
+    // drop connections by hostAndPort
+    t.dropConnections(hap1);
+
+    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap1));
+    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap2));
+    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap3));
+    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap4));
 }
 
-TEST_F(ConnectionPoolTest, DropConnectionsByTag) {
+TEST_F(ConnectionPoolTest, DropConnections) {
     ConnectionPool::Options options;
     ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
-    dropConnectionsByTagTest(pool, pool);
+    dropConnectionsTest(pool, pool);
 }
 
-TEST_F(ConnectionPoolTest, DropConnectionsByTagInMultipleViaManager) {
+TEST_F(ConnectionPoolTest, DropConnectionsInMultipleViaManager) {
     EgressTagCloserManager manager;
     ConnectionPool::Options options;
     options.egressTagCloserManager = &manager;
     ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
 
-    dropConnectionsByTagTest(pool, manager);
+    dropConnectionsTest(pool, manager);
+}
+
+TEST_F(ConnectionPoolTest, TryGetWorks) {
+    ConnectionPool::Options options;
+    options.maxConnections = 1;
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+
+    auto now = Date_t::now();
+    PoolImpl::setNow(now);
+
+    // no connections in the pool, tryGet should fail
+    ASSERT_FALSE(pool.tryGet(HostAndPort()));
+
+    // Successfully get a new connection
+    size_t conn1Id = 0;
+    ConnectionImpl::pushSetup(Status::OK());
+    pool.get(HostAndPort(), Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn1Id = CONN2ID(swConn);
+        doneWith(swConn.getValue());
+    });
+    ASSERT(conn1Id);
+
+    // 1 connection in the pool, tryGet should succeed
+    auto tryGetConn = pool.tryGet(HostAndPort());
+    ASSERT(tryGetConn);
+
+    // No connection available, this waits in the request queue
+    size_t conn3Id = 0;
+    pool.get(HostAndPort(), Seconds(2), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn3Id = CONN2ID(swConn);
+        doneWith(swConn.getValue());
+    });
+
+    ASSERT_EQ(conn3Id, 0ul);
+
+    // We want to wait if there are any outstanding requests (to provide fair access to the pool),
+    // so we need to call tryGet while fulfilling requests.  This triggers that race by actually
+    // calling tryGet from within a callback (which works, because we drop locks).  Not the cleanest
+    // way to do it, but gets us at least the code coverage we need.
+    //
+    // We run before the previous get because our deadline is 1 sec instead of 2
+    size_t conn2Id = 0;
+    pool.get(HostAndPort(), Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn2Id = CONN2ID(swConn);
+        doneWith(swConn.getValue());
+        swConn.getValue().reset();
+
+        // we do have one connection
+        ASSERT_EQUALS(pool.getNumConnectionsPerHost(HostAndPort()), 1ul);
+
+        // we fail because there's an outstanding request, even though we do have a good connection
+        // available.
+        ASSERT_FALSE(pool.tryGet(HostAndPort()));
+    });
+
+    doneWith(*tryGetConn);
+    tryGetConn.reset();
+
+    ASSERT(conn2Id);
+    ASSERT(conn3Id);
 }
 
 }  // namespace connection_pool_test_details

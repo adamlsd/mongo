@@ -1652,6 +1652,38 @@ class TestBinder(testcase.IDLTestcase):
                 from_string: qux
             """))
 
+        # Custom setting with only from_string callback, and auto-redaction.
+        self.assert_bind(
+            textwrap.dedent("""
+        server_parameters:
+            foo:
+                set_at: startup
+                description: bar
+                redact: true
+                from_string: baz
+            """))
+
+        # Bound setting with arbitrary expression default and validators.
+        self.assert_bind(
+            textwrap.dedent("""
+        server_parameters:
+            foo:
+                set_at: startup
+                description: bar
+                cpp_varname: baz
+                default:
+                    expr: 'kDefaultValue'
+                validator:
+                    gte:
+                        expr: 'kMinimumValue'
+                        is_constexpr: true
+                    lte:
+                        expr: 'kMaximumValue'
+                        is_constexpr: false
+                    gt: 0
+                    lt: 255
+            """))
+
     def test_server_parameter_negative(self):
         # type: () -> None
         """Negative server parameter test cases."""
@@ -1816,6 +1848,21 @@ class TestBinder(testcase.IDLTestcase):
                         source: cli
                         positional: %s
                 """ % (positional)))
+
+        # Expressions in default, implicit, and validators.
+        self.assert_bind(
+            textwrap.dedent("""
+            configs:
+                foo:
+                    description: bar
+                    arg_vartype: String
+                    source: cli
+                    default: { expr: kDefault, is_constexpr: true }
+                    implicit: { expr: kImplicit, is_constexpr: false }
+                    validator:
+                        gte: { expr: kMinimum }
+                        lte: { expr: kMaximum }
+            """))
 
     def test_config_option_negative(self):
         # type: () -> None

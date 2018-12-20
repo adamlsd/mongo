@@ -47,6 +47,7 @@
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/plan_stats.h"
 #include "mongo/db/exec/subplan.h"
+#include "mongo/db/exec/trial_stage.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/query/find_common.h"
@@ -238,9 +239,6 @@ PlanExecutorImpl::PlanExecutorImpl(OperationContext* opCtx,
 
     if (collection) {
         _nss = collection->ns();
-        if (_yieldPolicy->canReleaseLocksDuringExecution()) {
-            _registrationToken = collection->getCursorManager()->registerExecutor(this);
-        }
     } else {
         invariant(_cq);
         _nss = _cq->getQueryRequest().nss();
@@ -271,6 +269,14 @@ Status PlanExecutorImpl::_pickBestPlan() {
     if (foundStage) {
         CachedPlanStage* cachedPlan = static_cast<CachedPlanStage*>(foundStage);
         return cachedPlan->pickBestPlan(_yieldPolicy.get());
+    }
+
+    // Finally, we might have an explicit TrialPhase. This specifies exactly two candidate plans,
+    // one of which is to be evaluated. If it fails the trial, then the backup plan is adopted.
+    foundStage = getStageByType(_root.get(), STAGE_TRIAL);
+    if (foundStage) {
+        TrialStage* trialStage = static_cast<TrialStage*>(foundStage);
+        return trialStage->pickBestPlan(_yieldPolicy.get());
     }
 
     // Either we chose a plan, or no plan selection was required. In both cases,
@@ -652,15 +658,6 @@ void PlanExecutorImpl::dispose(OperationContext* opCtx, CursorManager* cursorMan
         return;
     }
 
-    // If we are registered with the CursorManager we need to be sure to deregister ourselves.
-    // However, if we have been killed we should not attempt to deregister ourselves, since the
-    // caller of markAsKilled() will have done that already, and the CursorManager may no longer
-    // exist. Note that the caller's collection lock prevents us from being marked as killed during
-    // this method, since any interruption event requires a lock in at least MODE_IX.
-    if (cursorManager && _registrationToken && !isMarkedAsKilled()) {
-        dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IS));
-        cursorManager->deregisterExecutor(this);
-    }
     _root->dispose(opCtx);
     _currentState = kDisposed;
 }
@@ -692,19 +689,6 @@ Status PlanExecutorImpl::executePlan() {
 
 void PlanExecutorImpl::enqueue(const BSONObj& obj) {
     _stash.push(obj.getOwned());
-}
-
-void PlanExecutorImpl::unsetRegistered() {
-    _registrationToken.reset();
-}
-
-PlanExecutor::RegistrationToken PlanExecutorImpl::getRegistrationToken() const& {
-    return _registrationToken;
-}
-
-void PlanExecutorImpl::setRegistrationToken(RegistrationToken token)& {
-    invariant(!_registrationToken);
-    _registrationToken = token;
 }
 
 bool PlanExecutorImpl::isMarkedAsKilled() const {

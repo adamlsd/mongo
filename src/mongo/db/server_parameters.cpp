@@ -85,4 +85,43 @@ void ServerParameterSet::add(ServerParameter* sp) {
     x = sp;
 }
 
+namespace {
+class DisabledTestParameter : public ServerParameter {
+public:
+    DisabledTestParameter() = delete;
+
+    DisabledTestParameter(ServerParameter* sp)
+        : ServerParameter(
+              nullptr, sp->name(), sp->allowedToChangeAtStartup(), sp->allowedToChangeAtRuntime()),
+          _sp(sp) {
+        setTestOnly();
+    }
+
+    void append(OperationContext* opCtx, BSONObjBuilder& b, const std::string& name) final {}
+
+    Status setFromString(const std::string&) final {
+        return {ErrorCodes::BadValue,
+                str::stream() << "setParameter: '" << name()
+                              << "' is only supported with 'enableTestCommands=true'"};
+    }
+
+    Status set(const BSONElement& newValueElement) final {
+        return setFromString("");
+    }
+
+private:
+    // Retain the original pointer to avoid ASAN complaining.
+    ServerParameter* _sp;
+};
+}  // namespace
+
+void ServerParameterSet::disableTestParameters() {
+    for (auto& spit : _map) {
+        auto*& sp = spit.second;
+        if (sp->isTestOnly()) {
+            sp = new DisabledTestParameter(sp);
+        }
+    }
+}
+
 }  // namespace mongo

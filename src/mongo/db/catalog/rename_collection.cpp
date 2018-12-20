@@ -41,7 +41,6 @@
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/multi_index_block.h"
-#include "mongo/db/catalog/multi_index_block_impl.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -300,7 +299,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
                 // drop-pending rename. In the case that this collection drop gets rolled back, this
                 // will incur a performance hit, since those indexes will have to be rebuilt from
                 // scratch, but data integrity is maintained.
-                std::vector<IndexDescriptor*> indexesToDrop;
+                std::vector<const IndexDescriptor*> indexesToDrop;
                 auto indexIter = targetColl->getIndexCatalog()->getIndexIterator(opCtx, true);
 
                 // Determine which index names are too long. Since we don't have the collection
@@ -411,16 +410,18 @@ Status renameCollectionCommon(OperationContext* opCtx,
 
     // Dismissed on success
     auto tmpCollectionDropper = MakeGuard([&] {
-        // Ensure that we don't trigger an exception when attempting to take locks.
-        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
-
         BSONObjBuilder unusedResult;
-        auto status =
-            dropCollection(opCtx,
-                           tmpName,
-                           unusedResult,
-                           renameOpTimeFromApplyOps,
-                           DropCollectionSystemCollectionMode::kAllowSystemCollectionDrops);
+        Status status = Status::OK();
+        try {
+            status =
+                dropCollection(opCtx,
+                               tmpName,
+                               unusedResult,
+                               renameOpTimeFromApplyOps,
+                               DropCollectionSystemCollectionMode::kAllowSystemCollectionDrops);
+        } catch (...) {
+            status = exceptionToStatus();
+        }
         if (!status.isOK()) {
             // Ignoring failure case when dropping the temporary collection during cleanup because
             // the rename operation has already failed for another reason.
@@ -431,7 +432,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
 
     // Copy the index descriptions from the source collection, adjusting the ns field.
     {
-        MultiIndexBlockImpl indexer(opCtx, tmpColl);
+        MultiIndexBlock indexer(opCtx, tmpColl);
         indexer.allowInterruption();
 
         std::vector<BSONObj> indexesToCopy;
@@ -462,7 +463,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
             return status;
         }
 
-        status = indexer.doneInserting();
+        status = indexer.dumpInsertsFromBulk();
         if (!status.isOK()) {
             return status;
         }

@@ -518,6 +518,52 @@ def _normalize_method_name(cpp_type_name, cpp_method_name):
     return cpp_method_name
 
 
+def _bind_expression(expr, allow_literal_string=True):
+    # type: (syntax.Expression, bool) -> ast.Expression
+    """Bind an expression."""
+    node = ast.Expression(expr.file_name, expr.line, expr.column)
+
+    if expr.literal is None:
+        node.expr = expr.expr
+        node.validate_constexpr = expr.is_constexpr
+        return node
+
+    node.validate_constexpr = False
+
+    # bool
+    if (expr.literal == "true") or (expr.literal == "false"):
+        node.expr = expr.literal
+        return node
+
+    # int32_t
+    try:
+        intval = int(expr.literal)
+        if (intval >= -0x80000000) and (intval <= 0x7FFFFFFF):
+            node.expr = repr(intval)
+            return node
+    except ValueError:
+        pass
+
+    # float
+    try:
+        node.expr = repr(float(expr.literal))
+        return node
+    except ValueError:
+        pass
+
+    # std::string
+    if allow_literal_string:
+        strval = expr.literal
+        for i in ['\\', '"', "'"]:
+            if i in strval:
+                strval = strval.replace(i, '\\' + i)
+        node.expr = '"' + strval + '"'
+        return node
+
+    # Unable to bind expression.
+    return None
+
+
 def _bind_validator(ctxt, validator):
     # type: (errors.ParserContext, syntax.Validator) -> ast.Validator
     """Bind a validator from the idl.syntax tree."""
@@ -526,24 +572,35 @@ def _bind_validator(ctxt, validator):
 
     # Parse syntax value as numeric if possible.
     for pred in ["gt", "lt", "gte", "lte"]:
-        val = getattr(validator, pred)
-        if val is None:
+        src = getattr(validator, pred)
+        if src is None:
             continue
 
-        try:
-            intval = int(val)
-            if (intval < -0x80000000) or (intval > 0x7FFFFFFF):
-                raise ValueError('IDL ints are limited to int32_t')
-            setattr(ast_validator, pred, intval)
-        except ValueError:
-            try:
-                setattr(ast_validator, pred, float(val))
-            except ValueError:
-                ctxt.add_value_not_numeric_error(ast_validator, pred, val)
-                return None
+        dest = _bind_expression(src, allow_literal_string=False)
+        if dest is None:
+            # This only happens if we have a non-numeric literal.
+            ctxt.add_value_not_numeric_error(ast_validator, pred, src)
+            return None
+
+        setattr(ast_validator, pred, dest)
 
     ast_validator.callback = validator.callback
     return ast_validator
+
+
+def _bind_condition(condition):
+    # type: (syntax.Condition) -> ast.Condition
+    """Bind a condition from the idl.syntax tree."""
+
+    if not condition:
+        return None
+
+    ast_condition = ast.Condition(condition.file_name, condition.line, condition.column)
+    ast_condition.expr = condition.expr
+    ast_condition.constexpr = condition.constexpr
+    ast_condition.preprocessor = condition.preprocessor
+
+    return ast_condition
 
 
 def _bind_field(ctxt, parsed_spec, field):
@@ -834,9 +891,11 @@ def _bind_server_parameter(ctxt, param):
     ast_param.description = param.description
     ast_param.cpp_vartype = param.cpp_vartype
     ast_param.cpp_varname = param.cpp_varname
+    ast_param.condition = _bind_condition(param.condition)
+    ast_param.redact = param.redact
+    ast_param.test_only = param.test_only
     ast_param.deprecated_name = param.deprecated_name
 
-    custom_required_fields = ["from_string", "append_bson"]
     standard_optional_fields = ["default", "on_update", "validator"]
 
     if param.cpp_varname is None:
@@ -846,9 +905,11 @@ def _bind_server_parameter(ctxt, param):
         ast_param.from_string = param.from_string
 
         # Check for required callbacks.
-        for req in custom_required_fields:
-            if getattr(param, req) is None:
-                ctxt.add_missing_server_parameter_method(param, req)
+        if not param.from_string:
+            ctxt.add_missing_server_parameter_method(param, "from_string")
+        if (not param.redact) and (not param.append_bson):
+            # append_bson may be missing if redact is specified.
+            ctxt.add_missing_server_parameter_method(param, "append_bson")
 
         # Check for disallowed declared-storage fields.
         for conflict in standard_optional_fields:
@@ -856,11 +917,14 @@ def _bind_server_parameter(ctxt, param):
                 ctxt.add_server_parameter_attr_without_storage(param, conflict)
     else:
         # Standard SCP, allows optional fields, but not custom callbacks.
-        for conflict in custom_required_fields + ["from_bson"]:
+        for conflict in ["from_string", "append_bson", "from_bson"]:
             if getattr(param, conflict) is not None:
                 ctxt.add_server_parameter_attr_with_storage(param, conflict)
 
-        ast_param.default = param.default
+        if param.default:
+            ast_param.default = _bind_expression(param.default)
+            if ast_param.default is None:
+                return None
         ast_param.on_update = param.on_update
 
     set_at = 0
@@ -968,12 +1032,18 @@ def _bind_config_option(ctxt, globals_spec, option):
     node.arg_vartype = option.arg_vartype
     node.cpp_vartype = option.cpp_vartype
     node.cpp_varname = option.cpp_varname
+    node.condition = _bind_condition(option.condition)
 
     node.requires = option.requires
     node.conflicts = option.conflicts
     node.hidden = option.hidden
-    node.default = option.default
-    node.implicit = option.implicit
+    node.redact = option.redact
+
+    if option.default:
+        node.default = _bind_expression(option.default)
+
+    if option.implicit:
+        node.implicit = _bind_expression(option.implicit)
 
     # Commonly repeated attributes section and source may be set in globals.
     if globals_spec and globals_spec.configs:

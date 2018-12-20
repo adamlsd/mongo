@@ -175,12 +175,15 @@ public:
 
     Timestamp getAllCommittedTimestamp(ServiceContext* serviceCtx) const override;
 
+    Timestamp getOldestOpenReadTimestamp(ServiceContext* serviceCtx) const override;
+
     /**
      * Checks that the "admin" database contains a supported version of the auth data schema.
      */
     Status isAdminDbValid(OperationContext* opCtx) override;
 
-    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) override;
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx,
+                                                 bool primaryOnly) override;
     void oplogDiskLocRegister(OperationContext* opCtx,
                               const Timestamp& ts,
                               bool orderedCommit) override;

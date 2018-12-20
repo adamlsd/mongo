@@ -31,7 +31,7 @@
 
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
-#include "mongo/db/catalog/multi_index_block_impl.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/curop.h"
@@ -148,7 +148,7 @@ TEST_F(DuplicateKeyTrackerTest, IndexBuild) {
         AutoGetCollection autoColl(opCtx(), collNs, MODE_X);
         auto coll = autoColl.getCollection();
 
-        MultiIndexBlockImpl indexer(opCtx(), coll);
+        MultiIndexBlock indexer(opCtx(), coll);
         // Don't use the bulk builder, which does not insert directly into the IAM for the index.
         indexer.allowBackgroundBuilding();
         // Allow duplicates.
@@ -259,7 +259,7 @@ TEST_F(DuplicateKeyTrackerTest, BulkIndexBuild) {
         AutoGetCollection autoColl(opCtx(), collNs, MODE_X);
         auto coll = autoColl.getCollection();
 
-        MultiIndexBlockImpl indexer(opCtx(), coll);
+        MultiIndexBlock indexer(opCtx(), coll);
         // Allow duplicates.
         indexer.ignoreUniqueConstraint();
 
@@ -280,7 +280,7 @@ TEST_F(DuplicateKeyTrackerTest, BulkIndexBuild) {
         std::vector<BSONObj> dupsInserted;
 
         // Neither of these inserts will recognize duplicates because the bulk inserter does not
-        // detect them until doneInserting() is called.
+        // detect them until dumpInsertsFromBulk() is called.
         ASSERT_OK(indexer.insert(record1->data.releaseToBson(), record1->id, &dupsInserted));
         ASSERT_EQ(0u, dupsInserted.size());
 
@@ -289,7 +289,7 @@ TEST_F(DuplicateKeyTrackerTest, BulkIndexBuild) {
         ASSERT_OK(indexer.insert(record2->data.releaseToBson(), record2->id, &dupsInserted));
         ASSERT_EQ(0u, dupsInserted.size());
 
-        ASSERT_OK(indexer.doneInserting(&dupsInserted));
+        ASSERT_OK(indexer.dumpInsertsFromBulk(&dupsInserted));
         ASSERT_EQ(1u, dupsInserted.size());
 
         // Record that duplicates were inserted.

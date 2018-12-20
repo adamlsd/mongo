@@ -41,8 +41,8 @@
 #include "mongo/base/init.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/background.h"
-#include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
+#include "mongo/db/catalog/collection_impl.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
@@ -80,15 +80,6 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-MONGO_REGISTER_SHIM(Database::makeImpl)
-(Database* const this_,
- OperationContext* const opCtx,
- const StringData name,
- DatabaseCatalogEntry* const dbEntry,
- PrivateTo<Database>)
-    ->std::unique_ptr<Database::Impl> {
-    return stdx::make_unique<DatabaseImpl>(this_, opCtx, name, dbEntry);
-}
 
 namespace {
 MONGO_FAIL_POINT_DEFINE(hangBeforeLoggingCreateCollection);
@@ -197,7 +188,7 @@ void DatabaseImpl::close(OperationContext* opCtx, const std::string& reason) {
     invariant(opCtx->lockState()->isW());
 
     // Clear cache of oplog Collection pointer.
-    repl::oplogCheckCloseDatabase(opCtx, this->_this);
+    repl::oplogCheckCloseDatabase(opCtx, this);
 
     for (auto&& pair : _collections) {
         auto* coll = pair.second;
@@ -257,7 +248,7 @@ Collection* DatabaseImpl::_getOrCreateCollectionInstance(OperationContext* opCtx
     }
 
     // Not registering AddCollectionChange since this is for collections that already exist.
-    Collection* coll = new Collection(opCtx, nss.ns(), uuid, cce.release(), rs.release(), _dbEntry);
+    auto coll = new CollectionImpl(opCtx, nss.ns(), uuid, cce.release(), rs.release(), _dbEntry);
     if (uuid) {
         // We are not in a WUOW only when we are called from Database::init(). There is no need
         // to rollback UUIDCatalog changes because we are initializing existing collections.
@@ -272,17 +263,16 @@ Collection* DatabaseImpl::_getOrCreateCollectionInstance(OperationContext* opCtx
     return coll;
 }
 
-DatabaseImpl::DatabaseImpl(Database* const this_,
-                           OperationContext* const opCtx,
-                           const StringData name,
-                           DatabaseCatalogEntry* const dbEntry)
+DatabaseImpl::DatabaseImpl(const StringData name,
+                           DatabaseCatalogEntry* const dbEntry,
+                           uint64_t epoch)
     : _name(name.toString()),
       _dbEntry(dbEntry),
+      _epoch(epoch),
       _profileName(_name + ".system.profile"),
       _viewsName(_name + "." + DurableViewCatalog::viewsCollectionName().toString()),
-      _durableViews(DurableViewCatalogImpl(this_)),
-      _views(&_durableViews),
-      _this(this_) {}
+      _durableViews(DurableViewCatalogImpl(this)),
+      _views(&_durableViews) {}
 
 void DatabaseImpl::init(OperationContext* const opCtx) {
     Status status = validateDBName(_name);
@@ -297,8 +287,7 @@ void DatabaseImpl::init(OperationContext* const opCtx) {
     list<string> collections;
     _dbEntry->getCollectionNamespaces(&collections);
 
-    for (list<string>::const_iterator it = collections.begin(); it != collections.end(); ++it) {
-        const string ns = *it;
+    for (auto ns : collections) {
         NamespaceString nss(ns);
         _collections[ns] = _getOrCreateCollectionInstance(opCtx, nss);
     }
@@ -323,8 +312,7 @@ void DatabaseImpl::clearTmpCollections(OperationContext* opCtx) {
     list<string> collections;
     _dbEntry->getCollectionNamespaces(&collections);
 
-    for (list<string>::iterator i = collections.begin(); i != collections.end(); ++i) {
-        string ns = *i;
+    for (auto ns : collections) {
         invariant(NamespaceString::normal(ns));
 
         CollectionCatalogEntry* coll = _dbEntry->getCollectionCatalogEntry(ns);
@@ -371,7 +359,7 @@ Status DatabaseImpl::setProfilingLevel(OperationContext* opCtx, int newLevel) {
                       "the storage engine doesn't support profiling.");
     }
 
-    Status status = createProfileCollection(opCtx, this->_this);
+    Status status = createProfileCollection(opCtx, this);
 
     if (!status.isOK()) {
         return status;
@@ -383,14 +371,15 @@ Status DatabaseImpl::setProfilingLevel(OperationContext* opCtx, int newLevel) {
 }
 
 void DatabaseImpl::setDropPending(OperationContext* opCtx, bool dropPending) {
-    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
     if (dropPending) {
+        invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
         uassert(ErrorCodes::DatabaseDropPending,
                 str::stream() << "Unable to drop database " << name()
                               << " because it is already in the process of being dropped.",
                 !_dropPending);
         _dropPending = true;
     } else {
+        invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_IX));
         _dropPending = false;
     }
 }
@@ -401,8 +390,6 @@ bool DatabaseImpl::isDropPending(OperationContext* opCtx) const {
 }
 
 void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale) {
-    list<string> collections;
-    _dbEntry->getCollectionNamespaces(&collections);
 
     long long nCollections = 0;
     long long nViews = 0;
@@ -413,9 +400,13 @@ void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, dou
     long long indexes = 0;
     long long indexSize = 0;
 
-    for (list<string>::const_iterator it = collections.begin(); it != collections.end(); ++it) {
-        const string ns = *it;
+    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_IS));
+    list<string> collections;
+    _dbEntry->getCollectionNamespaces(&collections);
 
+
+    for (auto ns : collections) {
+        Lock::CollectionLock colLock(opCtx->lockState(), ns, MODE_IS);
         Collection* collection = getCollection(opCtx, ns);
 
         if (!collection)
@@ -448,11 +439,8 @@ void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, dou
     _dbEntry->appendExtraStats(opCtx, output, scale);
 
     if (!opCtx->getServiceContext()->getStorageEngine()->isEphemeral()) {
-        boost::filesystem::path dbpath(storageGlobalParams.dbpath);
-        if (storageGlobalParams.directoryperdb) {
-            dbpath /= _name;
-        }
-
+        boost::filesystem::path dbpath(
+            opCtx->getServiceContext()->getStorageEngine()->getFilesystemPathForDb(_name));
         boost::system::error_code ec;
         boost::filesystem::space_info spaceInfo = boost::filesystem::space(dbpath, ec);
         if (!ec) {
@@ -571,7 +559,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
         // rename. In the case that this collection drop gets rolled back, this will incur a
         // performance hit, since those indexes will have to be rebuilt from scratch, but data
         // integrity is maintained.
-        std::vector<IndexDescriptor*> indexesToDrop;
+        std::vector<const IndexDescriptor*> indexesToDrop;
         auto indexIter = collection->getIndexCatalog()->getIndexIterator(opCtx, true);
 
         // Determine which index names are too long. Since we don't have the collection drop optime
@@ -921,34 +909,6 @@ const DatabaseCatalogEntry* DatabaseImpl::getDatabaseCatalogEntry() const {
     return _dbEntry;
 }
 
-void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
-    invariant(db);
-
-    // Store the name so we have if for after the db object is deleted
-    const string name = db->name();
-
-    LOG(1) << "dropDatabase " << name;
-
-    invariant(opCtx->lockState()->isDbLockedForMode(name, MODE_X));
-
-    BackgroundOperation::assertNoBgOpInProgForDb(name);
-
-    audit::logDropDatabase(opCtx->getClient(), name);
-
-    auto const serviceContext = opCtx->getServiceContext();
-
-    for (auto&& coll : *db) {
-        Top::get(serviceContext).collectionDropped(coll->ns().ns(), true);
-    }
-
-    DatabaseHolder::getDatabaseHolder().close(opCtx, name, "database dropped");
-
-    auto const storageEngine = serviceContext->getStorageEngine();
-    writeConflictRetry(opCtx, "dropDatabase", name, [&] {
-        storageEngine->dropDatabase(opCtx, name).transitional_ignore();
-    });
-}
-
 StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
     OperationContext* opCtx, StringData collectionNameModel) {
     invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
@@ -1049,34 +1009,25 @@ void DatabaseImpl::checkForIdIndexesAndDropPendingCollections(OperationContext* 
     }
 }
 
-MONGO_REGISTER_SHIM(Database::dropDatabase)(OperationContext* opCtx, Database* db)->void {
-    return DatabaseImpl::dropDatabase(opCtx, db);
-}
+Status DatabaseImpl::userCreateNS(OperationContext* opCtx,
+                                  const NamespaceString& fullns,
+                                  CollectionOptions collectionOptions,
+                                  bool createDefaultIndexes,
+                                  const BSONObj& idIndex) {
+    LOG(1) << "create collection " << fullns << ' ' << collectionOptions.toBSON();
 
-MONGO_REGISTER_SHIM(Database::userCreateNS)
-(OperationContext* opCtx,
- Database* db,
- StringData ns,
- CollectionOptions collectionOptions,
- bool createDefaultIndexes,
- const BSONObj& idIndex)
-    ->Status {
-    invariant(db);
+    if (!NamespaceString::validCollectionComponent(fullns.ns()))
+        return Status(ErrorCodes::InvalidNamespace, str::stream() << "invalid ns: " << fullns.ns());
 
-    LOG(1) << "create collection " << ns << ' ' << collectionOptions.toBSON();
-
-    if (!NamespaceString::validCollectionComponent(ns))
-        return Status(ErrorCodes::InvalidNamespace, str::stream() << "invalid ns: " << ns);
-
-    Collection* collection = db->getCollection(opCtx, ns);
+    Collection* collection = getCollection(opCtx, fullns);
 
     if (collection)
         return Status(ErrorCodes::NamespaceExists,
-                      str::stream() << "a collection '" << ns.toString() << "' already exists");
+                      str::stream() << "a collection '" << fullns.ns() << "' already exists");
 
-    if (db->getViewCatalog()->lookup(opCtx, ns))
+    if (getViewCatalog()->lookup(opCtx, fullns.ns()))
         return Status(ErrorCodes::NamespaceExists,
-                      str::stream() << "a view '" << ns.toString() << "' already exists");
+                      str::stream() << "a view '" << fullns.ns() << "' already exists");
 
     // Validate the collation, if there is one.
     std::unique_ptr<CollatorInterface> collator;
@@ -1145,42 +1096,16 @@ MONGO_REGISTER_SHIM(Database::userCreateNS)
     }
 
     if (collectionOptions.isView()) {
-        uassertStatusOK(db->createView(opCtx, ns, collectionOptions));
+        uassertStatusOK(createView(opCtx, fullns.ns(), collectionOptions));
     } else {
         invariant(
-            db->createCollection(opCtx, ns, collectionOptions, createDefaultIndexes, idIndex));
+            createCollection(opCtx, fullns.ns(), collectionOptions, createDefaultIndexes, idIndex),
+            str::stream() << "Collection creation failed after validating options: " << fullns.ns()
+                          << ". Options: "
+                          << collectionOptions.toBSON());
     }
 
     return Status::OK();
 }
 
-MONGO_REGISTER_SHIM(Database::dropAllDatabasesExceptLocal)(OperationContext* opCtx)->void {
-    Lock::GlobalWrite lk(opCtx);
-
-    vector<string> n;
-    StorageEngine* storageEngine = opCtx->getServiceContext()->getStorageEngine();
-    storageEngine->listDatabases(&n);
-
-    if (n.size() == 0)
-        return;
-    log() << "dropAllDatabasesExceptLocal " << n.size();
-
-    repl::ReplicationCoordinator::get(opCtx)->dropAllSnapshots();
-
-    for (const auto& dbName : n) {
-        if (dbName != "local") {
-            writeConflictRetry(opCtx, "dropAllDatabasesExceptLocal", dbName, [&opCtx, &dbName] {
-                Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, dbName);
-
-                // This is needed since dropDatabase can't be rolled back.
-                // This is safe be replaced by "invariant(db);dropDatabase(opCtx, db);" once fixed
-                if (db == nullptr) {
-                    log() << "database disappeared after listDatabases but before drop: " << dbName;
-                } else {
-                    DatabaseImpl::dropDatabase(opCtx, db);
-                }
-            });
-        }
-    }
-}
 }  // namespace mongo

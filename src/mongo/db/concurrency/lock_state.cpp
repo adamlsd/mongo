@@ -168,6 +168,14 @@ bool LockerImpl::isReadLocked() const {
     return isLockHeldForMode(resourceIdGlobal, MODE_IS);
 }
 
+bool LockerImpl::isRSTLExclusive() const {
+    return getLockMode(resourceIdReplicationStateTransitionLock) == MODE_X;
+}
+
+bool LockerImpl::isRSTLLocked() const {
+    return getLockMode(resourceIdReplicationStateTransitionLock) != MODE_NONE;
+}
+
 void LockerImpl::dump() const {
     StringBuilder ss;
     ss << "Locker id " << _id << " status: ";
@@ -208,10 +216,16 @@ LockResult CondVarLockGrantNotification::wait(Milliseconds timeout) {
 LockResult CondVarLockGrantNotification::wait(OperationContext* opCtx, Milliseconds timeout) {
     invariant(opCtx);
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-    return opCtx->waitForConditionOrInterruptFor(
-               _cond, lock, timeout, [this] { return _result != LOCK_INVALID; })
-        ? _result
-        : LOCK_TIMEOUT;
+    if (opCtx->waitForConditionOrInterruptFor(
+            _cond, lock, timeout, [this] { return _result != LOCK_INVALID; })) {
+        // Because waitForConditionOrInterruptFor evaluates the predicate before checking for
+        // interrupt, it is possible that a killed operation can acquire a lock if the request is
+        // granted quickly. For that reason, it is necessary to check if the operation has been
+        // killed at least once before accepting the lock grant.
+        opCtx->checkForInterrupt();
+        return _result;
+    }
+    return LOCK_TIMEOUT;
 }
 
 void CondVarLockGrantNotification::notify(ResourceId resId, LockResult result) {
@@ -415,6 +429,40 @@ void LockerImpl::endWriteUnitOfWork() {
     }
 }
 
+bool LockerImpl::releaseWriteUnitOfWork(LockSnapshot* stateOut) {
+    // Only the global WUOW can be released.
+    invariant(_wuowNestingLevel == 1);
+    --_wuowNestingLevel;
+    invariant(!isGlobalLockedRecursively());
+
+    // All locks should be pending to unlock.
+    invariant(_requests.size() == _numResourcesToUnlockAtEndUnitOfWork);
+    for (auto it = _requests.begin(); it; it.next()) {
+        // No converted lock so we don't need to unlock more than once.
+        invariant(it->unlockPending == 1);
+    }
+    _numResourcesToUnlockAtEndUnitOfWork = 0;
+
+    return saveLockStateAndUnlock(stateOut);
+}
+
+void LockerImpl::restoreWriteUnitOfWork(OperationContext* opCtx,
+                                        const LockSnapshot& stateToRestore) {
+    if (stateToRestore.globalMode != MODE_NONE) {
+        restoreLockState(opCtx, stateToRestore);
+    }
+
+    invariant(_numResourcesToUnlockAtEndUnitOfWork == 0);
+    for (auto it = _requests.begin(); it; it.next()) {
+        invariant(_shouldDelayUnlock(it.key(), (it->mode)));
+        invariant(it->unlockPending == 0);
+        it->unlockPending++;
+    }
+    _numResourcesToUnlockAtEndUnitOfWork = static_cast<unsigned>(_requests.size());
+
+    beginWriteUnitOfWork();
+}
+
 LockResult LockerImpl::lock(OperationContext* opCtx,
                             ResourceId resId,
                             LockMode mode,
@@ -593,10 +641,12 @@ bool LockerImpl::saveLockStateAndUnlock(Locker::LockSnapshot* stateOut) {
         return false;
     }
 
-    // If the global lock has been acquired more than once, we're probably somewhere in a
+    // If the global lock or RSTL has been acquired more than once, we're probably somewhere in a
     // DBDirectClient call.  It's not safe to release and reacquire locks -- the context using
     // the DBDirectClient is probably not prepared for lock release.
-    if (globalRequest->recursiveCount > 1) {
+    LockRequestsMap::Iterator rstlRequest =
+        _requests.find(resourceIdReplicationStateTransitionLock);
+    if (globalRequest->recursiveCount > 1 || (rstlRequest && rstlRequest->recursiveCount > 1)) {
         return false;
     }
 
@@ -744,7 +794,7 @@ LockResult LockerImpl::lockComplete(OperationContext* opCtx,
     Milliseconds timeout;
     if (deadline == Date_t::max()) {
         timeout = Milliseconds::max();
-    } else if (deadline == Date_t::min()) {
+    } else if (deadline <= Date_t()) {
         timeout = Milliseconds(0);
     } else {
         timeout = deadline - Date_t::now();
@@ -823,6 +873,15 @@ LockResult LockerImpl::lockComplete(OperationContext* opCtx,
         unlockOnErrorGuard.Dismiss();
     }
     return result;
+}
+
+LockResult LockerImpl::lockRSTLBegin(OperationContext* opCtx) {
+    invariant(!opCtx->lockState()->isLocked());
+    return lockBegin(opCtx, resourceIdReplicationStateTransitionLock, MODE_X);
+}
+
+LockResult LockerImpl::lockRSTLComplete(OperationContext* opCtx, Date_t deadline) {
+    return lockComplete(opCtx, resourceIdReplicationStateTransitionLock, MODE_X, deadline);
 }
 
 void LockerImpl::releaseTicket() {

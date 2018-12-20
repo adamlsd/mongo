@@ -478,6 +478,12 @@ bool CommandHelpers::shouldActivateFailCommandFailPoint(const BSONObj& data,
         return false;
     }
 
+    if (client->session() && (client->session()->getTags() & transport::Session::kInternalClient)) {
+        if (!data.hasField("failInternalCommands") || !data.getBoolField("failInternalCommands")) {
+            return false;
+        }
+    }
+
     for (auto&& failCommand : data.getObjectField("failCommands")) {
         if (failCommand.type() == String && failCommand.valueStringData() == cmdName) {
             return true;
@@ -683,10 +689,9 @@ void CommandRegistry::registerCommand(Command* command, StringData name, StringD
         if (key.empty()) {
             continue;
         }
-        auto hashedKey = CommandMap::HashedKey(key);
-        auto iter = _commands.find(hashedKey);
-        invariant(iter == _commands.end(), str::stream() << "command name collision: " << key);
-        _commands[hashedKey] = command;
+
+        auto result = _commands.try_emplace(key, command);
+        invariant(result.second, str::stream() << "command name collision: " << key);
     }
 }
 

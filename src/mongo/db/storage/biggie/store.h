@@ -61,6 +61,8 @@ class RadixStore {
     class Node;
     class Head;
 
+    friend class RadixStoreTest;
+
 public:
     using mapped_type = T;
     using value_type = std::pair<const Key, mapped_type>;
@@ -83,53 +85,53 @@ public:
 
         radix_iterator() : _root(nullptr), _current(nullptr) {}
 
-        ~radix_iterator() = default;
+        ~radix_iterator() {
+            updateTreeView(/*stopIfMultipleCursors=*/true);
+        }
 
         radix_iterator& operator++() {
-            _restoreIfChanged();
+            repositionIfChanged();
             _findNext();
             return *this;
         }
 
         radix_iterator operator++(int) {
-            _restoreIfChanged();
+            repositionIfChanged();
             radix_iterator old = *this;
             ++*this;
             return old;
         }
 
         bool operator==(const radix_iterator& other) {
-            _restoreIfChanged();
-            return this->_current == other._current;
+            repositionIfChanged();
+            return _current == other._current;
         }
 
         bool operator!=(const radix_iterator& other) {
-            _restoreIfChanged();
-            return this->_current != other._current;
+            repositionIfChanged();
+            return _current != other._current;
         }
 
         reference operator*() {
-            _restoreIfChanged();
+            repositionIfChanged();
             return *(_current->_data);
         }
 
         const_pointer operator->() {
-            _restoreIfChanged();
+            repositionIfChanged();
             return &*(_current->_data);
         }
 
-    private:
-        radix_iterator(const std::shared_ptr<Head>& root) : _root(root), _current(nullptr) {}
-
-        radix_iterator(const std::shared_ptr<Head>& root, Node* current)
-            : _root(root), _current(current) {}
-
         /**
-         * Tries to restore the iterator if the working tree experienced a change, if it isn't
-         * possible to restore the iterator, it invalidates it instead.
+         * Attempts to restore the iterator on its former position in the updated tree if the tree
+         * has changed.
+         *
+         * If the former position has been erased, the iterator finds the next node. It is
+         * possible that no next node is available, so at that point the cursor is exhausted and
+         * points to the end.
          */
-        void _restoreIfChanged() {
-            if (!_root->_nextVersion)
+        void repositionIfChanged() {
+            if (!_current || !_root->_nextVersion)
                 return;
 
             invariant(_current->_data);
@@ -137,15 +139,18 @@ public:
             // Copy the key from _current before we move our _root reference.
             auto key = _current->_data->first;
 
-            do {
-                _root = _root->_nextVersion;
-            } while (_root->_nextVersion);
-
+            updateTreeView();
             RadixStore store(*_root);
 
             // Find the same or next node in the updated tree.
             _current = store.lower_bound(key)._current;
         }
+
+    private:
+        radix_iterator(const std::shared_ptr<Head>& root) : _root(root), _current(nullptr) {}
+
+        radix_iterator(const std::shared_ptr<Head>& root, Node* current)
+            : _root(root), _current(current) {}
 
         /**
         * This function traverses the tree to find the next left-most node with data. Modifies
@@ -224,6 +229,18 @@ public:
             } while (!_current->_data);
         }
 
+        void updateTreeView(bool stopIfMultipleCursors = false) {
+            while (_root && _root->_nextVersion) {
+                if (stopIfMultipleCursors && _root.use_count() > 1)
+                    return;
+
+                bool clearPreviousFlag = _root.use_count() == 1;
+                _root = _root->_nextVersion;
+                if (clearPreviousFlag)
+                    _root->_hasPreviousVersion = false;
+            }
+        }
+
         // "_root" is a pointer to the root of the tree over which this is iterating.
         std::shared_ptr<Head> _root;
 
@@ -275,55 +292,53 @@ public:
             }
         }
 
-        ~reverse_radix_iterator() = default;
+        ~reverse_radix_iterator() {
+            updateTreeView(/*stopIfMultipleCursors=*/true);
+        }
 
         reverse_radix_iterator& operator++() {
-            _restoreIfChanged();
+            repositionIfChanged();
             _findNextReverse();
             return *this;
         }
 
         reverse_radix_iterator operator++(int) {
-            _restoreIfChanged();
+            repositionIfChanged();
             reverse_radix_iterator old = *this;
             ++*this;
             return old;
         }
 
         bool operator==(const reverse_radix_iterator& other) {
-            _restoreIfChanged();
-            return this->_current == other._current;
+            repositionIfChanged();
+            return _current == other._current;
         }
 
         bool operator!=(const reverse_radix_iterator& other) {
-            _restoreIfChanged();
-            return this->_current != other._current;
+            repositionIfChanged();
+            return _current != other._current;
         }
 
         reference operator*() {
-            _restoreIfChanged();
+            repositionIfChanged();
             return *(_current->_data);
         }
 
         const_pointer operator->() {
-            _restoreIfChanged();
+            repositionIfChanged();
             return &*(_current->_data);
         }
 
-
-    private:
-        reverse_radix_iterator(const std::shared_ptr<Head>& root)
-            : _root(root), _current(nullptr) {}
-
-        reverse_radix_iterator(const std::shared_ptr<Head>& root, Node* current)
-            : _root(root), _current(current) {}
-
         /**
-         * Tries to restore the iterator if the working tree experienced a change, if it isn't
-         * possible to restore the iterator, it invalidates it instead.
+         * Attempts to restore the iterator on its former position in the updated tree if the tree
+         * has changed.
+         *
+         * If the former position has been erased, the iterator finds the next node. It is
+         * possible that no next node is available, so at that point the cursor is exhausted and
+         * points to the end.
          */
-        void _restoreIfChanged() {
-            if (!_root->_nextVersion)
+        void repositionIfChanged() {
+            if (!_current || !_root->_nextVersion)
                 return;
 
             invariant(_current->_data);
@@ -331,10 +346,7 @@ public:
             // Copy the key from _current before we move our _root reference.
             auto key = _current->_data->first;
 
-            do {
-                _root = _root->_nextVersion;
-            } while (_root->_nextVersion);
-
+            updateTreeView();
             RadixStore store(*_root);
 
             // Find the same or next node in the updated tree.
@@ -353,6 +365,13 @@ public:
                     _findNextReverse();
             }
         }
+
+    private:
+        reverse_radix_iterator(const std::shared_ptr<Head>& root)
+            : _root(root), _current(nullptr) {}
+
+        reverse_radix_iterator(const std::shared_ptr<Head>& root, Node* current)
+            : _root(root), _current(current) {}
 
         void _findNextReverse() {
             // Reverse find iterates through the tree to find the "next" node containing data,
@@ -411,6 +430,18 @@ public:
                     }
                 }
             } while (!_current->isLeaf());
+        }
+
+        void updateTreeView(bool stopIfMultipleCursors = false) {
+            while (_root && _root->_nextVersion) {
+                if (stopIfMultipleCursors && _root.use_count() > 1)
+                    return;
+
+                bool clearPreviousFlag = _root.use_count() == 1;
+                _root = _root->_nextVersion;
+                if (clearPreviousFlag)
+                    _root->_hasPreviousVersion = false;
+            }
         }
 
         // "_root" is a pointer to the root of the tree over which this is iterating.
@@ -477,20 +508,6 @@ public:
         return _root->_sizeSubtreeElems;
     }
 
-    size_type subtreeSize(const Key& key) const {
-        Node* node = _findNode(key, /* allowNext */ true, /* allowEmpty */ true);
-        if (node)
-            return node->_numSubtreeElems;
-        return 0;
-    }
-
-    size_type subtreeDataSize(const Key& key) const {
-        Node* node = _findNode(key, /* allowNext */ true, /* allowEmpty */ true);
-        if (node)
-            return node->_sizeSubtreeElems;
-        return 0;
-    }
-
     bool hasBranch() const {
         return _root->_nextVersion ? true : false;
     }
@@ -504,7 +521,7 @@ public:
         Key key = value.first;
         mapped_type m = value.second;
 
-        Node* node = _findNode(key, /* allowNext */ false, /* allowEmpty */ false);
+        Node* node = _findNode(key);
         if (node != nullptr || key.size() == 0)
             return std::make_pair(end(), false);
 
@@ -527,7 +544,8 @@ public:
         std::vector<std::pair<Node*, bool>> context;
 
         Node* prev = _root.get();
-        bool isUniquelyOwned = _root.use_count() == 1;
+        int rootUseCount = _root->_hasPreviousVersion ? 2 : 1;
+        bool isUniquelyOwned = _root.use_count() == rootUseCount;
         context.push_back(std::make_pair(prev, isUniquelyOwned));
 
         Node* node = nullptr;
@@ -569,8 +587,10 @@ public:
 
         if (!isUniquelyOwned) {
             invariant(!_root->_nextVersion);
+            invariant(_root.use_count() > rootUseCount);
             _root->_nextVersion = std::make_shared<Head>(*_root);
             _root = _root->_nextVersion;
+            _root->_hasPreviousVersion = true;
             parent = _root.get();
         }
 
@@ -649,7 +669,7 @@ public:
     const_iterator find(const Key& key) const {
         RadixStore::const_iterator it = RadixStore::end();
 
-        Node* node = _findNode(key, /* allowNext */ false, /* allowEmpty */ false);
+        Node* node = _findNode(key);
         if (node == nullptr)
             return it;
         else
@@ -658,29 +678,24 @@ public:
 
     const_iterator lower_bound(const Key& key) const {
         Node* node = _root.get();
-        std::vector<Node*> context;
-        context.push_back(node);
-
         const char* charKey = key.data();
-        // When we search a child array, always search to the right of 'idx' so that
-        // when we go back up the tree we never search anything less than something
-        // we already examined.
-        uint8_t idx = 0;
-        size_t depth = node->_depth + node->_trieKey.size();
+        std::vector<std::pair<Node*, uint8_t>> context;
+        size_t depth = 0;
 
         // Traverse the path given the key to see if the node exists.
         while (depth < key.size()) {
-            // idx is an unsigned int, and converting from a signed 8-bit char to an unsigned int is
-            // not trivial. It is necessary to convert the signed char to a unsigned 8-bit int (aka
-            // 'unsigned char' or 'uint8_t'). Then only it can be assigned to an unsigned int.
-            idx = static_cast<uint8_t>(charKey[depth]);
-            if (node->_children[idx] == nullptr) {
+            uint8_t idx = static_cast<uint8_t>(charKey[depth]);
+
+            // When we go back up the tree to search for the lower bound of key, always search to
+            // the right of 'idx' so that we never search anything less than what the lower bound
+            // would be.
+            if (idx != UINT8_MAX)
+                context.push_back(std::make_pair(node, idx + 1));
+
+            if (!node->_children[idx])
                 break;
-            }
 
             node = node->_children[idx].get();
-            // We may eventually need to search this node's parent for larger children.
-            idx += 1;
             size_t mismatchIdx =
                 _comparePrefix(node->_trieKey, charKey + depth, key.size() - depth);
 
@@ -693,71 +708,57 @@ public:
                 if (mismatchIdx == key.size() - depth ||
                     node->_trieKey[mismatchIdx] > mismatchChar) {
                     // If the current key is greater and has a value it is the lower bound.
-                    if (node->_data) {
+                    if (node->_data)
                         return const_iterator(_root, node);
-                    }
 
                     // If the current key has no value, place it in the context
                     // so that we can search its children.
-                    context.push_back(node);
-                    idx = 0;
-                } else {
-                    // If the current key is less, we will need to go back up the
-                    // tree and this node does not need to be pushed into the context.
-                    unsigned char c = static_cast<unsigned char>(charKey[depth]);
-                    idx = c + 1;
+                    context.push_back(std::make_pair(node, 0));
                 }
                 break;
             }
 
-            context.push_back(node);
             depth = node->_depth + node->_trieKey.size();
         }
 
-        if (depth == key.size() && node->_data) {
+        if (depth == key.size()) {
             // If the node exists, then we can just return an iterator to that node.
-            return const_iterator(_root, node);
-        } else if (depth == key.size()) {
+            if (node->_data)
+                return const_iterator(_root, node);
+
             // The search key is an exact prefix, so we need to search all of this node's
             // children.
-            idx = 0;
+            context.back() = std::make_pair(node, 0);
         }
 
-        // The node did not exist, so must find an node with the next largest key (if it exists).
-        // Use the context stack to move up the tree and keep searching for the next node with data
-        // if need be.
+        // The node with the provided key did not exist. Now we must find the next largest node, if
+        // it exists.
         while (!context.empty()) {
-            node = context.back();
+            uint8_t idx = 0;
+            std::tie(node, idx) = context.back();
             context.pop_back();
 
             for (auto iter = idx + node->_children.begin(); iter != node->_children.end(); ++iter) {
-                if (*iter != nullptr) {
-                    // There exists a node with a key larger than the one given, traverse to
-                    // this node which will be the left-most node in this sub-tree.
-                    node = iter->get();
-                    while (!node->_data) {
-                        for (auto iter = node->_children.begin(); iter != node->_children.end();
-                             ++iter) {
-                            if (*iter != nullptr) {
-                                node = iter->get();
-                                break;
-                            }
-                        }
-                    }
+                if (!(*iter))
+                    continue;
+
+                // There exists a node with a key larger than the one given.
+                node = iter->get();
+                if (node->_data)
                     return const_iterator(_root, node);
-                }
+
+                // Need to search this node's children for the next largest node.
+                context.push_back(std::make_pair(node, 0));
+                break;
             }
 
-            if (node->_trieKey.empty()) {
+            if (node->_trieKey.empty() && context.empty()) {
                 // We have searched the root. There's nothing left to search.
                 return end();
-            } else {
-                unsigned char c = static_cast<unsigned char>(node->_trieKey.front());
-                idx = c + 1;
             }
         }
 
-        // If there was no node with a larger key than the one given, return end().
+        // There was no node key at least as large as the one given.
         return end();
     }
 
@@ -805,15 +806,6 @@ private:
             _sizeSubtreeElems = other._sizeSubtreeElems;
         }
 
-        friend void swap(Node& first, Node& second) {
-            std::swap(first.trieKey, second.trieKey);
-            std::swap(first.depth, second.depth);
-            std::swap(first.data, second.data);
-            std::swap(first.children, second.children);
-            std::swap(first._numSubtreeElems, second._numSubtreeElems);
-            std::swap(first._sizeSubtreeElems, second._sizeSubtreeElems);
-        }
-
         Node(Node&& other) {
             _depth = std::move(other._depth);
             _numSubtreeElems = std::move(other._numSubtreeElems);
@@ -821,6 +813,17 @@ private:
             _trieKey = std::move(other._trieKey);
             _data = std::move(other._data);
             _children = std::move(other._children);
+        }
+
+        virtual ~Node() = default;
+
+        friend void swap(Node& first, Node& second) {
+            std::swap(first.trieKey, second.trieKey);
+            std::swap(first.depth, second.depth);
+            std::swap(first.data, second.data);
+            std::swap(first.children, second.children);
+            std::swap(first._numSubtreeElems, second._numSubtreeElems);
+            std::swap(first._sizeSubtreeElems, second._sizeSubtreeElems);
         }
 
         Node& operator=(const Node other) {
@@ -857,26 +860,37 @@ private:
         Head() = default;
         Head(std::vector<uint8_t> key) : Node(key) {}
         Head(const Node& other) : Node(other) {}
-        Head(const Head& other) : Node(other) {
-            _nextVersion = other._nextVersion;
+        Head(const Head& other) : Node(other) {}
+
+        ~Head() {
+            if (_nextVersion)
+                _nextVersion->_hasPreviousVersion = false;
         }
 
         friend void swap(Head& first, Head& second) {
             Node::swap(first, second);
-            std::swap(first._nextVersion, second._nextVersion);
         }
 
-        Head(Head&& other) : Node(std::move(other)) {
-            _nextVersion = std::move(other._nextVersion);
-        }
+        Head(Head&& other) : Node(std::move(other)) {}
 
         Head& operator=(const Head other) {
             swap(*this, other);
             return *this;
         }
 
+        bool hasPreviousVersion() const {
+            return _hasPreviousVersion;
+        }
+
     protected:
+        // Forms a singly linked list of versions that is needed to reposition cursors after
+        // modifications have been made.
         std::shared_ptr<Head> _nextVersion;
+
+        // While we have cursors that haven't been repositioned to the latest tree, this will be
+        // true to help us understand when to copy on modifications due to the extra shared pointer
+        // _nextVersion.
+        bool _hasPreviousVersion = false;
     };
 
     /**
@@ -912,7 +926,7 @@ private:
         return ret;
     }
 
-    Node* _findNode(const Key& key, bool allowNext, bool allowEmpty) const {
+    Node* _findNode(const Key& key) const {
         const char* charKey = key.data();
 
         unsigned int depth = _root->_depth;
@@ -941,13 +955,8 @@ private:
             size_t mismatchIdx =
                 _comparePrefix(node->_trieKey, charKey + depth, key.size() - depth);
             if (mismatchIdx != node->_trieKey.size()) {
-                // The node with the key was not found in the tree. This could be because the
-                // node which will be located at that key was not yet compressed due to the
-                // prefixes. Until then we return its future children.
-                if (allowNext && node->_numSubtreeElems > 0)
-                    return node.get();
                 return nullptr;
-            } else if (mismatchIdx == key.size() - depth && (node->_data || allowEmpty)) {
+            } else if (mismatchIdx == key.size() - depth && node->_data) {
                 return node.get();
             }
 
@@ -958,6 +967,31 @@ private:
         }
 
         return nullptr;
+    }
+
+    /**
+     * Makes a copy of the _root node if it isn't uniquely owned during an operation that will
+     * modify the tree.
+     *
+     * The _root node wouldn't be uniquely owned only when there are cursors positioned on the
+     * latest version of the tree. Cursors that are not yet repositioned onto the latest version of
+     * the tree are not considered to be sharing the _root for modifying operations.
+     */
+    void _makeRootUnique() {
+        int rootUseCount = _root->_hasPreviousVersion ? 2 : 1;
+
+        if (_root.use_count() == rootUseCount)
+            return;
+
+        invariant(_root.use_count() > rootUseCount);
+        // Copy the node on a modifying operation when the root isn't unique.
+
+        // There should not be any _nextVersion set in the _root otherwise our tree would have
+        // multiple HEADs.
+        invariant(!_root->_nextVersion);
+        _root->_nextVersion = std::make_shared<Head>(*_root);
+        _root = _root->_nextVersion;
+        _root->_hasPreviousVersion = true;
     }
 
     /**
@@ -996,16 +1030,7 @@ private:
         int depth = _root->_depth + _root->_trieKey.size();
         uint8_t childFirstChar = static_cast<uint8_t>(charKey[depth]);
 
-        if (_root.use_count() > 1) {
-            // Copy the node on a modifying operation when the root isn't unique.
-
-            // There should not be any _nextVersion set in the _root otherwise our tree would have
-            // multiple HEADs.
-            invariant(!_root->_nextVersion);
-            _root->_nextVersion = std::make_shared<Head>(*_root);
-            _root = _root->_nextVersion;
-        }
-
+        _makeRootUnique();
         _root->_numSubtreeElems += elemNum;
         _root->_sizeSubtreeElems += elemSize;
 
@@ -1229,11 +1254,7 @@ private:
             return nullptr;
 
         // The first node should always be the root node.
-        if (_root.use_count() > 1) {
-            invariant(!_root->_nextVersion);
-            _root->_nextVersion = std::make_shared<Head>(*_root);
-            _root = _root->_nextVersion;
-        }
+        _makeRootUnique();
         context[0] = _root.get();
 
         // If the context only contains the root, and it was copied, return the new root.

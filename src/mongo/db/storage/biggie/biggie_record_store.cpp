@@ -62,11 +62,6 @@ std::string createKey(StringData ident, int64_t recordId) {
     return std::string(ks.getBuffer(), ks.getSize());
 }
 
-std::string createKey(StringData ident) {
-    KeyString ks(version, BSON("" << ident), allAscending);
-    return std::string(ks.getBuffer(), ks.getSize());
-}
-
 int64_t extractRecordId(const std::string& keyStr) {
     KeyString ks(version, sample, allAscending);
     ks.resetFromBuffer(keyStr.c_str(), keyStr.size());
@@ -123,9 +118,7 @@ long long RecordStore::dataSize(OperationContext* opCtx) const {
 
 
 long long RecordStore::numRecords(OperationContext* opCtx) const {
-    StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
-    return workingCopy->distance(workingCopy->lower_bound(_prefix),
-                                 workingCopy->upper_bound(_postfix));
+    return static_cast<long long>(_numRecords.load());
 }
 
 bool RecordStore::isCapped() const {
@@ -157,7 +150,11 @@ void RecordStore::deleteRecord(OperationContext* opCtx, const RecordId& dl) {
     StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
     auto numElementsRemoved = workingCopy->erase(createKey(_ident, dl.repr()));
     invariant(numElementsRemoved == 1);
-    RecoveryUnit::get(opCtx)->makeDirty();
+    _numRecords.fetchAndSubtract(numElementsRemoved);
+    auto ru = RecoveryUnit::get(opCtx);
+    ru->onRollback(
+        [numElementsRemoved, this]() { this->_numRecords.fetchAndAdd(numElementsRemoved); });
+    ru->makeDirty();
 }
 
 Status RecordStore::insertRecords(OperationContext* opCtx,
@@ -171,14 +168,18 @@ Status RecordStore::insertRecords(OperationContext* opCtx,
     if (_isCapped && totalSize > _cappedMaxSize)
         return Status(ErrorCodes::BadValue, "object to insert exceeds cappedMaxSize");
 
-    StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
+    auto ru = RecoveryUnit::get(opCtx);
+    StringStore* workingCopy(ru->getHead());
     for (auto& record : *inOutRecords) {
         int64_t thisRecordId = nextRecordId();
         workingCopy->insert(StringStore::value_type{
             createKey(_ident, thisRecordId), std::string(record.data.data(), record.data.size())});
         record.id = RecordId(thisRecordId);
-        RecoveryUnit::get(opCtx)->makeDirty();
+        ru->makeDirty();
     }
+    auto numInserted = inOutRecords->size();
+    _numRecords.fetchAndAdd(numInserted);
+    ru->onRollback([numInserted, this]() { this->_numRecords.fetchAndSubtract(numInserted); });
 
     cappedDeleteAsNeeded(opCtx, workingCopy);
     return Status::OK();
@@ -197,7 +198,8 @@ Status RecordStore::insertRecordsWithDocWriter(OperationContext* opCtx,
     if (_isCapped && totalSize > _cappedMaxSize)
         return Status(ErrorCodes::BadValue, "object to insert exceeds cappedMaxSize");
 
-    StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
+    auto ru = RecoveryUnit::get(opCtx);
+    StringStore* workingCopy(ru->getHead());
     for (size_t i = 0; i < nDocs; i++) {
         const size_t len = docs[i]->documentSize();
 
@@ -209,8 +211,11 @@ Status RecordStore::insertRecordsWithDocWriter(OperationContext* opCtx,
         workingCopy->insert(std::move(vt));
         if (idsOut)
             idsOut[i] = RecordId(thisRecordId);
-        RecoveryUnit::get(opCtx)->makeDirty();
+        ru->makeDirty();
     }
+    _numRecords.fetchAndAdd(static_cast<int64_t>(nDocs));
+    ru->onRollback(
+        [nDocs, this]() { this->_numRecords.fetchAndSubtract(static_cast<int64_t>(nDocs)); });
 
     cappedDeleteAsNeeded(opCtx, workingCopy);
     return Status::OK();
@@ -253,33 +258,50 @@ std::unique_ptr<SeekableRecordCursor> RecordStore::getCursor(OperationContext* o
 }
 
 Status RecordStore::truncate(OperationContext* opCtx) {
+    StatusWith<int64_t> s = truncateWithoutUpdatingCount(opCtx);
+    if (!s.isOK())
+        return s.getStatus();
 
-    StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
-    StringStore::const_iterator end = workingCopy->upper_bound(_postfix);
-    std::vector<std::string> toDelete;
-    for (auto it = workingCopy->lower_bound(_prefix); it != end; ++it) {
-        toDelete.push_back(it->first);
-    }
-    if (!toDelete.empty()) {
-        size_t numErased = 0;
-        for (const auto& key : toDelete) {
-            numErased += workingCopy->erase(key);
-        }
-        invariant(numErased == toDelete.size());
-        RecoveryUnit::get(opCtx)->makeDirty();
-    }
+    int64_t numErased = s.getValue();
+    _numRecords.fetchAndSubtract(numErased);
+    RecoveryUnit::get(opCtx)->onRollback(
+        [numErased, this]() { this->_numRecords.fetchAndAdd(numErased); });
 
     return Status::OK();
 }
 
+StatusWith<int64_t> RecordStore::truncateWithoutUpdatingCount(OperationContext* opCtx) {
+    auto ru = RecoveryUnit::get(opCtx);
+    StringStore* workingCopy(ru->getHead());
+    StringStore::const_iterator end = workingCopy->upper_bound(_postfix);
+    std::vector<std::string> toDelete;
+
+    for (auto it = workingCopy->lower_bound(_prefix); it != end; ++it) {
+        toDelete.push_back(it->first);
+    }
+
+    size_t numErased = 0;
+    if (!toDelete.empty()) {
+        for (const auto& key : toDelete) {
+            numErased += workingCopy->erase(key);
+        }
+        invariant(numErased == toDelete.size());
+        ru->makeDirty();
+    }
+
+    return static_cast<int64_t>(numErased);
+}
+
 void RecordStore::cappedTruncateAfter(OperationContext* opCtx, RecordId end, bool inclusive) {
-    StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
+    auto ru = RecoveryUnit::get(opCtx);
+    StringStore* workingCopy(ru->getHead());
 
     WriteUnitOfWork wuow(opCtx);
     const auto recordKey = createKey(_ident, end.repr());
     auto recordIt =
         inclusive ? workingCopy->lower_bound(recordKey) : workingCopy->upper_bound(recordKey);
     auto endIt = workingCopy->upper_bound(_postfix);
+    int64_t numErased = 0;
 
     while (recordIt != endIt) {
         stdx::lock_guard<stdx::mutex> cappedCallbackLock(_cappedCallbackMutex);
@@ -293,9 +315,16 @@ void RecordStore::cappedTruncateAfter(OperationContext* opCtx, RecordId end, boo
 
         // Don't need to increment the iterator because the iterator gets revalidated and placed
         // on the next item after the erase.
+        numErased++;
         workingCopy->erase(recordIt->first);
-        RecoveryUnit::get(opCtx)->makeDirty();
+
+        // Tree modifications are bound to happen here so we need to reposition our end cursor.
+        endIt.repositionIfChanged();
+        ru->makeDirty();
     }
+
+    _numRecords.fetchAndSubtract(numErased);
+    ru->onRollback([numErased, this]() { this->_numRecords.fetchAndAdd(numErased); });
 
     wuow.commit();
 }
@@ -359,20 +388,15 @@ bool RecordStore::cappedAndNeedDelete(OperationContext* opCtx, StringStore* work
     if (!_isCapped)
         return false;
 
-    const auto subTreeKey = createKey(_ident);
-
-    if (workingCopy->subtreeDataSize(subTreeKey) > static_cast<size_t>(_cappedMaxSize))
+    if (dataSize(opCtx) > _cappedMaxSize)
         return true;
 
-    if ((_cappedMaxDocs != -1) &&
-        workingCopy->subtreeSize(subTreeKey) > static_cast<size_t>(_cappedMaxDocs))
+    if ((_cappedMaxDocs != -1) && numRecords(opCtx) > _cappedMaxDocs)
         return true;
     return false;
 }
 
 void RecordStore::cappedDeleteAsNeeded(OperationContext* opCtx, StringStore* workingCopy) {
-
-    const auto subTreeKey = createKey(_ident);
 
     // Create the lowest key for this identifier and use lower_bound() to get to the first one.
     auto recordIt = workingCopy->lower_bound(_prefix);
@@ -381,7 +405,7 @@ void RecordStore::cappedDeleteAsNeeded(OperationContext* opCtx, StringStore* wor
     stdx::lock_guard<stdx::mutex> cappedDeleterLock(_cappedDeleterMutex);
 
     while (cappedAndNeedDelete(opCtx, workingCopy)) {
-        DEV invariant(workingCopy->subtreeSize(subTreeKey) > 0);
+        invariant(numRecords(opCtx) > 0);
 
         stdx::lock_guard<stdx::mutex> cappedCallbackLock(_cappedCallbackMutex);
         if (_cappedCallback) {
@@ -393,7 +417,10 @@ void RecordStore::cappedDeleteAsNeeded(OperationContext* opCtx, StringStore* wor
         // Don't need to increment the iterator because the iterator gets revalidated and placed
         // on the next item after the erase.
         workingCopy->erase(recordIt->first);
-        RecoveryUnit::get(opCtx)->makeDirty();
+        _numRecords.fetchAndSubtract(1);
+        auto ru = RecoveryUnit::get(opCtx);
+        ru->onRollback([this]() { this->_numRecords.fetchAndAdd(1); });
+        ru->makeDirty();
     }
 }
 

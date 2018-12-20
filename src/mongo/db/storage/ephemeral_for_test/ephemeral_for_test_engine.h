@@ -119,6 +119,10 @@ public:
         MONGO_UNREACHABLE;
     }
 
+    virtual Timestamp getOldestOpenReadTimestamp() const override {
+        return Timestamp();
+    }
+
 private:
     typedef StringMap<std::shared_ptr<void>> DataMap;
 

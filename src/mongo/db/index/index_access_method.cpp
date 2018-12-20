@@ -39,7 +39,6 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/base/status.h"
-#include "mongo/db/catalog/collection_impl.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_consistency.h"
 #include "mongo/db/client.h"
@@ -184,12 +183,26 @@ Status AbstractIndexAccessMethod::insert(OperationContext* opCtx,
                                          const RecordId& loc,
                                          const InsertDeleteOptions& options,
                                          InsertResult* result) {
-    bool checkIndexKeySize = shouldCheckIndexKeySize(opCtx);
+    invariant(options.fromIndexBuilder || !_btreeState->isBuilding());
+
     BSONObjSet multikeyMetadataKeys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
     BSONObjSet keys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
     MultikeyPaths multikeyPaths;
+
     // Delegate to the subclass.
     getKeys(obj, options.getKeysMode, &keys, &multikeyMetadataKeys, &multikeyPaths);
+
+    return insertKeys(opCtx, keys, multikeyMetadataKeys, multikeyPaths, loc, options, result);
+}
+
+Status AbstractIndexAccessMethod::insertKeys(OperationContext* opCtx,
+                                             const BSONObjSet& keys,
+                                             const BSONObjSet& multikeyMetadataKeys,
+                                             const MultikeyPaths& multikeyPaths,
+                                             const RecordId& loc,
+                                             const InsertDeleteOptions& options,
+                                             InsertResult* result) {
+    bool checkIndexKeySize = shouldCheckIndexKeySize(opCtx);
 
     // Add all new data keys, and all new multikey metadata keys, into the index. When iterating
     // over the data keys, each of them should point to the doc's RecordId. When iterating over
@@ -236,7 +249,6 @@ Status AbstractIndexAccessMethod::insert(OperationContext* opCtx,
     if (shouldMarkIndexAsMultikey(keys, multikeyMetadataKeys, multikeyPaths)) {
         _btreeState->setMultikey(opCtx, multikeyPaths);
     }
-
     return Status::OK();
 }
 
@@ -271,7 +283,9 @@ Status AbstractIndexAccessMethod::remove(OperationContext* opCtx,
                                          const RecordId& loc,
                                          const InsertDeleteOptions& options,
                                          int64_t* numDeleted) {
+    invariant(!_btreeState->isBuilding());
     invariant(numDeleted);
+
     *numDeleted = 0;
     BSONObjSet keys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
     // There's no need to compute the prefixes of the indexed fields that cause the index to be
@@ -285,12 +299,20 @@ Status AbstractIndexAccessMethod::remove(OperationContext* opCtx,
     getKeys(
         obj, GetKeysMode::kRelaxConstraintsUnfiltered, &keys, multikeyMetadataKeys, multikeyPaths);
 
+    return removeKeys(opCtx, keys, loc, options, numDeleted);
+}
+
+Status AbstractIndexAccessMethod::removeKeys(OperationContext* opCtx,
+                                             const BSONObjSet& keys,
+                                             const RecordId& loc,
+                                             const InsertDeleteOptions& options,
+                                             int64_t* numDeleted) {
+
     for (const auto& key : keys) {
         removeOneKey(opCtx, key, loc, options.dupsAllowed);
     }
 
     *numDeleted = keys.size();
-
     return Status::OK();
 }
 
@@ -356,7 +378,7 @@ RecordId AbstractIndexAccessMethod::findSingle(OperationContext* opCtx,
 
 void AbstractIndexAccessMethod::validate(OperationContext* opCtx,
                                          int64_t* numKeys,
-                                         ValidateResults* fullResults) {
+                                         ValidateResults* fullResults) const {
     long long keys = 0;
     _newInterface->fullValidate(opCtx, &keys, fullResults);
     *numKeys = keys;
@@ -446,6 +468,7 @@ Status AbstractIndexAccessMethod::update(OperationContext* opCtx,
                                          const UpdateTicket& ticket,
                                          int64_t* numInserted,
                                          int64_t* numDeleted) {
+    invariant(!_btreeState->isBuilding());
     invariant(ticket.newKeys.size() ==
               ticket.oldKeys.size() + ticket.added.size() - ticket.removed.size());
     invariant(numInserted);

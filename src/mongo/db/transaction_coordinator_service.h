@@ -74,20 +74,48 @@ public:
                            Date_t commitDeadline);
 
     /**
-     * Delivers coordinateCommit to the TransactionCoordinator, asynchronously sends commit or
-     * abort to participants if necessary, and returns a Future that will contain the commit
-     * decision when the transaction finishes committing or aborting.
+     * If a coordinator for the (lsid, txnNumber) exists, delivers the participant list to the
+     * coordinator, which will cause the coordinator to start coordinating the commit if the
+     * coordinator had not yet received a list, and returns a Future that will contain the decision
+     * when the transaction finishes committing or aborting.
+     *
+     * If no coordinator for the (lsid, txnNumber) exists, returns boost::none.
      */
-    Future<TransactionCoordinator::CommitDecision> coordinateCommit(
+    boost::optional<Future<TransactionCoordinator::CommitDecision>> coordinateCommit(
         OperationContext* opCtx,
         LogicalSessionId lsid,
         TxnNumber txnNumber,
         const std::set<ShardId>& participantList);
 
+    /**
+     * If a coordinator for the (lsid, txnNumber) exists, returns a Future that will contain the
+     * decision when the transaction finishes committing or aborting.
+     *
+     * If no coordinator for the (lsid, txnNumber) exists, returns boost::none.
+     */
+    boost::optional<Future<TransactionCoordinator::CommitDecision>> recoverCommit(
+        OperationContext* opCtx, LogicalSessionId lsid, TxnNumber txnNumber);
+
+    /**
+     * Marks the coordinator catalog as stepping up, which blocks all incoming requests for
+     * coordinators, and launches an async task to:
+     * 1. Wait for the coordinators in the catalog to complete (successfully or with an error) and
+     *    be removed from the catalog.
+     * 2. Read all pending commit tasks from the config.transactionCoordinators collection.
+     * 3. Create TransactionCoordinator objects in memory for each pending commit and launch an
+     *    async task to continue coordinating its commit.
+     */
+    void onStepUp(OperationContext* opCtx);
+
+    /*
+     * TESTING ONLY
+     */
+    void setThreadPool(std::unique_ptr<ThreadPool> pool);
+
 private:
     std::shared_ptr<TransactionCoordinatorCatalog> _coordinatorCatalog;
 
-    ThreadPool _threadPool;
+    std::unique_ptr<ThreadPool> _threadPool;
 };
 
 }  // namespace mongo

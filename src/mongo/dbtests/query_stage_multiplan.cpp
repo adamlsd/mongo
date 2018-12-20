@@ -137,11 +137,11 @@ unique_ptr<PlanStage> getIxScanPlan(OperationContext* opCtx,
                                     const Collection* coll,
                                     WorkingSet* sharedWs,
                                     int desiredFooValue) {
-    std::vector<IndexDescriptor*> indexes;
+    std::vector<const IndexDescriptor*> indexes;
     coll->getIndexCatalog()->findIndexesByKeyPattern(opCtx, BSON("foo" << 1), false, &indexes);
     ASSERT_EQ(indexes.size(), 1U);
 
-    IndexScanParams ixparams(opCtx, *indexes[0]);
+    IndexScanParams ixparams(opCtx, indexes[0]);
     ixparams.bounds.isSimpleRange = true;
     ixparams.bounds.startKey = BSON("" << desiredFooValue);
     ixparams.bounds.endKey = BSON("" << desiredFooValue);

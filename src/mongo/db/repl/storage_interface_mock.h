@@ -315,13 +315,16 @@ public:
 
     Timestamp getAllCommittedTimestamp(ServiceContext* serviceCtx) const override;
 
+    Timestamp getOldestOpenReadTimestamp(ServiceContext* serviceCtx) const override;
+
     bool supportsDocLocking(ServiceContext* serviceCtx) const override;
 
     Status isAdminDbValid(OperationContext* opCtx) override {
         return isAdminDbValidFn(opCtx);
     };
 
-    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) override {
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx,
+                                                 bool primaryOnly) override {
         return;
     }
 
@@ -414,6 +417,7 @@ public:
 
     bool supportsDocLockingBool = false;
     Timestamp allCommittedTimestamp = Timestamp::min();
+    Timestamp oldestOpenReadTimestamp = Timestamp::min();
 
 private:
     mutable stdx::mutex _mutex;

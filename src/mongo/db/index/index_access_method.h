@@ -93,6 +93,14 @@ public:
                           const InsertDeleteOptions& options,
                           InsertResult* result) = 0;
 
+    virtual Status insertKeys(OperationContext* opCtx,
+                              const BSONObjSet& keys,
+                              const BSONObjSet& multikeyMetadataKeys,
+                              const MultikeyPaths& multikeyPaths,
+                              const RecordId& loc,
+                              const InsertDeleteOptions& options,
+                              InsertResult* result) = 0;
+
     /**
      * Analogous to above, but remove the records instead of inserting them.
      * 'numDeleted' will be set to the number of keys removed from the index for the document.
@@ -102,6 +110,12 @@ public:
                           const RecordId& loc,
                           const InsertDeleteOptions& options,
                           int64_t* numDeleted) = 0;
+
+    virtual Status removeKeys(OperationContext* opCtx,
+                              const BSONObjSet& keys,
+                              const RecordId& loc,
+                              const InsertDeleteOptions& options,
+                              int64_t* numDeleted) = 0;
 
     /**
      * Checks whether the index entries for the document 'from', which is placed at location
@@ -174,7 +188,7 @@ public:
      */
     virtual void validate(OperationContext* opCtx,
                           int64_t* numKeys,
-                          ValidateResults* fullResults) = 0;
+                          ValidateResults* fullResults) const = 0;
 
     /**
      * Add custom statistics about this index to BSON object builder, for display.
@@ -403,6 +417,10 @@ struct InsertDeleteOptions {
     // Are duplicate keys allowed in the index?
     bool dupsAllowed = false;
 
+    // Only an index builder is allowed to insert into the index while it is building, so only the
+    // index builder should set this to 'true'.
+    bool fromIndexBuilder = false;
+
     // Should we relax the index constraints?
     IndexAccessMethod::GetKeysMode getKeysMode =
         IndexAccessMethod::GetKeysMode::kEnforceConstraints;
@@ -439,11 +457,25 @@ public:
                   const InsertDeleteOptions& options,
                   InsertResult* result) final;
 
+    Status insertKeys(OperationContext* opCtx,
+                      const BSONObjSet& keys,
+                      const BSONObjSet& multikeyMetadataKeys,
+                      const MultikeyPaths& multikeyPaths,
+                      const RecordId& loc,
+                      const InsertDeleteOptions& options,
+                      InsertResult* result) final;
+
     Status remove(OperationContext* opCtx,
                   const BSONObj& obj,
                   const RecordId& loc,
                   const InsertDeleteOptions& options,
                   int64_t* numDeleted) final;
+
+    Status removeKeys(OperationContext* opCtx,
+                      const BSONObjSet& keys,
+                      const RecordId& loc,
+                      const InsertDeleteOptions& options,
+                      int64_t* numDeleted) final;
 
     Status validateUpdate(OperationContext* opCtx,
                           const BSONObj& from,
@@ -468,7 +500,9 @@ public:
 
     Status touch(OperationContext* opCtx) const final;
 
-    void validate(OperationContext* opCtx, int64_t* numKeys, ValidateResults* fullResults) final;
+    void validate(OperationContext* opCtx,
+                  int64_t* numKeys,
+                  ValidateResults* fullResults) const final;
 
     bool appendCustomStats(OperationContext* opCtx,
                            BSONObjBuilder* result,

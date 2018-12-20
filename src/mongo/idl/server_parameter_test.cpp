@@ -145,5 +145,52 @@ TEST(IDLServerParameter, customSettingTest) {
     ASSERT_EQ(test::gCustomSetting, "Value via depr name");
 }
 
+TEST(IDLServerParameter, customSettingWithRedaction) {
+    auto* csr = getServerParameter("customSettingWithRedaction");
+    ASSERT_OK(csr->setFromString("Secret"));
+    ASSERT_EQ(test::gCustomSetting, "Secret");
+
+    BSONObjBuilder b;
+    csr->append(nullptr, b, csr->name());
+    auto obj = b.obj();
+    ASSERT_EQ(obj.nFields(), 1);
+    ASSERT_EQ(obj[csr->name()].String(), "###");
+}
+
+TEST(IDLServerParameter, customTestOnly) {
+    auto* cto = getServerParameter("customTestOnlyParameter");
+    ASSERT_OK(cto->setFromString("enabled"));
+    ASSERT_EQ(test::gCustomSetting, "enabled");
+
+    {
+        BSONObjBuilder b;
+        cto->append(nullptr, b, cto->name());
+        auto obj = b.obj();
+        ASSERT_EQ(obj.nFields(), 1);
+        ASSERT_EQ(obj[cto->name()].String(), "enabled");
+    }
+
+    ServerParameterSet::getGlobal()->disableTestParameters();
+    auto* disabled = getServerParameter("customTestOnlyParameter");
+    ASSERT_NE(cto, disabled);
+    ASSERT_EQ(cto->name(), disabled->name());
+
+    {
+        BSONObjBuilder b;
+        disabled->append(nullptr, b, disabled->name());
+        auto obj = b.obj();
+        ASSERT_EQ(obj.nFields(), 0);
+    }
+
+    auto status = disabled->setFromString("disabled");
+    ASSERT_NOT_OK(status);
+    ASSERT_EQ(status.code(), ErrorCodes::BadValue);
+    ASSERT_EQ(
+        status.reason(),
+        "setParameter: 'customTestOnlyParameter' is only supported with 'enableTestCommands=true'");
+
+    ASSERT_EQ(test::gCustomSetting, "enabled");
+}
+
 }  // namespace
 }  // namespace mongo

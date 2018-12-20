@@ -33,6 +33,7 @@
 
 #include "mongo/idl/config_option_test_gen.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/cmdline_utils/censor_cmdline_test.h"
 #include "mongo/util/log.h"
 #include "mongo/util/options_parser/options_parser.h"
 #include "mongo/util/options_parser/startup_option_init.h"
@@ -42,6 +43,8 @@ namespace mongo {
 namespace test {
 
 namespace moe = ::mongo::optionenvironment;
+bool gEnableTestConfigOpt14 = true;
+bool gEnableTestConfigOpt15 = false;
 
 namespace {
 
@@ -89,6 +92,8 @@ MONGO_STARTUP_OPTIONS_PARSE(ConfigOption)(InitializerContext*) {
         "8",
         "--testConfigOpt12",
         "command-line option",
+        "--testConfigOpt14",
+        "set14",
     };
     return parseArgv(argv, &moe::startupOptionsParsed);
 }
@@ -365,7 +370,250 @@ TEST(ConfigOption, Opt13) {
     ASSERT_OPTION_SET<std::string>(parsedShort, "test.config.opt13", "short");
 }
 
-}  // namespace
+TEST(ConfigOption, Opt14) {
+    ASSERT_OPTION_SET<std::string>(moe::startupOptionsParsed, "test.config.opt14", "set14");
+    ASSERT_EQ(gTestConfigOpt14, "set14");
+}
 
+TEST(ConfigOption, Opt15) {
+    ASSERT_OPTION_NOT_SET<std::string>(moe::startupOptionsParsed, "test.config.opt15");
+
+    // Fails because the option was never declared.
+    moe::Environment parseFail;
+    ASSERT_NOT_OK(parseArgv({"mongod", "--testConfigOpt15", "set15"}, &parseFail));
+
+    // Variable is declared.
+    ASSERT_EQ(gTestConfigOpt15, "");
+}
+
+TEST(RedactionArgvVector, NothingCensored) {
+    const std::vector<std::string> argv({"first",
+                                         "second",
+                                         "testConfigOpt16=KEEP",
+                                         "---testConfigOpt16=KEEP",
+                                         "testConfigOpt16",
+                                         "KEEP"});
+    censoringArgv(argv, argv);
+    censoringVector(argv, argv);
+}
+
+TEST(RedactionArgv, DoubleHyphen) {
+    const std::vector<std::string> argv({"first",
+                                         "second",
+                                         "--testConfigOpt16=LOSEME",
+                                         "--testConfigOpt16",
+                                         "Really, lose me!",
+                                         "--testConfigOpt16depr=LOSEME",
+                                         "--testConfigOpt16depr",
+                                         "Really, lose me!"});
+
+    const std::vector<std::string> expected({"first",
+                                             "second",
+                                             "--testConfigOpt16=xxxxxx",
+                                             "--testConfigOpt16",
+                                             "xxxxxxxxxxxxxxxx",
+                                             "--testConfigOpt16depr=xxxxxx",
+                                             "--testConfigOpt16depr",
+                                             "xxxxxxxxxxxxxxxx"});
+
+    ASSERT_EQ(expected.size(), argv.size());
+    censoringArgv(expected, argv);
+}
+
+TEST(RedactionArgv, SingleHyphen) {
+    const std::vector<std::string> argv({"first",
+                                         "second",
+                                         "-testConfigOpt16=LOSEME",
+                                         "-testConfigOpt16",
+                                         "Really, lose me!",
+                                         "-testConfigOpt16depr=LOSEME",
+                                         "-testConfigOpt16depr",
+                                         "Really, lose me!"});
+
+    const std::vector<std::string> expected({"first",
+                                             "second",
+                                             "-testConfigOpt16=xxxxxx",
+                                             "-testConfigOpt16",
+                                             "xxxxxxxxxxxxxxxx",
+                                             "-testConfigOpt16depr=xxxxxx",
+                                             "-testConfigOpt16depr",
+                                             "xxxxxxxxxxxxxxxx"});
+
+    ASSERT_EQ(expected.size(), argv.size());
+    censoringArgv(expected, argv);
+}
+
+TEST(RedactionVector, DoubleHyphen) {
+    const std::vector<std::string> argv({"first",
+                                         "second",
+                                         "--testConfigOpt16=LOSEME",
+                                         "--testConfigOpt16",
+                                         "Really, lose me!",
+                                         "--testConfigOpt16depr=LOSEME",
+                                         "--testConfigOpt16depr",
+                                         "Really, lose me!"});
+
+    const std::vector<std::string> expected({"first",
+                                             "second",
+                                             "--testConfigOpt16=<password>",
+                                             "--testConfigOpt16",
+                                             "<password>",
+                                             "--testConfigOpt16depr=<password>",
+                                             "--testConfigOpt16depr",
+                                             "<password>"});
+
+    ASSERT_EQ(expected.size(), argv.size());
+    censoringVector(expected, argv);
+}
+
+TEST(RedactionVector, SingleHyphen) {
+    const std::vector<std::string> argv({"first",
+                                         "second",
+                                         "-testConfigOpt16=LOSEME",
+                                         "-testConfigOpt16",
+                                         "Really, lose me!",
+                                         "-testConfigOpt16depr=LOSEME",
+                                         "-testConfigOpt16depr",
+                                         "Really, lose me!"});
+
+    const std::vector<std::string> expected({"first",
+                                             "second",
+                                             "-testConfigOpt16=<password>",
+                                             "-testConfigOpt16",
+                                             "<password>",
+                                             "-testConfigOpt16depr=<password>",
+                                             "-testConfigOpt16depr",
+                                             "<password>"});
+
+    ASSERT_EQ(expected.size(), argv.size());
+    censoringVector(expected, argv);
+}
+
+TEST(RedactionBSON, Strings) {
+    BSONObj obj = BSON("firstarg"
+                       << "not a password"
+                       << "test.config.opt16"
+                       << "this password should be censored"
+                       << "test.config.opt16depr"
+                       << "this password should be censored"
+                       << "middlearg"
+                       << "also not a password"
+                       << "test.config.opt16depr2"
+                       << "this password should also be censored"
+                       << "lastarg"
+                       << false);
+
+    BSONObj res = BSON("firstarg"
+                       << "not a password"
+                       << "test.config.opt16"
+                       << "<password>"
+                       << "test.config.opt16depr"
+                       << "<password>"
+                       << "middlearg"
+                       << "also not a password"
+                       << "test.config.opt16depr2"
+                       << "<password>"
+                       << "lastarg"
+                       << false);
+
+    cmdline_utils::censorBSONObj(&obj);
+    ASSERT_BSONOBJ_EQ(res, obj);
+}
+
+TEST(RedactionBSON, Arrays) {
+    BSONObj obj = BSON("firstarg"
+                       << "not a password"
+                       << "test.config.opt16"
+                       << BSON_ARRAY("first censored password"
+                                     << "next censored password")
+                       << "test.config.opt16depr"
+                       << BSON_ARRAY("first censored password"
+                                     << "next censored password")
+                       << "middlearg"
+                       << "also not a password"
+                       << "test.config.opt16depr2"
+                       << BSON_ARRAY("first censored password"
+                                     << "next censored password")
+                       << "lastarg"
+                       << false);
+
+    BSONObj res = BSON("firstarg"
+                       << "not a password"
+                       << "test.config.opt16"
+                       << BSON_ARRAY("<password>"
+                                     << "<password>")
+                       << "test.config.opt16depr"
+                       << BSON_ARRAY("<password>"
+                                     << "<password>")
+                       << "middlearg"
+                       << "also not a password"
+                       << "test.config.opt16depr2"
+                       << BSON_ARRAY("<password>"
+                                     << "<password>")
+                       << "lastarg"
+                       << false);
+
+    cmdline_utils::censorBSONObj(&obj);
+    ASSERT_BSONOBJ_EQ(res, obj);
+}
+
+TEST(RedactionBSON, SubObjects) {
+    BSONObj obj = BSON("firstarg"
+                       << "not a password"
+                       << "test"
+                       << BSON("config" << BSON("opt16" << BSON_ARRAY("first censored password"
+                                                                      << "next censored password")
+                                                        << "opt16"
+                                                        << "should be censored too"
+                                                        << "opt16depr"
+                                                        << BSON_ARRAY("first censored password"
+                                                                      << "next censored password")
+                                                        << "opt16depr"
+                                                        << "should be censored too"))
+                       << "lastarg"
+                       << false);
+
+    BSONObj res = BSON("firstarg"
+                       << "not a password"
+                       << "test"
+                       << BSON("config" << BSON("opt16" << BSON_ARRAY("<password>"
+                                                                      << "<password>")
+                                                        << "opt16"
+                                                        << "<password>"
+                                                        << "opt16depr"
+                                                        << BSON_ARRAY("<password>"
+                                                                      << "<password>")
+                                                        << "opt16depr"
+                                                        << "<password>"))
+                       << "lastarg"
+                       << false);
+
+    cmdline_utils::censorBSONObj(&obj);
+    ASSERT_BSONOBJ_EQ(res, obj);
+}
+
+TEST(ConfigOption, Opt17) {
+    ASSERT_OPTION_SET<std::int32_t>(
+        moe::startupOptionsParsed, "test.config.opt17", kTestConfigOpt17Default);
+
+    moe::Environment implicitParse;
+    ASSERT_OK(parseArgv({"mongod", "--testConfigOpt17"}, &implicitParse));
+    ASSERT_OPTION_SET<std::int32_t>(implicitParse, "test.config.opt17", kTestConfigOpt17Implicit);
+
+    moe::Environment negativeParse;
+    ASSERT_NOT_OK(
+        parseArgv({"mongod", "--testConfigOpt17", std::to_string(kTestConfigOpt17Minimum - 1)},
+                  &negativeParse));
+    ASSERT_NOT_OK(
+        parseArgv({"mongod", "--testConfigOpt17", std::to_string(kTestConfigOpt17Maximum + 1)},
+                  &negativeParse));
+
+    moe::Environment okParse;
+    ASSERT_OK(parseArgv({"mongod", "--testConfigOpt17", std::to_string(kTestConfigOpt17Minimum)},
+                        &okParse));
+    ASSERT_OPTION_SET<std::int32_t>(okParse, "test.config.opt17", kTestConfigOpt17Minimum);
+}
+
+}  // namespace
 }  // namespace test
 }  // namespace mongo

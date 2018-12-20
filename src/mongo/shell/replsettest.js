@@ -1191,7 +1191,9 @@ var ReplSetTest = function(opts) {
 
     /**
      * Waits for the last oplog entry on the primary to be visible in the committed snapshop view
-     * of the oplog on *all* secondaries.
+     * of the oplog on *all* secondaries. When majority read concern is disabled, there is no
+     * committed snapshot view, so this function waits for the knowledge of the majority commit
+     * point on each node to advance to the optime of the last oplog entry on the primary.
      * Returns last oplog entry.
      */
     this.awaitLastOpCommitted = function(timeout) {
@@ -2229,7 +2231,6 @@ var ReplSetTest = function(opts) {
             oplogSize: this.oplogSize,
             keyFile: this.keyFile,
             port: _useBridge ? _unbridgedPorts[n] : this.ports[n],
-            noprealloc: "",
             replSet: this.useSeedList ? this.getURL() : this.name,
             dbpath: "$set-$node"
         };
@@ -2262,8 +2263,7 @@ var ReplSetTest = function(opts) {
         // Turn off periodic noop writes for replica sets by default.
         options.setParameter = options.setParameter || {};
         options.setParameter.writePeriodicNoops = options.setParameter.writePeriodicNoops || false;
-        options.setParameter.numInitialSyncAttempts =
-            options.setParameter.numInitialSyncAttempts || 1;
+
         // We raise the number of initial sync connect attempts for tests that disallow chaining.
         // Disabling chaining can cause sync source selection to take longer so we must increase
         // the number of connection attempts.

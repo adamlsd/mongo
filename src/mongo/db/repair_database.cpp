@@ -49,7 +49,6 @@
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/catalog/multi_index_block.h"
-#include "mongo/db/catalog/multi_index_block_impl.h"
 #include "mongo/db/catalog/namespace_uuid_cache.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -122,6 +121,11 @@ Status rebuildIndexesOnCollection(OperationContext* opCtx,
     if (indexSpecs.empty())
         return Status::OK();
 
+    auto dbHolder = &DatabaseHolder::getDatabaseHolder();
+
+    const auto& ns = cce->ns().ns();
+    auto rs = dbce->getRecordStore(ns);
+
     std::unique_ptr<Collection> collection;
     std::unique_ptr<MultiIndexBlock> indexer;
     {
@@ -144,11 +148,10 @@ Status rebuildIndexesOnCollection(OperationContext* opCtx,
         // Indexes must be dropped before we open the Collection otherwise we could attempt to
         // open a bad index and fail.
         // TODO see if MultiIndexBlock can be made to work without a Collection.
-        const StringData ns = cce->ns().ns();
         const auto uuid = cce->getCollectionOptions(opCtx).uuid;
-        collection.reset(new Collection(opCtx, ns, uuid, cce, dbce->getRecordStore(ns), dbce));
+        collection = dbHolder->makeCollection(opCtx, ns, uuid, cce, rs, dbce);
 
-        indexer = std::make_unique<MultiIndexBlockImpl>(opCtx, collection.get());
+        indexer = std::make_unique<MultiIndexBlock>(opCtx, collection.get());
         Status status = indexer->init(indexSpecs).getStatus();
         if (!status.isOK()) {
             // The WUOW will handle cleanup, so the indexer shouldn't do its own.
@@ -165,7 +168,6 @@ Status rebuildIndexesOnCollection(OperationContext* opCtx,
     long long numRecords = 0;
     long long dataSize = 0;
 
-    RecordStore* rs = collection->getRecordStore();
     auto cursor = rs->getCursor(opCtx);
     auto record = cursor->next();
     while (record) {
@@ -213,7 +215,7 @@ Status rebuildIndexesOnCollection(OperationContext* opCtx,
         }
     }
 
-    Status status = indexer->doneInserting();
+    Status status = indexer->dumpInsertsFromBulk();
     if (!status.isOK())
         return status;
 

@@ -36,6 +36,13 @@
 namespace mongo {
 using SPT = ServerParameterType;
 
+MONGO_INITIALIZER_GROUP(BeginServerParameterRegistration,
+                        MONGO_NO_PREREQUISITES,
+                        ("EndServerParameterRegistration"))
+MONGO_INITIALIZER_GROUP(EndServerParameterRegistration,
+                        ("BeginServerParameterRegistration"),
+                        ("BeginStartupOptionHandling"))
+
 IDLServerParameter::IDLServerParameter(StringData name, ServerParameterType paramType)
     : ServerParameter(ServerParameterSet::getGlobal(),
                       name,
@@ -56,7 +63,11 @@ IDLServerParameterDeprecatedAlias::IDLServerParameterDeprecatedAlias(StringData 
                       name,
                       sp->allowedToChangeAtStartup(),
                       sp->allowedToChangeAtRuntime()),
-      _sp(sp) {}
+      _sp(sp) {
+    if (_sp->isTestOnly()) {
+        setTestOnly();
+    }
+}
 
 Status IDLServerParameter::set(const BSONElement& newValueElement) try {
     if (_fromBSON) {

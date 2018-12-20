@@ -38,10 +38,15 @@
 #include <functional>
 #include <string>
 
+#include "mongo/base/init.h"
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/server_parameters.h"
+
+#define MONGO_SERVER_PARAMETER_REGISTER(name) \
+    MONGO_INITIALIZER_GENERAL(                \
+        name, ("BeginServerParameterRegistration"), ("EndServerParameterRegistration"))
 
 namespace mongo {
 
@@ -99,6 +104,13 @@ public:
      */
     Status setFromString(const std::string& str) final;
 
+    /**
+     * Helper method usable as setAppendBSON() callback when redaction of value is requested.
+     */
+    static void redactedAppendBSON(OperationContext*, BSONObjBuilder* b, StringData name) {
+        b->append(name, "###");
+    }
+
 protected:
     std::function<appendBSON_t> _appendBSON;
     std::function<fromBSON_t> _fromBSON;
@@ -108,7 +120,7 @@ protected:
 /**
  * Proxy instance for deprecated aliases of set parameters.
  */
-class IDLServerParameterDeprecatedAlias : ServerParameter {
+class IDLServerParameterDeprecatedAlias : public ServerParameter {
 public:
     IDLServerParameterDeprecatedAlias(StringData name, ServerParameter* sp);
 

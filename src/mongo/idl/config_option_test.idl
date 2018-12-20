@@ -30,11 +30,9 @@ global:
   cpp_namespace: "mongo::test"
   cpp_includes:
   - "mongo/idl/server_parameter_with_storage_test.h"
+  - "mongo/idl/config_option_test.h"
   configs:
     initializer_name: TestConfigs
-
-imports:
-  - "mongo/idl/basic_types.idl"
 
 configs:
   "test.config.opt1":
@@ -152,3 +150,55 @@ configs:
     single_name: o
     arg_vartype: String
     source: cli
+
+  "test.config.opt14":
+    description: "Test with preprocessor and runtime conditions positive"
+    short_name: testConfigOpt14
+    arg_vartype: String
+    source: cli
+    cpp_vartype: std::string
+    cpp_varname: gTestConfigOpt14
+    condition:
+      preprocessor: "1 == 1"
+      expr: gEnableTestConfigOpt14
+
+  "test.config.opt15":
+    description: "Test with runtime condition negative"
+    short_name: testConfigOpt15
+    arg_vartype: String
+    source: cli
+    cpp_vartype: std::string
+    cpp_varname: gTestConfigOpt15
+    condition:
+      expr: gEnableTestConfigOpt15
+
+  "test.config.opt16":
+    description: "Test redacted configurations"
+    short_name: testConfigOpt16
+    deprecated_name:
+    - test.config.opt16depr
+    - test.config.opt16depr2
+    deprecated_short_name:
+    - testConfigOpt16depr
+    - testConfigOpt16depr2
+    arg_vartype: String
+    source: cli
+    redact: true
+
+  "test.config.opt17":
+    description: "Test c++ expressions in default, implicit, validator"
+    short_name: testConfigOpt17
+    arg_vartype: Int
+    source: cli
+    default:
+        expr: kTestConfigOpt17Default
+    implicit:
+        expr: kTestConfigOpt17Implicit
+    validator:
+        gte:
+            expr: kTestConfigOpt17Minimum
+            is_constexpr: false
+        lte:
+            expr: kTestConfigOpt17Maximum
+            is_constexpr: true
+

@@ -39,6 +39,7 @@
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/db_raii.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/util/assert_util.h"
@@ -90,9 +91,16 @@ Status IndexCatalogImpl::IndexBuildBlock::init() {
     _entry = _catalog->_setupInMemoryStructures(
         _opCtx, std::move(descriptor), initFromDisk, isReadyIndex);
 
-    if (isBackgroundIndex) {
-        _indexBuildInterceptor = stdx::make_unique<IndexBuildInterceptor>();
-        _indexBuildInterceptor->ensureSideWritesCollectionExists(_opCtx);
+    // Hybrid indexes are only enabled for background indexes.
+    bool useHybrid = true;
+    // TODO: Remove when SERVER-37270 is complete.
+    useHybrid = useHybrid && isBackgroundIndex;
+    // TODO: Remove when SERVER-38550 is complete. The mobile storage engine does not suport
+    // dupsAllowed mode on bulk builders.
+    useHybrid = useHybrid && storageGlobalParams.engine != "mobile";
+
+    if (useHybrid) {
+        _indexBuildInterceptor = stdx::make_unique<IndexBuildInterceptor>(_opCtx, _entry);
         _entry->setIndexBuildInterceptor(_indexBuildInterceptor.get());
 
         _opCtx->recoveryUnit()->onCommit(
@@ -129,7 +137,6 @@ void IndexCatalogImpl::IndexBuildBlock::fail() {
     if (_entry) {
         invariant(_catalog->_dropIndex(_opCtx, _entry).isOK());
         if (_indexBuildInterceptor) {
-            _indexBuildInterceptor->removeSideWritesCollection(_opCtx);
             _entry->setIndexBuildInterceptor(nullptr);
         }
     } else {
@@ -145,11 +152,21 @@ void IndexCatalogImpl::IndexBuildBlock::success() {
     NamespaceString ns(_indexNamespace);
     invariant(_opCtx->lockState()->isDbLockedForMode(ns.db(), MODE_X));
 
+    if (_indexBuildInterceptor) {
+        // An index build should never be completed with writes remaining in the interceptor.
+        invariant(_indexBuildInterceptor->areAllWritesApplied(_opCtx));
+
+        // Hybrid indexes must check for any outstanding duplicate key constraint violations when
+        // they finish.
+        uassertStatusOK(_indexBuildInterceptor->checkDuplicateKeyConstraints(_opCtx));
+    }
+
+
+    LOG(2) << "marking index " << _indexName << " as ready in snapshot id "
+           << _opCtx->recoveryUnit()->getSnapshotId();
     _collection->indexBuildSuccess(_opCtx, _entry);
 
     OperationContext* opCtx = _opCtx;
-    LOG(2) << "marking index " << _indexName << " as ready in snapshot id "
-           << opCtx->recoveryUnit()->getSnapshotId();
     _opCtx->recoveryUnit()->onCommit(
         [ opCtx, entry = _entry, collection = _collection ](boost::optional<Timestamp> commitTime) {
             // Note: this runs after the WUOW commits but before we release our X lock on the
@@ -168,11 +185,5 @@ void IndexCatalogImpl::IndexBuildBlock::success() {
             // able to remove this when the catalog is versioned.
             collection->setMinimumVisibleSnapshot(commitTime.get());
         });
-
-    _entry->setIsReady(true);
-    if (_indexBuildInterceptor) {
-        _indexBuildInterceptor->removeSideWritesCollection(_opCtx);
-        _entry->setIndexBuildInterceptor(nullptr);
-    }
 }
 }  // namespace mongo

@@ -73,9 +73,8 @@ public:
 
 protected:
     void noRetryAfterSuccessfulCreate() {
-        auto future = launchAsync([this] {
-            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4));
-        });
+        auto future = launchAsync(
+            [this] { log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4)); });
 
         expectConfigCollectionCreate(configHost, getConfigCollName(), _cappedSize, BSON("ok" << 1));
         expectConfigCollectionInsert(configHost,
@@ -89,9 +88,8 @@ protected:
         future.timed_get(kFutureTimeout);
 
         // Now log another change and confirm that we don't re-attempt to create the collection
-        future = launchAsync([this] {
-            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5));
-        });
+        future = launchAsync(
+            [this] { log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5)); });
 
         expectConfigCollectionInsert(configHost,
                                      getConfigCollName(),
@@ -105,9 +103,8 @@ protected:
     }
 
     void noRetryCreateIfAlreadyExists() {
-        auto future = launchAsync([this] {
-            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4));
-        });
+        auto future = launchAsync(
+            [this] { log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4)); });
 
         BSONObjBuilder createResponseBuilder;
         CommandHelpers::appendCommandStatusNoThrow(
@@ -125,9 +122,8 @@ protected:
         future.timed_get(kFutureTimeout);
 
         // Now log another change and confirm that we don't re-attempt to create the collection
-        future = launchAsync([this] {
-            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5));
-        });
+        future = launchAsync(
+            [this] { log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5)); });
 
         expectConfigCollectionInsert(configHost,
                                      getConfigCollName(),
@@ -141,9 +137,8 @@ protected:
     }
 
     void createFailure() {
-        auto future = launchAsync([this] {
-            log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4));
-        });
+        auto future = launchAsync(
+            [this] { log("moved a chunk", "foo.bar", BSON("min" << 3 << "max" << 4)); });
 
         BSONObjBuilder createResponseBuilder;
         CommandHelpers::appendCommandStatusNoThrow(
@@ -155,9 +150,8 @@ protected:
         future.timed_get(kFutureTimeout);
 
         // Now log another change and confirm that we *do* attempt to create the collection
-        future = launchAsync([this] {
-            log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5));
-        });
+        future = launchAsync(
+            [this] { log("moved a second chunk", "foo.bar", BSON("min" << 4 << "max" << 5)); });
 
         expectConfigCollectionCreate(configHost, getConfigCollName(), _cappedSize, BSON("ok" << 1));
         expectConfigCollectionInsert(configHost,
@@ -179,10 +173,10 @@ protected:
         if (_configCollType == ChangeLog) {
             ShardingLogging::get(operationContext())
                 ->logChange(operationContext(),
-                                   what,
-                                   ns,
-                                   detail,
-                                   ShardingCatalogClient::kMajorityWriteConcern);
+                            what,
+                            ns,
+                            detail,
+                            ShardingCatalogClient::kMajorityWriteConcern);
         } else {
             ShardingLogging::get(operationContext())
                 ->logAction(operationContext(), what, ns, detail);

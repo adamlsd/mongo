@@ -163,8 +163,8 @@ void ShardingCatalogManager::enableSharding(OperationContext* opCtx, const std::
         ShardingCatalogClient::kLocalWriteConcern));
 }
 
-std::vector<std::string> ShardingCatalogManager::getDatabasesForShard(
-    OperationContext* opCtx, const ShardId& shardId) {
+std::vector<std::string> ShardingCatalogManager::getDatabasesForShard(OperationContext* opCtx,
+                                                                      const ShardId& shardId) {
     auto findResult = uassertStatusOK(Grid::get(opCtx)->catalogClient()->_exhaustiveFindOnConfig(
         opCtx,
         kConfigReadSelector,

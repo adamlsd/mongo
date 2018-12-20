@@ -714,16 +714,15 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
     OperationContext* opCtx) {
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         // TODO(ADAM): Change this to actually be exception-oriented.
-        Status status= [&]
-        {
-            try
-            {
+        Status status = [&] {
+            try {
                 ShardingCatalogManager::get(opCtx)->initializeConfigDatabaseIfNeeded(opCtx);
                 return Status::OK();
+            } catch (const DBException& ex) {
+                return ex.toStatus();
             }
-            catch( const DBException &ex ) { return ex.toStatus(); }
         }();
-        
+
         if (!status.isOK() && status != ErrorCodes::AlreadyInitialized) {
             // If the node is shutting down or it lost quorum just as it was becoming primary, don't
             // run the sharding onStepUp machinery. The onStepDown counterpart to these methods is

@@ -96,10 +96,10 @@ public:
      * Throws the an exception on failure containing the status of the migration.
      */
     void executeManualMigration(OperationContext* opCtx,
-                                  const MigrateInfo& migrateInfo,
-                                  uint64_t maxChunkSizeBytes,
-                                  const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                                  bool waitForDelete);
+                                const MigrateInfo& migrateInfo,
+                                uint64_t maxChunkSizeBytes,
+                                const MigrationSecondaryThrottleOptions& secondaryThrottle,
+                                bool waitForDelete);
 
     /**
      * Non-blocking method that puts the migration manager in the kRecovering state, in which

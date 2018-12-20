@@ -157,8 +157,7 @@ TEST_F(ShardCollectionTest, noInitialChunksOrData) {
     shard.setName("shard0");
     shard.setHost(shardHost.toString());
 
-    auto targeter=
-        std::make_unique<RemoteCommandTargeterMock>();
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     targeter->setConnectionStringReturnValue(ConnectionString(shardHost));
     targeter->setFindHostReturnValue(shardHost);
     targeterFactory()->addTargeterToReturn(ConnectionString(shardHost), std::move(targeter));
@@ -216,12 +215,9 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
     shard2.setName("shard2");
     shard2.setHost(shard2Host.toString());
 
-    auto targeter0=
-        std::make_unique<RemoteCommandTargeterMock>();
-    auto targeter1=
-        std::make_unique<RemoteCommandTargeterMock>();
-    auto targeter2=
-        std::make_unique<RemoteCommandTargeterMock>();
+    auto targeter0 = std::make_unique<RemoteCommandTargeterMock>();
+    auto targeter1 = std::make_unique<RemoteCommandTargeterMock>();
+    auto targeter2 = std::make_unique<RemoteCommandTargeterMock>();
     targeter0->setConnectionStringReturnValue(ConnectionString(shard0Host));
     targeter0->setFindHostReturnValue(shard0Host);
     targeterFactory()->addTargeterToReturn(ConnectionString(shard0Host), std::move(targeter0));
@@ -324,8 +320,7 @@ TEST_F(ShardCollectionTest, withInitialData) {
     shard.setName("shard0");
     shard.setHost(shardHost.toString());
 
-    auto targeter=
-        std::make_unique<RemoteCommandTargeterMock>();
+    auto targeter = std::make_unique<RemoteCommandTargeterMock>();
     targeter->setConnectionStringReturnValue(ConnectionString(shardHost));
     targeter->setFindHostReturnValue(shardHost);
     targeterFactory()->addTargeterToReturn(ConnectionString(shardHost), std::move(targeter));

@@ -150,45 +150,43 @@ private:
  */
 Status modifyRecoveryDocument(OperationContext* opCtx,
                               RecoveryDocument::ChangeType change,
-                              const WriteConcernOptions& writeConcern) 
-    try {
-        // Use boost::optional so we can release the locks early
-        boost::optional<AutoGetOrCreateDb> autoGetOrCreateDb;
-        autoGetOrCreateDb.emplace(
-            opCtx, NamespaceString::kServerConfigurationNamespace.db(), MODE_X);
+                              const WriteConcernOptions& writeConcern) try {
+    // Use boost::optional so we can release the locks early
+    boost::optional<AutoGetOrCreateDb> autoGetOrCreateDb;
+    autoGetOrCreateDb.emplace(opCtx, NamespaceString::kServerConfigurationNamespace.db(), MODE_X);
 
-        // The config server connection string and shard name are no longer parsed in 4.0, but 3.6
-        // nodes still expect to find them, so we must include them until after 4.0 ships.
-        //
-        // TODO SERVER-34166: Stop writing config server connection string and shard name.
-        auto const grid = Grid::get(opCtx);
-        BSONObj updateObj = RecoveryDocument::createChangeObj(
-            grid->shardRegistry()->getConfigServerConnectionString(),
-            ShardingState::get(opCtx)->shardId().toString(),
-            grid->configOpTime(),
-            change);
+    // The config server connection string and shard name are no longer parsed in 4.0, but 3.6
+    // nodes still expect to find them, so we must include them until after 4.0 ships.
+    //
+    // TODO SERVER-34166: Stop writing config server connection string and shard name.
+    auto const grid = Grid::get(opCtx);
+    BSONObj updateObj =
+        RecoveryDocument::createChangeObj(grid->shardRegistry()->getConfigServerConnectionString(),
+                                          ShardingState::get(opCtx)->shardId().toString(),
+                                          grid->configOpTime(),
+                                          change);
 
-        LOG(1) << "Changing sharding recovery document " << redact(updateObj);
+    LOG(1) << "Changing sharding recovery document " << redact(updateObj);
 
-        UpdateRequest updateReq(NamespaceString::kServerConfigurationNamespace);
-        updateReq.setQuery(RecoveryDocument::getQuery());
-        updateReq.setUpdates(updateObj);
-        updateReq.setUpsert();
+    UpdateRequest updateReq(NamespaceString::kServerConfigurationNamespace);
+    updateReq.setQuery(RecoveryDocument::getQuery());
+    updateReq.setUpdates(updateObj);
+    updateReq.setUpsert();
 
-        UpdateResult result = update(opCtx, autoGetOrCreateDb->getDb(), updateReq);
-        invariant(result.numDocsModified == 1 || !result.upserted.isEmpty());
-        invariant(result.numMatched <= 1);
+    UpdateResult result = update(opCtx, autoGetOrCreateDb->getDb(), updateReq);
+    invariant(result.numDocsModified == 1 || !result.upserted.isEmpty());
+    invariant(result.numMatched <= 1);
 
-        // Wait until the majority write concern has been satisfied, but do it outside of lock
-        autoGetOrCreateDb = boost::none;
+    // Wait until the majority write concern has been satisfied, but do it outside of lock
+    autoGetOrCreateDb = boost::none;
 
-        WriteConcernResult writeConcernResult;
-        return waitForWriteConcern(opCtx,
-                                   repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
-                                   writeConcern,
-                                   &writeConcernResult);
-    } catch (const DBException& ex) {
-        return ex.toStatus();
+    WriteConcernResult writeConcernResult;
+    return waitForWriteConcern(opCtx,
+                               repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
+                               writeConcern,
+                               &writeConcernResult);
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 }  // namespace

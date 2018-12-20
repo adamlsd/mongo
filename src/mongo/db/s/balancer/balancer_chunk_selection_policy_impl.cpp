@@ -413,8 +413,7 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
     }
 
     return BalancerPolicy::balance(shardStats, distribution, usedShards);
-}
-catch (const DBException& ex) {
+} catch (const DBException& ex) {
     return ex.toStatus();
 }
 

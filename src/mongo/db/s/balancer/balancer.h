@@ -132,11 +132,11 @@ public:
      *       move regardless. If should be used only for user-initiated moves.
      */
     void moveSingleChunk(OperationContext* opCtx,
-                           const ChunkType& chunk,
-                           const ShardId& newShardId,
-                           uint64_t maxChunkSizeBytes,
-                           const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                           bool waitForDelete);
+                         const ChunkType& chunk,
+                         const ShardId& newShardId,
+                         uint64_t maxChunkSizeBytes,
+                         const MigrationSecondaryThrottleOptions& secondaryThrottle,
+                         bool waitForDelete);
 
     /**
      * Appends the runtime state of the balancer instance to the specified builder.

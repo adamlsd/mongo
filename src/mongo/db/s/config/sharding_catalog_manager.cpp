@@ -129,8 +129,8 @@ void ShardingCatalogManager::initializeConfigDatabaseIfNeeded(OperationContext* 
     {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         if (_configInitialized) {
-            uasserted( ErrorCodes::AlreadyInitialized,
-                    "Config database was previously loaded into memory");
+            uasserted(ErrorCodes::AlreadyInitialized,
+                      "Config database was previously loaded into memory");
         }
     }
 
@@ -153,30 +153,30 @@ void ShardingCatalogManager::discardCachedConfigDatabaseInitializationState() {
 void ShardingCatalogManager::_initConfigVersion(OperationContext* opCtx) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
 
-    const auto versionInfo= uassertStatusOK(
+    const auto versionInfo = uassertStatusOK(
         catalogClient->getConfigVersion(opCtx, repl::ReadConcernLevel::kLocalReadConcern));
 
     if (versionInfo.getMinCompatibleVersion() > CURRENT_CONFIG_VERSION) {
-        uasserted (ErrorCodes::IncompatibleShardingConfigVersion,
-                str::stream() << "current version v" << CURRENT_CONFIG_VERSION
-                              << " is older than the cluster min compatible v"
-                              << versionInfo.getMinCompatibleVersion());
+        uasserted(ErrorCodes::IncompatibleShardingConfigVersion,
+                  str::stream() << "current version v" << CURRENT_CONFIG_VERSION
+                                << " is older than the cluster min compatible v"
+                                << versionInfo.getMinCompatibleVersion());
     }
 
     if (versionInfo.getCurrentVersion() == UpgradeHistory_UnreportedVersion) {
         uasserted(ErrorCodes::IncompatibleShardingConfigVersion,
-                "Assuming config data is old since the version document cannot be found in the "
-                "config server and it contains databases besides 'local' and 'admin'. "
-                "Please upgrade if this is the case. Otherwise, make sure that the config "
-                "server is clean.");
+                  "Assuming config data is old since the version document cannot be found in the "
+                  "config server and it contains databases besides 'local' and 'admin'. "
+                  "Please upgrade if this is the case. Otherwise, make sure that the config "
+                  "server is clean.");
     }
 
     if (versionInfo.getCurrentVersion() < CURRENT_CONFIG_VERSION) {
-        uasserted (ErrorCodes::IncompatibleShardingConfigVersion,
-                str::stream() << "need to upgrade current cluster version to v"
-                              << CURRENT_CONFIG_VERSION
-                              << "; currently at v"
-                              << versionInfo.getCurrentVersion());
+        uasserted(ErrorCodes::IncompatibleShardingConfigVersion,
+                  str::stream() << "need to upgrade current cluster version to v"
+                                << CURRENT_CONFIG_VERSION
+                                << "; currently at v"
+                                << versionInfo.getCurrentVersion());
     }
 
     if (versionInfo.getCurrentVersion() == UpgradeHistory_EmptyVersion) {
@@ -186,26 +186,28 @@ void ShardingCatalogManager::_initConfigVersion(OperationContext* opCtx) {
         newVersion.setCurrentVersion(CURRENT_CONFIG_VERSION);
 
         BSONObj versionObj(newVersion.toBSON());
-        uassertStatusOK( catalogClient->insertConfigDocument(
+        uassertStatusOK(catalogClient->insertConfigDocument(
             opCtx, VersionType::ConfigNS, versionObj, kNoWaitWriteConcern));
-
     }
 }
 
-void ShardingCatalogManager::_initConfigIndexes(OperationContext* opCtx)
-{
+void ShardingCatalogManager::_initConfigIndexes(OperationContext* opCtx) {
     const bool unique = true;
     auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx, ChunkType::ConfigNS, BSON(ChunkType::ns() << 1 << ChunkType::min() << 1), unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(opCtx,
+                                         ChunkType::ConfigNS,
+                                         BSON(ChunkType::ns() << 1 << ChunkType::min() << 1),
+                                         unique),
         "couldn't create ns_1_min_1 index on config db");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx,
-        ChunkType::ConfigNS,
-        BSON(ChunkType::ns() << 1 << ChunkType::shard() << 1 << ChunkType::min() << 1),
-        unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(
+            opCtx,
+            ChunkType::ConfigNS,
+            BSON(ChunkType::ns() << 1 << ChunkType::shard() << 1 << ChunkType::min() << 1),
+            unique),
         "couldn't create ns_1_shard_1_min_1 index on config db");
 
     uassertStatusOKWithContext(
@@ -215,19 +217,21 @@ void ShardingCatalogManager::_initConfigIndexes(OperationContext* opCtx)
                                          unique),
         "couldn't create ns_1_lastmod_1 index on config db");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx,
-        MigrationType::ConfigNS,
-        BSON(MigrationType::ns() << 1 << MigrationType::min() << 1),
-        unique),
-        "couldn't create ns_1_min_1 index on config.migrations");
+    uassertStatusOKWithContext(configShard->createIndexOnConfig(
+                                   opCtx,
+                                   MigrationType::ConfigNS,
+                                   BSON(MigrationType::ns() << 1 << MigrationType::min() << 1),
+                                   unique),
+                               "couldn't create ns_1_min_1 index on config.migrations");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx, ShardType::ConfigNS, BSON(ShardType::host() << 1), unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(
+            opCtx, ShardType::ConfigNS, BSON(ShardType::host() << 1), unique),
         "couldn't create host_1 index on config db");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx, LocksType::ConfigNS, BSON(LocksType::lockID() << 1), !unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(
+            opCtx, LocksType::ConfigNS, BSON(LocksType::lockID() << 1), !unique),
         "couldn't create lock id index on config db");
 
     uassertStatusOKWithContext(
@@ -237,22 +241,24 @@ void ShardingCatalogManager::_initConfigIndexes(OperationContext* opCtx)
                                          !unique),
         "couldn't create state and process id index on config db");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx, LockpingsType::ConfigNS, BSON(LockpingsType::ping() << 1), !unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(
+            opCtx, LockpingsType::ConfigNS, BSON(LockpingsType::ping() << 1), !unique),
         "couldn't create lockping ping time index on config db");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx, TagsType::ConfigNS, BSON(TagsType::ns() << 1 << TagsType::min() << 1), unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(
+            opCtx, TagsType::ConfigNS, BSON(TagsType::ns() << 1 << TagsType::min() << 1), unique),
         "couldn't create ns_1_min_1 index on config db");
 
-    uassertStatusOKWithContext( configShard->createIndexOnConfig(
-        opCtx, TagsType::ConfigNS, BSON(TagsType::ns() << 1 << TagsType::tag() << 1), !unique),
+    uassertStatusOKWithContext(
+        configShard->createIndexOnConfig(
+            opCtx, TagsType::ConfigNS, BSON(TagsType::ns() << 1 << TagsType::tag() << 1), !unique),
         "couldn't create ns_1_tag_1 index on config db");
 }
 
 void ShardingCatalogManager::setFeatureCompatibilityVersionOnShards(OperationContext* opCtx,
-                                                                      const BSONObj& cmdObj)
-{
+                                                                    const BSONObj& cmdObj) {
 
     // No shards should be added until we have forwarded featureCompatibilityVersion to all shards.
     Lock::SharedLock lk(opCtx->lockState(), _kShardMembershipLock);
@@ -278,7 +284,7 @@ void ShardingCatalogManager::setFeatureCompatibilityVersionOnShards(OperationCon
             cmdObj,
             Shard::RetryPolicy::kIdempotent));
         uasserted(response.commandStatus, "");
-        uasserted( response.writeConcernStatus,"");
+        uasserted(response.writeConcernStatus, "");
     }
 }
 

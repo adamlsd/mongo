@@ -174,13 +174,13 @@ public:
 
             // Upgrade shards before config finishes its upgrade.
             if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-                    ShardingCatalogManager::get(opCtx)->setFeatureCompatibilityVersionOnShards(
-                        opCtx,
-                        CommandHelpers::appendMajorityWriteConcern(
-                            CommandHelpers::appendPassthroughFields(
-                                cmdObj,
-                                BSON(FeatureCompatibilityVersionCommandParser::kCommandName
-                                     << requestedVersion))));
+                ShardingCatalogManager::get(opCtx)->setFeatureCompatibilityVersionOnShards(
+                    opCtx,
+                    CommandHelpers::appendMajorityWriteConcern(
+                        CommandHelpers::appendPassthroughFields(
+                            cmdObj,
+                            BSON(FeatureCompatibilityVersionCommandParser::kCommandName
+                                 << requestedVersion))));
             }
 
             FeatureCompatibilityVersion::unsetTargetUpgradeOrDowngrade(opCtx, requestedVersion);
@@ -215,13 +215,13 @@ public:
 
             // Downgrade shards before config finishes its downgrade.
             if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-                    ShardingCatalogManager::get(opCtx)->setFeatureCompatibilityVersionOnShards(
-                        opCtx,
-                        CommandHelpers::appendMajorityWriteConcern(
-                            CommandHelpers::appendPassthroughFields(
-                                cmdObj,
-                                BSON(FeatureCompatibilityVersionCommandParser::kCommandName
-                                     << requestedVersion))));
+                ShardingCatalogManager::get(opCtx)->setFeatureCompatibilityVersionOnShards(
+                    opCtx,
+                    CommandHelpers::appendMajorityWriteConcern(
+                        CommandHelpers::appendPassthroughFields(
+                            cmdObj,
+                            BSON(FeatureCompatibilityVersionCommandParser::kCommandName
+                                 << requestedVersion))));
             }
 
             FeatureCompatibilityVersion::unsetTargetUpgradeOrDowngrade(opCtx, requestedVersion);

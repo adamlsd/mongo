@@ -560,14 +560,13 @@ void ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
         opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions());
 }
 
-BSONObj ShardingCatalogManager::commitChunkMigration(
-    OperationContext* opCtx,
-    const NamespaceString& nss,
-    const ChunkType& migratedChunk,
-    const OID& collectionEpoch,
-    const ShardId& fromShard,
-    const ShardId& toShard,
-    const boost::optional<Timestamp>& validAfter) {
+BSONObj ShardingCatalogManager::commitChunkMigration(OperationContext* opCtx,
+                                                     const NamespaceString& nss,
+                                                     const ChunkType& migratedChunk,
+                                                     const OID& collectionEpoch,
+                                                     const ShardId& fromShard,
+                                                     const ShardId& toShard,
+                                                     const boost::optional<Timestamp>& validAfter) {
 
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 

@@ -57,18 +57,20 @@ private:
      * Synchronous method, which iterates the collection's chunks and uses the tags information to
      * figure out whether some of them validate the tag range boundaries and need to be split.
      */
-    StatusWith<SplitInfoVector> _getSplitCandidatesForCollection(OperationContext* opCtx,
-                                                     const NamespaceString& nss,
-                                                     const ShardStatisticsVector& shardStats);
+    StatusWith<SplitInfoVector> _getSplitCandidatesForCollection(
+        OperationContext* opCtx,
+        const NamespaceString& nss,
+        const ShardStatisticsVector& shardStats);
 
     /**
      * Synchronous method, which iterates the collection's chunks and uses the cluster statistics to
      * figure out where to place them.
      */
-    StatusWith<MigrateInfoVector> _getMigrateCandidatesForCollection(OperationContext* opCtx,
-                                                         const NamespaceString& nss,
-                                                         const ShardStatisticsVector& shardStats,
-                                                         std::set<ShardId>* usedShards);
+    StatusWith<MigrateInfoVector> _getMigrateCandidatesForCollection(
+        OperationContext* opCtx,
+        const NamespaceString& nss,
+        const ShardStatisticsVector& shardStats,
+        std::set<ShardId>* usedShards);
 
     // Source for obtaining cluster statistics. Not owned and must not be destroyed before the
     // policy object is destroyed.

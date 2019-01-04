@@ -171,14 +171,6 @@ void ShardingCatalogManager::_initConfigVersion(OperationContext* opCtx) {
                   "server is clean.");
     }
 
-    if (versionInfo.getCurrentVersion() < CURRENT_CONFIG_VERSION) {
-        uasserted(ErrorCodes::IncompatibleShardingConfigVersion,
-                  str::stream() << "need to upgrade current cluster version to v"
-                                << CURRENT_CONFIG_VERSION
-                                << "; currently at v"
-                                << versionInfo.getCurrentVersion());
-    }
-
     if (versionInfo.getCurrentVersion() == UpgradeHistory_EmptyVersion) {
         VersionType newVersion;
         newVersion.setClusterId(OID::gen());
@@ -188,6 +180,14 @@ void ShardingCatalogManager::_initConfigVersion(OperationContext* opCtx) {
         BSONObj versionObj(newVersion.toBSON());
         uassertStatusOK(catalogClient->insertConfigDocument(
             opCtx, VersionType::ConfigNS, versionObj, kNoWaitWriteConcern));
+    }
+
+    if (versionInfo.getCurrentVersion() < CURRENT_CONFIG_VERSION) {
+        uasserted(ErrorCodes::IncompatibleShardingConfigVersion,
+                  str::stream() << "need to upgrade current cluster version to v"
+                                << CURRENT_CONFIG_VERSION
+                                << "; currently at v"
+                                << versionInfo.getCurrentVersion());
     }
 }
 

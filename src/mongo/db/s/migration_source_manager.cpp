@@ -120,7 +120,8 @@ MONGO_FAIL_POINT_DEFINE(failMigrationCommit);
 MONGO_FAIL_POINT_DEFINE(hangBeforeLeavingCriticalSection);
 MONGO_FAIL_POINT_DEFINE(migrationCommitNetworkError);
 
-MigrationSourceManager* MigrationSourceManager::get(CollectionShardingRuntime& csr) {
+MigrationSourceManager* MigrationSourceManager::get(CollectionShardingRuntime* csr,
+                                                    CollectionShardingRuntimeLock& csrLock) {
     return msmForCsr(csr);
 }
 
@@ -235,7 +236,6 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
     _cloneAndCommitTimer.reset();
 
     {
-        // Register for notifications from the replication subsystem
         const auto metadata = _getCurrentMetadataAndCheckEpoch(opCtx);
 
         // Having the metadata manager registered on the collection sharding state is what indicates
@@ -245,10 +245,10 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
         _cloneDriver = stdx::make_unique<MigrationChunkClonerSourceLegacy>(
             _args, metadata->getKeyPattern(), _donorConnStr, _recipientHost);
 
-        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetCollection autoColl(opCtx, getNss(), MODE_IX, MODE_X);
-        auto* const css = CollectionShardingRuntime::get(opCtx, getNss());
-        invariant(nullptr == std::exchange(msmForCsr(css), this));
+        auto csr = CollectionShardingRuntime::get(opCtx, getNss());
+        auto lockedCsr = CollectionShardingRuntimeLock::lockExclusive(opCtx, csr);
+        invariant(nullptr == std::exchange(msmForCsr(csr), this));
         _state = kCloning;
     }
 

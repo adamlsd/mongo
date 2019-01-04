@@ -356,6 +356,11 @@ add_option('use-system-zlib',
     nargs=0,
 )
 
+add_option('use-system-zstd',
+    help="use system version of Zstandard library",
+    nargs=0,
+)
+
 add_option('use-system-sqlite',
     help='use system version of sqlite library',
     nargs=0,
@@ -2230,7 +2235,6 @@ def doConfigure(myenv):
         AddToCCFLAGSIfSupported(myenv, "-Wno-exceptions")
 
         # These warnings begin in gcc-8.2 and we should get rid of these disables at some point.
-        AddToCCFLAGSIfSupported(env, '-Wno-format-truncation')
         AddToCXXFLAGSIfSupported(env, '-Wno-class-memaccess')
 
 
@@ -3197,6 +3201,9 @@ def doConfigure(myenv):
 
     if use_system_version_of_library("zlib"):
         conf.FindSysLibDep("zlib", ["zdll" if conf.env.TargetOSIs('windows') else "z"])
+
+    if use_system_version_of_library("zstd"):
+        conf.FindSysLibDep("zstd", ["libzstd" if conf.env.TargetOSIs('windows') else "zstd"])
 
     if use_system_version_of_library("stemmer"):
         conf.FindSysLibDep("stemmer", ["stemmer"])

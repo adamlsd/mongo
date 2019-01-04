@@ -79,9 +79,6 @@ page_init(uint64_t n)
 	}
 }
 
-/*
- * TODO: Platform specific?
- */
 static void
 onsig(int signo)
 {
@@ -101,8 +98,8 @@ main(int argc, char *argv[])
 	uint64_t i, id;
 	char buf[100];
 
-	/* Ignore unless requested */
-	if (!testutil_is_flag_set("TESTUTIL_ENABLE_LONG_TESTS"))
+	/* Bypass this test for valgrind */
+	if (testutil_is_flag_set("TESTUTIL_BYPASS_VALGRIND"))
 		return (EXIT_SUCCESS);
 
 	opts = &_opts;

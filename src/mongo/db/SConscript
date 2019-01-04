@@ -222,6 +222,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'curop',
+        '$BUILD_DIR/mongo/db/query/query_test_service_context',
     ],
 )
 
@@ -697,7 +698,6 @@ env.Library(
         '$BUILD_DIR/mongo/idl/idl_parser',
         'catalog/collection',
         'catalog/database_holder',
-        'catalog/database',
         'catalog/uuid_catalog',
         'commands/test_commands_enabled',
         'commands/txn_cmd_request',
@@ -745,7 +745,6 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'auth/authmocks',
-        'catalog/database_holder_mock',
         'catalog_raii',
         'service_context_test_fixture',
         'stats/fill_locker_info',
@@ -848,6 +847,8 @@ env.Library(
         'views/views_mongod',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
+        '$BUILD_DIR/mongo/s/coreshard',
+        "$BUILD_DIR/mongo/s/grid",
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/commands/mongod_fcv',
@@ -973,6 +974,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         "logical_clock",
+        "server_options_core",
     ],
 )
 
@@ -998,6 +1000,7 @@ env.Library(
         "curop",
         "repl/read_concern_args",
         "repl/repl_coordinator_interface",
+        "repl/speculative_majority_read_info",
         "stats/timer_stats",
         "storage/storage_options",
     ],
@@ -1017,6 +1020,7 @@ env.Library(
         "catalog_raii",
         "curop",
         "repl/repl_coordinator_interface",
+        "repl/speculative_majority_read_info",
         "s/sharding_api_d",
     ],
 )
@@ -1028,7 +1032,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/catalog/collection',
-        '$BUILD_DIR/mongo/db/catalog/database',
         'rw_concern_d',
         'background',
         'logical_clock',
@@ -1077,6 +1080,7 @@ env.Library(
         'exec/and_hash.cpp',
         'exec/and_sorted.cpp',
         'exec/cached_plan.cpp',
+        'exec/change_stream_proxy.cpp',
         'exec/collection_scan.cpp',
         'exec/count.cpp',
         'exec/count_scan.cpp',
@@ -1111,6 +1115,7 @@ env.Library(
         'exec/text.cpp',
         'exec/text_match.cpp',
         'exec/text_or.cpp',
+        'exec/trial_stage.cpp',
         'exec/update.cpp',
         'exec/working_set_common.cpp',
         'exec/write_stage_common.cpp',
@@ -1141,7 +1146,6 @@ env.Library(
         'background',
         'bson/dotted_path_support',
         'catalog/collection',
-        'catalog/database',
         'catalog/document_validation',
         'catalog/index_catalog_entry',
         'catalog/index_catalog',
@@ -1838,6 +1842,7 @@ env.Library(
         'service_context_test_fixture',
     ],
     LIBDEPS_PRIVATE=[
+        'catalog/catalog_impl',
         'commands/mongod',
         'index_builds_coordinator_mongod',
         'service_context_d',

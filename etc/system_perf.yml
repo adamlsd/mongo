@@ -67,6 +67,7 @@ functions:
         dsi: ${dsi_rev}
         enterprise: ${enterprise_rev}
         linkbench: ${linkbench_rev}
+        genny: ${genny_rev}
         workloads: ${workloads_rev}
         wtdevelop: ${wtdevelop_rev}
 
@@ -202,6 +203,7 @@ functions:
           workloads_dir: ../src/workloads/workloads
           ycsb_dir: ../src/YCSB/YCSB
           linkbench_dir: ../src/linkbench/linkbench
+          genny_dir: ../src/genny/genny
           authentication: ${authentication}
           EOF
 
@@ -349,6 +351,17 @@ tasks:
     - func: "prepare environment"
       vars:
         test: "genny_workloads"
+        authentication: disabled
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
+- name: big_update
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "big_update"
         authentication: disabled
     - func: "deploy cluster"
     - func: "run test"
@@ -533,6 +546,17 @@ tasks:
     - func: "run test"
     - func: "analyze"
 
+- name: mongos_large_catalog_workloads
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "mongos_large_catalog"
+        authentication: disabled
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
 - name: move_chunk_workloads
   priority: 5
   commands:
@@ -643,6 +667,11 @@ modules:
   repo: git@github.com:10gen/dsi.git
   prefix: dsi
   branch: master
+ 
+- name: genny
+  repo: git@github.com:10gen/genny.git
+  prefix: genny
+  branch: master
 
 - name: workloads
   repo: git@github.com:10gen/workloads.git
@@ -727,6 +756,7 @@ buildvariants:
   batchtime: 1440 # 24 hours
   modules: &modules
     - dsi
+    - genny
     - workloads
     - linkbench
   expansions:
@@ -759,6 +789,7 @@ buildvariants:
     - name: linkbench
     - name: tpcc
     - name: genny_workloads
+    - name: big_update
 
 - name: linux-standalone
   display_name: Linux Standalone
@@ -788,6 +819,7 @@ buildvariants:
     - name: bestbuy_agg
     - name: bestbuy_agg_out
     - name: bestbuy_query
+    - name: big_update
 
 - name: linux-standalone-audit
   display_name: Linux Standalone Audit
@@ -837,6 +869,7 @@ buildvariants:
     - name: smoke_test
     - name: industry_benchmarks_wmajority
     - name: mongos_workloads
+    - name: mongos_large_catalog_workloads
     - name: change_streams_throughput
     - name: change_streams_latency
     - name: change_streams_multi_mongos
@@ -867,6 +900,7 @@ buildvariants:
     - name: industry_benchmarks_wmajority
     - name: mixed_workloads
     - name: mongos_workloads
+    - name: mongos_large_catalog_workloads
     - name: move_chunk_workloads
     - name: move_chunk_waiting_workloads
     - name: retryable_writes_workloads
@@ -911,6 +945,7 @@ buildvariants:
     - name: secondary_reads
     - name: tpcc
     - name: linkbench
+    - name: big_update
 
 - name: linux-3-node-replSet-initialsync
   display_name: Linux 3-Node ReplSet Initial Sync

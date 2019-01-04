@@ -69,10 +69,10 @@ public:
      *
      * Returns an error status if there are any errors setting up the index build.
      */
-    StatusWith<Future<void>> buildIndex(OperationContext* opCtx,
-                                        const NamespaceString& nss,
-                                        const std::vector<BSONObj>& specs,
-                                        const UUID& buildUUID) override;
+    StatusWith<SharedSemiFuture<void>> buildIndex(OperationContext* opCtx,
+                                                  const NamespaceString& nss,
+                                                  const std::vector<BSONObj>& specs,
+                                                  const UUID& buildUUID) override;
 
     void signalChangeToPrimaryMode() override;
     void signalChangeToSecondaryMode() override;
@@ -81,8 +81,8 @@ public:
     Status voteCommitIndexBuild(const UUID& buildUUID, const HostAndPort& hostAndPort) override;
 
     Status setCommitQuorum(const NamespaceString& nss,
-                           const std::vector<std::string>& indexNames,
-                           const BSONObj& newCommitQuorum) override;
+                           const std::vector<StringData>& indexNames,
+                           const WriteConcernOptions& newCommitQuorum) override;
 
 private:
     /**

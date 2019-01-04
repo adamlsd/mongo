@@ -209,7 +209,7 @@ void makeCollection(OperationContext* opCtx, const NamespaceString& ns) {
             CollectionOptions collectionOptions;
             uassertStatusOK(
                 collectionOptions.parse(BSONObj(), CollectionOptions::ParseKind::parseForCommand));
-            uassertStatusOK(Database::userCreateNS(opCtx, db.getDb(), ns.ns(), collectionOptions));
+            uassertStatusOK(db.getDb()->userCreateNS(opCtx, ns, collectionOptions));
             wuow.commit();
         }
     });
@@ -520,8 +520,7 @@ WriteResult performInserts(OperationContext* opCtx,
             const auto stmtId = getStmtIdForWriteOp(opCtx, wholeOp, stmtIdIndex++);
             if (opCtx->getTxnNumber()) {
                 if (!txnParticipant->inMultiDocumentTransaction() &&
-                    txnParticipant->checkStatementExecutedNoOplogEntryFetch(*opCtx->getTxnNumber(),
-                                                                            stmtId)) {
+                    txnParticipant->checkStatementExecutedNoOplogEntryFetch(stmtId)) {
                     containsRetry = true;
                     RetryableWritesStats::get(opCtx)->incrementRetriedStatementsCount();
                     out.results.emplace_back(makeWriteResultForInsertOrDeleteRetry());
@@ -729,8 +728,7 @@ WriteResult performUpdates(OperationContext* opCtx, const write_ops::Update& who
         const auto stmtId = getStmtIdForWriteOp(opCtx, wholeOp, stmtIdIndex++);
         if (opCtx->getTxnNumber()) {
             if (!txnParticipant->inMultiDocumentTransaction()) {
-                if (auto entry = txnParticipant->checkStatementExecuted(
-                        opCtx, *opCtx->getTxnNumber(), stmtId)) {
+                if (auto entry = txnParticipant->checkStatementExecuted(stmtId)) {
                     containsRetry = true;
                     RetryableWritesStats::get(opCtx)->incrementRetriedStatementsCount();
                     out.results.emplace_back(parseOplogEntryForUpdate(*entry));
@@ -785,8 +783,6 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
         curOp.setOpDescription_inlock(op.toBSON());
         curOp.ensureStarted();
     }
-
-    curOp.debug().additiveMetrics.ndeleted = 0;
 
     DeleteRequest request(ns);
     request.setQuery(op.getQ());
@@ -871,8 +867,7 @@ WriteResult performDeletes(OperationContext* opCtx, const write_ops::Delete& who
         const auto stmtId = getStmtIdForWriteOp(opCtx, wholeOp, stmtIdIndex++);
         if (opCtx->getTxnNumber()) {
             if (!txnParticipant->inMultiDocumentTransaction() &&
-                txnParticipant->checkStatementExecutedNoOplogEntryFetch(*opCtx->getTxnNumber(),
-                                                                        stmtId)) {
+                txnParticipant->checkStatementExecutedNoOplogEntryFetch(stmtId)) {
                 containsRetry = true;
                 RetryableWritesStats::get(opCtx)->incrementRetriedStatementsCount();
                 out.results.emplace_back(makeWriteResultForInsertOrDeleteRetry());

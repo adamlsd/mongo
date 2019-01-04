@@ -170,18 +170,16 @@ public:
             coll = db->createCollection(&_opCtx, _ns);
 
             OpDebug* const nullOpDebug = nullptr;
-            coll->insertDocument(&_opCtx,
-                                 InsertStatement(BSON("_id" << 1 << "a"
-                                                            << "dup")),
-                                 nullOpDebug,
-                                 true)
-                .transitional_ignore();
-            coll->insertDocument(&_opCtx,
-                                 InsertStatement(BSON("_id" << 2 << "a"
-                                                            << "dup")),
-                                 nullOpDebug,
-                                 true)
-                .transitional_ignore();
+            ASSERT_OK(coll->insertDocument(&_opCtx,
+                                           InsertStatement(BSON("_id" << 1 << "a"
+                                                                      << "dup")),
+                                           nullOpDebug,
+                                           true));
+            ASSERT_OK(coll->insertDocument(&_opCtx,
+                                           InsertStatement(BSON("_id" << 2 << "a"
+                                                                      << "dup")),
+                                           nullOpDebug,
+                                           true));
             wunit.commit();
         }
 
@@ -204,7 +202,20 @@ public:
                                   << background);
 
         ASSERT_OK(indexer.init(spec).getStatus());
-        const Status status = indexer.insertAllDocumentsInCollection();
+        auto desc =
+            coll->getIndexCatalog()->findIndexByName(&_opCtx, "a", true /* includeUnfinished */);
+        ASSERT(desc);
+
+        Status status = indexer.insertAllDocumentsInCollection();
+        if (!coll->getIndexCatalog()->getEntry(desc)->isBuilding()) {
+            ASSERT_EQUALS(status.code(), ErrorCodes::DuplicateKey);
+            return;
+        }
+
+        // Hybrid index builds, with an interceptor, check duplicates explicitly.
+        ASSERT_OK(status);
+
+        status = indexer.checkConstraints();
         ASSERT_EQUALS(status.code(), ErrorCodes::DuplicateKey);
     }
 };

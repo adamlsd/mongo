@@ -30,14 +30,18 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kTransaction
 
+#include <memory>
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/transaction_coordinator_service.h"
 
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/transaction_coordinator.h"
 #include "mongo/db/transaction_coordinator_util.h"
+#include "mongo/db/write_concern.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
@@ -59,7 +63,7 @@ ThreadPool::Options makeDefaultThreadPoolOptions() {
     ThreadPool::Options options;
     options.poolName = "TransactionCoordinatorService";
     options.minThreads = 0;
-    options.maxThreads = 16;
+    options.maxThreads = ThreadPool::Options::kUnlimited;
 
     // Ensure all threads have a client
     options.onCreateThread = [](const std::string& threadName) {
@@ -72,18 +76,21 @@ ThreadPool::Options makeDefaultThreadPoolOptions() {
 
 TransactionCoordinatorService::TransactionCoordinatorService()
     : _coordinatorCatalog(std::make_shared<TransactionCoordinatorCatalog>()),
-      _threadPool(std::make_unique<ThreadPool>(makeDefaultThreadPoolOptions())) {
-    _threadPool->startup();
+      _threadPool(std::make_unique<ThreadPool>(makeDefaultThreadPoolOptions())) {}
+
+void TransactionCoordinatorService::setThreadPoolForTest(std::unique_ptr<ThreadPool> pool) {
+    shutdown();
+    _threadPool = std::move(pool);
+    startup();
 }
 
-void TransactionCoordinatorService::setThreadPool(std::unique_ptr<ThreadPool> pool) {
-    _threadPool->shutdown();
-    _threadPool = std::move(pool);
+void TransactionCoordinatorService::startup() {
     _threadPool->startup();
 }
 
 void TransactionCoordinatorService::shutdown() {
     _threadPool->shutdown();
+    _threadPool->join();
 }
 
 TransactionCoordinatorService* TransactionCoordinatorService::get(OperationContext* opCtx) {
@@ -98,7 +105,7 @@ void TransactionCoordinatorService::createCoordinator(OperationContext* opCtx,
                                                       LogicalSessionId lsid,
                                                       TxnNumber txnNumber,
                                                       Date_t commitDeadline) {
-    if (auto latestTxnNumAndCoordinator = _coordinatorCatalog->getLatestOnSession(lsid)) {
+    if (auto latestTxnNumAndCoordinator = _coordinatorCatalog->getLatestOnSession(opCtx, lsid)) {
         auto latestCoordinator = latestTxnNumAndCoordinator.get().second;
         if (txnNumber == latestTxnNumAndCoordinator.get().first) {
             return;
@@ -107,12 +114,26 @@ void TransactionCoordinatorService::createCoordinator(OperationContext* opCtx,
     }
 
     auto networkExecutor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
-    auto newCoordinator = std::make_shared<TransactionCoordinator>(
+    auto coordinator = std::make_shared<TransactionCoordinator>(
         networkExecutor, _threadPool.get(), lsid, txnNumber);
 
-    _coordinatorCatalog->insert(lsid, txnNumber, newCoordinator);
+    _coordinatorCatalog->insert(opCtx, lsid, txnNumber, coordinator);
 
-    // TODO (SERVER-37024): Schedule abort task on executor to execute at commitDeadline.
+    // Schedule a task in the future to cancel the commit coordination on the coordinator, so that
+    // the coordinator does not remain in memory forever (in case the particpant list is never
+    // received).
+    auto cbHandle = uassertStatusOK(networkExecutor->scheduleWorkAt(
+        commitDeadline,
+        [coordinatorWeakPtr = std::weak_ptr<TransactionCoordinator>(coordinator)](
+            const mongo::executor::TaskExecutor::CallbackArgs& cbArgs) mutable {
+            auto coordinator = coordinatorWeakPtr.lock();
+            if (coordinator) {
+                coordinator->cancelIfCommitNotYetStarted();
+            }
+        }));
+
+    // TODO (SERVER-38715): Store the callback handle in the coordinator, so that the coordinator
+    // can cancel the cancel task on receiving the participant list.
 }
 
 boost::optional<Future<TransactionCoordinator::CommitDecision>>
@@ -121,7 +142,7 @@ TransactionCoordinatorService::coordinateCommit(OperationContext* opCtx,
                                                 TxnNumber txnNumber,
                                                 const std::set<ShardId>& participantList) {
 
-    auto coordinator = _coordinatorCatalog->get(lsid, txnNumber);
+    auto coordinator = _coordinatorCatalog->get(opCtx, lsid, txnNumber);
     if (!coordinator) {
         return boost::none;
     }
@@ -142,7 +163,7 @@ boost::optional<Future<TransactionCoordinator::CommitDecision>>
 TransactionCoordinatorService::recoverCommit(OperationContext* opCtx,
                                              LogicalSessionId lsid,
                                              TxnNumber txnNumber) {
-    auto coordinator = _coordinatorCatalog->get(lsid, txnNumber);
+    auto coordinator = _coordinatorCatalog->get(opCtx, lsid, txnNumber);
     if (!coordinator) {
         return boost::none;
     }
@@ -154,5 +175,71 @@ TransactionCoordinatorService::recoverCommit(OperationContext* opCtx,
     // reject requests with a higher transaction number, causing tests to fail.
     // return coordinator.get()->getDecision();
 }
+
+void TransactionCoordinatorService::onStepUp(OperationContext* opCtx) {
+    // Blocks until the stepup task from the last term completes, then marks a new stepup task as
+    // having begun and blocks until all active coordinators complete (are removed from the
+    // catalog).
+    // Note: No other threads can read the catalog while the catalog is marked as having an active
+    // stepup task.
+    _coordinatorCatalog->enterStepUp(opCtx);
+
+    auto scheduleStatus = _threadPool->schedule([this]() {
+        try {
+            // The opCtx destructor handles unsetting itself from the Client
+            auto opCtxPtr = Client::getCurrent()->makeOperationContext();
+            auto opCtx = opCtxPtr.get();
+
+            repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+            const auto lastOpTime = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+            LOG(3) << "Going to wait for client's last OpTime " << lastOpTime
+                   << " to become majority committed";
+            WriteConcernResult unusedWCResult;
+            uassertStatusOK(waitForWriteConcern(
+                opCtx,
+                lastOpTime,
+                WriteConcernOptions{WriteConcernOptions::kInternalMajorityNoSnapshot,
+                                    WriteConcernOptions::SyncMode::UNSET,
+                                    WriteConcernOptions::kNoTimeout},
+                &unusedWCResult));
+
+            auto coordinatorDocs = txn::readAllCoordinatorDocs(opCtx);
+            LOG(0) << "Need to resume coordinating commit for " << coordinatorDocs.size()
+                   << " transactions";
+
+            for (const auto& doc : coordinatorDocs) {
+                LOG(3) << "Going to resume coordinating commit for " << doc.toBSON();
+                const auto lsid = *doc.getId().getSessionId();
+                const auto txnNumber = *doc.getId().getTxnNumber();
+
+                auto networkExecutor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
+                auto coordinator = std::make_shared<TransactionCoordinator>(
+                    networkExecutor, _threadPool.get(), lsid, txnNumber);
+                _coordinatorCatalog->insert(
+                    opCtx, lsid, txnNumber, coordinator, true /* forStepUp */);
+                coordinator->continueCommit(doc);
+            }
+
+            _coordinatorCatalog->exitStepUp();
+
+            LOG(3) << "Incoming coordinateCommit requests now accepted";
+        } catch (const DBException& e) {
+            LOG(3) << "Failed while executing thread to resume coordinating commit for pending "
+                      "transactions "
+                   << causedBy(e.toStatus());
+            _coordinatorCatalog->exitStepUp();
+        }
+    });
+
+    if (scheduleStatus.code() == ErrorCodes::ShutdownInProgress) {
+        return;
+    }
+    fassert(51031, scheduleStatus.isOK());
+}
+
+ServiceContext::ConstructorActionRegisterer transactionCoordinatorServiceRegisterer{
+    "TransactionCoordinatorService",
+    [](ServiceContext* service) { TransactionCoordinatorService::get(service)->startup(); },
+    [](ServiceContext* service) { TransactionCoordinatorService::get(service)->shutdown(); }};
 
 }  // namespace mongo

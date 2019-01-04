@@ -56,10 +56,10 @@ public:
      */
     void shutdown() override;
 
-    StatusWith<Future<void>> buildIndex(OperationContext* opCtx,
-                                        const NamespaceString& nss,
-                                        const std::vector<BSONObj>& specs,
-                                        const UUID& buildUUID) override;
+    StatusWith<SharedSemiFuture<void>> buildIndex(OperationContext* opCtx,
+                                                  const NamespaceString& nss,
+                                                  const std::vector<BSONObj>& specs,
+                                                  const UUID& buildUUID) override;
 
     /**
      * None of the following functions should ever be called on an embedded server node.
@@ -69,8 +69,8 @@ public:
     void signalChangeToInitialSyncMode() override;
     Status voteCommitIndexBuild(const UUID& buildUUID, const HostAndPort& hostAndPort) override;
     Status setCommitQuorum(const NamespaceString& nss,
-                           const std::vector<std::string>& indexNames,
-                           const BSONObj& newCommitQuorum) override;
+                           const std::vector<StringData>& indexNames,
+                           const WriteConcernOptions& newCommitQuorum) override;
 
 private:
     void _runIndexBuild(OperationContext* opCtx, const UUID& buildUUID) noexcept override;

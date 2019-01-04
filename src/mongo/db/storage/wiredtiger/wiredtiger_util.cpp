@@ -39,7 +39,6 @@
 #include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/snapshot_window_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
@@ -403,7 +402,6 @@ int mdb_handle_error_with_startup_suppression(WT_EVENT_HANDLER* handler,
                 return 0;
             }
         }
-
         error() << "WiredTiger error (" << errorCode << ") " << redact(message)
                 << " Raw: " << message;
 
@@ -533,10 +531,6 @@ bool WiredTigerUtil::useTableLogging(NamespaceString ns, bool replEnabled) {
         return true;
     }
 
-    if (!serverGlobalParams.enableMajorityReadConcern) {
-        return true;
-    }
-
     // Of the replica set configurations:
     if (ns.db() != "local") {
         // All replicated collections are not logged.
@@ -649,7 +643,7 @@ Status WiredTigerUtil::exportTableToBSON(WT_SESSION* session,
             suffix = "num";
         }
 
-        long long v = _castStatisticsValue<long long>(value);
+        long long v = castStatisticsValue<long long>(value);
 
         if (prefix.size() == 0) {
             bob->appendNumber(desc, v);

@@ -36,7 +36,7 @@
 
 #include "mongo/base/initializer.h"
 #include "mongo/config.h"
-#include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/catalog/health_log.h"
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/catalog/uuid_catalog.h"
@@ -99,6 +99,10 @@ MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
     return Status::OK();
 }
 
+void setUpCatalog(ServiceContext* serviceContext) {
+    DatabaseHolder::set(serviceContext, std::make_unique<DatabaseHolderImpl>());
+}
+
 // Create a minimalistic replication coordinator to provide a limited interface for users. Not
 // functional to provide any replication logic.
 ServiceContext::ConstructorActionRegisterer replicationManagerInitializer(
@@ -155,11 +159,12 @@ void shutdown(ServiceContext* srvContext) {
         {
             UninterruptibleLockGuard noInterrupt(shutdownOpCtx->lockState());
             Lock::GlobalLock lk(shutdownOpCtx.get(), MODE_X);
-            DatabaseHolder::getDatabaseHolder().closeAll(shutdownOpCtx.get(), "shutdown");
+            auto databaseHolder = DatabaseHolder::get(shutdownOpCtx.get());
+            databaseHolder->closeAll(shutdownOpCtx.get(), "shutdown");
 
             LogicalSessionCache::set(serviceContext, nullptr);
 
-            // Shut down the background periodic task runner
+            // Shut down the background periodic task runner, before the storage engine.
             if (auto runner = serviceContext->getPeriodicRunner()) {
                 runner->shutdown();
             }
@@ -221,7 +226,14 @@ ServiceContext* initialize(const char* yaml_config) {
 
     DEV log(LogComponent::kControl) << "DEBUG build (which is slower)" << endl;
 
+    // The periodic runner is required by the storage engine to be running beforehand.
+    auto periodicRunner = std::make_unique<PeriodicRunnerEmbedded>(
+        serviceContext, serviceContext->getPreciseClockSource());
+    periodicRunner->startup();
+    serviceContext->setPeriodicRunner(std::move(periodicRunner));
+
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kAllowNoLockFile);
+    setUpCatalog(serviceContext);
 
     // Warn if we detect configurations for multiple registered storage engines in the same
     // configuration file/environment.
@@ -307,11 +319,6 @@ ServiceContext* initialize(const char* yaml_config) {
     if (!storageGlobalParams.readOnly) {
         restartInProgressIndexesFromLastShutdown(startupOpCtx.get());
     }
-
-    auto periodicRunner = std::make_unique<PeriodicRunnerEmbedded>(
-        serviceContext, serviceContext->getPreciseClockSource());
-    periodicRunner->startup();
-    serviceContext->setPeriodicRunner(std::move(periodicRunner));
 
     // Set up the logical session cache
     auto sessionCache = makeLogicalSessionCacheEmbedded();

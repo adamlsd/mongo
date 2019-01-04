@@ -236,7 +236,8 @@ void createIndexForApplyOps(OperationContext* opCtx,
         dbLock.emplace(opCtx, indexNss.db(), MODE_X);
     }
     // Check if collection exists.
-    Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, indexNss.ns());
+    auto databaseHolder = DatabaseHolder::get(opCtx);
+    auto db = databaseHolder->getDb(opCtx, indexNss.ns());
     auto indexCollection = db ? db->getCollection(opCtx, indexNss) : nullptr;
     uassert(ErrorCodes::NamespaceNotFound,
             str::stream() << "Failed to create index due to missing collection: " << indexNss.ns(),
@@ -550,8 +551,7 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
     if (txnParticipant) {
         sessionInfo.setSessionId(*opCtx->getLogicalSessionId());
         sessionInfo.setTxnNumber(*opCtx->getTxnNumber());
-
-        oplogLink.prevOpTime = txnParticipant->getLastWriteOpTime(*opCtx->getTxnNumber());
+        oplogLink.prevOpTime = txnParticipant->getLastWriteOpTime();
     }
 
     auto timestamps = stdx::make_unique<Timestamp[]>(count);
@@ -1562,7 +1562,8 @@ Status applyCommand_inlock(OperationContext* opCtx,
         // Command application doesn't always acquire the global writer lock for transaction
         // commands, so we acquire its own locks here.
         Lock::DBLock lock(opCtx, nss.db(), MODE_IS);
-        Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, nss.ns());
+        auto databaseHolder = DatabaseHolder::get(opCtx);
+        auto db = databaseHolder->getDb(opCtx, nss.ns());
         if (db && !db->getCollection(opCtx, nss) && db->getViewCatalog()->lookup(opCtx, nss.ns())) {
             return {ErrorCodes::CommandNotSupportedOnView,
                     str::stream() << "applyOps not supported on view:" << nss.ns()};
@@ -1737,7 +1738,7 @@ void establishOplogCollectionForLogging(OperationContext* opCtx, Collection* opl
 void signalOplogWaiters() {
     auto oplog = localOplogInfo(getGlobalServiceContext()).oplog;
     if (oplog) {
-        oplog->notifyCappedWaitersIfNeeded();
+        oplog->getCappedCallback()->notifyCappedWaitersIfNeeded();
     }
 }
 

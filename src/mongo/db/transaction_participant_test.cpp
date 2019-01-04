@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -415,19 +414,19 @@ TEST_F(TxnParticipantTest, SameTransactionPreservesStoredStatements) {
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     txnParticipant->addTransactionOperation(opCtx(), operation);
     ASSERT_BSONOBJ_EQ(operation.toBSON(),
-                      txnParticipant->transactionOperationsForTest()[0].toBSON());
+                      txnParticipant->getTransactionOperationsForTest()[0].toBSON());
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->stashTransactionResources(opCtx());
 
     // Check the transaction operations before re-opening the transaction.
     ASSERT_BSONOBJ_EQ(operation.toBSON(),
-                      txnParticipant->transactionOperationsForTest()[0].toBSON());
+                      txnParticipant->getTransactionOperationsForTest()[0].toBSON());
 
     // Re-opening the same transaction should have no effect.
     txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), false, boost::none);
     ASSERT_BSONOBJ_EQ(operation.toBSON(),
-                      txnParticipant->transactionOperationsForTest()[0].toBSON());
+                      txnParticipant->getTransactionOperationsForTest()[0].toBSON());
 }
 
 TEST_F(TxnParticipantTest, AbortClearsStoredStatements) {
@@ -437,13 +436,13 @@ TEST_F(TxnParticipantTest, AbortClearsStoredStatements) {
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     txnParticipant->addTransactionOperation(opCtx(), operation);
     ASSERT_BSONOBJ_EQ(operation.toBSON(),
-                      txnParticipant->transactionOperationsForTest()[0].toBSON());
+                      txnParticipant->getTransactionOperationsForTest()[0].toBSON());
 
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->stashTransactionResources(opCtx());
     txnParticipant->abortArbitraryTransaction();
-    ASSERT_TRUE(txnParticipant->transactionOperationsForTest().empty());
+    ASSERT_TRUE(txnParticipant->getTransactionOperationsForTest().empty());
     ASSERT_TRUE(txnParticipant->transactionIsAborted());
 }
 
@@ -455,8 +454,43 @@ TEST_F(TxnParticipantTest, EmptyTransactionCommit) {
     txnParticipant->unstashTransactionResources(opCtx(), "commitTransaction");
 
     // The transaction machinery cannot store an empty locker.
-    Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->commitUnpreparedTransaction(opCtx());
+    txnParticipant->stashTransactionResources(opCtx());
+
+    ASSERT_TRUE(txnParticipant->transactionIsCommitted());
+}
+
+// This test makes sure the commit machinery works even when no operations are done on the
+// transaction.
+TEST_F(TxnParticipantTest, EmptyPreparedTransactionCommit) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "commitTransaction");
+
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
+    const auto prepareTimestamp = txnParticipant->prepareTransaction(opCtx(), {});
+    const auto commitTS = Timestamp(prepareTimestamp.getSecs(), prepareTimestamp.getInc() + 1);
+    txnParticipant->commitPreparedTransaction(opCtx(), commitTS);
+    txnParticipant->stashTransactionResources(opCtx());
+
+    ASSERT_TRUE(txnParticipant->transactionIsCommitted());
+}
+
+TEST_F(TxnParticipantTest, PrepareSucceedsWithNestedLocks) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "commitTransaction");
+
+    {
+        Lock::GlobalLock lk1(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+        Lock::GlobalLock lk2(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    }
+
+    const auto prepareTimestamp = txnParticipant->prepareTransaction(opCtx(), {});
+    const auto commitTS = Timestamp(prepareTimestamp.getSecs(), prepareTimestamp.getInc() + 1);
+    txnParticipant->commitPreparedTransaction(opCtx(), commitTS);
     txnParticipant->stashTransactionResources(opCtx());
 
     ASSERT_TRUE(txnParticipant->transactionIsCommitted());
@@ -480,7 +514,7 @@ TEST_F(TxnParticipantTest, CommitTransactionSetsCommitTimestampOnPreparedTransac
         ASSERT(commitOplogEntryOpTime);
         ASSERT(commitTimestamp);
 
-        ASSERT_GT(commitTimestamp, prepareTimestamp);
+        ASSERT_GT(*commitTimestamp, prepareTimestamp);
     };
 
     txnParticipant->commitPreparedTransaction(opCtx(), commitTS);
@@ -603,6 +637,20 @@ TEST_F(TxnParticipantTest, EmptyTransactionAbort) {
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->stashTransactionResources(opCtx());
     txnParticipant->abortArbitraryTransaction();
+    ASSERT_TRUE(txnParticipant->transactionIsAborted());
+}
+
+// This test makes sure the abort machinery works even when no operations are done on the
+// transaction.
+TEST_F(TxnParticipantTest, EmptyPreparedTransactionAbort) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "abortTransaction");
+
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
+    txnParticipant->prepareTransaction(opCtx(), {});
+    txnParticipant->abortActiveTransaction(opCtx());
     ASSERT_TRUE(txnParticipant->transactionIsAborted());
 }
 
@@ -837,6 +885,91 @@ TEST_F(TxnParticipantTest, KillSessionsDuringPreparedCommitDoesNotAbortTransacti
     ASSERT(_opObserver->transactionCommitted);
     ASSERT_FALSE(txnParticipant->transactionIsAborted());
     ASSERT(txnParticipant->transactionIsCommitted());
+}
+
+TEST_F(TxnParticipantTest, StepDownAfterPrepareDoesNotBlock) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+
+    txnParticipant->prepareTransaction(opCtx(), {});
+
+    // Test that we can acquire the RSTL in mode X, and then immediately release it so the test can
+    // complete successfully.
+    auto func = [&](OperationContext* opCtx) {
+        ASSERT_EQ(
+            LOCK_OK,
+            opCtx->lockState()->lock(opCtx, resourceIdReplicationStateTransitionLock, MODE_X));
+        opCtx->lockState()->unlock(resourceIdReplicationStateTransitionLock);
+    };
+    runFunctionFromDifferentOpCtx(func);
+
+    txnParticipant->abortActiveTransaction(opCtx());
+    ASSERT(_opObserver->transactionAborted);
+    ASSERT(txnParticipant->transactionIsAborted());
+}
+
+TEST_F(TxnParticipantTest, StepDownAfterPrepareDoesNotBlockThenCommit) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+
+    const auto prepareTimestamp = txnParticipant->prepareTransaction(opCtx(), {});
+    const auto commitTS = Timestamp(prepareTimestamp.getSecs(), prepareTimestamp.getInc() + 1);
+
+    // Test that we can acquire the RSTL in mode X, and then immediately release it so the test can
+    // complete successfully.
+    auto func = [&](OperationContext* opCtx) {
+        ASSERT_EQ(
+            LOCK_OK,
+            opCtx->lockState()->lock(opCtx, resourceIdReplicationStateTransitionLock, MODE_X));
+        opCtx->lockState()->unlock(resourceIdReplicationStateTransitionLock);
+    };
+    runFunctionFromDifferentOpCtx(func);
+
+    txnParticipant->commitPreparedTransaction(opCtx(), commitTS);
+    ASSERT(_opObserver->transactionCommitted);
+    ASSERT(txnParticipant->transactionIsCommitted());
+}
+
+TEST_F(TxnParticipantTest, StepDownDuringAbortSucceeds) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "abortTransaction");
+
+    ASSERT_OK(repl::ReplicationCoordinator::get(opCtx())->setFollowerMode(
+        repl::MemberState::RS_SECONDARY));
+    txnParticipant->abortActiveTransaction(opCtx());
+    ASSERT(_opObserver->transactionAborted);
+    ASSERT(txnParticipant->transactionIsAborted());
+}
+
+TEST_F(TxnParticipantTest, StepDownDuringPreparedAbortFails) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+
+    txnParticipant->prepareTransaction(opCtx(), {});
+
+    ASSERT_OK(repl::ReplicationCoordinator::get(opCtx())->setFollowerMode(
+        repl::MemberState::RS_SECONDARY));
+    ASSERT_THROWS_CODE(
+        txnParticipant->abortActiveTransaction(opCtx()), AssertionException, ErrorCodes::NotMaster);
+}
+
+TEST_F(TxnParticipantTest, StepDownDuringPreparedCommitFails) {
+    auto sessionCheckout = checkOutSession();
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+
+    const auto prepareTimestamp = txnParticipant->prepareTransaction(opCtx(), {});
+    const auto commitTS = Timestamp(prepareTimestamp.getSecs(), prepareTimestamp.getInc() + 1);
+
+    ASSERT_OK(repl::ReplicationCoordinator::get(opCtx())->setFollowerMode(
+        repl::MemberState::RS_SECONDARY));
+    ASSERT_THROWS_CODE(txnParticipant->commitPreparedTransaction(opCtx(), commitTS),
+                       AssertionException,
+                       ErrorCodes::NotMaster);
 }
 
 TEST_F(TxnParticipantTest, ArbitraryAbortDuringPreparedCommitDoesNotAbortTransaction) {
@@ -1091,7 +1224,7 @@ DEATH_TEST_F(TxnParticipantTest, AbortIsIllegalDuringCommittingPreparedTransacti
 
     txnParticipant->commitPreparedTransaction(opCtx(), commitTS);
     // Check that we removed the prepareTimestamp from the set.
-    ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime(), boost::none);
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime());
 }
 
 TEST_F(TxnParticipantTest, CannotContinueNonExistentTransaction) {
@@ -1150,8 +1283,6 @@ TEST_F(TxnParticipantTest, StashInNestedSessionIsANoop) {
     {
         // Make it look like we're in a DBDirectClient running a nested operation.
         DirectClientSetter inDirectClient(opCtx());
-        MongoDOperationContextSession innerScopedSession(opCtx());
-
         txnParticipant->stashTransactionResources(opCtx());
 
         // The stash was a noop, so the locker, RecoveryUnit, and WriteUnitOfWork on the
@@ -1159,38 +1290,6 @@ TEST_F(TxnParticipantTest, StashInNestedSessionIsANoop) {
         ASSERT_EQUALS(originalLocker, opCtx()->lockState());
         ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
         ASSERT(opCtx()->getWriteUnitOfWork());
-    }
-}
-
-TEST_F(TxnParticipantTest, UnstashInNestedSessionIsANoop) {
-    auto outerScopedSession = checkOutSession();
-
-    Locker* originalLocker = opCtx()->lockState();
-    RecoveryUnit* originalRecoveryUnit = opCtx()->recoveryUnit();
-    ASSERT(originalLocker);
-    ASSERT(originalRecoveryUnit);
-
-    // Set the readConcern on the OperationContext.
-    repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
-    repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
-
-    {
-        // Make it look like we're in a DBDirectClient running a nested operation.
-        DirectClientSetter inDirectClient(opCtx());
-        MongoDOperationContextSession innerScopedSession(opCtx());
-
-        auto txnParticipant = TransactionParticipant::get(opCtx());
-        txnParticipant->unstashTransactionResources(opCtx(), "find");
-
-        // The unstash was a noop, so the OperationContext did not get a WriteUnitOfWork.
-        ASSERT_EQUALS(originalLocker, opCtx()->lockState());
-        ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
-        ASSERT_FALSE(opCtx()->getWriteUnitOfWork());
     }
 }
 
@@ -1436,35 +1535,6 @@ TEST_F(TxnParticipantTest, KillSessionsDuringPreparedAbortFails) {
 
     txnParticipant->abortActiveTransaction(opCtx());
 
-    ASSERT(_opObserver->transactionAborted);
-    ASSERT(txnParticipant->transactionIsAborted());
-}
-
-TEST_F(TxnParticipantTest, ActiveAbortSucceedsDuringPreparedAbort) {
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "abortTransaction");
-    txnParticipant->prepareTransaction(opCtx(), {});
-
-    auto sessionId = *opCtx()->getLogicalSessionId();
-    auto txnNumber = *opCtx()->getTxnNumber();
-    auto originalFn = _opObserver->onTransactionAbortFn;
-    _opObserver->onTransactionAbortFn = [&] {
-        originalFn();
-
-        auto func = [&](OperationContext* opCtx) {
-            opCtx->setLogicalSessionId(sessionId);
-            opCtx->setTxnNumber(txnNumber);
-
-            // Prevent recursion.
-            _opObserver->onTransactionAbortFn = originalFn;
-            txnParticipant->abortActiveTransaction(opCtx);
-            ASSERT(txnParticipant->transactionIsAborted());
-        };
-        runFunctionFromDifferentOpCtx(func);
-    };
-
-    txnParticipant->abortActiveTransaction(opCtx());
     ASSERT(_opObserver->transactionAborted);
     ASSERT(txnParticipant->transactionIsAborted());
 }
@@ -1910,12 +1980,12 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponCom
     tickSource->advance(Microseconds(100));
 
     txnParticipant->commitUnpreparedTransaction(opCtx());
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(100));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(100));
 }
 
-TEST_F(TransactionsMetricsTest, SingleTranasactionStatsPreparedDurationShouldBeSetUponCommit) {
+TEST_F(TransactionsMetricsTest, SingleTransactionStatsPreparedDurationShouldBeSetUponCommit) {
     auto tickSource = initMockTickSource();
 
     auto sessionCheckout = checkOutSession();
@@ -1935,7 +2005,7 @@ TEST_F(TransactionsMetricsTest, SingleTranasactionStatsPreparedDurationShouldBeS
     tickSource->advance(Microseconds(100));
 
     txnParticipant->commitPreparedTransaction(opCtx(), commitTimestamp);
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(100));
 }
@@ -1951,9 +2021,9 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponAbo
     tickSource->advance(Microseconds(100));
 
     txnParticipant->abortArbitraryTransaction();
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(100));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(100));
 }
 
 TEST_F(TransactionsMetricsTest, SingleTransactionStatsPreparedDurationShouldBeSetUponAbort) {
@@ -1971,7 +2041,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsPreparedDurationShouldBeSe
     tickSource->advance(Microseconds(100));
 
     txnParticipant->abortActiveTransaction(opCtx());
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(100));
 }
@@ -1988,23 +2058,23 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasi
     tickSource->advance(Microseconds(100));
 
     // The transaction's duration should have increased.
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(100));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(100));
 
     tickSource->advance(Microseconds(100));
 
     // Commit the transaction and check duration.
     txnParticipant->commitUnpreparedTransaction(opCtx());
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(200));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(200));
 
     // The transaction committed, so the duration shouldn't have increased even if more time passed.
     tickSource->advance(Microseconds(100));
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(200));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(200));
 }
 
 TEST_F(TransactionsMetricsTest,
@@ -2025,7 +2095,7 @@ TEST_F(TransactionsMetricsTest,
     tickSource->advance(Microseconds(100));
 
     // The prepared transaction's duration should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(100));
 
@@ -2033,14 +2103,14 @@ TEST_F(TransactionsMetricsTest,
 
     // Commit the prepared transaction and check the prepared duration.
     txnParticipant->commitPreparedTransaction(opCtx(), commitTimestamp);
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
 
     // The prepared transaction committed, so the prepared duration shouldn't have increased even if
     // more time passed.
     tickSource->advance(Microseconds(100));
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
 }
@@ -2057,23 +2127,23 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasi
     tickSource->advance(Microseconds(100));
 
     // The transaction's duration should have increased.
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(100));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(100));
 
     tickSource->advance(Microseconds(100));
 
     // Abort the transaction and check duration.
     txnParticipant->abortArbitraryTransaction();
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(200));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(200));
 
     // The transaction aborted, so the duration shouldn't have increased even if more time passed.
     tickSource->advance(Microseconds(100));
-    ASSERT_EQ(
-        txnParticipant->getSingleTransactionStats().getDuration(tickSource, tickSource->getTicks()),
-        Microseconds(200));
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getDuration(
+                  tickSource, tickSource->getTicks()),
+              Microseconds(200));
 }
 
 TEST_F(TransactionsMetricsTest,
@@ -2091,7 +2161,7 @@ TEST_F(TransactionsMetricsTest,
     tickSource->advance(Microseconds(100));
 
     // The prepared transaction's duration should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(100));
 
@@ -2099,14 +2169,14 @@ TEST_F(TransactionsMetricsTest,
 
     // Abort the prepared transaction and check the prepared duration.
     txnParticipant->abortActiveTransaction(opCtx());
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
 
     // The prepared transaction aborted, so the prepared duration shouldn't have increased even if
     // more time passed.
     tickSource->advance(Microseconds(100));
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getPreparedDuration(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
 }
@@ -2118,7 +2188,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndStash) 
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time active should be zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 
@@ -2132,7 +2202,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndStash) 
     tickSource->advance(Microseconds(100));
 
     // Time active should have increased only during active period.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
@@ -2144,7 +2214,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndStash) 
     tickSource->advance(Microseconds(100));
 
     // Time active should have increased again.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{200});
 
@@ -2153,7 +2223,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndStash) 
     txnParticipant->beginOrContinue(higherTxnNum, false, true);
 
     // Time active should be zero for a new transaction.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 }
@@ -2165,7 +2235,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndAbort) 
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time active should be zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 
@@ -2174,14 +2244,14 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldBeSetUponUnstashAndAbort) 
     txnParticipant->abortArbitraryTransaction();
 
     // Time active should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
     tickSource->advance(Microseconds(100));
 
     // The transaction is not active after abort, so time active should not have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 }
@@ -2193,7 +2263,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetUponAbortOnly) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time active should be zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 
@@ -2203,7 +2273,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetUponAbortOnly) {
     txnParticipant->abortArbitraryTransaction();
 
     // Time active should still be zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 }
@@ -2215,21 +2285,21 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilStash) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time active should be zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
     txnParticipant->unstashTransactionResources(opCtx(), "insert");
     tickSource->advance(Microseconds(100));
 
     // Time active should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds(100));
 
     tickSource->advance(Microseconds(100));
 
     // Time active should have increased again.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
 
@@ -2240,7 +2310,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilStash) {
     tickSource->advance(Microseconds(100));
 
     // The transaction is no longer active, so time active should have stopped increasing.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
 }
@@ -2252,7 +2322,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilCommit) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time active should be zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
     txnParticipant->unstashTransactionResources(opCtx(), "commitTransaction");
@@ -2260,14 +2330,14 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilCommit) {
     tickSource->advance(Microseconds(100));
 
     // Time active should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
     tickSource->advance(Microseconds(100));
 
     // Time active should have increased again.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{200});
 
@@ -2276,47 +2346,9 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilCommit) {
     tickSource->advance(Microseconds(100));
 
     // The transaction is no longer active, so time active should have stopped increasing.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds(200));
-}
-
-TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetIfUnstashHasBadReadConcernArgs) {
-    auto tickSource = initMockTickSource();
-
-    auto sessionCheckout = checkOutSession();
-    auto txnParticipant = TransactionParticipant::get(opCtx());
-
-    // Initialize bad read concern args (!readConcernArgs.isEmpty()).
-    repl::ReadConcernArgs readConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
-    repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
-
-    // Transaction resources do not exist yet.
-    txnParticipant->unstashTransactionResources(opCtx(), "find");
-
-    tickSource->advance(Microseconds(100));
-
-    // The transaction machinery cannot store an empty locker.
-    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
-    txnParticipant->stashTransactionResources(opCtx());
-
-    // Time active should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
-                  tickSource, tickSource->getTicks()),
-              Microseconds{100});
-
-    // Transaction resources already exist here and should throw an exception due to bad read
-    // concern arguments.
-    ASSERT_THROWS_CODE(txnParticipant->unstashTransactionResources(opCtx(), "find"),
-                       AssertionException,
-                       ErrorCodes::InvalidOptions);
-
-    tickSource->advance(Microseconds(100));
-
-    // Time active should not have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeActiveMicros(
-                  tickSource, tickSource->getTicks()),
-              Microseconds{100});
 }
 
 TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponStash) {
@@ -2324,26 +2356,31 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponS
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Initialize field values for both AdditiveMetrics objects.
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysExamined = 1;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysExamined =
+        1;
     CurOp::get(opCtx())->debug().additiveMetrics.keysExamined = 5;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.docsExamined = 2;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.docsExamined =
+        2;
     CurOp::get(opCtx())->debug().additiveMetrics.docsExamined = 0;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nMatched = 3;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nModified = 1;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nMatched = 3;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nModified = 1;
     CurOp::get(opCtx())->debug().additiveMetrics.nModified = 1;
     CurOp::get(opCtx())->debug().additiveMetrics.ninserted = 4;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nmoved = 3;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nmoved = 3;
     CurOp::get(opCtx())->debug().additiveMetrics.nmoved = 2;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysInserted = 1;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysInserted =
+        1;
     CurOp::get(opCtx())->debug().additiveMetrics.keysInserted = 1;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysDeleted = 0;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysDeleted =
+        0;
     CurOp::get(opCtx())->debug().additiveMetrics.keysDeleted = 0;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.prepareReadConflicts =
-        5;
+    txnParticipant->getSingleTransactionStatsForTest()
+        .getOpDebug()
+        ->additiveMetrics.prepareReadConflicts = 5;
     CurOp::get(opCtx())->debug().additiveMetrics.prepareReadConflicts = 4;
 
     auto additiveMetricsToCompare =
-        txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics;
+        txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics;
     additiveMetricsToCompare.add(CurOp::get(opCtx())->debug().additiveMetrics);
 
     txnParticipant->unstashTransactionResources(opCtx(), "insert");
@@ -2351,7 +2388,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponS
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->stashTransactionResources(opCtx());
 
-    ASSERT(txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.equals(
+    ASSERT(txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.equals(
         additiveMetricsToCompare));
 }
 
@@ -2360,26 +2397,32 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponC
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Initialize field values for both AdditiveMetrics objects.
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysExamined = 3;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysExamined =
+        3;
     CurOp::get(opCtx())->debug().additiveMetrics.keysExamined = 2;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.docsExamined = 0;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.docsExamined =
+        0;
     CurOp::get(opCtx())->debug().additiveMetrics.docsExamined = 2;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nMatched = 4;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nModified = 5;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nMatched = 4;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nModified = 5;
     CurOp::get(opCtx())->debug().additiveMetrics.nModified = 1;
     CurOp::get(opCtx())->debug().additiveMetrics.ninserted = 1;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.ndeleted = 4;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.ndeleted = 4;
     CurOp::get(opCtx())->debug().additiveMetrics.ndeleted = 0;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysInserted = 1;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysInserted =
+        1;
     CurOp::get(opCtx())->debug().additiveMetrics.keysInserted = 1;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.prepareReadConflicts =
-        0;
+    txnParticipant->getSingleTransactionStatsForTest()
+        .getOpDebug()
+        ->additiveMetrics.prepareReadConflicts = 0;
     CurOp::get(opCtx())->debug().additiveMetrics.prepareReadConflicts = 0;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.writeConflicts = 6;
+    txnParticipant->getSingleTransactionStatsForTest()
+        .getOpDebug()
+        ->additiveMetrics.writeConflicts = 6;
     CurOp::get(opCtx())->debug().additiveMetrics.writeConflicts = 3;
 
     auto additiveMetricsToCompare =
-        txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics;
+        txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics;
     additiveMetricsToCompare.add(CurOp::get(opCtx())->debug().additiveMetrics);
 
     txnParticipant->unstashTransactionResources(opCtx(), "insert");
@@ -2387,7 +2430,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponC
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->commitUnpreparedTransaction(opCtx());
 
-    ASSERT(txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.equals(
+    ASSERT(txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.equals(
         additiveMetricsToCompare));
 }
 
@@ -2396,25 +2439,31 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponA
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Initialize field values for both AdditiveMetrics objects.
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysExamined = 2;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysExamined =
+        2;
     CurOp::get(opCtx())->debug().additiveMetrics.keysExamined = 4;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.docsExamined = 1;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.docsExamined =
+        1;
     CurOp::get(opCtx())->debug().additiveMetrics.docsExamined = 3;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nMatched = 2;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nModified = 0;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nMatched = 2;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nModified = 0;
     CurOp::get(opCtx())->debug().additiveMetrics.nModified = 3;
     CurOp::get(opCtx())->debug().additiveMetrics.ndeleted = 5;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.nmoved = 0;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.nmoved = 0;
     CurOp::get(opCtx())->debug().additiveMetrics.nmoved = 2;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysInserted = 1;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysInserted =
+        1;
     CurOp::get(opCtx())->debug().additiveMetrics.keysInserted = 1;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.keysDeleted = 6;
+    txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.keysDeleted =
+        6;
     CurOp::get(opCtx())->debug().additiveMetrics.keysDeleted = 0;
-    txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.writeConflicts = 3;
+    txnParticipant->getSingleTransactionStatsForTest()
+        .getOpDebug()
+        ->additiveMetrics.writeConflicts = 3;
     CurOp::get(opCtx())->debug().additiveMetrics.writeConflicts = 3;
 
     auto additiveMetricsToCompare =
-        txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics;
+        txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics;
     additiveMetricsToCompare.add(CurOp::get(opCtx())->debug().additiveMetrics);
 
     txnParticipant->unstashTransactionResources(opCtx(), "insert");
@@ -2422,7 +2471,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponA
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
     txnParticipant->abortActiveTransaction(opCtx());
 
-    ASSERT(txnParticipant->getSingleTransactionStats().getOpDebug()->additiveMetrics.equals(
+    ASSERT(txnParticipant->getSingleTransactionStatsForTest().getOpDebug()->additiveMetrics.equals(
         additiveMetricsToCompare));
 }
 
@@ -2434,13 +2483,13 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndStash
 
     // Time inactive should have increased.
     tickSource->advance(Microseconds(100));
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
     // Time inactive should have increased again.
     tickSource->advance(Microseconds(100));
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{200});
 
@@ -2449,7 +2498,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndStash
     tickSource->advance(Microseconds(100));
 
     // The transaction is currently active, so time inactive should not have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{200});
 
@@ -2460,7 +2509,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndStash
     tickSource->advance(Microseconds(100));
 
     // The transaction is inactive again, so time inactive should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{300});
 }
@@ -2472,28 +2521,28 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldBeSetUponUnstashAndAbort
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time inactive should be greater than or equal to zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 
     tickSource->advance(Microseconds(100));
 
     // Time inactive should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
     txnParticipant->unstashTransactionResources(opCtx(), "insert");
     txnParticipant->abortArbitraryTransaction();
 
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
     tickSource->advance(Microseconds(100));
 
     // The transaction has aborted, so time inactive should not have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 }
@@ -2505,14 +2554,14 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldIncreaseUntilCommit) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
 
     // Time inactive should be greater than or equal to zero.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{0});
 
     tickSource->advance(Microseconds(100));
 
     // Time inactive should have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 
@@ -2524,7 +2573,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldIncreaseUntilCommit) {
     tickSource->advance(Microseconds(100));
 
     // The transaction has committed, so time inactive should not have increased.
-    ASSERT_EQ(txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(
+    ASSERT_EQ(txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
                   tickSource, tickSource->getTicks()),
               Microseconds{100});
 }
@@ -2715,8 +2764,8 @@ TEST_F(TransactionsMetricsTest, ReportUnstashedResourcesForARetryableWrite) {
     txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), boost::none, boost::none);
     txnParticipant->unstashTransactionResources(opCtx(), "find");
 
-    // Build a BSONObj containing the details which we expect to see reported when we call
-    // Session::reportUnstashedState. For a retryable write, we should only include the txnNumber.
+    // Build a BSONObj containing the details which we expect to see reported when we invoke
+    // reportUnstashedState. For a retryable write, we should only include the txnNumber.
     BSONObjBuilder reportBuilder;
     BSONObjBuilder transactionBuilder(reportBuilder.subobjStart("transaction"));
     BSONObjBuilder parametersBuilder(transactionBuilder.subobjStart("parameters"));
@@ -2765,7 +2814,7 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponStash) {
     txnParticipant->stashTransactionResources(opCtx());
 
     // LastClientInfo should have been set.
-    auto lastClientInfo = txnParticipant->getSingleTransactionStats().getLastClientInfo();
+    auto lastClientInfo = txnParticipant->getSingleTransactionStatsForTest().getLastClientInfo();
     ASSERT_EQ(lastClientInfo.clientHostAndPort, "");
     ASSERT_EQ(lastClientInfo.connectionId, 0);
     ASSERT_EQ(lastClientInfo.appName, "appName");
@@ -2781,7 +2830,7 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponStash) {
     txnParticipant->stashTransactionResources(opCtx());
 
     // LastClientInfo's clientMetadata should have been updated to the new ClientMetadata object.
-    lastClientInfo = txnParticipant->getSingleTransactionStats().getLastClientInfo();
+    lastClientInfo = txnParticipant->getSingleTransactionStatsForTest().getLastClientInfo();
     ASSERT_EQ(lastClientInfo.appName, "newAppName");
     ASSERT_BSONOBJ_EQ(lastClientInfo.clientMetadata, newObj.getField("client").Obj());
 }
@@ -2802,7 +2851,7 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponCommit) {
     txnParticipant->commitUnpreparedTransaction(opCtx());
 
     // LastClientInfo should have been set.
-    auto lastClientInfo = txnParticipant->getSingleTransactionStats().getLastClientInfo();
+    auto lastClientInfo = txnParticipant->getSingleTransactionStatsForTest().getLastClientInfo();
     ASSERT_EQ(lastClientInfo.clientHostAndPort, "");
     ASSERT_EQ(lastClientInfo.connectionId, 0);
     ASSERT_EQ(lastClientInfo.appName, "appName");
@@ -2824,7 +2873,7 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponAbort) {
     txnParticipant->abortActiveTransaction(opCtx());
 
     // LastClientInfo should have been set.
-    auto lastClientInfo = txnParticipant->getSingleTransactionStats().getLastClientInfo();
+    auto lastClientInfo = txnParticipant->getSingleTransactionStatsForTest().getLastClientInfo();
     ASSERT_EQ(lastClientInfo.clientHostAndPort, "");
     ASSERT_EQ(lastClientInfo.connectionId, 0);
     ASSERT_EQ(lastClientInfo.appName, "appName");
@@ -2854,11 +2903,13 @@ void setupAdditiveMetrics(const int metricValue, OperationContext* opCtx) {
 void buildParametersInfoString(StringBuilder* sb,
                                LogicalSessionId sessionId,
                                const TxnNumber txnNum,
-                               const repl::ReadConcernArgs readConcernArgs) {
+                               const repl::ReadConcernArgs readConcernArgs,
+                               bool autocommitVal) {
     BSONObjBuilder lsidBuilder;
     sessionId.serialize(&lsidBuilder);
+    auto autocommitString = autocommitVal ? "true" : "false";
     (*sb) << "parameters:{ lsid: " << lsidBuilder.done().toString() << ", txnNumber: " << txnNum
-          << ", autocommit: false"
+          << ", autocommit: " << autocommitString
           << ", readConcern: " << readConcernArgs.toBSON().getObjectField("readConcern") << " },";
 }
 
@@ -2884,14 +2935,14 @@ void buildTimeActiveInactiveString(StringBuilder* sb,
     // Add time active micros to string.
     (*sb) << " timeActiveMicros:"
           << durationCount<Microseconds>(
-                 txnParticipant->getSingleTransactionStats().getTimeActiveMicros(tickSource,
-                                                                                 curTick));
+                 txnParticipant->getSingleTransactionStatsForTest().getTimeActiveMicros(tickSource,
+                                                                                        curTick));
 
     // Add time inactive micros to string.
     (*sb) << " timeInactiveMicros:"
           << durationCount<Microseconds>(
-                 txnParticipant->getSingleTransactionStats().getTimeInactiveMicros(tickSource,
-                                                                                   curTick));
+                 txnParticipant->getSingleTransactionStatsForTest().getTimeInactiveMicros(
+                     tickSource, curTick));
 }
 
 /*
@@ -2903,8 +2954,8 @@ void buildPreparedDurationString(StringBuilder* sb,
                                  TickSource::Tick curTick) {
     (*sb) << " totalPreparedDurationMicros:"
           << durationCount<Microseconds>(
-                 txnParticipant->getSingleTransactionStats().getPreparedDuration(tickSource,
-                                                                                 curTick));
+                 txnParticipant->getSingleTransactionStatsForTest().getPreparedDuration(tickSource,
+                                                                                        curTick));
 }
 
 /*
@@ -2916,14 +2967,26 @@ std::string buildTransactionInfoString(OperationContext* opCtx,
                                        const LogicalSessionId sessionId,
                                        const TxnNumber txnNum,
                                        const int metricValue,
-                                       const bool wasPrepared) {
+                                       const bool wasPrepared,
+                                       bool autocommitVal = false) {
     // Calling transactionInfoForLog to get the actual transaction info string.
     const auto lockerInfo =
         opCtx->lockState()->getLockerInfo(CurOp::get(*opCtx)->getLockStatsBase());
     // Building expected transaction info string.
     StringBuilder parametersInfo;
+    // autocommit must be false for a multi statement transaction, so
+    // getTransactionInfoForLogForTest should theoretically always print false. In certain unit
+    // tests, we compare its output to the output generated in this function.
+    //
+    // Since we clear the state of a transaction on abort, if getTransactionInfoForLogForTest is
+    // called after a transaction is already aborted, it will encounter boost::none for the
+    // autocommit value. In that case, it will print out true.
+    //
+    // In cases where we call getTransactionInfoForLogForTest after aborting a transaction
+    // and check if the output matches this function's output, we must explicitly set autocommitVal
+    // to true.
     buildParametersInfoString(
-        &parametersInfo, sessionId, txnNum, repl::ReadConcernArgs::get(opCtx));
+        &parametersInfo, sessionId, txnNum, repl::ReadConcernArgs::get(opCtx), autocommitVal);
 
     StringBuilder readTimestampInfo;
     readTimestampInfo
@@ -2961,7 +3024,7 @@ std::string buildTransactionInfoString(OperationContext* opCtx,
                             << timeActiveAndInactiveInfo.str() << " numYields:" << 0
                             << " locks:" << locks.done().toString() << " "
                             << duration_cast<Milliseconds>(
-                                   txnParticipant->getSingleTransactionStats().getDuration(
+                                   txnParticipant->getSingleTransactionStatsForTest().getDuration(
                                        tickSource, tickSource->getTicks()))
                             << " wasPrepared:" << wasPrepared;
     if (wasPrepared) {
@@ -2997,7 +3060,7 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterCommit) {
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
     std::string testTransactionInfo =
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
+        txnParticipant->getTransactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
 
     std::string expectedTransactionInfo =
         buildTransactionInfoString(opCtx(),
@@ -3043,7 +3106,7 @@ TEST_F(TransactionsMetricsTest, TestPreparedTransactionInfoForLogAfterCommit) {
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
     std::string testTransactionInfo =
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
+        txnParticipant->getTransactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
 
     std::string expectedTransactionInfo =
         buildTransactionInfoString(opCtx(),
@@ -3081,7 +3144,7 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterAbort) {
     ASSERT(lockerInfo);
 
     std::string testTransactionInfo =
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
+        txnParticipant->getTransactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
 
     std::string expectedTransactionInfo =
         buildTransactionInfoString(opCtx(),
@@ -3090,7 +3153,8 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterAbort) {
                                    *opCtx()->getLogicalSessionId(),
                                    *opCtx()->getTxnNumber(),
                                    metricValue,
-                                   false);
+                                   false,
+                                   true);
 
     ASSERT_EQ(testTransactionInfo, expectedTransactionInfo);
 }
@@ -3124,7 +3188,7 @@ TEST_F(TransactionsMetricsTest, TestPreparedTransactionInfoForLogAfterAbort) {
     ASSERT(lockerInfo);
 
     std::string testTransactionInfo =
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
+        txnParticipant->getTransactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
 
     std::string expectedTransactionInfo =
         buildTransactionInfoString(opCtx(),
@@ -3133,6 +3197,7 @@ TEST_F(TransactionsMetricsTest, TestPreparedTransactionInfoForLogAfterAbort) {
                                    *opCtx()->getLogicalSessionId(),
                                    *opCtx()->getTxnNumber(),
                                    metricValue,
+                                   true,
                                    true);
 
     ASSERT_EQ(testTransactionInfo, expectedTransactionInfo);
@@ -3157,7 +3222,7 @@ DEATH_TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogWithNoLockerInfoS
     txnParticipant->unstashTransactionResources(opCtx(), "commitTransaction");
     txnParticipant->commitUnpreparedTransaction(opCtx());
 
-    txnParticipant->transactionInfoForLogForTest(nullptr, true, readConcernArgs);
+    txnParticipant->getTransactionInfoForLogForTest(nullptr, true, readConcernArgs);
 }
 
 TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowCommit) {
@@ -3191,7 +3256,7 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowCommit) {
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
     std::string expectedTransactionInfo = "transaction " +
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
+        txnParticipant->getTransactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
     ASSERT_EQUALS(1, countLogLinesContaining(expectedTransactionInfo));
 }
 
@@ -3229,7 +3294,7 @@ TEST_F(TransactionsMetricsTest, LogPreparedTransactionInfoAfterSlowCommit) {
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
     std::string expectedTransactionInfo = "transaction " +
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
+        txnParticipant->getTransactionInfoForLogForTest(&lockerInfo->stats, true, readConcernArgs);
     ASSERT_EQUALS(1, countLogLinesContaining(expectedTransactionInfo));
 }
 
@@ -3263,8 +3328,16 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowAbort) {
 
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
-    std::string expectedTransactionInfo = "transaction " +
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
+
+    std::string expectedTransactionInfo =
+        buildTransactionInfoString(opCtx(),
+                                   txnParticipant,
+                                   "aborted",
+                                   *opCtx()->getLogicalSessionId(),
+                                   *opCtx()->getTxnNumber(),
+                                   metricValue,
+                                   false);
+
     ASSERT_EQUALS(1, countLogLinesContaining(expectedTransactionInfo));
 }
 
@@ -3299,8 +3372,16 @@ TEST_F(TransactionsMetricsTest, LogPreparedTransactionInfoAfterSlowAbort) {
 
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
-    std::string expectedTransactionInfo = "transaction " +
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
+
+    std::string expectedTransactionInfo =
+        buildTransactionInfoString(opCtx(),
+                                   txnParticipant,
+                                   "aborted",
+                                   *opCtx()->getLogicalSessionId(),
+                                   *opCtx()->getTxnNumber(),
+                                   metricValue,
+                                   true);
+
     ASSERT_EQUALS(1, countLogLinesContaining(expectedTransactionInfo));
 }
 
@@ -3338,8 +3419,15 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterExceptionInPrepare) {
 
     const auto lockerInfo = opCtx()->lockState()->getLockerInfo(boost::none);
     ASSERT(lockerInfo);
-    std::string expectedTransactionInfo = "transaction " +
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
+    std::string expectedTransactionInfo =
+        buildTransactionInfoString(opCtx(),
+                                   txnParticipant,
+                                   "aborted",
+                                   *opCtx()->getLogicalSessionId(),
+                                   *opCtx()->getTxnNumber(),
+                                   metricValue,
+                                   false);
+
     ASSERT_EQUALS(1, countLogLinesContaining(expectedTransactionInfo));
 }
 
@@ -3378,8 +3466,7 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowStashedAbort) {
     txnParticipant->abortArbitraryTransaction();
     stopCapturingLogMessages();
 
-    std::string expectedTransactionInfo = "transaction " +
-        txnParticipant->transactionInfoForLogForTest(&lockerInfo->stats, false, readConcernArgs);
+    std::string expectedTransactionInfo = "transaction parameters";
     ASSERT_EQUALS(1, countLogLinesContaining(expectedTransactionInfo));
 }
 
@@ -3510,7 +3597,7 @@ TEST_F(TxnParticipantTest, ReturnNullTimestampIfNoOldestActiveTimestamp) {
     txnParticipant->abortActiveTransaction(opCtx());
     ASSERT(txnParticipant->transactionIsAborted());
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalActiveOpTimes(), 0U);
-    ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime(), boost::none);
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime());
 }
 
 TEST_F(TxnParticipantTest, ProperlyMaintainOldestNonMajorityCommittedOpTimeSet) {
@@ -3553,7 +3640,7 @@ TEST_F(TxnParticipantTest, ProperlyMaintainOldestNonMajorityCommittedOpTimeSet) 
     // oldestNonMajorityCommittedOpTimes along with the abort/commit oplog entry OpTime
     // associated with the transaction.
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalActiveOpTimes(), 0U);
-    ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime(), boost::none);
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime());
 
     nonMajorityCommittedOpTime =
         ServerTransactionsMetrics::get(opCtx())->getOldestNonMajorityCommittedOpTime();
@@ -3562,7 +3649,8 @@ TEST_F(TxnParticipantTest, ProperlyMaintainOldestNonMajorityCommittedOpTimeSet) 
     ASSERT_FALSE(nonMajorityCommittedOpTime == boost::none);
     ASSERT_FALSE(nonMajorityCommittedOpTimeFinishOpTime == boost::none);
     ASSERT_EQ(nonMajorityCommittedOpTime->getTimestamp(), prepareTimestamp);
-    ASSERT_EQ(nonMajorityCommittedOpTimeFinishOpTime, finishOpTime);
+    ASSERT(nonMajorityCommittedOpTimeFinishOpTime);
+    ASSERT_EQ(*nonMajorityCommittedOpTimeFinishOpTime, finishOpTime);
 
     // If we pass in a mock commit point that is greater than the finish timestamp of the
     // oldestNonMajorityCommittedOpTime, it should be removed from the set. This would mean that
@@ -3571,7 +3659,7 @@ TEST_F(TxnParticipantTest, ProperlyMaintainOldestNonMajorityCommittedOpTimeSet) 
         repl::OpTime::max());
     nonMajorityCommittedOpTime =
         ServerTransactionsMetrics::get(opCtx())->getOldestNonMajorityCommittedOpTime();
-    ASSERT_EQ(nonMajorityCommittedOpTime, boost::none);
+    ASSERT_FALSE(nonMajorityCommittedOpTime);
 }
 
 TEST_F(TxnParticipantTest, GetOldestNonMajorityCommittedOpTimeReturnsOldestEntry) {
@@ -3605,7 +3693,7 @@ TEST_F(TxnParticipantTest, GetOldestNonMajorityCommittedOpTimeReturnsOldestEntry
         repl::OpTime::max());
     nonMajorityCommittedOpTime =
         ServerTransactionsMetrics::get(opCtx())->getOldestNonMajorityCommittedOpTime();
-    ASSERT_EQ(nonMajorityCommittedOpTime, boost::none);
+    ASSERT_FALSE(nonMajorityCommittedOpTime);
 
     // Test that we can remove only a part of the set by passing in a commit point that is only
     // greater than or equal to two of the optimes.
@@ -3630,7 +3718,69 @@ TEST_F(TxnParticipantTest, GetOldestNonMajorityCommittedOpTimeReturnsOldestEntry
 
     // earlierOpTime and middleOpTime must have been removed because their finishOpTime are less
     // than or equal to the mock commit point.
-    ASSERT_EQ(nonMajorityCommittedOpTime, laterOpTime);
+    ASSERT(nonMajorityCommittedOpTime);
+    ASSERT_EQ(*nonMajorityCommittedOpTime, laterOpTime);
+}
+
+TEST_F(TxnParticipantTest, RollbackResetsInMemoryStateOfPreparedTransaction) {
+    auto sessionCheckout = checkOutSession();
+
+    repl::ReadConcernArgs readConcernArgs;
+    ASSERT_OK(readConcernArgs.initialize(BSON("find"
+                                              << "test"
+                                              << repl::ReadConcernArgs::kReadConcernFieldName
+                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                      << "snapshot"))));
+    repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
+
+    auto txnParticipant = TransactionParticipant::get(opCtx());
+
+    // Check that our metrics are initialized to their default values.
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime());
+    ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalActiveOpTimes(), 0U);
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestNonMajorityCommittedOpTime());
+
+    // Perform an insert as a part of a transaction so that we have a transaction operation.
+    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
+    txnParticipant->addTransactionOperation(opCtx(), operation);
+    ASSERT_BSONOBJ_EQ(operation.toBSON(),
+                      txnParticipant->getTransactionOperationsForTest()[0].toBSON());
+
+    auto prepareTimestamp = txnParticipant->prepareTransaction(opCtx(), {});
+
+    // Check that we added a Timestamp to oldestActiveOplogEntryOpTimes.
+    ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalActiveOpTimes(), 1U);
+
+    // Check that the oldest active timestamp and the oldest non majority committed timestamp are
+    // equal to the prepareTimestamp because there is only one prepared transaction.
+    auto oldestActiveOpTime = ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime();
+    auto oldestNonMajorityCommittedOpTime =
+        ServerTransactionsMetrics::get(opCtx())->getOldestNonMajorityCommittedOpTime();
+    ASSERT_EQ(oldestActiveOpTime->getTimestamp(), prepareTimestamp);
+    ASSERT_EQ(oldestNonMajorityCommittedOpTime->getTimestamp(), prepareTimestamp);
+    ASSERT_FALSE(txnParticipant->transactionIsAborted());
+
+    // Make sure the state of txnParticipant is populated correctly after a prepared transaction.
+    ASSERT(txnParticipant->transactionIsPrepared());
+    ASSERT_EQ(txnParticipant->getTransactionOperationsForTest().size(), 1U);
+    ASSERT_EQ(txnParticipant->getPrepareOpTime().getTimestamp(), prepareTimestamp);
+    ASSERT_NE(txnParticipant->getActiveTxnNumber(), kUninitializedTxnNumber);
+
+    txnParticipant->abortPreparedTransactionForRollback();
+    ServerTransactionsMetrics::get(opCtx())->clearOpTimes();
+
+    // After calling abortPreparedTransactionForRollback, the state of txnParticipant should be
+    // invalidated.
+    ASSERT_FALSE(txnParticipant->transactionIsPrepared());
+    ASSERT_EQ(txnParticipant->getTransactionOperationsForTest().size(), 0U);
+    ASSERT_EQ(txnParticipant->getPrepareOpTime().getTimestamp(), Timestamp());
+    ASSERT_EQ(txnParticipant->getActiveTxnNumber(), kUninitializedTxnNumber);
+
+    // After calling clearOpTimes, we should no longer have an oldestActiveOpTime.
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestActiveOpTime());
+    ASSERT_FALSE(ServerTransactionsMetrics::get(opCtx())->getOldestNonMajorityCommittedOpTime());
+    ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalActiveOpTimes(), 0U);
 }
 
 class RecoverDecisionFromLocalParticipantTest : public TxnParticipantTest {

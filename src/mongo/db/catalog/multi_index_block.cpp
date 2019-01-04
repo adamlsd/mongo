@@ -39,6 +39,7 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/multi_index_block_gen.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
@@ -72,38 +73,11 @@ const StringData kCommitReadyMembersFieldName = "commitReadyMembers"_sd;
 
 }  // namespace
 
-MONGO_EXPORT_SERVER_PARAMETER(useReadOnceCursorsForIndexBuilds, bool, true);
-
 MONGO_FAIL_POINT_DEFINE(crashAfterStartingIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuildUnlocked);
-MONGO_FAIL_POINT_DEFINE(slowBackgroundIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangBeforeIndexBuildOf);
 MONGO_FAIL_POINT_DEFINE(hangAfterIndexBuildOf);
-
-AtomicInt32 maxIndexBuildMemoryUsageMegabytes(500);
-
-class ExportedMaxIndexBuildMemoryUsageParameter
-    : public ExportedServerParameter<std::int32_t, ServerParameterType::kStartupAndRuntime> {
-public:
-    ExportedMaxIndexBuildMemoryUsageParameter()
-        : ExportedServerParameter<std::int32_t, ServerParameterType::kStartupAndRuntime>(
-              ServerParameterSet::getGlobal(),
-              "maxIndexBuildMemoryUsageMegabytes",
-              &maxIndexBuildMemoryUsageMegabytes) {}
-
-    virtual Status validate(const std::int32_t& potentialNewValue) {
-        if (potentialNewValue < 100) {
-            return Status(
-                ErrorCodes::BadValue,
-                "maxIndexBuildMemoryUsageMegabytes must be greater than or equal to 100 MB");
-        }
-
-        return Status::OK();
-    }
-
-} exportedMaxIndexBuildMemoryUsageParameter;
-
 
 MultiIndexBlock::MultiIndexBlock(OperationContext* opCtx, Collection* collection)
     : _collection(collection), _opCtx(opCtx) {}
@@ -168,18 +142,6 @@ void MultiIndexBlock::allowInterruption() {
 
 void MultiIndexBlock::ignoreUniqueConstraint() {
     _ignoreUnique = true;
-}
-
-void MultiIndexBlock::removeExistingIndexes(std::vector<BSONObj>* specs) const {
-    for (size_t i = 0; i < specs->size(); i++) {
-        Status status =
-            _collection->getIndexCatalog()->prepareSpecForCreate(_opCtx, (*specs)[i]).getStatus();
-        if (status.code() == ErrorCodes::IndexAlreadyExists) {
-            specs->erase(specs->begin() + i);
-            i--;
-        }
-        // intentionally ignoring other error codes
-    }
 }
 
 StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const BSONObj& spec) {
@@ -271,15 +233,18 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
 
         _collection->getIndexCatalog()->prepareInsertDeleteOptions(
             _opCtx, descriptor, &index.options);
-        index.options.dupsAllowed = index.options.dupsAllowed || _ignoreUnique;
-        index.options.fromIndexBuilder = true;
+        // Allow duplicates when explicitly allowed or an interceptor is installed, which will
+        // perform duplicate checking itself.
+        index.options.dupsAllowed = index.options.dupsAllowed || _ignoreUnique ||
+            index.block->getEntry()->indexBuildInterceptor();
         if (_ignoreUnique) {
             index.options.getKeysMode = IndexAccessMethod::GetKeysMode::kRelaxConstraints;
         }
+        index.options.fromIndexBuilder = true;
 
-        log() << "build index on: " << ns << " properties: " << descriptor->toString();
+        log() << "index build: starting on " << ns << " properties: " << descriptor->toString();
         if (index.bulk)
-            log() << "\t building index using bulk method; build may temporarily use up to "
+            log() << "build may temporarily use up to "
                   << eachIndexBuildMaxMemoryUsageBytes / 1024 / 1024 << " megabytes of RAM";
 
         index.filterExpression = index.block->getEntry()->getFilterExpression();
@@ -343,12 +308,13 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
     }
     MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo();
 
-    const char* curopMessage = _buildInBackground ? "Index Build (background)" : "Index Build";
+    const char* curopMessage = "Index Build: scanning collection";
     const auto numRecords = _collection->numRecords(_opCtx);
-    stdx::unique_lock<Client> lk(*_opCtx->getClient());
-    ProgressMeterHolder progress(
-        CurOp::get(_opCtx)->setMessage_inlock(curopMessage, curopMessage, numRecords));
-    lk.unlock();
+    ProgressMeterHolder progress;
+    {
+        stdx::unique_lock<Client> lk(*_opCtx->getClient());
+        progress.set(CurOp::get(_opCtx)->setProgress_inlock(curopMessage, numRecords));
+    }
 
     Timer t;
 
@@ -384,18 +350,14 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
             if (_allowInterruption && !_opCtx->checkForInterruptNoAssert().isOK())
                 return _opCtx->checkForInterruptNoAssert();
 
-            if (!(retries || PlanExecutor::ADVANCED == state) ||
-                MONGO_FAIL_POINT(slowBackgroundIndexBuild)) {
-                log() << "Hanging index build due to failpoint";
-                invariant(_allowInterruption);
-                sleepmillis(1000);
+            if (!retries && PlanExecutor::ADVANCED != state) {
                 continue;
             }
 
             // Make sure we are working with the latest version of the document.
             if (objToIndex.snapshotId() != _opCtx->recoveryUnit()->getSnapshotId() &&
                 !_collection->findDoc(_opCtx, loc, &objToIndex)) {
-                // doc was deleted so don't index it.
+                // Document was deleted so don't index it.
                 retries = 0;
                 continue;
             }
@@ -473,19 +435,17 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
 
     progress->finished();
 
+    log() << "index build: collection scan done. scanned " << n << " total records in "
+          << t.seconds() << " secs";
+
     Status ret = dumpInsertsFromBulk();
     if (!ret.isOK())
         return ret;
 
-    log() << "build index collection scan done.  scanned " << n << " total records. " << t.seconds()
-          << " secs";
-
     return Status::OK();
 }
 
-Status MultiIndexBlock::insert(const BSONObj& doc,
-                               const RecordId& loc,
-                               std::vector<BSONObj>* const dupKeysInserted) {
+Status MultiIndexBlock::insert(const BSONObj& doc, const RecordId& loc) {
     if (State::kAborted == _getState()) {
         return {ErrorCodes::IndexBuildAborted,
                 str::stream() << "Index build aborted: " << _abortReason
@@ -512,29 +472,15 @@ Status MultiIndexBlock::insert(const BSONObj& doc,
 
         if (!idxStatus.isOK())
             return idxStatus;
-
-        if (dupKeysInserted) {
-            dupKeysInserted->insert(
-                dupKeysInserted->end(), result.dupsInserted.begin(), result.dupsInserted.end());
-        }
     }
     return Status::OK();
 }
 
 Status MultiIndexBlock::dumpInsertsFromBulk() {
-    return _dumpInsertsFromBulk(nullptr, nullptr);
+    return dumpInsertsFromBulk(nullptr);
 }
 
 Status MultiIndexBlock::dumpInsertsFromBulk(std::set<RecordId>* dupRecords) {
-    return _dumpInsertsFromBulk(dupRecords, nullptr);
-}
-
-Status MultiIndexBlock::dumpInsertsFromBulk(std::vector<BSONObj>* dupKeysInserted) {
-    return _dumpInsertsFromBulk(nullptr, dupKeysInserted);
-}
-
-Status MultiIndexBlock::_dumpInsertsFromBulk(std::set<RecordId>* dupRecords,
-                                             std::vector<BSONObj>* dupKeysInserted) {
     if (State::kAborted == _getState()) {
         return {ErrorCodes::IndexBuildAborted,
                 str::stream() << "Index build aborted: " << _abortReason
@@ -549,16 +495,37 @@ Status MultiIndexBlock::_dumpInsertsFromBulk(std::set<RecordId>* dupRecords,
     for (size_t i = 0; i < _indexes.size(); i++) {
         if (_indexes[i].bulk == NULL)
             continue;
-        LOG(1) << "\t dumping from external sorter into index: "
-               << _indexes[i].block->getEntry()->descriptor()->indexName();
+
+        // If 'dupRecords' is provided, it will be used to store all records that would result in
+        // duplicate key errors. Only pass 'dupKeysInserted', which stores inserted duplicate keys,
+        // when 'dupRecords' is not used because these two vectors are mutually incompatible.
+        std::vector<BSONObj> dupKeysInserted;
+
+        IndexCatalogEntry* entry = _indexes[i].block->getEntry();
+        LOG(1) << "index build: inserting from external sorter into index: "
+               << entry->descriptor()->indexName();
         Status status = _indexes[i].real->commitBulk(_opCtx,
                                                      _indexes[i].bulk.get(),
                                                      _allowInterruption,
                                                      _indexes[i].options.dupsAllowed,
                                                      dupRecords,
-                                                     dupKeysInserted);
+                                                     (dupRecords) ? nullptr : &dupKeysInserted);
         if (!status.isOK()) {
             return status;
+        }
+
+        // Do not record duplicates when explicitly ignored. This may be the case on secondaries.
+        auto interceptor = entry->indexBuildInterceptor();
+        if (!interceptor || _ignoreUnique) {
+            continue;
+        }
+
+        // Record duplicate key insertions for later verification.
+        if (dupKeysInserted.size()) {
+            status = interceptor->recordDuplicateKeys(_opCtx, dupKeysInserted);
+            if (!status.isOK()) {
+                return status;
+            }
         }
     }
 
@@ -588,13 +555,7 @@ Status MultiIndexBlock::drainBackgroundWritesIfNeeded() {
         if (!interceptor)
             continue;
 
-        LOG(1) << "draining background writes on collection " << _collection->ns()
-               << " into index: " << _indexes[i].block->getEntry()->descriptor()->indexName();
-
-        auto status = interceptor->drainWritesIntoIndex(_opCtx,
-                                                        _indexes[i].real,
-                                                        _indexes[i].block->getEntry()->descriptor(),
-                                                        _indexes[i].options);
+        auto status = interceptor->drainWritesIntoIndex(_opCtx, _indexes[i].options);
         if (!status.isOK()) {
             return status;
         }
@@ -602,6 +563,33 @@ Status MultiIndexBlock::drainBackgroundWritesIfNeeded() {
     return Status::OK();
 }
 
+
+Status MultiIndexBlock::checkConstraints() {
+    if (State::kAborted == _getState()) {
+        return {ErrorCodes::IndexBuildAborted,
+                str::stream() << "Index build aborted: " << _abortReason
+                              << ". Cannot complete constraint checking: "
+                              << _collection->ns().ns()
+                              << "("
+                              << *_collection->uuid()
+                              << ")"};
+    }
+
+    // For each index that may be unique, check that no recorded duplicates still exist. This can
+    // only check what is visible on the index. Callers are responsible for ensuring all writes to
+    // the collection are visible.
+    for (size_t i = 0; i < _indexes.size(); i++) {
+        auto interceptor = _indexes[i].block->getEntry()->indexBuildInterceptor();
+        if (!interceptor)
+            continue;
+
+        auto status = interceptor->checkDuplicateKeyConstraints(_opCtx);
+        if (!status.isOK()) {
+            return status;
+        }
+    }
+    return Status::OK();
+}
 
 void MultiIndexBlock::abortWithoutCleanup() {
     _setStateToAbortedIfNotCommitted("aborted without cleanup"_sd);

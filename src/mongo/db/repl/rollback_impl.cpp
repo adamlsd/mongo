@@ -41,6 +41,7 @@
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/apply_ops.h"
@@ -54,6 +55,7 @@
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/server_recovery.h"
+#include "mongo/db/server_transactions_metrics.h"
 #include "mongo/s/catalog/type_config_version.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -205,6 +207,14 @@ Status RollbackImpl::runRollback(OperationContext* opCtx) {
     } else {
         log() << "Not writing rollback files. 'createRollbackDataFiles' set to false.";
     }
+
+    // Before calling recoverToStableTimestamp, we must abort the storage transaction of any
+    // prepared transaction. This will require us to scan all sessions and call
+    // abortPreparedTransactionForRollback() on any txnParticipant with a prepared transaction.
+    killSessionsAbortAllPreparedTransactions(opCtx);
+
+    // Clear the in memory state of prepared transactions in ServerTransactionsMetrics.
+    ServerTransactionsMetrics::get(getGlobalServiceContext())->clearOpTimes();
 
     // Recover to the stable timestamp.
     auto stableTimestampSW = _recoverToStableTimestamp(opCtx);
@@ -469,6 +479,7 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
         return Status(ErrorCodes::ShutdownInProgress, "rollback shutting down");
     }
     const auto& uuidCatalog = UUIDCatalog::get(opCtx);
+    auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
 
     log() << "finding record store counts";
     for (const auto& uiCount : _countDiffs) {
@@ -479,6 +490,16 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
         }
 
         const auto nss = uuidCatalog.lookupNSSByUUID(uuid);
+
+        // Drop-pending collections are not visible to rollback via the catalog when they are
+        // managed by the storage engine. See StorageEngine::supportsPendingDrops().
+        // TODO(SERVER-38548): The collection count is fixed as we rebuild the _id index coming out
+        // of rollback in catalog::openCatalog(). When idents for index drops are managed by the
+        // storage engine, we cannot depend on index rebuilds to fix the collection counts.
+        if (nss.isEmpty() && storageEngine->supportsPendingDrops()) {
+            continue;
+        }
+
         invariant(!nss.isEmpty(),
                   str::stream() << "The collection with UUID " << uuid
                                 << " is unexpectedly missing in the UUIDCatalog");
@@ -774,9 +795,21 @@ boost::optional<BSONObj> RollbackImpl::_findDocumentById(OperationContext* opCtx
 
 Status RollbackImpl::_writeRollbackFiles(OperationContext* opCtx) {
     const auto& uuidCatalog = UUIDCatalog::get(opCtx);
+    auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
     for (auto&& entry : _observerInfo.rollbackDeletedIdsMap) {
         const auto& uuid = entry.first;
         const auto nss = uuidCatalog.lookupNSSByUUID(uuid);
+
+        // Drop-pending collections are not visible to rollback via the catalog when they are
+        // managed by the storage engine. See StorageEngine::supportsPendingDrops().
+        if (nss.isEmpty() && storageEngine->supportsPendingDrops()) {
+            log() << "The collection with UUID " << uuid
+                  << " is missing in the UUIDCatalog. This could be due to a dropped collection. "
+                     "Not writing rollback file for namespace "
+                  << nss.ns() << " with uuid " << uuid;
+            continue;
+        }
+
         invariant(!nss.isEmpty(),
                   str::stream() << "The collection with UUID " << uuid
                                 << " is unexpectedly missing in the UUIDCatalog");
@@ -891,13 +924,22 @@ void RollbackImpl::_transitionFromRollbackToSecondary(OperationContext* opCtx) {
 }
 
 void RollbackImpl::_resetDropPendingState(OperationContext* opCtx) {
+    // TODO(SERVER-38671): Remove this line when drop-pending idents are always supported with this
+    // rolback method. Until then, we should assume that pending drops can be handled by either the
+    // replication subsystem or the storage engine.
     DropPendingCollectionReaper::get(opCtx)->clearDropPendingState();
 
+    // After recovering to a timestamp, the list of drop-pending idents maintained by the storage
+    // engine is no longer accurate and needs to be cleared.
+    auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
+    storageEngine->clearDropPendingState();
+
     std::vector<std::string> dbNames;
-    opCtx->getServiceContext()->getStorageEngine()->listDatabases(&dbNames);
+    storageEngine->listDatabases(&dbNames);
+    auto databaseHolder = DatabaseHolder::get(opCtx);
     for (const auto& dbName : dbNames) {
         Lock::DBLock dbLock(opCtx, dbName, MODE_X);
-        Database* db = DatabaseHolder::getDatabaseHolder().openDb(opCtx, dbName);
+        auto db = databaseHolder->openDb(opCtx, dbName);
         db->checkForIdIndexesAndDropPendingCollections(opCtx);
     }
 }

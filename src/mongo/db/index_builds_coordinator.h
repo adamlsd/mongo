@@ -92,10 +92,10 @@ public:
      *
      * Returns an error status if there are any errors setting up the index build.
      */
-    virtual StatusWith<Future<void>> buildIndex(OperationContext* opCtx,
-                                                const NamespaceString& nss,
-                                                const std::vector<BSONObj>& specs,
-                                                const UUID& buildUUID) = 0;
+    virtual StatusWith<SharedSemiFuture<void>> buildIndex(OperationContext* opCtx,
+                                                          const NamespaceString& nss,
+                                                          const std::vector<BSONObj>& specs,
+                                                          const UUID& buildUUID) = 0;
 
     /**
      * TODO: not yet implemented.
@@ -192,8 +192,8 @@ public:
      * the collection UUID.)
      */
     virtual Status setCommitQuorum(const NamespaceString& nss,
-                                   const std::vector<std::string>& indexNames,
-                                   const BSONObj& newCommitQuorum) = 0;
+                                   const std::vector<StringData>& indexNames,
+                                   const WriteConcernOptions& newCommitQuorum) = 0;
 
     /**
      * TODO: This is not yet implemented.

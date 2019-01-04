@@ -217,6 +217,7 @@
         drop: {command: {drop: "view"}},
         dropAllRolesFromDatabase: {skip: isUnrelated},
         dropAllUsersFromDatabase: {skip: isUnrelated},
+        dropConnections: {skip: isUnrelated},
         dropDatabase: {command: {dropDatabase: 1}},
         dropIndexes: {command: {dropIndexes: "view"}, expectFailure: true},
         dropRole: {
@@ -464,6 +465,7 @@
         saslContinue: {skip: isUnrelated},
         saslStart: {skip: isUnrelated},
         serverStatus: {command: {serverStatus: 1}, skip: isUnrelated},
+        setIndexCommitQuorum: {skip: isUnrelated},
         setCommittedSnapshot: {skip: isAnInternalCommand},
         setFeatureCompatibilityVersion: {skip: isUnrelated},
         setFreeMonitoring: {skip: isUnrelated},
@@ -517,6 +519,10 @@
         top: {skip: "tested in views/views_stats.js"},
         touch: {
             command: {touch: "view", data: true},
+            expectFailure: true,
+        },
+        twoPhaseCreateIndexes: {
+            command: {twoPhaseCreateIndexes: "view", indexes: [{key: {x: 1}, name: "x_1"}]},
             expectFailure: true,
         },
         unsetSharding: {skip: isAnInternalCommand},

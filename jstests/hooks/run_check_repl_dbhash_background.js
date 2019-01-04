@@ -136,14 +136,33 @@
             // doesn't exceed the node's notion of the latest clusterTime.
             session.advanceClusterTime(sessions[0].getClusterTime());
 
-            // We do an afterClusterTime read on a nonexistent collection to wait for the secondary
-            // to have applied up to 'clusterTime' and advanced its majority commit point.
-            assert.commandWorked(db.runCommand({
-                find: 'run_check_repl_dbhash_background',
-                readConcern: {level: 'majority', afterClusterTime: clusterTime},
-                limit: 1,
-                singleBatch: true,
-            }));
+            // We need to make sure the secondary has applied up to 'clusterTime' and advanced its
+            // majority commit point.
+
+            if (jsTest.options().enableMajorityReadConcern !== false) {
+                // If majority reads are supported, we can issue an afterClusterTime read on
+                // a nonexistent collection and wait on it. This has the advantage of being easier
+                // to debug in case of a timeout.
+                assert.commandWorked(db.runCommand({
+                    find: 'run_check_repl_dbhash_background',
+                    readConcern: {level: 'majority', afterClusterTime: clusterTime},
+                    limit: 1,
+                    singleBatch: true,
+                }));
+            } else {
+                // If majority reads are not supported, then our only option is to poll for the
+                // lastOpCommitted on the secondary to catch up.
+                assert.soon(
+                    function() {
+                        const rsStatus =
+                            assert.commandWorked(db.adminCommand({replSetGetStatus: 1}));
+                        const committedOpTime = rsStatus.optimes.lastCommittedOpTime;
+                        return bsonWoCompare(committedOpTime.ts, clusterTime) >= 0;
+                    },
+                    "The majority commit point on secondary " + i + " failed to reach " +
+                        clusterTime,
+                    10 * 60 * 1000);
+            }
         }
     };
 
@@ -216,10 +235,34 @@
     };
 
     for (let dbName of dbNames) {
+        let result;
+        let clusterTime;
         let hasTransientError;
 
+        // The isTransientError() function is responsible for setting hasTransientError to true.
+        const isTransientError = (e) => {
+            // It is possible for the ReplSetTest#getHashesUsingSessions() function to be
+            // interrupted due to active sessions being killed by a test running concurrently. We
+            // treat this as a transient error and simply retry running the dbHash check.
+            //
+            // Note that unlike auto_retry_transaction.js, we do not treat CursorKilled or
+            // CursorNotFound error responses as transient errors because the
+            // run_check_repl_dbhash_background.js hook would only establish a cursor via
+            // ReplSetTest#getCollectionDiffUsingSessions() upon detecting a dbHash mismatch. It is
+            // presumed to still useful to know that a bug exists even if we cannot get more
+            // diagnostics for it.
+            if ((e.hasOwnProperty('errorLabels') &&
+                 e.errorLabels.includes('TransientTransactionError')) ||
+                e.code === ErrorCodes.Interrupted) {
+                hasTransientError = true;
+                return true;
+            }
+
+            return false;
+        };
+
         do {
-            const clusterTime = sessions[0].getOperationTime();
+            clusterTime = sessions[0].getOperationTime();
             waitForSecondaries(clusterTime);
 
             for (let session of sessions) {
@@ -227,44 +270,43 @@
                     {readConcern: {level: 'snapshot', atClusterTime: clusterTime}});
             }
 
-            let commitErrorSessionId = undefined;
             hasTransientError = false;
 
             try {
-                const result = checkCollectionHashesForDB(dbName);
-
-                for (let session of sessions) {
-                    // commitTransaction() calls assert.commandWorked(), which may fail with a
-                    // WriteConflict error response, which is ignored.
-                    try {
-                        session.commitTransaction();
-                    } catch (e) {
-                        commitErrorSessionId = session.getSessionId();
-                        throw e;
-                    }
-                }
-
-                for (let mismatchInfo of result) {
-                    mismatchInfo.atClusterTime = clusterTime;
-                    results.push(mismatchInfo);
-                }
+                result = checkCollectionHashesForDB(dbName);
             } catch (e) {
+                // We abort each of the transactions started on the nodes if one of them returns an
+                // error while running the dbHash check.
                 for (let session of sessions) {
-                    if ((commitErrorSessionId === undefined) ||
-                        bsonWoCompare(session.getSessionId(), commitErrorSessionId) !== 0) {
-                        session.abortTransaction_forTesting();
-                    }
+                    session.abortTransaction_forTesting();
                 }
 
-                if (e.hasOwnProperty('errorLabels') &&
-                    e.errorLabels.includes('TransientTransactionError')) {
-                    hasTransientError = true;
+                if (isTransientError(e)) {
                     continue;
                 }
 
                 throw e;
             }
+
+            // We then attempt to commit each of the transactions started on the nodes to confirm
+            // the data we read was actually majority-committed. If one of them returns an error,
+            // then we still try to commit the transactions started on subsequent nodes in order to
+            // clear their transaction state.
+            for (let session of sessions) {
+                try {
+                    session.commitTransaction();
+                } catch (e) {
+                    if (!isTransientError(e)) {
+                        throw e;
+                    }
+                }
+            }
         } while (hasTransientError);
+
+        for (let mismatchInfo of result) {
+            mismatchInfo.atClusterTime = clusterTime;
+            results.push(mismatchInfo);
+        }
     }
 
     for (let resetFn of resetFns) {

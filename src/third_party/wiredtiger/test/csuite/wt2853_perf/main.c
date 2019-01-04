@@ -82,10 +82,6 @@ main(int argc, char *argv[])
 	int i, nfail;
 	const char *tablename;
 
-	/* Ignore unless requested */
-	if (!testutil_is_flag_set("TESTUTIL_ENABLE_LONG_TESTS"))
-		return (EXIT_SUCCESS);
-
 	opts = &_opts;
 	sharedopts = &_sharedopts;
 	memset(opts, 0, sizeof(*opts));
@@ -190,10 +186,7 @@ main(int argc, char *argv[])
 
 	testutil_assert(nfail == 0);
 	testutil_progress(opts, "cleanup starting");
-#if 0
 	testutil_cleanup(opts);
-#endif
-
 	return (0);
 }
 

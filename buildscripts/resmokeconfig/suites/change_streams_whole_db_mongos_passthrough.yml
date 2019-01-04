@@ -13,6 +13,9 @@ selector:
   - jstests/change_streams/include_cluster_time.js
   # Only relevant for single-collection change streams.
   - jstests/change_streams/metadata_notifications.js
+  # TODO SERVER-38411: un-blacklist when mongoS can return postBatchResumeToken.
+  - jstests/change_streams/report_post_batch_resume_token.js
+  - jstests/change_streams/shell_helper_resume_token.js
   exclude_with_any_tags:
   ##
   # The next tags correspond to the special errors thrown by the
@@ -36,10 +39,13 @@ executor:
         TestData:
           defaultReadConcernLevel: null
           enableMajorityReadConcern: ''
+      # Enable causal consistency for change streams suites using 1 node replica sets. See
+      # change_streams.yml for detailed explanation.
       eval: >-
         var testingReplication = true;
         load('jstests/libs/override_methods/set_read_and_write_concerns.js');
         load('jstests/libs/override_methods/implicit_whole_db_changestreams.js');
+        load('jstests/libs/override_methods/enable_causal_consistency_without_read_pref.js');
       readMode: commands
   hooks:
   - class: CheckReplDBHash

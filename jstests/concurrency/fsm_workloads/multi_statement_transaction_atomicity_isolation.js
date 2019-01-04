@@ -39,7 +39,7 @@
  *       (tid, txnNumber) for the thread with threadId == tid. This indicates that there are writes
  *       that exist in the database that were not committed.
  *
- * @tags: [uses_transactions]
+ * @tags: [uses_transactions, assumes_snapshot_transactions]
  */
 
 // for Graph
@@ -170,7 +170,14 @@ var $config = (function() {
             }
         }
 
-        assertWhenOwnColl.eq(allDocuments.length, numDocs * this.collections.length);
+        assertWhenOwnColl.eq(allDocuments.length, numDocs * this.collections.length, () => {
+            if (this.session) {
+                return "txnNumber: " + tojson(this.session.getTxnNumber_forTesting()) +
+                    ", session id: " + tojson(this.session.getSessionId()) + ", all documents: " +
+                    tojson(allDocuments);
+            }
+            return "all documents: " + tojson(allDocuments);
+        });
 
         return allDocuments;
     }

@@ -40,9 +40,9 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
-#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
@@ -633,46 +633,45 @@ void MigrationDestinationManager::cloneCollectionIndexesAndOptions(OperationCont
             uassertStatusOK(collectionOptions.parse(donorOptions,
                                                     CollectionOptions::ParseKind::parseForStorage));
             const bool createDefaultIndexes = true;
-            uassertStatusOK(Database::userCreateNS(
-                opCtx, db, nss.ns(), collectionOptions, createDefaultIndexes, donorIdIndexSpec));
+            uassertStatusOK(db->userCreateNS(
+                opCtx, nss, collectionOptions, createDefaultIndexes, donorIdIndexSpec));
             wuow.commit();
 
             collection = db->getCollection(opCtx, nss);
         }
 
-        MultiIndexBlock indexer(opCtx, collection);
-        indexer.removeExistingIndexes(&donorIndexSpecs);
 
-        if (!donorIndexSpecs.empty()) {
-            // Only copy indexes if the collection does not have any documents.
-            uassert(ErrorCodes::CannotCreateCollection,
-                    str::stream() << "aborting, shard is missing " << donorIndexSpecs.size()
-                                  << " indexes and "
-                                  << "collection is not empty. Non-trivial "
-                                  << "index creation should be scheduled manually",
-                    collection->numRecords(opCtx) == 0);
-
-            auto indexInfoObjs = indexer.init(donorIndexSpecs);
-            uassert(ErrorCodes::CannotCreateIndex,
-                    str::stream() << "failed to create index before migrating data. "
-                                  << " error: "
-                                  << redact(indexInfoObjs.getStatus()),
-                    indexInfoObjs.isOK());
-
-            WriteUnitOfWork wunit(opCtx);
-            uassertStatusOK(indexer.commit());
-
-            for (auto&& infoObj : indexInfoObjs.getValue()) {
-                // make sure to create index on secondaries as well
-                serviceContext->getOpObserver()->onCreateIndex(opCtx,
-                                                               collection->ns(),
-                                                               *(collection->uuid()),
-                                                               infoObj,
-                                                               true /* fromMigrate */);
-            }
-
-            wunit.commit();
+        auto indexCatalog = collection->getIndexCatalog();
+        auto indexSpecs = indexCatalog->removeExistingIndexes(opCtx, donorIndexSpecs);
+        if (indexSpecs.empty()) {
+            return;
         }
+
+        // Only copy indexes if the collection does not have any documents.
+        uassert(ErrorCodes::CannotCreateCollection,
+                str::stream() << "aborting, shard is missing " << indexSpecs.size()
+                              << " indexes and "
+                              << "collection is not empty. Non-trivial "
+                              << "index creation should be scheduled manually",
+                collection->numRecords(opCtx) == 0);
+
+        WriteUnitOfWork wunit(opCtx);
+
+        for (const auto& spec : indexSpecs) {
+            // Make sure to create index on secondaries as well. Oplog entry must be written before
+            // the index is added to the index catalog for correct rollback operation.
+            // See SERVER-35780 and SERVER-35070.
+            serviceContext->getOpObserver()->onCreateIndex(
+                opCtx, collection->ns(), *(collection->uuid()), spec, true /* fromMigrate */);
+
+            // Since the collection is empty, we can add and commit the index catalog entry within
+            // a single WUOW.
+            uassertStatusOKWithContext(
+                indexCatalog->createIndexOnEmptyCollection(opCtx, spec),
+                str::stream() << "failed to create index before migrating data: " << redact(spec));
+        }
+
+        wunit.commit();
     }
 }
 
@@ -861,7 +860,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx) {
                                       ReadPreferenceSetting(ReadPreference::PrimaryOnly),
                                       "admin",
                                       migrateCloneRequest,
-                                      Shard::RetryPolicy::kIdempotent),
+                                      Shard::RetryPolicy::kNoRetry),
                 "_migrateClone failed: ");
 
             uassertStatusOKWithContext(Shard::CommandResponse::getEffectiveStatus(res),
@@ -898,7 +897,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx) {
                                       ReadPreferenceSetting(ReadPreference::PrimaryOnly),
                                       "admin",
                                       xferModsRequest,
-                                      Shard::RetryPolicy::kIdempotent),
+                                      Shard::RetryPolicy::kNoRetry),
                 "_transferMods failed: ");
 
             uassertStatusOKWithContext(Shard::CommandResponse::getEffectiveStatus(res),
@@ -980,7 +979,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx) {
                                       ReadPreferenceSetting(ReadPreference::PrimaryOnly),
                                       "admin",
                                       xferModsRequest,
-                                      Shard::RetryPolicy::kIdempotent),
+                                      Shard::RetryPolicy::kNoRetry),
                 "_transferMods failed in STEADY STATE: ");
 
             uassertStatusOKWithContext(Shard::CommandResponse::getEffectiveStatus(res),

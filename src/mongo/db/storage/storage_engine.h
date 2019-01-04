@@ -38,6 +38,7 @@
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/db/storage/temporary_record_store.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -45,7 +46,6 @@ namespace mongo {
 class DatabaseCatalogEntry;
 class JournalListener;
 class OperationContext;
-class TemporaryRecordStore;
 class RecoveryUnit;
 class SnapshotManager;
 struct StorageGlobalParams;
@@ -278,6 +278,11 @@ public:
         return;
     }
 
+    virtual StatusWith<std::vector<std::string>> extendBackupCursor(OperationContext* opCtx) {
+        return Status(ErrorCodes::CommandNotSupported,
+                      "The current storage engine does not support a concurrent mode.");
+    }
+
     /**
      * Recover as much data as possible from a potentially corrupt RecordStore.
      * This only recovers the record data, not indexes or anything else.
@@ -350,6 +355,19 @@ public:
     }
 
     /**
+     * Returns true if the storage engine supports deferring collection drops until the the storage
+     * engine determines that the storage layer artifacts for the pending drops are no longer needed
+     * based on the stable and oldest timestamps.
+     */
+    virtual bool supportsPendingDrops() const = 0;
+
+    /**
+     * Clears list of drop-pending idents in the storage engine.
+     * Used primarily by rollback after recovering to a stable timestamp.
+     */
+    virtual void clearDropPendingState() = 0;
+
+    /**
      * Recovers the storage engine state to the last stable timestamp. "Stable" in this case
      * refers to a timestamp that is guaranteed to never be rolled back. The stable timestamp
      * used should be one provided by StorageEngine::setStableTimestamp().
@@ -393,8 +411,9 @@ public:
     }
 
     /**
-     * Sets the highest timestamp at which the storage engine is allowed to take a checkpoint.
-     * This timestamp can never decrease, and thus should be a timestamp that can never roll back.
+     * Sets the highest timestamp at which the storage engine is allowed to take a checkpoint. This
+     * timestamp must not decrease unless force=true is set, in which case we force the stable
+     * timestamp, the oldest timestamp, and the commit timestamp backward.
      *
      * The maximumTruncationTimestamp (and newer) must not be truncated from the oplog in order to
      * recover from the `stableTimestamp`.  `boost::none` implies there are no additional
@@ -406,7 +425,8 @@ public:
      * before a call to this method protects it.
      */
     virtual void setStableTimestamp(Timestamp stableTimestamp,
-                                    boost::optional<Timestamp> maximumTruncationTimestamp) {}
+                                    boost::optional<Timestamp> maximumTruncationTimestamp,
+                                    bool force = false) {}
 
     /**
      * Tells the storage engine the timestamp of the data at startup. This is necessary because

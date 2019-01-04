@@ -38,7 +38,6 @@
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/platform/hash_namespace.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/uuid.h"
 
@@ -211,12 +210,6 @@ public:
         return _ns.empty();
     }
 
-    struct Hasher {
-        size_t operator()(const NamespaceString& nss) const {
-            return std::hash<std::string>()(nss._ns);
-        }
-    };
-
     //
     // The following methods assume isValid() is true for this NamespaceString.
     //
@@ -361,6 +354,11 @@ public:
     }
 
     /**
+     * Returns index namespace for an index in this collection namespace.
+     */
+    NamespaceString makeIndexNamespace(StringData indexName) const;
+
+    /**
      * @return true if ns is 'normal'.  A "$" is used for namespaces holding index data,
      * which do not contain BSON objects in their records. ("oplog.$main" is the exception)
      */
@@ -450,6 +448,11 @@ public:
     }
     friend bool operator>=(const NamespaceString& a, const NamespaceString& b) {
         return a.ns() >= b.ns();
+    }
+
+    template <typename H>
+    friend H AbslHashValue(H h, const NamespaceString& nss) {
+        return H::combine(std::move(h), nss._ns);
     }
 
 private:
@@ -615,13 +618,3 @@ inline bool NamespaceString::validCollectionName(StringData coll) {
 }
 
 }  // namespace mongo
-
-MONGO_HASH_NAMESPACE_START
-template <>
-struct hash<mongo::NamespaceString> {
-    size_t operator()(const mongo::NamespaceString& nss) const {
-        mongo::NamespaceString::Hasher hasher;
-        return hasher(nss);
-    }
-};
-MONGO_HASH_NAMESPACE_END

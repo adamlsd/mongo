@@ -36,7 +36,7 @@
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/db/catalog/catalog_control.h"
-#include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/index_builds_coordinator_mongod.h"
@@ -79,6 +79,8 @@ ServiceContextMongoDTest::ServiceContextMongoDTest(std::string engine, RepairAct
 
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kNone);
 
+    DatabaseHolder::set(serviceContext, std::make_unique<DatabaseHolderImpl>());
+
     IndexBuildsCoordinator::set(serviceContext, std::make_unique<IndexBuildsCoordinatorMongod>());
 
     // Set up UUID Catalog observer. This is necessary because the Collection destructor contains an
@@ -95,7 +97,8 @@ ServiceContextMongoDTest::~ServiceContextMongoDTest() {
     {
         auto opCtx = getClient()->makeOperationContext();
         Lock::GlobalLock glk(opCtx.get(), MODE_X);
-        DatabaseHolder::getDatabaseHolder().closeAll(opCtx.get(), "all databases dropped");
+        auto databaseHolder = DatabaseHolder::get(opCtx.get());
+        databaseHolder->closeAll(opCtx.get(), "all databases dropped");
     }
 
     IndexBuildsCoordinator::get(getServiceContext())->shutdown();

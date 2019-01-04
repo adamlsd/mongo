@@ -34,6 +34,7 @@
 #include <map>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/read_concern_args.h"
@@ -66,6 +67,8 @@ public:
         // Only set for transactions with snapshot level read concern.
         boost::optional<LogicalTime> atClusterTime;
     };
+
+    enum class TransactionActions { kStart, kContinue, kCommit };
 
     /**
      * Represents a shard participant in a distributed transaction. Lives only for the duration of
@@ -154,7 +157,9 @@ public:
      * Starts a fresh transaction in this session or continue an existing one. Also cleans up the
      * previous transaction state.
      */
-    void beginOrContinueTxn(OperationContext* opCtx, TxnNumber txnNumber, bool startTransaction);
+    void beginOrContinueTxn(OperationContext* opCtx,
+                            TxnNumber txnNumber,
+                            TransactionActions action);
 
     /**
      * Attaches the required transaction related fields for a request to be sent to the given
@@ -172,39 +177,20 @@ public:
      * Updates the transaction state to allow for a retry of the current command on a stale version
      * error. Will throw if the transaction cannot be continued.
      */
-    void onStaleShardOrDbError(StringData cmdName);
+    void onStaleShardOrDbError(StringData cmdName, const Status& errorStatus);
 
     /**
      * Resets the transaction state to allow for a retry attempt. This includes clearing all
      * participants, clearing the coordinator, and resetting the global read timestamp. Will throw
      * if the transaction cannot be continued.
      */
-    void onSnapshotError();
+    void onSnapshotError(const Status& errorStatus);
 
     /**
      * Updates the transaction tracking state to allow for a retry attempt on a view resolution
      * error.
      */
-    void onViewResolutionError();
-
-    /**
-     * Computes and sets the atClusterTime for the current transaction based on the given query
-     * parameters. Does nothing if the transaction does not have snapshot read concern or an
-     * atClusterTime has already been selected and cannot be changed.
-     */
-    void computeAndSetAtClusterTime(OperationContext* opCtx,
-                                    bool mustRunOnAll,
-                                    const std::set<ShardId>& shardIds,
-                                    const NamespaceString& nss,
-                                    const BSONObj query,
-                                    const BSONObj collation);
-
-    /**
-     * Computes and sets the atClusterTime for the current transaction based on the targeted shard.
-     * Does nothing if the transaction does not have snapshot read concern or an atClusterTime has
-     * already been selected and cannot be changed.
-     */
-    void computeAndSetAtClusterTimeForUnsharded(OperationContext* opCtx, const ShardId& shardId);
+    void onViewResolutionError(const NamespaceString& nss);
 
     /**
      * Sets the atClusterTime for the current transaction to the latest time in the router's logical
@@ -228,12 +214,14 @@ public:
      * Commits the transaction. For transactions with multiple participants, this will initiate
      * the two phase commit procedure.
      */
-    Shard::CommandResponse commitTransaction(OperationContext* opCtx);
+    Shard::CommandResponse commitTransaction(OperationContext* opCtx,
+                                             boost::optional<TxnRecoveryToken> recoveryToken);
 
     /**
      * Sends abort to all participants and returns the responses from all shards.
      */
-    std::vector<AsyncRequestsSender::Response> abortTransaction(OperationContext* opCtx);
+    std::vector<AsyncRequestsSender::Response> abortTransaction(OperationContext* opCtx,
+                                                                bool isImplicit = false);
 
     /**
      * Sends abort to all shards in the current participant list. Will retry on retryable errors,
@@ -252,6 +240,8 @@ public:
      */
     boost::optional<Participant&> getParticipant(const ShardId& shard);
 
+    void appendRecoveryToken(BSONObjBuilder* builder);
+
 private:
     // Shortcut to obtain the id of the session under which this transaction router runs
     const LogicalSessionId& _sessionId() const;
@@ -260,6 +250,9 @@ private:
      * Run basic commit for transactions that touched a single shard.
      */
     Shard::CommandResponse _commitSingleShardTransaction(OperationContext* opCtx);
+
+    Shard::CommandResponse _commitWithRecoveryToken(OperationContext* opCtx,
+                                                    const TxnRecoveryToken& recoveryToken);
 
     /**
      * Run two phase commit for transactions that touched multiple shards.
@@ -317,6 +310,12 @@ private:
      */
     void _verifyParticipantAtClusterTime(const Participant& participant);
 
+    /**
+     * Returns a string with the active transaction's transaction number and logical session id
+     * (i.e. the transaction id).
+     */
+    std::string _txnIdToString();
+
     // The currently active transaction number on this transaction router (i.e. on the session)
     TxnNumber _txnNumber{kUninitializedTxnNumber};
 
@@ -324,6 +323,9 @@ private:
     // coordinator. If so, the router should no longer implicitly abort the transaction on errors,
     // since the coordinator may independently make a commit decision.
     bool _initiatedTwoPhaseCommit{false};
+
+    // Indicates whether this is trying to recover a commitTransaction on the current transaction.
+    bool _isRecoveringCommit{false};
 
     // Map of current participants of the current transaction.
     StringMap<Participant> _participants;

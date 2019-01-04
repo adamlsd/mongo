@@ -53,7 +53,7 @@
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
-#include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/catalog/health_log.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_key_validate.h"
@@ -227,8 +227,7 @@ void logStartup(OperationContext* opCtx) {
         CollectionOptions collectionOptions;
         uassertStatusOK(
             collectionOptions.parse(options, CollectionOptions::ParseKind::parseForCommand));
-        uassertStatusOK(
-            Database::userCreateNS(opCtx, db, startupLogCollectionName.ns(), collectionOptions));
+        uassertStatusOK(db->userCreateNS(opCtx, startupLogCollectionName, collectionOptions));
         collection = db->getCollection(opCtx, startupLogCollectionName);
     }
     invariant(collection);
@@ -246,8 +245,6 @@ void logStartup(OperationContext* opCtx) {
  *          --replset.
  */
 unsigned long long checkIfReplMissingFromCommandLine(OperationContext* opCtx) {
-    // This is helpful for the query below to work as you can't open files when readlocked
-    Lock::GlobalWrite lk(opCtx);
     if (!repl::ReplicationCoordinator::get(opCtx)->getSettings().usingReplSets()) {
         DBDirectClient c(opCtx);
         return c.count(kSystemReplSetCollection.ns());
@@ -331,6 +328,13 @@ ExitCode _initAndListen(int listenPort) {
         }
         serviceContext->setTransportLayer(std::move(tl));
     }
+
+    // Set up the periodic runner for background job execution. This is required to be running
+    // before the storage engine is initialized.
+    auto runner = makePeriodicRunner(serviceContext);
+    runner->startup();
+    serviceContext->setPeriodicRunner(std::move(runner));
+
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kNone);
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
@@ -515,11 +519,6 @@ ExitCode _initAndListen(int listenPort) {
                  "data."
               << startupWarningsLog;
     }
-
-    // Set up the periodic runner for background job execution
-    auto runner = makePeriodicRunner(serviceContext);
-    runner->startup();
-    serviceContext->setPeriodicRunner(std::move(runner));
 
     // This function may take the global lock.
     auto shardingInitialized = ShardingInitializationMongoD::get(startupOpCtx.get())
@@ -797,6 +796,10 @@ void startupConfigActions(const std::vector<std::string>& args) {
 #endif
 }
 
+void setUpCatalog(ServiceContext* serviceContext) {
+    DatabaseHolder::set(serviceContext, std::make_unique<DatabaseHolderImpl>());
+}
+
 auto makeReplicationExecutor(ServiceContext* serviceContext) {
     ThreadPool::Options tpOptions;
     tpOptions.poolName = "replexec";
@@ -890,7 +893,8 @@ void shutdownTask() {
     // Shut down the global dbclient pool so callers stop waiting for connections.
     globalConnPool.shutdown();
 
-    // Shut down the background periodic task runner
+    // Shut down the background periodic task runner. This must be done before shutting down the
+    // storage engine.
     if (auto runner = serviceContext->getPeriodicRunner()) {
         runner->shutdown();
     }
@@ -1015,6 +1019,7 @@ int mongoDbMain(int argc, char* argv[], char** envp) {
     }
 
     auto service = getGlobalServiceContext();
+    setUpCatalog(service);
     setUpReplication(service);
     service->setServiceEntryPoint(std::make_unique<ServiceEntryPointMongod>(service));
 

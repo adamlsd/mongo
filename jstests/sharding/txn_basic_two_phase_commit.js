@@ -8,7 +8,7 @@
 (function() {
     'use strict';
 
-    load("jstests/libs/check_log.js");
+    load('jstests/sharding/libs/sharded_transactions_helpers.js');
 
     const dbName = "test";
     const collName = "foo";
@@ -136,6 +136,9 @@
         assert.commandWorked(
             st.s.adminCommand({moveChunk: ns, find: {_id: 10}, to: participant2.shardName}));
 
+        // These forced refreshes are not strictly necessary; they just prevent extra TXN log lines
+        // from the shards starting, aborting, and restarting the transaction due to needing to
+        // refresh after the transaction has started.
         assert.commandWorked(coordinator.adminCommand({_flushRoutingTableCacheUpdates: ns}));
         assert.commandWorked(participant1.adminCommand({_flushRoutingTableCacheUpdates: ns}));
         assert.commandWorked(participant2.adminCommand({_flushRoutingTableCacheUpdates: ns}));
@@ -195,9 +198,8 @@
         }
 
         // Check that the coordinator wrote the participant list.
-        checkLog.containsWithCount(coordinator,
-                                   "Hit hangBeforeWaitingForParticipantListWriteConcern failpoint",
-                                   txnNumber);
+        waitForFailpoint("Hit hangBeforeWaitingForParticipantListWriteConcern failpoint",
+                         txnNumber);
         checkParticipantListMatches(coordinator, lsid, txnNumber, expectedParticipantList);
         assert.commandWorked(coordinator.adminCommand({
             configureFailPoint: "hangBeforeWaitingForParticipantListWriteConcern",
@@ -205,8 +207,7 @@
         }));
 
         // Check that the coordinator wrote the decision.
-        checkLog.containsWithCount(
-            coordinator, "Hit hangBeforeWaitingForDecisionWriteConcern failpoint", txnNumber);
+        waitForFailpoint("Hit hangBeforeWaitingForDecisionWriteConcern failpoint", txnNumber);
         checkParticipantListMatches(coordinator, lsid, txnNumber, expectedParticipantList);
         checkDecisionIs(coordinator, lsid, txnNumber, (shouldCommit ? "commit" : "abort"));
         assert.commandWorked(coordinator.adminCommand({

@@ -65,6 +65,7 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/speculative_majority_read_info.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_state.h"
@@ -370,10 +371,16 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
             if (sessionOptions.getCoordinator() == boost::optional<bool>(true)) {
                 createTransactionCoordinator(opCtx, *sessionOptions.getTxnNumber());
             }
+        } else if (txnParticipant->inMultiDocumentTransaction()) {
+            const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+            uassert(ErrorCodes::InvalidOptions,
+                    "Only the first command in a transaction may specify a readConcern",
+                    readConcernArgs.isEmpty());
         }
+
+        txnParticipant->unstashTransactionResources(opCtx, invocation->definition()->getName());
     }
 
-    txnParticipant->unstashTransactionResources(opCtx, invocation->definition()->getName());
     ScopeGuard guard = MakeGuard([&txnParticipant, opCtx]() {
         txnParticipant->abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
     });
@@ -498,6 +505,9 @@ bool runCommandImpl(OperationContext* opCtx,
     }
 
     behaviors.waitForLinearizableReadConcern(opCtx);
+
+    // Wait for data to satisfy the read concern level, if necessary.
+    behaviors.waitForSpeculativeMajorityReadConcern(opCtx);
 
     const bool ok = [&] {
         auto body = replyBuilder->getBodyBuilder();

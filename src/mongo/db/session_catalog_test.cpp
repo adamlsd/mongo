@@ -270,7 +270,7 @@ TEST_F(SessionCatalogTest, KillSessionWhenSessionIsCheckedOut) {
     future.get();
 }
 
-TEST_F(SessionCatalogTest, MarkSessionAsKilledThrowsWhenCalledTwice) {
+TEST_F(SessionCatalogTest, MarkSessionAsKilledCanBeCalledMoreThanOnce) {
     const auto lsid = makeLogicalSessionIdForTest();
 
     // Create the session so there is something to kill
@@ -279,14 +279,11 @@ TEST_F(SessionCatalogTest, MarkSessionAsKilledThrowsWhenCalledTwice) {
         const auto unusedSession(catalog()->checkOutSession(opCtx.get(), lsid));
     }
 
-    auto killToken = catalog()->killSession(lsid);
+    auto killToken1 = catalog()->killSession(lsid);
+    auto killToken2 = catalog()->killSession(lsid);
 
-    // Second mark as killed attempt will throw since the session is already killed
-    ASSERT_THROWS_CODE(catalog()->killSession(lsid),
-                       AssertionException,
-                       ErrorCodes::ConflictingOperationInProgress);
-
-    // Make sure that regular session check-out will fail because the session is marked as killed
+    // Make sure that regular session check-out will fail because there are two killers on the
+    // session
     {
         auto opCtx = makeOperationContext();
         opCtx->setLogicalSessionId(lsid);
@@ -295,10 +292,36 @@ TEST_F(SessionCatalogTest, MarkSessionAsKilledThrowsWhenCalledTwice) {
             OperationContextSession(opCtx.get()), AssertionException, ErrorCodes::MaxTimeMSExpired);
     }
 
-    // Finish "killing" the session so the SessionCatalog destructor doesn't complain
+    boost::optional<Session::KillToken> killTokenWhileSessionIsCheckedOutForKill;
+
+    // Finish the first killer of the session
     {
         auto opCtx = makeOperationContext();
-        auto scopedSession = catalog()->checkOutSessionForKill(opCtx.get(), std::move(killToken));
+        auto scopedSession = catalog()->checkOutSessionForKill(opCtx.get(), std::move(killToken1));
+        ASSERT_EQ(opCtx.get(), scopedSession->currentOperation());
+
+        // Killing a session while checked out for kill should not affect the killers
+        killTokenWhileSessionIsCheckedOutForKill.emplace(catalog()->killSession(lsid));
+    }
+
+    // Regular session check-out should still fail because there are now still two killers on the
+    // session
+    {
+        auto opCtx = makeOperationContext();
+        opCtx->setLogicalSessionId(lsid);
+        opCtx->setDeadlineAfterNowBy(Milliseconds(10), ErrorCodes::MaxTimeMSExpired);
+        ASSERT_THROWS_CODE(
+            OperationContextSession(opCtx.get()), AssertionException, ErrorCodes::MaxTimeMSExpired);
+    }
+    {
+        auto opCtx = makeOperationContext();
+        auto scopedSession = catalog()->checkOutSessionForKill(opCtx.get(), std::move(killToken2));
+        ASSERT_EQ(opCtx.get(), scopedSession->currentOperation());
+    }
+    {
+        auto opCtx = makeOperationContext();
+        auto scopedSession = catalog()->checkOutSessionForKill(
+            opCtx.get(), std::move(*killTokenWhileSessionIsCheckedOutForKill));
         ASSERT_EQ(opCtx.get(), scopedSession->currentOperation());
     }
 }
@@ -415,6 +438,66 @@ TEST_F(SessionCatalogTestWithDefaultOpCtx, KillSessionsThroughScanSessions) {
         }
         futures[1].get();
     }
+}
+
+// Test that session kill will block normal sesion chechout and will be signaled correctly.
+// Even if the implementaion has a bug, the test may not always fail depending on thread
+// scheduling, however, this test case still gives us a good coverage.
+TEST_F(SessionCatalogTestWithDefaultOpCtx, ConcurrentCheckOutAndKill) {
+    auto lsid = makeLogicalSessionIdForTest();
+    _opCtx->setLogicalSessionId(lsid);
+
+    stdx::future<void> normalCheckOutFinish, killCheckOutFinish;
+
+    // This variable is protected by the session check-out.
+    std::string lastSessionCheckOut = "first session";
+    {
+        // Check out the session to block both normal check-out and checkOutForKill.
+        OperationContextSession firstCheckOut(_opCtx);
+
+        // Normal check out should start after kill.
+        normalCheckOutFinish = stdx::async(stdx::launch::async, [&] {
+            ThreadClient tc(getGlobalServiceContext());
+            auto sideOpCtx = Client::getCurrent()->makeOperationContext();
+            sideOpCtx->setLogicalSessionId(lsid);
+            OperationContextSession normalCheckOut(sideOpCtx.get());
+            ASSERT_EQ("session kill", lastSessionCheckOut);
+            lastSessionCheckOut = "session checkout";
+        });
+
+        // Kill will short-cut the queue and be the next one to check out.
+        killCheckOutFinish = stdx::async(stdx::launch::async, [&] {
+            ThreadClient tc(getGlobalServiceContext());
+            auto sideOpCtx = Client::getCurrent()->makeOperationContext();
+            sideOpCtx->setLogicalSessionId(lsid);
+
+            // Kill the session
+            std::vector<Session::KillToken> killTokens;
+            catalog()->scanSessions(SessionKiller::Matcher(KillAllSessionsByPatternSet{
+                                        makeKillAllSessionsByPattern(sideOpCtx.get())}),
+                                    [&killTokens](WithLock sessionCatalogLock, Session* session) {
+                                        killTokens.emplace_back(session->kill(
+                                            sessionCatalogLock, ErrorCodes::InternalError));
+                                    });
+            ASSERT_EQ(1U, killTokens.size());
+            auto checkOutSessionForKill(
+                catalog()->checkOutSessionForKill(sideOpCtx.get(), std::move(killTokens[0])));
+            ASSERT_EQ("first session", lastSessionCheckOut);
+            lastSessionCheckOut = "session kill";
+        });
+
+        // The main thread won't check in the session until it's killed.
+        {
+            stdx::mutex m;
+            stdx::condition_variable cond;
+            stdx::unique_lock<stdx::mutex> lock(m);
+            ASSERT_EQ(ErrorCodes::InternalError,
+                      _opCtx->waitForConditionOrInterruptNoAssert(cond, lock));
+        }
+    }
+    normalCheckOutFinish.get();
+    killCheckOutFinish.get();
+    ASSERT_EQ("session checkout", lastSessionCheckOut);
 }
 
 }  // namespace

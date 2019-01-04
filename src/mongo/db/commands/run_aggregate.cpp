@@ -41,7 +41,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
-#include "mongo/db/exec/pipeline_proxy.h"
+#include "mongo/db/exec/change_stream_proxy.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/accumulator.h"
@@ -62,6 +62,7 @@
 #include "mongo/db/read_concern.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/db/repl/speculative_majority_read_info.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_options.h"
@@ -154,8 +155,12 @@ bool handleCursorCommand(OperationContext* opCtx,
         }
 
         if (state == PlanExecutor::IS_EOF) {
+            // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the
+            // postBatchResumeToken until the former is removed in a future release.
             responseBuilder.setLatestOplogTimestamp(
                 cursor->getExecutor()->getLatestOplogTimestamp());
+            responseBuilder.setPostBatchResumeToken(
+                cursor->getExecutor()->getPostBatchResumeToken());
             if (!cursor->isTailable()) {
                 // make it an obvious error to use cursor or executor after this point
                 cursor = nullptr;
@@ -175,7 +180,10 @@ bool handleCursorCommand(OperationContext* opCtx,
             break;
         }
 
+        // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the
+        // postBatchResumeToken until the former is removed in a future release.
         responseBuilder.setLatestOplogTimestamp(cursor->getExecutor()->getLatestOplogTimestamp());
+        responseBuilder.setPostBatchResumeToken(cursor->getExecutor()->getPostBatchResumeToken());
         responseBuilder.append(next);
     }
 
@@ -340,6 +348,38 @@ boost::intrusive_ptr<ExpressionContext> makeExpressionContext(
 
     return expCtx;
 }
+
+/**
+ * Upconverts the read concern for a change stream aggregation, if necesssary.
+ *
+ * If there is no given read concern level on the given object, upgrades the level to 'majority' and
+ * waits for read concern. If a read concern level is already specified on the given read concern
+ * object, this method does nothing.
+ */
+void _adjustChangeStreamReadConcern(OperationContext* opCtx) {
+    repl::ReadConcernArgs& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    // There is already a read concern level set. Do nothing.
+    if (readConcernArgs.hasLevel()) {
+        return;
+    }
+    // We upconvert an empty read concern to 'majority'.
+    {
+        // We must obtain the client lock to set the ReadConcernArgs on the operation
+        // context as it may be concurrently read by CurrentOp.
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        readConcernArgs = repl::ReadConcernArgs(repl::ReadConcernLevel::kMajorityReadConcern);
+
+        // Change streams are allowed to use the speculative majority read mechanism, if
+        // the storage engine doesn't support majority reads directly.
+        if (!serverGlobalParams.enableMajorityReadConcern) {
+            readConcernArgs.setMajorityReadMechanism(
+                repl::ReadConcernArgs::MajorityReadMechanism::kSpeculative);
+        }
+    }
+    // Wait for read concern again since we changed the original read concern.
+    uassertStatusOK(waitForReadConcern(opCtx, readConcernArgs, true));
+}
+
 }  // namespace
 
 Status runAggregate(OperationContext* opCtx,
@@ -366,7 +406,8 @@ Status runAggregate(OperationContext* opCtx,
 
         try {
             // Check whether the parsed pipeline supports the given read concern.
-            liteParsedPipeline.assertSupportsReadConcern(opCtx, request.getExplain());
+            liteParsedPipeline.assertSupportsReadConcern(
+                opCtx, request.getExplain(), serverGlobalParams.enableMajorityReadConcern);
         } catch (const DBException& ex) {
             auto txnParticipant = TransactionParticipant::get(opCtx);
             // If we are in a multi-document transaction, we intercept the 'readConcern'
@@ -381,19 +422,8 @@ Status runAggregate(OperationContext* opCtx,
         if (liteParsedPipeline.hasChangeStream()) {
             nss = NamespaceString::kRsOplogNamespace;
 
-            // If the read concern is not specified, upgrade to 'majority' and wait to make sure
-            // we have a snapshot available.
-            auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-            if (!readConcernArgs.hasLevel()) {
-                {
-                    // We must obtain the client lock to set the ReadConcernArgs on the operation
-                    // context as it may be concurrently read by CurrentOp.
-                    stdx::lock_guard<Client> lk(*opCtx->getClient());
-                    readConcernArgs =
-                        repl::ReadConcernArgs(repl::ReadConcernLevel::kMajorityReadConcern);
-                }
-                uassertStatusOK(waitForReadConcern(opCtx, readConcernArgs, true));
-            }
+            // Upgrade and wait for read concern if necessary.
+            _adjustChangeStreamReadConcern(opCtx);
 
             if (!origNss.isCollectionlessAggregateNS()) {
                 // AutoGetCollectionForReadCommand will raise an error if 'origNss' is a view.
@@ -544,8 +574,8 @@ Status runAggregate(OperationContext* opCtx,
 
                 // Create a new pipeline for the consumer consisting of a single
                 // DocumentSourceExchange.
-                boost::intrusive_ptr<DocumentSource> consumer =
-                    new DocumentSourceExchange(expCtx, exchange, idx);
+                boost::intrusive_ptr<DocumentSource> consumer = new DocumentSourceExchange(
+                    expCtx, exchange, idx, expCtx->mongoProcessInterface->getResourceYielder());
                 pipelines.emplace_back(uassertStatusOK(Pipeline::create({consumer}, expCtx)));
             }
         } else {
@@ -555,8 +585,9 @@ Status runAggregate(OperationContext* opCtx,
         for (size_t idx = 0; idx < pipelines.size(); ++idx) {
             // Transfer ownership of the Pipeline to the PipelineProxyStage.
             auto ws = make_unique<WorkingSet>();
-            auto proxy =
-                make_unique<PipelineProxyStage>(opCtx, std::move(pipelines[idx]), ws.get());
+            auto proxy = liteParsedPipeline.hasChangeStream()
+                ? make_unique<ChangeStreamProxyStage>(opCtx, std::move(pipelines[idx]), ws.get())
+                : make_unique<PipelineProxyStage>(opCtx, std::move(pipelines[idx]), ws.get());
 
             // This PlanExecutor will simply forward requests to the Pipeline, so does not need to
             // yield or to be registered with any collection's CursorManager to receive

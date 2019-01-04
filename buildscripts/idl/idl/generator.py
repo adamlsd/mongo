@@ -327,6 +327,17 @@ def _encaps_list(vals):
     return '{' + ', '.join([_encaps(v) for v in vals]) + '}'
 
 
+# Translate an ast.Expression into C++ code.
+def _get_expression(expr):
+    # type: (ast.Expression) -> unicode
+    if not expr.validate_constexpr:
+        return expr.expr
+
+    # Wrap in a lambda to let the compiler enforce constexprness for us.
+    # The optimization pass should end up inlining it.
+    return '([]{ constexpr auto value = %s; return value; })()' % expr.expr
+
+
 class _CppFileWriterBase(object):
     """
     C++ File writer.
@@ -1283,11 +1294,12 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             self._writer.write_line('return object;')
 
     def _compare_and_return_status(self, op, limit, field, optional_param):
-        # type: (unicode, Union[int, float], ast.Field, unicode) -> None
+        # type: (unicode, ast.Expression, ast.Field, unicode) -> None
         """Throw an error on comparison failure."""
-        with self._block('if (!(value %s %s)) {' % (op, repr(limit)), '}'):
+        with self._block('if (!(value %s %s)) {' % (op, _get_expression(limit)), '}'):
             self._writer.write_line('throwComparisonError<%s>(%s"%s", "%s"_sd, value, %s);' %
-                                    (field.cpp_type, optional_param, field.name, op, limit))
+                                    (field.cpp_type, optional_param, field.name, op,
+                                     _get_expression(limit)))
 
     def _gen_field_validator(self, struct, field, optional_params):
         # type: (ast.Struct, ast.Field, Tuple[unicode, unicode]) -> None
@@ -1729,74 +1741,76 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                 common.template_args('${class_name}::kCommandName,', class_name=common.title_case(
                     struct.cpp_name)))
 
-    def gen_server_parameter(self, param):
+    def _gen_server_parameter_with_storage(self, param):
+        # type: (ast.ServerParameter) -> None
+        """Generate a single IDLServerParameterWithStorage."""
+        self._writer.write_line(
+            common.template_args(
+                'auto* ret = makeIDLServerParameterWithStorage<${spt}>(${name}, ${storage});',
+                storage=param.cpp_varname, spt=param.set_at, name=_encaps(param.name)))
+
+        if param.on_update is not None:
+            self._writer.write_line('ret->setOnUpdate(%s);' % (param.on_update))
+        if param.validator is not None:
+            if param.validator.callback is not None:
+                self._writer.write_line('ret->addValidator(%s);' % (param.validator.callback))
+
+            for pred in ['lt', 'gt', 'lte', 'gte']:
+                bound = getattr(param.validator, pred)
+                if bound is not None:
+                    self._writer.write_line('ret->addBound<idl_server_parameter_detail::%s>(%s);' %
+                                            (pred.upper(), _get_expression(bound)))
+
+        if param.redact:
+            self._writer.write_line('ret->setRedact();')
+
+        if param.test_only:
+            self._writer.write_line('ret->setTestOnly();')
+
+        if param.default is not None:
+            self._writer.write_line('uassertStatusOK(ret->setValue(%s));' %
+                                    (_get_expression(param.default)))
+
+        self._writer.write_line('return ret;')
+
+    def _gen_server_parameter_without_storage(self, param):
+        # type: (ast.ServerParameter) -> None
+        """Generate a single IDLServerParameter."""
+        self._writer.write_line(
+            common.template_args('auto* ret = new IDLServerParameter(${name}, ${spt});',
+                                 spt=param.set_at, name=_encaps(param.name)))
+        if param.from_bson:
+            self._writer.write_line('ret->setFromBSON(%s);' % (param.from_bson))
+
+        if param.append_bson:
+            self._writer.write_line('ret->setAppendBSON(%s);' % (param.append_bson))
+        elif param.redact:
+            self._writer.write_line('ret->setAppendBSON(IDLServerParameter::redactedAppendBSON);')
+
+        if param.test_only:
+            self._writer.write_line('ret->setTestOnly();')
+
+        self._writer.write_line('ret->setFromString(%s);' % (param.from_string))
+        self._writer.write_line('return ret;')
+
+    def _gen_server_parameter(self, param):
         # type: (ast.ServerParameter) -> None
         """Generate a single IDLServerParameter(WithStorage)."""
-        # pylint: disable=too-many-branches
-        with self._condition(param.condition):
-            if param.cpp_varname is not None:
-                self._writer.write_line(
-                    common.template_args(
-                        'auto* ret = makeIDLServerParameterWithStorage(${name}, ${storage}, ${spt});',
-                        storage=param.cpp_varname, spt=param.set_at, name=_encaps(param.name)))
+        if param.cpp_varname is not None:
+            self._gen_server_parameter_with_storage(param)
+        else:
+            self._gen_server_parameter_without_storage(param)
 
-                if param.on_update is not None:
-                    self._writer.write_line('ret->setOnUpdate(%s);' % (param.on_update))
-                if param.validator is not None:
-                    if param.validator.callback is not None:
-                        self._writer.write_line('ret->addValidator(%s);' %
-                                                (param.validator.callback))
-
-                    for pred in ['lt', 'gt', 'lte', 'gte']:
-                        bound = getattr(param.validator, pred)
-                        if bound is not None:
-                            self._writer.write_line(
-                                'ret->addBound<idl_server_parameter_detail::%s>(%s);' %
-                                (pred.upper(), bound))
-
-                if param.redact:
-                    self._writer.write_line('ret->setRedact();')
-
-            else:
-                self._writer.write_line(
-                    common.template_args('auto* ret = new IDLServerParameter(${name}, ${spt});',
-                                         spt=param.set_at, name=_encaps(param.name)))
-                if param.from_bson:
-                    self._writer.write_line('ret->setFromBSON(%s);' % (param.from_bson))
-
-                if param.append_bson:
-                    self._writer.write_line('ret->setAppendBSON(%s);' % (param.append_bson))
-                elif param.redact:
-                    self._writer.write_line(
-                        'ret->setAppendBSON(IDLServerParameter::redactedAppendBSON);')
-
-                self._writer.write_line('ret->setFromString(%s);' % (param.from_string))
-
-            if param.default is not None:
-                self._writer.write_line('uassertStatusOK(ret->setFromString(%s));' %
-                                        (_encaps(param.default)))
-
-            self._writer.write_line('return ret;')
-
-        if param.condition:
-            # Fallback in case any of the provided conditions are false.
-            self._writer.write_line('return nullptr;')
-
-    def gen_server_parameter_deprecated_aliases(self, param_no, param):
+    def _gen_server_parameter_deprecated_aliases(self, param_no, param):
         # type: (int, ast.ServerParameter) -> None
         """Generate IDLServerParamterDeprecatedAlias instance."""
 
         for alias_no, alias in enumerate(param.deprecated_name):
-            with self.get_initializer_lambda('auto* scp_%d_%d' % (param_no, alias_no), unused=True,
-                                             return_type='ServerParameter*'):
-                with self._condition(param.condition):
-                    with self._predicate('scp_%d != nullptr' % (param_no)):
-                        self._writer.write_line(
-                            'return new IDLServerParameterDeprecatedAlias(%s, scp_%d);' %
-                            (_encaps(alias), param_no))
-
-                # Fallthrough in case any predicate above fails.
-                self._writer.write_line('return nullptr;')
+            self._writer.write_line(
+                common.template_args(
+                    '${unused} auto* ${alias_var} = new IDLServerParameterDeprecatedAlias(${name}, ${param_var});',
+                    unused='MONGO_COMPILER_VARIABLE_UNUSED', alias_var='scp_%d_%d' %
+                    (param_no, alias_no), name=_encaps(alias), param_var='scp_%d' % (param_no)))
 
     def gen_server_parameters(self, params):
         # type: (List[ast.ServerParameter]) -> None
@@ -1805,20 +1819,24 @@ class _CppSourceFileWriter(_CppFileWriterBase):
         for param in params:
             # Optional storage declarations.
             if (param.cpp_vartype is not None) and (param.cpp_varname is not None):
-                with self._condition(param.condition):
+                with self._condition(param.condition, preprocessor_only=True):
                     self._writer.write_line('%s %s;' % (param.cpp_vartype, param.cpp_varname))
 
-        with self.gen_namespace_block(''):
+        blockname = 'idl_' + uuid.uuid4().hex
+        with self._block('MONGO_SERVER_PARAMETER_REGISTER(%s)(InitializerContext*) {' % (blockname),
+                         '}'):
             # ServerParameter instances.
             for param_no, param in enumerate(params):
                 self.gen_description_comment(param.description)
+                with self._condition(param.condition):
+                    with self.get_initializer_lambda('auto* scp_%d' % (param_no), unused=(len(
+                            param.deprecated_name) == 0), return_type='ServerParameter*'):
+                        self._gen_server_parameter(param)
 
-                with self.get_initializer_lambda('auto* scp_%d' % (param_no), unused=(len(
-                        param.deprecated_name) == 0), return_type='ServerParameter*'):
-                    self.gen_server_parameter(param)
-
-                self.gen_server_parameter_deprecated_aliases(param_no, param)
+                    self._gen_server_parameter_deprecated_aliases(param_no, param)
                 self.write_empty_line()
+
+            self._writer.write_line('return Status::OK();')
 
     def gen_config_option(self, opt, section):
         # type: (ast.ConfigOption, unicode) -> None
@@ -1846,12 +1864,12 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                     self._writer.write_line('.requires(%s)' % (_encaps(requires)))
                 for conflicts in opt.conflicts:
                     self._writer.write_line('.incompatibleWith(%s)' % (_encaps(conflicts)))
-                if opt.default is not None:
-                    dflt = _encaps(opt.default) if opt.arg_vartype == "String" else opt.default
-                    self._writer.write_line('.setDefault(moe::Value(%s))' % (dflt))
-                if opt.implicit is not None:
-                    impl = _encaps(opt.implicit) if opt.arg_vartype == "String" else opt.implicit
-                    self._writer.write_line('.setImplicit(moe::Value(%s))' % (impl))
+                if opt.default:
+                    self._writer.write_line('.setDefault(moe::Value(%s))' %
+                                            (_get_expression(opt.default)))
+                if opt.implicit:
+                    self._writer.write_line('.setImplicit(moe::Value(%s))' %
+                                            (_get_expression(opt.implicit)))
                 if opt.duplicates_append:
                     self._writer.write_line('.composing()')
                 if (opt.positional_start is not None) and (opt.positional_end is not None):
@@ -1872,12 +1890,13 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                             common.template_args(
                                 '.addConstraint(new moe::BoundaryKeyConstraint<${argtype}>(${key}, ${gt}, ${lt}, ${gte}, ${lte}))',
                                 argtype=vartype, key=_encaps(opt.name), gt='boost::none'
-                                if opt.validator.gt is None else unicode(opt.validator.gt),
-                                lt='boost::none' if opt.validator.lt is None else unicode(
+                                if opt.validator.gt is None else _get_expression(opt.validator.gt),
+                                lt='boost::none' if opt.validator.lt is None else _get_expression(
                                     opt.validator.lt), gte='boost::none'
-                                if opt.validator.gte is None else unicode(
+                                if opt.validator.gte is None else _get_expression(
                                     opt.validator.gte), lte='boost::none'
-                                if opt.validator.lte is None else unicode(opt.validator.lte)))
+                                if opt.validator.lte is None else _get_expression(
+                                    opt.validator.lte)))
 
         self.write_empty_line()
 
@@ -1946,7 +1965,10 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                 with self._block('MONGO_STARTUP_OPTIONS_STORE(%s)(InitializerContext*) {' %
                                  (blockname), '}'):
                     self._writer.write_line('namespace moe = ::mongo::optionenvironment;')
-                    self._writer.write_line('const auto& params = moe::startupOptionsParsed;')
+                    # If all options are guarded by non-passing #ifdefs, then params will be unused.
+                    self._writer.write_line(
+                        'MONGO_COMPILER_VARIABLE_UNUSED const auto& params = moe::startupOptionsParsed;'
+                    )
                     self.write_empty_line()
 
                     for opt in spec.configs:

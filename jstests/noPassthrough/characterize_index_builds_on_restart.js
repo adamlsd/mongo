@@ -6,12 +6,11 @@
 (function() {
     'use strict';
 
-    load("jstests/libs/check_log.js");
-
     const dbName = "test";
     const collName = "coll";
 
-    const indexName = "collIndex";
+    const firstIndex = "firstIndex";
+    const secondIndex = "secondIndex";
 
     function startStandalone() {
         let mongod = MongoRunner.runMongod({cleanData: true});
@@ -68,11 +67,14 @@
 
         if (isReplicaNode) {
             assert.commandWorked(hangDB.adminCommand(
-                {configureFailPoint: "hangAfterStartingIndexBuildUnlocked", mode: "alwaysOn"}));
+                {configureFailPoint: "slowBackgroundIndexBuild", mode: "alwaysOn"}));
 
             db.runCommand({
                 createIndexes: collName,
-                indexes: [{key: {i: 1}, name: indexName, background: true}],
+                indexes: [
+                    {key: {i: 1}, name: firstIndex, background: true},
+                    {key: {i: -1}, name: secondIndex, background: true},
+                ],
                 writeConcern: {w: w}
             });
         } else {
@@ -82,7 +84,10 @@
             assert.throws(() => {
                 db.runCommand({
                     createIndexes: collName,
-                    indexes: [{key: {i: 1}, name: indexName, background: true}]
+                    indexes: [
+                        {key: {i: 1}, name: firstIndex, background: true},
+                        {key: {i: -1}, name: secondIndex, background: true},
+                    ]
                 });
             });
         }
@@ -152,7 +157,8 @@
 
         mongod = restartStandalone(mongod);
 
-        checkForIndexRebuild(mongod, indexName, /*shouldExist=*/false);
+        checkForIndexRebuild(mongod, firstIndex, /*shouldExist=*/false);
+        checkForIndexRebuild(mongod, secondIndex, /*shouldExist=*/false);
 
         shutdownStandalone(mongod);
     }
@@ -168,22 +174,14 @@
         addTestDocuments(primaryDB);
         startIndexBuildAndCrash(primaryDB, /*isReplicaNode=*/true, /*w=*/2, secondaryDB);
 
-        // Wait for index build to begin on secondary before restarting.
-        replSet.awaitReplication();
-        checkLog.contains(secondary,
-                          "Hanging index build with no locks due " +
-                              "to \'hangAfterStartingIndexBuildUnlocked\' failpoint");
-
-        // Wait for the writes to be durable.
-        secondaryDB.adminCommand({fsync: 1});
-
         let secondaryId = replSet.getNodeId(secondary);
         replSet.stop(secondaryId);
         replSet.remove(secondaryId);
 
         let mongod = restartStandalone(secondary);
 
-        checkForIndexRebuild(mongod, indexName, /*shouldExist=*/true);
+        checkForIndexRebuild(mongod, firstIndex, /*shouldExist=*/true);
+        checkForIndexRebuild(mongod, secondIndex, /*shouldExist=*/true);
 
         shutdownStandalone(mongod);
         stopReplSet(replSet);

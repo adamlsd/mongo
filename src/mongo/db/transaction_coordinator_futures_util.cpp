@@ -1,3 +1,4 @@
+
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -26,51 +27,23 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-#pragma once
 
-#include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/thread.h"
-#include "mongo/util/alarm.h"
-#include "mongo/util/concurrency/with_lock.h"
-#include "mongo/util/time_support.h"
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/transaction_coordinator_futures_util.h"
 
 namespace mongo {
+namespace txn {
 
-/*
- * This is a runner for alarm schedulers that waits for and processes alarms in a single
- * background thread.
- */
-class AlarmRunnerBackgroundThread {
-public:
-    using AlarmSchedulerHandle = std::shared_ptr<AlarmScheduler>;
-    // Construct an alarm runner from a vector of shared_ptr<AlarmScheduler>'s.
-    explicit AlarmRunnerBackgroundThread(std::vector<AlarmSchedulerHandle> container)
-        : _schedulers(_initializeSchedulers(std::move(container))) {}
+Future<void> whenAll(std::vector<Future<void>>& futures) {
+    std::vector<Future<int>> dummyFutures;
+    for (auto&& f : futures) {
+        dummyFutures.push_back(std::move(f).then([]() { return 0; }));
+    }
+    return collect(
+               std::move(dummyFutures), 0, [](int, const int&) { return ShouldStopIteration::kNo; })
+        .ignoreValue();
+}
 
-    /*
-     * Starts a background thread that will process alarms from all registered schedulers.
-     */
-    void start();
-
-    /*
-     * Clears all outstanding timers from all registered schedulers and shuts down the background
-     * thread.
-     */
-    void shutdown();
-
-private:
-    std::vector<AlarmSchedulerHandle> _initializeSchedulers(
-        std::vector<AlarmSchedulerHandle> container);
-
-    void _threadRoutine();
-
-    stdx::mutex _mutex;
-    stdx::condition_variable _condVar;
-    bool _running = false;
-    bool _newAlarm = false;
-    Date_t _nextAlarm = Date_t::max();
-    std::vector<AlarmSchedulerHandle> _schedulers;
-    stdx::thread _thread;
-};
-
+}  // namespace txn
 }  // namespace mongo

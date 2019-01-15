@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -176,6 +175,13 @@ void tearDownFCV() {
     serverGlobalParams.featureCompatibility.reset();
 }
 
+void setupDBEnvironment() {
+    setUpFCV();
+}
+void teardownDBEnvironment() {
+    tearDownFCV();
+}
+
 }  // namespace
 
 Test::Test() : _isCapturingLogMessages(false) {}
@@ -196,17 +202,18 @@ void Test::run() {
     // not considered an error.
     try {
         _doTest();
-    } catch (FixtureExceptionForTesting&) {
+    } catch (const FixtureExceptionForTesting&) {
         return;
     }
 }
 
 void Test::_setUp() {
-    setUpFCV();
+    setupDBEnvironment();
     this->setUp();
 }
 void Test::_tearDown() {
     this->tearDown();
+    teardownDBEnvironment();
 }
 
 namespace {
@@ -317,8 +324,8 @@ Result* Suite::run(const std::string& filter, int runsPerTest) {
                 if (runsPerTest > 1) {
                     runTimes << "  (" << x + 1 << "/" << runsPerTest << ")";
                 }
-                setUpFCV();
-                auto guard = MakeUnsafeScopeGuard([this] { tearDownFCV(); });
+                setupDBEnvironment();
+                auto guard = MakeUnsafeScopeGuard([this] { teardownDBEnvironment(); });
                 log() << "\t going to run test: " << tc->getName() << runTimes.str();
                 tc->run();
             }

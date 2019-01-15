@@ -54,7 +54,8 @@ class CollectionBulkLoaderMock : public CollectionBulkLoader {
     MONGO_DISALLOW_COPYING(CollectionBulkLoaderMock);
 
 public:
-    CollectionBulkLoaderMock(CollectionMockStats* collStats) : stats(collStats){};
+    explicit CollectionBulkLoaderMock(std::shared_ptr<CollectionMockStats> collStats)
+        : stats(std::move(collStats)){};
     virtual ~CollectionBulkLoaderMock() = default;
     virtual Status init(const std::vector<BSONObj>& secondaryIndexSpecs) override;
 
@@ -69,15 +70,15 @@ public:
         return BSONObj();
     };
 
-    CollectionMockStats* stats;
+    std::shared_ptr<CollectionMockStats> stats;
 
     // Override functions.
-    stdx::function<Status(const std::vector<BSONObj>::const_iterator begin,
-                          const std::vector<BSONObj>::const_iterator end)>
+    std::function<Status(const std::vector<BSONObj>::const_iterator begin,
+                         const std::vector<BSONObj>::const_iterator end)>
         insertDocsFn = [](const std::vector<BSONObj>::const_iterator,
                           const std::vector<BSONObj>::const_iterator) { return Status::OK(); };
-    stdx::function<Status()> abortFn = []() { return Status::OK(); };
-    stdx::function<Status()> commitFn = []() { return Status::OK(); };
+    std::function<Status()> abortFn = []() { return Status::OK(); };
+    std::function<Status()> commitFn = []() { return Status::OK(); };
 };
 
 class StorageInterfaceMock : public StorageInterface {

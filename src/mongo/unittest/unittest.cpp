@@ -166,6 +166,16 @@ UnsafeScopeGuard<F> MakeUnsafeScopeGuard(F fun) {
     return UnsafeScopeGuard<F>(std::move(fun));
 }
 
+// Attempting to read the featureCompatibilityVersion parameter before it is explicitly initialized
+// with a meaningful value will trigger failures as of SERVER-32630.
+void setUpFCV() {
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+}
+void tearDownFCV() {
+    serverGlobalParams.featureCompatibility.reset();
+}
+
 }  // namespace
 
 Test::Test() : _isCapturingLogMessages(false) {}
@@ -177,8 +187,8 @@ Test::~Test() {
 }
 
 void Test::run() {
-    setUp();
-    auto guard = MakeUnsafeScopeGuard([this] { tearDown(); });
+    _setUp();
+    auto guard = MakeUnsafeScopeGuard([this] { _tearDown(); });
 
     // An uncaught exception does not prevent the tear down from running. But
     // such an event still constitutes an error. To test this behavior we use a
@@ -191,14 +201,12 @@ void Test::run() {
     }
 }
 
-// Attempting to read the featureCompatibilityVersion parameter before it is explicitly initialized
-// with a meaningful value will trigger failures as of SERVER-32630.
-void Test::setUp() {
-    serverGlobalParams.featureCompatibility.setVersion(
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+void Test::_setUp() {
+    setUpFCV();
+    this->setUp();
 }
-void Test::tearDown() {
-    serverGlobalParams.featureCompatibility.reset();
+void Test::_tearDown() {
+    this->tearDown();
 }
 
 namespace {
@@ -309,6 +317,8 @@ Result* Suite::run(const std::string& filter, int runsPerTest) {
                 if (runsPerTest > 1) {
                     runTimes << "  (" << x + 1 << "/" << runsPerTest << ")";
                 }
+                setUpFCV();
+                auto guard = MakeUnsafeScopeGuard([this] { tearDownFCV(); });
                 log() << "\t going to run test: " << tc->getName() << runTimes.str();
                 tc->run();
             }

@@ -366,18 +366,21 @@ protected:
     /**
      * Called on the test object before running the test.
      */
-    virtual void setUp();
+    virtual void setUp() {}
 
     /**
      * Called on the test object after running the test.
      */
-    virtual void tearDown();
+    virtual void tearDown() {}
 
 private:
     /**
      * The test itself.
      */
     virtual void _doTest() = 0;
+
+    void _setUp();
+    void _tearDown();
 
     bool _isCapturingLogMessages;
     std::vector<std::string> _capturedLogMessages;

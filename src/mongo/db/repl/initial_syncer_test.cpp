@@ -305,7 +305,7 @@ protected:
                     log() << "reusing collection during test which may cause problems, ns:" << nss;
                 }
                 auto localLoader = std::make_unique<CollectionBulkLoaderMock>(collInfo->stats);
-                auto status = collInfo->loader->init(secondaryIndexSpecs);
+                auto status = localLoader->init(secondaryIndexSpecs);
                 if (!status.isOK())
                     return status;
                 collInfo->loader = localLoader.get();

@@ -573,7 +573,7 @@ TEST_F(CollectionClonerNoAutoIndexTest, DoNotCreateIDIndexIfAutoIndexIdUsed) {
             const auto status = loader->init(theIndexSpecs);
             if (!status.isOK())
                 return status;
-            return loader;
+            return std::move(loader);
         };
 
     const BSONObj doc = BSON("_id" << 1);

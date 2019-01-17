@@ -42,21 +42,22 @@ ChangeStreamProxyStage::ChangeStreamProxyStage(OperationContext* opCtx,
                                                std::unique_ptr<Pipeline, PipelineDeleter> pipeline,
                                                WorkingSet* ws)
     : PipelineProxyStage(opCtx, std::move(pipeline), ws, kStageType) {
-    invariant(std::any_of(
-        _pipeline->getSources().begin(), _pipeline->getSources().end(), [](const auto& stage) {
-            return stage->constraints().isChangeStreamStage();
-        }));
+    // Set _postBatchResumeToken to the initial PBRT that was added to the expression context during
+    // pipeline construction, and use it to obtain the starting time for _latestOplogTimestamp.
+    invariant(!_pipeline->getContext()->initialPostBatchResumeToken.isEmpty());
+    _postBatchResumeToken = _pipeline->getContext()->initialPostBatchResumeToken.getOwned();
+    if (!_pipeline->getContext()->needsMerge || _pipeline->getContext()->mergeByPBRT) {
+        _latestOplogTimestamp = ResumeToken::parse(_postBatchResumeToken).getData().clusterTime;
+    }
 }
 
 boost::optional<BSONObj> ChangeStreamProxyStage::getNextBson() {
     if (auto next = _pipeline->getNext()) {
         // While we have more results to return, we track both the timestamp and the resume token of
-        // the latest event observed in the oplog, the latter via its _id field.
+        // the latest event observed in the oplog, the latter via its sort key metadata field.
         auto nextBSON = (_includeMetaData ? next->toBsonWithMetaData() : next->toBson());
         _latestOplogTimestamp = PipelineD::getLatestOplogTimestamp(_pipeline.get());
-        if (next->getField("_id").getType() == BSONType::Object) {
-            _postBatchResumeToken = next->getField("_id").getDocument().toBson();
-        }
+        _postBatchResumeToken = next->getSortKeyMetaField();
         return nextBSON;
     }
 

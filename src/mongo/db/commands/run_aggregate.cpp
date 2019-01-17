@@ -139,6 +139,7 @@ bool handleCursorCommand(OperationContext* opCtx,
     invariant(cursor);
 
     BSONObj next;
+    bool stashedResult = false;
     for (int objCount = 0; objCount < batchSize; objCount++) {
         // The initial getNext() on a PipelineProxyStage may be very expensive so we don't
         // do it when batchSize is 0 since that indicates a desire for a fast return.
@@ -155,12 +156,6 @@ bool handleCursorCommand(OperationContext* opCtx,
         }
 
         if (state == PlanExecutor::IS_EOF) {
-            // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the
-            // postBatchResumeToken until the former is removed in a future release.
-            responseBuilder.setLatestOplogTimestamp(
-                cursor->getExecutor()->getLatestOplogTimestamp());
-            responseBuilder.setPostBatchResumeToken(
-                cursor->getExecutor()->getPostBatchResumeToken());
             if (!cursor->isTailable()) {
                 // make it an obvious error to use cursor or executor after this point
                 cursor = nullptr;
@@ -177,17 +172,27 @@ bool handleCursorCommand(OperationContext* opCtx,
         // for later.
         if (!FindCommon::haveSpaceForNext(next, objCount, responseBuilder.bytesUsed())) {
             cursor->getExecutor()->enqueue(next);
+            stashedResult = true;
             break;
         }
 
-        // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the
-        // postBatchResumeToken until the former is removed in a future release.
+        // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the PBRT until the
+        // former is removed in a future release.
         responseBuilder.setLatestOplogTimestamp(cursor->getExecutor()->getLatestOplogTimestamp());
         responseBuilder.setPostBatchResumeToken(cursor->getExecutor()->getPostBatchResumeToken());
         responseBuilder.append(next);
     }
 
     if (cursor) {
+        // For empty batches, or in the case where the final result was added to the batch rather
+        // than being stashed, we update the PBRT to ensure that it is the most recent available.
+        const auto* exec = cursor->getExecutor();
+        if (!stashedResult) {
+            // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the PBRT until
+            // the former is removed in a future release.
+            responseBuilder.setLatestOplogTimestamp(exec->getLatestOplogTimestamp());
+            responseBuilder.setPostBatchResumeToken(exec->getPostBatchResumeToken());
+        }
         // If a time limit was set on the pipeline, remaining time is "rolled over" to the
         // cursor (for use by future getmore ops).
         cursor->setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
@@ -617,13 +622,11 @@ Status runAggregate(OperationContext* opCtx,
     std::vector<ClientCursorPin> pins;
     std::vector<ClientCursor*> cursors;
 
-    ScopeGuard cursorFreer = MakeGuard(
-        [](std::vector<ClientCursorPin>* pins) {
-            for (auto& p : *pins) {
-                p.deleteUnderlying();
-            }
-        },
-        &pins);
+    auto cursorFreer = makeGuard([&] {
+        for (auto& p : pins) {
+            p.deleteUnderlying();
+        }
+    });
 
     for (size_t idx = 0; idx < execs.size(); ++idx) {
         ClientCursorParams cursorParams(
@@ -631,7 +634,8 @@ Status runAggregate(OperationContext* opCtx,
             origNss,
             AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
             repl::ReadConcernArgs::get(opCtx),
-            cmdObj);
+            cmdObj,
+            ClientCursorParams::LockPolicy::kLocksInternally);
         if (expCtx->tailableMode == TailableModeEnum::kTailable) {
             cursorParams.setTailable(true);
         } else if (expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
@@ -655,7 +659,7 @@ Status runAggregate(OperationContext* opCtx,
         const bool keepCursor =
             handleCursorCommand(opCtx, origNss, std::move(cursors), request, result);
         if (keepCursor) {
-            cursorFreer.Dismiss();
+            cursorFreer.dismiss();
         }
     }
 

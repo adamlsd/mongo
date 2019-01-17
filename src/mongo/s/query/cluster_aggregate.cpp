@@ -35,7 +35,6 @@
 #include "mongo/s/query/cluster_aggregate.h"
 
 #include <boost/intrusive_ptr.hpp>
-#include <mongo/rpc/op_msg_rpc_impls.h>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_session.h"
@@ -58,6 +57,7 @@
 #include "mongo/db/write_concern_options.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/rpc/op_msg_rpc_impls.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_commands_helpers.h"
@@ -143,11 +143,11 @@ BSONObj createCommandForMergingShard(const AggregationRequest& request,
 MongoSInterface::DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     const NamespaceString& executionNss,
-    const AggregationRequest& aggRequest,
-    const LiteParsedPipeline& liteParsedPipeline,
+    const AggregationRequest& request,
+    const LiteParsedPipeline& litePipe,
     BSONObj collationObj,
     MongoSInterface::DispatchShardPipelineResults* shardDispatchResults) {
-    invariant(!liteParsedPipeline.hasChangeStream());
+    invariant(!litePipe.hasChangeStream());
     auto opCtx = expCtx->opCtx;
 
     if (MONGO_FAIL_POINT(clusterAggregateFailToDispatchExchangeConsumerPipeline)) {
@@ -174,7 +174,7 @@ MongoSInterface::DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
 
         cluster_aggregation_planner::addMergeCursorsSource(
             consumerPipeline.get(),
-            liteParsedPipeline,
+            litePipe,
             BSONObj(),
             std::move(producers),
             {},
@@ -184,7 +184,7 @@ MongoSInterface::DispatchShardPipelineResults dispatchExchangeConsumerPipeline(
         consumerPipelines.emplace_back(std::move(consumerPipeline), nullptr, boost::none);
 
         auto consumerCmdObj = MongoSInterface::createCommandForTargetedShards(
-            opCtx, aggRequest, consumerPipelines.back(), collationObj, boost::none, false);
+            opCtx, request, litePipe, consumerPipelines.back(), collationObj, boost::none, false);
 
         requests.emplace_back(shardDispatchResults->exchangeSpec->consumerShards[idx],
                               consumerCmdObj);
@@ -326,6 +326,7 @@ BSONObj establishMergingMongosCursor(
     options.isInitialResponse = true;
 
     CursorResponseBuilder responseBuilder(&replyBuilder, options);
+    bool stashedResult = false;
 
     for (long long objCount = 0; objCount < request.getBatchSize(); ++objCount) {
         ClusterQueryResult next;
@@ -357,10 +358,19 @@ BSONObj establishMergingMongosCursor(
 
         if (!FindCommon::haveSpaceForNext(nextObj, objCount, responseBuilder.bytesUsed())) {
             ccc->queueResult(nextObj);
+            stashedResult = true;
             break;
         }
 
+        // Set the postBatchResumeToken. For non-$changeStream aggregations, this will be empty.
+        responseBuilder.setPostBatchResumeToken(ccc->getPostBatchResumeToken());
         responseBuilder.append(nextObj);
+    }
+
+    // For empty batches, or in the case where the final result was added to the batch rather than
+    // being stashed, we update the PBRT here to ensure that it is the most recent available.
+    if (!stashedResult) {
+        responseBuilder.setPostBatchResumeToken(ccc->getPostBatchResumeToken());
     }
 
     ccc->detachFromOperationContext();
@@ -511,6 +521,19 @@ ShardId pickMergingShard(OperationContext* opCtx,
     // shard for the database.
     return needsPrimaryShardMerge ? primaryShard
                                   : targetedShards[prng.nextInt32(targetedShards.size())];
+}
+
+// "Resolve" involved namespaces into a map. We won't try to execute anything on a mongos, but we
+// still have to populate this map so that any $lookups, etc. will be able to have a resolved view
+// definition. It's okay that this is incorrect, we will repopulate the real namespace map on the
+// mongod. Note that this function must be called before forwarding an aggregation command on an
+// unsharded collection, in order to verify that the involved namespaces are allowed to be sharded.
+auto resolveInvolvedNamespaces(OperationContext* opCtx, const LiteParsedPipeline& litePipe) {
+    StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces;
+    for (auto&& nss : litePipe.getInvolvedNamespaces()) {
+        resolvedNamespaces.try_emplace(nss.coll(), nss, std::vector<BSONObj>{});
+    }
+    return resolvedNamespaces;
 }
 
 // Build an appropriate ExpressionContext for the pipeline. This helper instantiates an appropriate
@@ -669,6 +692,13 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
         MongoSInterface::getExecutionNsRoutingInfo(opCtx, namespaces.executionNss);
     boost::optional<CachedCollectionRoutingInfo> routingInfo;
     LiteParsedPipeline litePipe(request);
+    const auto isSharded = [](OperationContext* opCtx, const NamespaceString& nss) -> bool {
+        const auto resolvedNsRoutingInfo =
+            uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
+        return resolvedNsRoutingInfo.cm().get();
+    };
+    const bool involvesShardedCollections = litePipe.verifyIsSupported(
+        opCtx, isSharded, request.getExplain(), serverGlobalParams.enableMajorityReadConcern);
 
     // If the routing table is valid, we obtain a reference to it. If the table is not valid, then
     // either the database does not exist, or there are no shards in the cluster. In the latter
@@ -692,21 +722,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     // If we don't have a routing table, then this is a $changeStream which must run on all shards.
     invariant(routingInfo || (mustRunOnAll && litePipe.hasChangeStream()));
 
-    StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces;
-    bool involvesShardedCollections = false;
-    for (auto&& nss : litePipe.getInvolvedNamespaces()) {
-        const auto resolvedNsRoutingInfo =
-            uassertStatusOK(getCollectionRoutingInfoForTxnCmd(opCtx, nss));
-
-        uassert(28769,
-                str::stream() << nss.ns() << " cannot be sharded",
-                !resolvedNsRoutingInfo.cm() || litePipe.allowShardedForeignCollection(nss));
-
-        resolvedNamespaces.try_emplace(nss.coll(), nss, std::vector<BSONObj>{});
-        if (resolvedNsRoutingInfo.cm()) {
-            involvesShardedCollections = true;
-        }
-    }
+    auto resolvedNamespaces = resolveInvolvedNamespaces(opCtx, litePipe);
 
     // A pipeline is allowed to passthrough to the primary shard iff the following conditions are
     // met:

@@ -115,6 +115,7 @@ public:
     repl::OpTime onDropCollection(OperationContext* opCtx,
                                   const NamespaceString& collectionName,
                                   OptionalCollectionUUID uuid,
+                                  std::uint64_t numRecords,
                                   CollectionDropType dropType) override;
 
     const repl::OpTime dropOpTime = {Timestamp(Seconds(100), 1U), 1LL};
@@ -165,6 +166,7 @@ void OpObserverMock::onTransactionAbort(OperationContext* opCtx,
 repl::OpTime OpObserverMock::onDropCollection(OperationContext* opCtx,
                                               const NamespaceString& collectionName,
                                               OptionalCollectionUUID uuid,
+                                              std::uint64_t numRecords,
                                               const CollectionDropType dropType) {
     // If the oplog is not disabled for this namespace, then we need to reserve an op time for the
     // drop.
@@ -246,10 +248,11 @@ protected:
         func(newOpCtx.get());
     }
 
-    std::unique_ptr<MongoDOperationContextSession> checkOutSession() {
+    std::unique_ptr<MongoDOperationContextSession> checkOutSession(
+        boost::optional<bool> startNewTxn = true) {
         auto opCtxSession = std::make_unique<MongoDOperationContextSession>(opCtx());
         auto txnParticipant = TransactionParticipant::get(opCtx());
-        txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), false, true);
+        txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), false, startNewTxn);
         return opCtxSession;
     }
 
@@ -1141,9 +1144,8 @@ TEST_F(TxnParticipantTest, CannotStartNewTransactionWhilePreparedTransactionInPr
         ](OperationContext * newOpCtx) {
             newOpCtx->setLogicalSessionId(lsid);
             newOpCtx->setTxnNumber(txnNumberToStart);
-
-            auto session = SessionCatalog::get(newOpCtx)->checkOutSession(newOpCtx);
-            auto txnParticipant = TransactionParticipant::get(session.get());
+            MongoDOperationContextSession ocs(newOpCtx);
+            auto txnParticipant = TransactionParticipant::get(newOpCtx);
 
             ASSERT_THROWS_CODE(txnParticipant->beginOrContinue(txnNumberToStart, false, true),
                                AssertionException,
@@ -1380,9 +1382,27 @@ protected:
             50911);
     }
 
-    // TODO SERVER-36639: Add tests that the active transaction number cannot be reused if the
-    // transaction is in the abort after prepare state (or any state indicating the participant
-    // has been involved in a two phase commit).
+    void cannotSpecifyStartTransactionOnAbortedPreparedTransaction() {
+        auto autocommit = false;
+        auto startTransaction = true;
+        auto sessionCheckout = checkOutSession();
+
+        auto txnParticipant = TransactionParticipant::get(opCtx());
+        ASSERT(txnParticipant->inMultiDocumentTransaction());
+
+        txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+        txnParticipant->prepareTransaction(opCtx(), {});
+        ASSERT(txnParticipant->transactionIsPrepared());
+
+        txnParticipant->abortActiveTransaction(opCtx());
+        ASSERT(txnParticipant->transactionIsAborted());
+
+        startTransaction = true;
+        ASSERT_THROWS_CODE(
+            txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), autocommit, startTransaction),
+            AssertionException,
+            50911);
+    }
 };
 
 /**
@@ -1421,6 +1441,10 @@ TEST_F(ShardTxnParticipantTest, CannotSpecifyStartTransactionOnStartedRetryableW
     cannotSpecifyStartTransactionOnStartedRetryableWrite();
 }
 
+TEST_F(ShardTxnParticipantTest, CannotSpecifyStartTransactionOnAbortedPreparedTransaction) {
+    cannotSpecifyStartTransactionOnAbortedPreparedTransaction();
+}
+
 /**
  * Test fixture for a transaction participant running on a config server.
  */
@@ -1455,6 +1479,10 @@ TEST_F(ConfigTxnParticipantTest, CannotSpecifyStartTransactionOnPreparedTxn) {
 
 TEST_F(ConfigTxnParticipantTest, CannotSpecifyStartTransactionOnStartedRetryableWrite) {
     cannotSpecifyStartTransactionOnStartedRetryableWrite();
+}
+
+TEST_F(ConfigTxnParticipantTest, CannotSpecifyStartTransactionOnAbortedPreparedTransaction) {
+    cannotSpecifyStartTransactionOnAbortedPreparedTransaction();
 }
 
 TEST_F(TxnParticipantTest, KillSessionsDuringUnpreparedAbortSucceeds) {
@@ -1550,6 +1578,42 @@ TEST_F(TxnParticipantTest, ThrowDuringPreparedOnTransactionAbortIsFatal) {
     ASSERT_THROWS_CODE(txnParticipant->abortActiveTransaction(opCtx()),
                        AssertionException,
                        ErrorCodes::OperationFailed);
+}
+
+TEST_F(TxnParticipantTest, ReacquireLocksForPreparedTransactionsOnStepUp) {
+    ASSERT(opCtx()->writesAreReplicated());
+
+    // Prepare a transaction on secondary.
+    {
+        auto sessionCheckout = checkOutSession();
+        auto txnParticipant = TransactionParticipant::get(opCtx());
+
+        // Simulate a transaction on secondary.
+        repl::UnreplicatedWritesBlock uwb(opCtx());
+        ASSERT(!opCtx()->writesAreReplicated());
+
+        txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+        // Simulate the locking of an insert.
+        {
+            Lock::DBLock dbLock(opCtx(), "test", MODE_IX);
+            Lock::CollectionLock collLock(opCtx()->lockState(), "test.foo", MODE_IX);
+        }
+        txnParticipant->prepareTransaction(opCtx(), repl::OpTime({1, 1}, 1));
+        txnParticipant->stashTransactionResources(opCtx());
+        // Secondary yields locks for prepared transactions.
+        ASSERT_FALSE(txnParticipant->getTxnResourceStashLockerForTest()->isLocked());
+    }
+
+    // Step-up will restore the locks of prepared transactions.
+    ASSERT(opCtx()->writesAreReplicated());
+    MongoDSessionCatalog::onStepUp(opCtx());
+    {
+        auto sessionCheckout = checkOutSession({});
+        auto txnParticipant = TransactionParticipant::get(opCtx());
+        ASSERT(txnParticipant->getTxnResourceStashLockerForTest()->isLocked());
+        txnParticipant->unstashTransactionResources(opCtx(), "abortTransaction");
+        txnParticipant->abortActiveTransaction(opCtx());
+    }
 }
 
 /**

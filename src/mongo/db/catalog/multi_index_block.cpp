@@ -51,6 +51,7 @@
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/logger/redaction.h"
 #include "mongo/util/assert_util.h"
@@ -76,7 +77,6 @@ const StringData kCommitReadyMembersFieldName = "commitReadyMembers"_sd;
 MONGO_FAIL_POINT_DEFINE(crashAfterStartingIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuildUnlocked);
-MONGO_FAIL_POINT_DEFINE(slowBackgroundIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangBeforeIndexBuildOf);
 MONGO_FAIL_POINT_DEFINE(hangAfterIndexBuildOf);
 
@@ -133,12 +133,16 @@ MultiIndexBlock::~MultiIndexBlock() {
     }
 }
 
-void MultiIndexBlock::allowBackgroundBuilding() {
-    _buildInBackground = true;
-}
+bool MultiIndexBlock::areHybridIndexBuildsEnabled() {
+    // The mobile storage engine does not suport dupsAllowed mode on bulk builders, which means that
+    // it does not support hybrid builds. See SERVER-38550
+    if (storageGlobalParams.engine == "mobile") {
+        return false;
+    }
 
-void MultiIndexBlock::allowInterruption() {
-    _allowInterruption = true;
+    // TODO: SERVER-37272 Disable hybrid if in FCV 4.0.
+
+    return enableHybridIndexBuilds.load();
 }
 
 void MultiIndexBlock::ignoreUniqueConstraint() {
@@ -184,11 +188,25 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
     if (!status.isOK())
         return status;
 
+    const bool enableHybrid = areHybridIndexBuildsEnabled();
+
+    // Parse the specs if this builder is not building hybrid indexes, otherwise log a message.
     for (size_t i = 0; i < indexSpecs.size(); i++) {
         BSONObj info = indexSpecs[i];
+        if (enableHybrid) {
+            if (info["background"].isBoolean() && !info["background"].Bool()) {
+                log() << "ignoring obselete { background: false } index build option because all "
+                         "indexes are built in the background with the hybrid method";
+            }
+            continue;
+        }
 
-        // Any foreground indexes make all indexes be built in the foreground.
-        _buildInBackground = (_buildInBackground && info["background"].trueValue());
+        // A single foreground build makes the entire builder foreground.
+        if (info["background"].trueValue() && _method != IndexBuildMethod::kForeground) {
+            _method = IndexBuildMethod::kBackground;
+        } else {
+            _method = IndexBuildMethod::kForeground;
+        }
     }
 
     std::vector<BSONObj> indexInfoObjs;
@@ -211,7 +229,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
         indexInfoObjs.push_back(info);
 
         IndexToBuild index;
-        index.block = _collection->getIndexCatalog()->createIndexBuildBlock(_opCtx, info);
+        index.block = _collection->getIndexCatalog()->createIndexBuildBlock(_opCtx, info, _method);
         status = index.block->init();
         if (!status.isOK())
             return status;
@@ -221,9 +239,9 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
         if (!status.isOK())
             return status;
 
-        // Foreground builds and background builds using an interceptor can use the bulk builder.
+        // Hybrid builds and non-hybrid foreground builds use the bulk builder.
         const bool useBulk =
-            !_buildInBackground || index.block->getEntry()->indexBuildInterceptor();
+            _method == IndexBuildMethod::kHybrid || _method == IndexBuildMethod::kForeground;
         if (useBulk) {
             // Bulk build process requires foreground building as it assumes nothing is changing
             // under it.
@@ -234,16 +252,18 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
 
         _collection->getIndexCatalog()->prepareInsertDeleteOptions(
             _opCtx, descriptor, &index.options);
-        // Allow duplicates when explicitly allowed or an interceptor is installed, which will
-        // perform duplicate checking itself.
+
+        // Allow duplicates when explicitly allowed or when using hybrid builds, which will perform
+        // duplicate checking itself.
         index.options.dupsAllowed = index.options.dupsAllowed || _ignoreUnique ||
-            index.block->getEntry()->indexBuildInterceptor();
+            index.block->getEntry()->isHybridBuilding();
         if (_ignoreUnique) {
             index.options.getKeysMode = IndexAccessMethod::GetKeysMode::kRelaxConstraints;
         }
         index.options.fromIndexBuilder = true;
 
-        log() << "index build: starting on " << ns << " properties: " << descriptor->toString();
+        log() << "index build: starting on " << ns << " properties: " << descriptor->toString()
+              << " using method: " << _method;
         if (index.bulk)
             log() << "build may temporarily use up to "
                   << eachIndexBuildMaxMemoryUsageBytes / 1024 / 1024 << " megabytes of RAM";
@@ -256,7 +276,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
         _indexes.push_back(std::move(index));
     }
 
-    if (_buildInBackground)
+    if (isBackgroundBuilding())
         _backgroundOperation.reset(new BackgroundOperation(ns));
 
     auto replCoord = repl::ReplicationCoordinator::get(_opCtx);
@@ -303,9 +323,9 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
     // accumulate them in the `MultikeyPathTracker` and do the write as part of the update that
     // commits the index.
     auto stopTracker =
-        MakeGuard([this] { MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo(); });
+        makeGuard([this] { MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo(); });
     if (MultikeyPathTracker::get(_opCtx).isTrackingMultikeyPathInfo()) {
-        stopTracker.Dismiss();
+        stopTracker.dismiss();
     }
     MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo();
 
@@ -322,8 +342,7 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
     unsigned long long n = 0;
 
     PlanExecutor::YieldPolicy yieldPolicy;
-    if (_buildInBackground) {
-        invariant(_allowInterruption);
+    if (isBackgroundBuilding()) {
         yieldPolicy = PlanExecutor::YIELD_AUTO;
     } else {
         yieldPolicy = PlanExecutor::WRITE_CONFLICT_RETRY_ONLY;
@@ -336,8 +355,9 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
     // with every insert into the index, which resets the collection scan cursor between every call
     // to getNextSnapshotted(). With read-once cursors enabled, this can evict data we may need to
     // read again, incurring a significant performance penalty.
-    // TODO: Enable this for all index builds when SERVER-37268 is complete.
-    bool readOnce = !_buildInBackground && useReadOnceCursorsForIndexBuilds.load();
+    // Note: This does not apply to hybrid builds because they write keys to the external sorter.
+    bool readOnce =
+        _method != IndexBuildMethod::kBackground && useReadOnceCursorsForIndexBuilds.load();
     _opCtx->recoveryUnit()->setReadOnce(readOnce);
 
     Snapshotted<BSONObj> objToIndex;
@@ -348,21 +368,18 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
            (PlanExecutor::ADVANCED == (state = exec->getNextSnapshotted(&objToIndex, &loc))) ||
            MONGO_FAIL_POINT(hangAfterStartingIndexBuild)) {
         try {
-            if (_allowInterruption && !_opCtx->checkForInterruptNoAssert().isOK())
+            auto interruptStatus = _opCtx->checkForInterruptNoAssert();
+            if (!interruptStatus.isOK())
                 return _opCtx->checkForInterruptNoAssert();
 
-            if (!(retries || PlanExecutor::ADVANCED == state) ||
-                MONGO_FAIL_POINT(slowBackgroundIndexBuild)) {
-                log() << "Hanging index build due to failpoint";
-                invariant(_allowInterruption);
-                sleepmillis(1000);
+            if (!retries && PlanExecutor::ADVANCED != state) {
                 continue;
             }
 
             // Make sure we are working with the latest version of the document.
             if (objToIndex.snapshotId() != _opCtx->recoveryUnit()->getSnapshotId() &&
                 !_collection->findDoc(_opCtx, loc, &objToIndex)) {
-                // doc was deleted so don't index it.
+                // Document was deleted so don't index it.
                 retries = 0;
                 continue;
             }
@@ -374,14 +391,14 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
 
             WriteUnitOfWork wunit(_opCtx);
             Status ret = insert(objToIndex.value(), loc);
-            if (_buildInBackground)
+            if (_method == IndexBuildMethod::kBackground)
                 exec->saveState();
             if (!ret.isOK()) {
                 // Fail the index build hard.
                 return ret;
             }
             wunit.commit();
-            if (_buildInBackground) {
+            if (_method == IndexBuildMethod::kBackground) {
                 try {
                     exec->restoreState();  // Handles any WCEs internally.
                 } catch (...) {
@@ -396,6 +413,10 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
             n++;
             retries = 0;
         } catch (const WriteConflictException&) {
+            // Only background builds write inside transactions, and therefore should only ever
+            // generate WCEs.
+            invariant(_method == IndexBuildMethod::kBackground);
+
             CurOp::get(_opCtx)->debug().additiveMetrics.incrementWriteConflicts(1);
             retries++;  // logAndBackoff expects this to be 1 on first call.
             WriteConflictException::logAndBackoff(
@@ -421,13 +442,12 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
         // Unlock before hanging so replication recognizes we've completed.
         Locker::LockSnapshot lockInfo;
         invariant(_opCtx->lockState()->saveLockStateAndUnlock(&lockInfo));
-        while (MONGO_FAIL_POINT(hangAfterStartingIndexBuildUnlocked)) {
-            log() << "Hanging index build with no locks due to "
-                     "'hangAfterStartingIndexBuildUnlocked' failpoint";
-            sleepmillis(1000);
-        }
 
-        if (_buildInBackground) {
+        log() << "Hanging index build with no locks due to "
+                 "'hangAfterStartingIndexBuildUnlocked' failpoint";
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterStartingIndexBuildUnlocked);
+
+        if (isBackgroundBuilding()) {
             _opCtx->lockState()->restoreLockState(_opCtx, lockInfo);
             _opCtx->recoveryUnit()->abandonSnapshot();
             return Status(ErrorCodes::OperationFailed,
@@ -441,7 +461,7 @@ Status MultiIndexBlock::insertAllDocumentsInCollection() {
     progress->finished();
 
     log() << "index build: collection scan done. scanned " << n << " total records in "
-          << t.seconds() << " secs";
+          << t.seconds() << " seconds";
 
     Status ret = dumpInsertsFromBulk();
     if (!ret.isOK())
@@ -506,13 +526,17 @@ Status MultiIndexBlock::dumpInsertsFromBulk(std::set<RecordId>* dupRecords) {
         // when 'dupRecords' is not used because these two vectors are mutually incompatible.
         std::vector<BSONObj> dupKeysInserted;
 
+        // When dupRecords is passed, 'dupsAllowed' should be passed to reflect whether or not the
+        // index is unique.
+        bool dupsAllowed = (dupRecords) ? !_indexes[i].block->getEntry()->descriptor()->unique()
+                                        : _indexes[i].options.dupsAllowed;
+
         IndexCatalogEntry* entry = _indexes[i].block->getEntry();
         LOG(1) << "index build: inserting from external sorter into index: "
                << entry->descriptor()->indexName();
         Status status = _indexes[i].real->commitBulk(_opCtx,
                                                      _indexes[i].bulk.get(),
-                                                     _allowInterruption,
-                                                     _indexes[i].options.dupsAllowed,
+                                                     dupsAllowed,
                                                      dupRecords,
                                                      (dupRecords) ? nullptr : &dupKeysInserted);
         if (!status.isOK()) {
@@ -538,7 +562,7 @@ Status MultiIndexBlock::dumpInsertsFromBulk(std::set<RecordId>* dupRecords) {
     return Status::OK();
 }
 
-Status MultiIndexBlock::drainBackgroundWritesIfNeeded() {
+Status MultiIndexBlock::drainBackgroundWrites() {
     if (State::kAborted == _getState()) {
         return {ErrorCodes::IndexBuildAborted,
                 str::stream() << "Index build aborted: " << _abortReason
@@ -619,9 +643,9 @@ Status MultiIndexBlock::commit(stdx::function<void(const BSONObj& spec)> onCreat
 
     // Do not interfere with writing multikey information when committing index builds.
     auto restartTracker =
-        MakeGuard([this] { MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo(); });
+        makeGuard([this] { MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo(); });
     if (!MultikeyPathTracker::get(_opCtx).isTrackingMultikeyPathInfo()) {
-        restartTracker.Dismiss();
+        restartTracker.dismiss();
     }
     MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo();
 
@@ -684,8 +708,8 @@ void MultiIndexBlock::abort(StringData reason) {
 }
 
 
-bool MultiIndexBlock::getBuildInBackground() const {
-    return _buildInBackground;
+bool MultiIndexBlock::isBackgroundBuilding() const {
+    return _method == IndexBuildMethod::kBackground || _method == IndexBuildMethod::kHybrid;
 }
 
 MultiIndexBlock::State MultiIndexBlock::getState_forTest() const {
@@ -759,6 +783,22 @@ std::ostream& operator<<(std::ostream& os, const MultiIndexBlock::State& state) 
             return os << "Aborted";
     }
     MONGO_UNREACHABLE;
+}
+
+logger::LogstreamBuilder& operator<<(logger::LogstreamBuilder& out,
+                                     const IndexBuildMethod& method) {
+    switch (method) {
+        case IndexBuildMethod::kHybrid:
+            out.stream() << "Hybrid";
+            break;
+        case IndexBuildMethod::kBackground:
+            out.stream() << "Background";
+            break;
+        case IndexBuildMethod::kForeground:
+            out.stream() << "Foreground";
+            break;
+    }
+    return out;
 }
 
 }  // namespace mongo

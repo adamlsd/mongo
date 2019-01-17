@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -190,9 +189,9 @@ public:
     StatusWith<BSONObj> prepareSpecForCreate(OperationContext* opCtx,
                                              const BSONObj& original) const override;
 
-    std::vector<BSONObj> removeExistingIndexes(
-        OperationContext* const opCtx,
-        const std::vector<BSONObj>& indexSpecsToBuild) const override;
+    std::vector<BSONObj> removeExistingIndexes(OperationContext* const opCtx,
+                                               const std::vector<BSONObj>& indexSpecsToBuild,
+                                               bool throwOnErrors) const override;
 
     /**
      * Drops all indexes in the index catalog, optionally dropping the id index depending on the
@@ -250,7 +249,8 @@ public:
         IndexBuildBlock(OperationContext* opCtx,
                         Collection* collection,
                         IndexCatalogImpl* catalog,
-                        const BSONObj& spec);
+                        const BSONObj& spec,
+                        IndexBuildMethod method);
 
         ~IndexBuildBlock();
 
@@ -289,6 +289,7 @@ public:
         const std::string _ns;
 
         BSONObj _spec;
+        IndexBuildMethod _method;
 
         std::string _indexName;
         std::string _indexNamespace;
@@ -337,7 +338,7 @@ public:
     }
 
     std::unique_ptr<IndexCatalog::IndexBuildBlockInterface> createIndexBuildBlock(
-        OperationContext* opCtx, const BSONObj& spec) override;
+        OperationContext* opCtx, const BSONObj& spec, IndexBuildMethod method) override;
 
     std::string::size_type getLongestIndexNameLength(OperationContext* opCtx) const override;
 

@@ -381,7 +381,7 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
         txnParticipant->unstashTransactionResources(opCtx, invocation->definition()->getName());
     }
 
-    ScopeGuard guard = MakeGuard([&txnParticipant, opCtx]() {
+    auto guard = makeGuard([&txnParticipant, opCtx] {
         txnParticipant->abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
     });
 
@@ -406,7 +406,7 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
         // If this shard has completed an earlier statement for this transaction, it must already be
         // in the transaction's participant list, so it is guaranteed to learn its outcome.
         txnParticipant->stashTransactionResources(opCtx);
-        guard.Dismiss();
+        guard.dismiss();
         throw;
     }
 
@@ -419,15 +419,11 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
 
     // Stash or commit the transaction when the command succeeds.
     txnParticipant->stashTransactionResources(opCtx);
-    guard.Dismiss();
+    guard.dismiss();
 } catch (const ExceptionFor<ErrorCodes::NoSuchTransaction>&) {
-    // We make our decision about the transaction state based on the oplog we have, so
-    // we set the client last op to the last optime observed by the system to ensure that
-    // we wait for the specified write concern on an optime greater than or equal to the
-    // the optime of our decision basis. Thus we know our decision basis won't be rolled
-    // back.
-    auto& replClient = repl::ReplClientInfo::forClient(opCtx->getClient());
-    replClient.setLastOpToSystemLastOpTime(opCtx);
+    if (!opCtx->getWriteConcern().usedDefault) {
+        TransactionParticipant::performNoopWriteForNoSuchTransaction(opCtx);
+    }
     throw;
 }
 

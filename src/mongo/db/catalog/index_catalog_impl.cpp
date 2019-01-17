@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -271,14 +270,19 @@ StatusWith<BSONObj> IndexCatalogImpl::prepareSpecForCreate(OperationContext* opC
 }
 
 std::vector<BSONObj> IndexCatalogImpl::removeExistingIndexes(
-    OperationContext* const opCtx, const std::vector<BSONObj>& indexSpecsToBuild) const {
+    OperationContext* const opCtx,
+    const std::vector<BSONObj>& indexSpecsToBuild,
+    bool throwOnErrors) const {
     std::vector<BSONObj> result;
     for (const auto& spec : indexSpecsToBuild) {
-        auto status = prepareSpecForCreate(opCtx, spec).getStatus();
-        if (status.code() == ErrorCodes::IndexAlreadyExists) {
+        auto prepareResult = prepareSpecForCreate(opCtx, spec);
+        if (prepareResult == ErrorCodes::IndexAlreadyExists) {
             continue;
         }
-        // Intentionally ignoring other error codes.
+        // Intentionally ignoring other error codes unless 'throwOnErrors' is true.
+        if (throwOnErrors) {
+            uassertStatusOK(prepareResult);
+        }
         result.push_back(spec);
     }
     return result;
@@ -306,7 +310,7 @@ StatusWith<BSONObj> IndexCatalogImpl::createIndexOnEmptyCollection(OperationCont
     spec = statusWithSpec.getValue();
 
     // now going to touch disk
-    IndexBuildBlock indexBuildBlock(opCtx, _collection, this, spec);
+    IndexBuildBlock indexBuildBlock(opCtx, _collection, this, spec, IndexBuildMethod::kForeground);
     status = indexBuildBlock.init();
     if (!status.isOK())
         return status;
@@ -1183,11 +1187,12 @@ Status IndexCatalogImpl::_indexFilteredRecords(OperationContext* opCtx,
         }
 
         Status status = Status::OK();
-        if (index->isBuilding()) {
+        if (index->isHybridBuilding()) {
             int64_t inserted;
             status = index->indexBuildInterceptor()->sideWrite(opCtx,
                                                                index->accessMethod(),
                                                                bsonRecord.docPtr,
+                                                               options,
                                                                bsonRecord.id,
                                                                IndexBuildInterceptor::Op::kInsert,
                                                                &inserted);
@@ -1233,20 +1238,25 @@ Status IndexCatalogImpl::_unindexRecord(OperationContext* opCtx,
                                         const RecordId& loc,
                                         bool logIfError,
                                         int64_t* keysDeletedOut) {
-    if (index->isBuilding()) {
+    InsertDeleteOptions options;
+    prepareInsertDeleteOptions(opCtx, index->descriptor(), &options);
+    options.logIfError = logIfError;
+
+    if (index->isHybridBuilding()) {
         int64_t removed;
-        auto status = index->indexBuildInterceptor()->sideWrite(
-            opCtx, index->accessMethod(), &obj, loc, IndexBuildInterceptor::Op::kDelete, &removed);
+        auto status = index->indexBuildInterceptor()->sideWrite(opCtx,
+                                                                index->accessMethod(),
+                                                                &obj,
+                                                                options,
+                                                                loc,
+                                                                IndexBuildInterceptor::Op::kDelete,
+                                                                &removed);
         if (status.isOK() && keysDeletedOut) {
             *keysDeletedOut += removed;
         }
 
         return status;
     }
-
-    InsertDeleteOptions options;
-    prepareInsertDeleteOptions(opCtx, index->descriptor(), &options);
-    options.logIfError = logIfError;
 
     // On WiredTiger, we do blind unindexing of records for efficiency.  However, when duplicates
     // are allowed in unique indexes, WiredTiger does not do blind unindexing, and instead confirms
@@ -1395,8 +1405,8 @@ Status IndexCatalogImpl::compactIndexes(OperationContext* opCtx) {
 }
 
 std::unique_ptr<IndexCatalog::IndexBuildBlockInterface> IndexCatalogImpl::createIndexBuildBlock(
-    OperationContext* opCtx, const BSONObj& spec) {
-    return std::make_unique<IndexBuildBlock>(opCtx, _collection, this, spec);
+    OperationContext* opCtx, const BSONObj& spec, IndexBuildMethod method) {
+    return std::make_unique<IndexBuildBlock>(opCtx, _collection, this, spec, method);
 }
 
 std::string::size_type IndexCatalogImpl::getLongestIndexNameLength(OperationContext* opCtx) const {

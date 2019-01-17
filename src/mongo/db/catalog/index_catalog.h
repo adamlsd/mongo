@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -53,6 +52,28 @@ struct BsonRecord {
     RecordId id;
     Timestamp ts;
     const BSONObj* docPtr;
+};
+
+enum class IndexBuildMethod {
+    /**
+     * Use a collection scan to dump all keys into an external sorter. During this process,
+     * concurrent client writes are accepted, and their generated keys are written into an
+     * interceptor. On completion, this interceptor is drained and used to verify uniqueness
+     * constraints on the index.
+     *
+     * This is the default for all index builds.
+     */
+    kHybrid,
+    /**
+     * Perform a collection scan by writing each document's generated key directly into the index.
+     * Accept writes in the background into the index as well.
+     */
+    kBackground,
+    /**
+     * Perform a collection scan to dump all keys into the exteral sorter, then into the index.
+     * During this process, callers guarantee that no writes will be accepted on this collection.
+     */
+    kForeground,
 };
 
 /**
@@ -325,11 +346,17 @@ public:
                                                      const BSONObj& original) const = 0;
 
     /**
-     * Removes pre-existing indexes from 'indexSpecsToBuild'. If this isn't done, an index build
-     * using 'indexSpecsToBuild' may fail with error code IndexAlreadyExists.
+     * Returns a copy of 'indexSpecsToBuild' that does not contain index specifications already
+     * existing in this index catalog. If this isn't done, an index build using 'indexSpecsToBuild'
+     * may fail with error code IndexAlreadyExists.
+     *
+     * If 'throwOnErrors' is set to true, any validation errors on a non-duplicate index
+     * will result in this function throwing an exception.
      */
     virtual std::vector<BSONObj> removeExistingIndexes(
-        OperationContext* const opCtx, const std::vector<BSONObj>& indexSpecsToBuild) const = 0;
+        OperationContext* const opCtx,
+        const std::vector<BSONObj>& indexSpecsToBuild,
+        bool throwOnErrors = false) const = 0;
 
     /**
      * Drops all indexes in the index catalog, optionally dropping the id index depending on the
@@ -424,7 +451,7 @@ public:
      * spex and OperationContext.
      */
     virtual std::unique_ptr<IndexBuildBlockInterface> createIndexBuildBlock(
-        OperationContext* opCtx, const BSONObj& spec) = 0;
+        OperationContext* opCtx, const BSONObj& spec, IndexBuildMethod method) = 0;
 
     // public helpers
 

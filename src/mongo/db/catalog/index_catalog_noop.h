@@ -144,9 +144,9 @@ public:
         return original;
     }
 
-    std::vector<BSONObj> removeExistingIndexes(
-        OperationContext* const opCtx,
-        const std::vector<BSONObj>& indexSpecsToBuild) const override {
+    std::vector<BSONObj> removeExistingIndexes(OperationContext* const opCtx,
+                                               const std::vector<BSONObj>& indexSpecsToBuild,
+                                               bool throwOnErrors) const override {
         return {};
     }
 
@@ -206,8 +206,8 @@ public:
         return "";
     }
 
-    std::unique_ptr<IndexBuildBlockInterface> createIndexBuildBlock(OperationContext* opCtx,
-                                                                    const BSONObj& spec) override {
+    std::unique_ptr<IndexBuildBlockInterface> createIndexBuildBlock(
+        OperationContext* opCtx, const BSONObj& spec, IndexBuildMethod method) override {
         return {};
     }
 

@@ -1482,6 +1482,16 @@ var ReplSetTest = function(opts) {
         }, "awaiting replication", timeout);
     };
 
+    // TODO: SERVER-38961 Remove when simultaneous index builds complete.
+    this.waitForAllIndexBuildsToFinish = function(dbName, collName) {
+        // Run a no-op command and wait for it to be applied on secondaries. Due to the asynchronous
+        // completion nature of indexes on secondaries, we can guarantee an index build is complete
+        // on all secondaries once all secondaries have applied this collMod command.
+        assert.commandWorked(this.getPrimary().getDB(dbName).runCommand(
+            {collMod: collName, usePowerOf2Sizes: true}));
+        this.awaitReplication();
+    };
+
     this.getHashesUsingSessions = function(sessions, dbName, {
         filterCapped: filterCapped = true,
         filterMapReduce: filterMapReduce = true,
@@ -1625,18 +1635,25 @@ var ReplSetTest = function(opts) {
         return {master: hashes[0], slaves: hashes.slice(1)};
     };
 
+    this.findOplog = function(conn, query, limit) {
+        return conn.getDB('local')
+            .getCollection(oplogName)
+            .find(query)
+            .sort({$natural: -1})
+            .limit(limit);
+    };
+
     this.dumpOplog = function(conn, query = {}, limit = 10) {
         var log = 'Dumping the latest ' + limit + ' documents that match ' + tojson(query) +
             ' from the oplog ' + oplogName + ' of ' + conn.host;
-        var cursor = conn.getDB('local')
-                         .getCollection(oplogName)
-                         .find(query)
-                         .sort({$natural: -1})
-                         .limit(limit);
+        let entries = [];
+        let cursor = this.findOplog(conn, query, limit);
         cursor.forEach(function(entry) {
             log = log + '\n' + tojsononeline(entry);
+            entries.push(entry);
         });
         jsTestLog(log);
+        return entries;
     };
 
     // Call the provided checkerFunction, after the replica set has been write locked.

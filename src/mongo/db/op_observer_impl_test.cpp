@@ -30,7 +30,6 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/locker_noop.h"
 #include "mongo/db/db_raii.h"
@@ -218,7 +217,7 @@ TEST_F(OpObserverTest, OnDropCollectionReturnsDropOpTime) {
         AutoGetDb autoDb(opCtx.get(), nss.db(), MODE_X);
         WriteUnitOfWork wunit(opCtx.get());
         opObserver.onDropCollection(
-            opCtx.get(), nss, uuid, OpObserver::CollectionDropType::kTwoPhase);
+            opCtx.get(), nss, uuid, 0U, OpObserver::CollectionDropType::kTwoPhase);
         dropOpTime = OpObserver::Times::get(opCtx.get()).reservedOpTimes.front();
         wunit.commit();
     }
@@ -250,7 +249,7 @@ TEST_F(OpObserverTest, OnRenameCollectionReturnsRenameOpTime) {
         AutoGetDb autoDb(opCtx.get(), sourceNss.db(), MODE_X);
         WriteUnitOfWork wunit(opCtx.get());
         opObserver.onRenameCollection(
-            opCtx.get(), sourceNss, targetNss, uuid, dropTargetUuid, stayTemp);
+            opCtx.get(), sourceNss, targetNss, uuid, dropTargetUuid, 0U, stayTemp);
         renameOpTime = OpObserver::Times::get(opCtx.get()).reservedOpTimes.front();
         wunit.commit();
     }
@@ -283,7 +282,7 @@ TEST_F(OpObserverTest, OnRenameCollectionOmitsDropTargetFieldIfDropTargetUuidIsN
     {
         AutoGetDb autoDb(opCtx.get(), sourceNss.db(), MODE_X);
         WriteUnitOfWork wunit(opCtx.get());
-        opObserver.onRenameCollection(opCtx.get(), sourceNss, targetNss, uuid, {}, stayTemp);
+        opObserver.onRenameCollection(opCtx.get(), sourceNss, targetNss, uuid, {}, 0U, stayTemp);
         wunit.commit();
     }
 
@@ -335,7 +334,6 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
        OnRollbackDoesntInvalidateSessionCatalogIfNoSessionOpsRolledBack) {
     const NamespaceString nss("testDB", "testColl");
 
-    auto sessionCatalog = SessionCatalog::get(getServiceContext());
     auto sessionId = makeLogicalSessionIdForTest();
 
     const TxnNumber txnNum = 0;
@@ -344,10 +342,8 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
     {
         auto opCtx = cc().makeOperationContext();
         opCtx->setLogicalSessionId(sessionId);
-
-        // Create a session and sync it from disk
-        auto session = sessionCatalog->checkOutSession(opCtx.get());
-        const auto txnParticipant = TransactionParticipant::get(session.get());
+        MongoDOperationContextSession ocs(opCtx.get());
+        const auto txnParticipant = TransactionParticipant::get(opCtx.get());
         txnParticipant->refreshFromStorageIfNeeded();
 
         // Simulate a write occurring on that session
@@ -370,50 +366,10 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
     {
         auto opCtx = cc().makeOperationContext();
         opCtx->setLogicalSessionId(sessionId);
-
-        auto session = sessionCatalog->checkOutSession(opCtx.get());
-        const auto txnParticipant = TransactionParticipant::get(session.get());
+        MongoDOperationContextSession ocs(opCtx.get());
+        const auto txnParticipant = TransactionParticipant::get(opCtx.get());
         ASSERT(txnParticipant->checkStatementExecutedNoOplogEntryFetch(stmtId));
     }
-}
-
-TEST_F(OpObserverTest, OnRollbackInvalidatesAuthCacheWhenAuthNamespaceRolledBack) {
-    OpObserverImpl opObserver;
-    auto opCtx = cc().makeOperationContext();
-    auto authMgr = AuthorizationManager::get(getServiceContext());
-    auto initCacheGen = authMgr->getCacheGeneration();
-
-    // Verify that the rollback op observer invalidates the user cache for each auth namespace by
-    // checking that the cache generation changes after a call to the rollback observer method.
-    auto nss = AuthorizationManager::rolesCollectionNamespace;
-    OpObserver::RollbackObserverInfo rbInfo;
-    rbInfo.rollbackNamespaces = {AuthorizationManager::rolesCollectionNamespace};
-    opObserver.onReplicationRollback(opCtx.get(), rbInfo);
-    ASSERT_NE(initCacheGen, authMgr->getCacheGeneration());
-
-    initCacheGen = authMgr->getCacheGeneration();
-    rbInfo.rollbackNamespaces = {AuthorizationManager::usersCollectionNamespace};
-    opObserver.onReplicationRollback(opCtx.get(), rbInfo);
-    ASSERT_NE(initCacheGen, authMgr->getCacheGeneration());
-
-    initCacheGen = authMgr->getCacheGeneration();
-    rbInfo.rollbackNamespaces = {AuthorizationManager::versionCollectionNamespace};
-    opObserver.onReplicationRollback(opCtx.get(), rbInfo);
-    ASSERT_NE(initCacheGen, authMgr->getCacheGeneration());
-}
-
-TEST_F(OpObserverTest, OnRollbackDoesntInvalidateAuthCacheWhenNoAuthNamespaceRolledBack) {
-    OpObserverImpl opObserver;
-    auto opCtx = cc().makeOperationContext();
-    auto authMgr = AuthorizationManager::get(getServiceContext());
-    auto initCacheGen = authMgr->getCacheGeneration();
-
-    // Verify that the rollback op observer doesn't invalidate the user cache.
-    auto nss = AuthorizationManager::rolesCollectionNamespace;
-    OpObserver::RollbackObserverInfo rbInfo;
-    opObserver.onReplicationRollback(opCtx.get(), rbInfo);
-    auto newCacheGen = authMgr->getCacheGeneration();
-    ASSERT_EQ(newCacheGen, initCacheGen);
 }
 
 TEST_F(OpObserverTest, MultipleAboutToDeleteAndOnDelete) {
@@ -795,7 +751,7 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedAbortTest) {
     opCtx()->setWriteUnitOfWork(nullptr);
     opCtx()->lockState()->unsetMaxLockTimeout();
     opObserver().onTransactionAbort(opCtx(), abortSlot);
-    txnParticipant->transitionToAbortedforTest();
+    txnParticipant->transitionToAbortedWithPrepareforTest();
 
     repl::OplogInterfaceLocal oplogInterface(opCtx(), NamespaceString::kRsOplogNamespace.ns());
     auto oplogIter = oplogInterface.makeIterator();
@@ -847,7 +803,7 @@ TEST_F(OpObserverTransactionTest, TransactionalUnpreparedAbortTest) {
         AutoGetCollection autoColl(opCtx(), nss, MODE_IX);
         opObserver().onInserts(opCtx(), nss, uuid, insert.begin(), insert.end(), false);
 
-        txnParticipant->transitionToAbortedforTest();
+        txnParticipant->transitionToAbortedWithoutPrepareforTest();
         opObserver().onTransactionAbort(opCtx(), boost::none);
     }
 
@@ -931,7 +887,7 @@ TEST_F(OpObserverTransactionTest, AbortingPreparedTransactionWritesToTransaction
     opCtx()->setWriteUnitOfWork(nullptr);
     opCtx()->lockState()->unsetMaxLockTimeout();
     opObserver().onTransactionAbort(opCtx(), abortSlot);
-    txnParticipant->transitionToAbortedforTest();
+    txnParticipant->transitionToAbortedWithPrepareforTest();
 
     txnParticipant->stashTransactionResources(opCtx());
 

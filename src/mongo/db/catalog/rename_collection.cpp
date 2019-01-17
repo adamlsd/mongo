@@ -278,7 +278,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
                 // We have to override the provided 'dropTarget' setting for idempotency reasons to
                 // avoid unintentionally removing a collection on a secondary with the same name as
                 // the target.
-                opObserver->onRenameCollection(opCtx, source, target, sourceUUID, {}, stayTemp);
+                opObserver->onRenameCollection(opCtx, source, target, sourceUUID, {}, 0U, stayTemp);
                 wunit.commit();
                 return Status::OK();
             }
@@ -331,8 +331,9 @@ Status renameCollectionCommon(OperationContext* opCtx,
                 }
             }
 
+            auto numRecords = targetColl->numRecords(opCtx);
             auto renameOpTime = opObserver->preRenameCollection(
-                opCtx, source, target, sourceUUID, dropTargetUUID, options.stayTemp);
+                opCtx, source, target, sourceUUID, dropTargetUUID, numRecords, options.stayTemp);
 
             if (!renameOpTimeFromApplyOps.isNull()) {
                 // 'renameOpTime' must be null because a valid 'renameOpTimeFromApplyOps' implies
@@ -410,7 +411,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
     }
 
     // Dismissed on success
-    auto tmpCollectionDropper = MakeGuard([&] {
+    auto tmpCollectionDropper = makeGuard([&] {
         BSONObjBuilder unusedResult;
         Status status = Status::OK();
         try {
@@ -562,7 +563,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
     if (!status.isOK()) {
         return status;
     }
-    tmpCollectionDropper.Dismiss();
+    tmpCollectionDropper.dismiss();
 
     BSONObjBuilder unusedResult;
     return dropCollection(opCtx,

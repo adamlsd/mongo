@@ -194,159 +194,6 @@ variables:
   - benchrun_embedded_update
   - generate_benchrun_embedded_files
 
-- &replica_sets_auth
-  name: replica_sets_auth
-  execution_tasks:
-  - replica_sets_auth_0
-  - replica_sets_auth_1
-  - replica_sets_auth_2
-  - replica_sets_auth_3
-  - replica_sets_auth_4
-  - replica_sets_auth_5
-  - replica_sets_auth_6
-  - replica_sets_auth_misc
-
-- &replica_sets_ese
-  name: replica_sets_ese
-  execution_tasks:
-  - replica_sets_ese_0
-  - replica_sets_ese_1
-  - replica_sets_ese_2
-  - replica_sets_ese_3
-  - replica_sets_ese_4
-  - replica_sets_ese_5
-  - replica_sets_ese_6
-  - replica_sets_ese_misc
-
-- &sharding
-  name: sharding
-  execution_tasks:
-  - sharding_0
-  - sharding_1
-  - sharding_2
-  - sharding_3
-  - sharding_4
-  - sharding_5
-  - sharding_6
-  - sharding_7
-  - sharding_8
-  - sharding_9
-  - sharding_10
-  - sharding_11
-  - sharding_12
-  - sharding_13
-  - sharding_14
-  - sharding_misc
-
-- &sharding_auth
-  name: sharding_auth
-  execution_tasks:
-  - sharding_auth_0
-  - sharding_auth_1
-  - sharding_auth_2
-  - sharding_auth_3
-  - sharding_auth_4
-  - sharding_auth_5
-  - sharding_auth_6
-  - sharding_auth_7
-  - sharding_auth_8
-  - sharding_auth_9
-  - sharding_auth_10
-  - sharding_auth_11
-  - sharding_auth_12
-  - sharding_auth_13
-  - sharding_auth_14
-  - sharding_auth_15
-  - sharding_auth_16
-  - sharding_auth_17
-  - sharding_auth_18
-  - sharding_auth_19
-  - sharding_auth_misc
-
-- &sharding_auth_audit
-  name: sharding_auth_audit
-  execution_tasks:
-  - sharding_auth_audit_0
-  - sharding_auth_audit_1
-  - sharding_auth_audit_2
-  - sharding_auth_audit_3
-  - sharding_auth_audit_4
-  - sharding_auth_audit_5
-  - sharding_auth_audit_6
-  - sharding_auth_audit_7
-  - sharding_auth_audit_8
-  - sharding_auth_audit_9
-  - sharding_auth_audit_10
-  - sharding_auth_audit_11
-  - sharding_auth_audit_12
-  - sharding_auth_audit_13
-  - sharding_auth_audit_14
-  - sharding_auth_audit_15
-  - sharding_auth_audit_16
-  - sharding_auth_audit_17
-  - sharding_auth_audit_18
-  - sharding_auth_audit_misc
-
-- &sharding_ese
-  name: sharding_ese
-  execution_tasks:
-  - sharding_ese_0
-  - sharding_ese_1
-  - sharding_ese_2
-  - sharding_ese_3
-  - sharding_ese_4
-  - sharding_ese_5
-  - sharding_ese_6
-  - sharding_ese_7
-  - sharding_ese_8
-  - sharding_ese_9
-  - sharding_ese_10
-  - sharding_ese_11
-  - sharding_ese_12
-  - sharding_ese_13
-  - sharding_ese_14
-  - sharding_ese_15
-  - sharding_ese_16
-  - sharding_ese_17
-  - sharding_ese_18
-  - sharding_ese_19
-  - sharding_ese_20
-  - sharding_ese_misc
-
-- &sharding_last_stable_mongos_and_mixed_shards
-  name: sharding_last_stable_mongos_and_mixed_shards
-  execution_tasks:
-  - sharding_last_stable_mongos_and_mixed_shards_0
-  - sharding_last_stable_mongos_and_mixed_shards_1
-  - sharding_last_stable_mongos_and_mixed_shards_2
-  - sharding_last_stable_mongos_and_mixed_shards_3
-  - sharding_last_stable_mongos_and_mixed_shards_4
-  - sharding_last_stable_mongos_and_mixed_shards_5
-  - sharding_last_stable_mongos_and_mixed_shards_6
-  - sharding_last_stable_mongos_and_mixed_shards_7
-  - sharding_last_stable_mongos_and_mixed_shards_8
-  - sharding_last_stable_mongos_and_mixed_shards_9
-  - sharding_last_stable_mongos_and_mixed_shards_10
-  - sharding_last_stable_mongos_and_mixed_shards_11
-  - sharding_last_stable_mongos_and_mixed_shards_misc
-
-- &sharding_op_query
-  name: sharding_op_query
-  execution_tasks:
-  - sharding_op_query_0
-  - sharding_op_query_1
-  - sharding_op_query_2
-  - sharding_op_query_3
-  - sharding_op_query_4
-  - sharding_op_query_5
-  - sharding_op_query_6
-  - sharding_op_query_7
-  - sharding_op_query_8
-  - sharding_op_query_9
-  - sharding_op_query_10
-  - sharding_op_query_11
-  - sharding_op_query_misc
-
 - &unittests
   name: unittests!
   execution_tasks:
@@ -433,11 +280,6 @@ variables:
   - enterprise
   display_tasks:
   - *dbtest
-  - *replica_sets_auth
-  - *replica_sets_ese
-  - *sharding_auth
-  - *sharding_auth_audit
-  - *sharding_ese
   - *unittests
   expansions: &enterprise-windows-64-2k8-nopush-expansions-template
     platform_decompress: unzip
@@ -457,6 +299,7 @@ variables:
     tooltags: "ssl sasl"
     build_mongoreplay: false
     jstestfuzz_num_generated_files: 35
+    large_distro_name: windows-64-vs2017-compile
   tasks:
   - name: compile_all_run_unittests_TG
     requires:
@@ -502,212 +345,12 @@ variables:
   - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_default_refresh_jscore_passthrough
-  - name: replica_sets_auth_0
-  - name: replica_sets_auth_1
-  - name: replica_sets_auth_2
-  - name: replica_sets_auth_3
-  - name: replica_sets_auth_4
-  - name: replica_sets_auth_5
-  - name: replica_sets_auth_6
-  - name: replica_sets_auth_misc
-  - name: replica_sets_ese_0
-  - name: replica_sets_ese_1
-  - name: replica_sets_ese_2
-  - name: replica_sets_ese_3
-  - name: replica_sets_ese_4
-  - name: replica_sets_ese_5
-  - name: replica_sets_ese_6
-  - name: replica_sets_ese_misc
+  - name: replica_sets_auth_gen
+  - name: replica_sets_ese_gen
   - name: sasl
-  - name: sharding_auth_0
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_1
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_2
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_3
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_4
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_5
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_6
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_7
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_8
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_9
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_10
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_11
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_12
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_13
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_14
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_15
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_16
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_17
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_18
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_19
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_misc
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_0
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_1
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_2
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_3
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_4
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_5
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_6
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_7
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_8
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_9
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_10
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_11
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_12
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_13
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_14
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_15
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_16
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_17
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_18
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_misc
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_0
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_1
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_2
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_3
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_4
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_5
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_6
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_7
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_8
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_9
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_10
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_11
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_12
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_13
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_14
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_15
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_16
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_17
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_18
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_19
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_20
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_misc
-    distros:
-    - windows-64-vs2017-compile
+  - name: sharding_auth_gen
+  - name: sharding_auth_audit_gen
+  - name: sharding_ese_gen
   - name: snmp
   - name: ssl
   - name: sslSpecial
@@ -1548,12 +1191,21 @@ functions:
           extra_args="$extra_args --continueOnFailure"
         fi
 
-        # Default storageEngineCacheSizeGB to 1. Override on individual test config if needed.
-        # resmoke will assign to the appropriate parameter on storage engines that support it.
+        # We reduce the storage engine's cache size to reduce the likelihood of a mongod process
+        # being killed by the OOM killer. The --storageEngineCacheSizeGB command line option is only
+        # filled in with a default value here if one hasn't already been specified in the task's
+        # definition or build variant's definition.
         set +o errexit
-        echo "${resmoke_args}" | grep -q storageEngineCacheSizeGB
+        echo "${resmoke_args} ${test_flags}" | grep -q storageEngineCacheSizeGB
         if [ $? -eq 1 ]; then
-          extra_args="$extra_args --storageEngineCacheSizeGB=1"
+          echo "${resmoke_args} ${test_flags}" | grep -q "\-\-storageEngine=inMemory"
+          if [ $? -eq 0 ]; then
+            # We use a default of 4GB for the InMemory storage engine.
+            extra_args="$extra_args --storageEngineCacheSizeGB=4"
+          else
+            # We use a default of 1GB for all other storage engines.
+            extra_args="$extra_args --storageEngineCacheSizeGB=1"
+          fi
         fi
         set -o errexit
 
@@ -1577,6 +1229,8 @@ functions:
           extra_args="$extra_args --tagFile=etc/test_retrial.yml"
         fi
 
+        resmoke_cmd_args="${resmoke_args}"
+
         # The "resmoke_wrapper" expansion is used by the 'burn_in_tests' task to wrap the resmoke.py
         # invocation. It doesn't set any environment variables and should therefore come last in
         # this list of expansions.
@@ -1590,7 +1244,7 @@ functions:
             ${snmp_config_path}                         \
             ${resmoke_wrapper}                          \
             $python buildscripts/evergreen_run_tests.py \
-                ${resmoke_args}                         \
+                $resmoke_cmd_args                       \
                 $extra_args                             \
                 ${test_flags}                           \
                 --log=buildlogger                       \
@@ -1650,7 +1304,6 @@ functions:
 
         cd $target_dir
         tar xzf generate_tasks_config.tgz
-        ls
 
   "generate resmoke tasks":
     - *git_get_project
@@ -5459,6 +5112,14 @@ tasks:
     vars:
       resmoke_args: --suites=auth --storageEngine=wiredTiger
 
+- name: auth_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: auth
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 4
+
 - <<: *task_template
   name: auth_audit
   commands:
@@ -5466,6 +5127,14 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=auth_audit --storageEngine=wiredTiger
+
+- name: auth_audit_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: auth_audit
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 4
 
 - <<: *task_template
   name: change_streams
@@ -5835,6 +5504,14 @@ tasks:
     vars:
       resmoke_args: --suites=sharded_causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
 
+- name: sharded_causally_consistent_jscore_txns_passthrough_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: sharded_causally_consistent_jscore_txns_passthrough
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 1
+
 - <<: *task_template
   name: sharded_collections_causally_consistent_jscore_txns_passthrough
   commands:
@@ -5852,6 +5529,18 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=replica_sets_jscore_passthrough --storageEngine=wiredTiger
+
+- name: replica_sets_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: replica_sets_jscore_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 1
 
 - <<: *task_template
   name: replica_sets_multi_stmt_txn_jscore_passthrough
@@ -5872,6 +5561,18 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=replica_sets_multi_stmt_txn_stepdown_jscore_passthrough --storageEngine=wiredTiger
+
+- name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 15
 
 - <<: *task_template
   name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
@@ -5979,6 +5680,15 @@ tasks:
     vars:
       resmoke_args: --suites=no_passthrough --storageEngine=wiredTiger
 
+- name: noPassthrough_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: noPassthrough
+      suite: no_passthrough
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 11
+
 - <<: *task_template
   name: noPassthroughWithMongod
   commands:
@@ -5986,6 +5696,15 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=no_passthrough_with_mongod --storageEngine=wiredTiger
+
+- name: noPassthroughWithMongod_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: noPassthroughWithMongod
+      suite: no_passthrough_with_mongod
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 5
 
 - <<: *task_template
   name: bulk_gle_passthrough
@@ -6002,6 +5721,15 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=slow1 --storageEngine=wiredTiger
+      resmoke_jobs_max: 1
+
+- name: slow1_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: slow1
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 4
       resmoke_jobs_max: 1
 
 - <<: *task_template
@@ -6053,6 +5781,18 @@ tasks:
     vars:
       resmoke_args: --suites=sharding_jscore_passthrough --storageEngine=wiredTiger --shellReadMode=legacy --shellWriteMode=compatibility --excludeWithAnyTags=requires_find_command
 
+- name: sharding_jscore_passthrough_wire_ops_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: sharding_jscore_passthrough_wire_ops
+      suite: sharding_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger --shellReadMode=legacy --shellWriteMode=compatibility --excludeWithAnyTags=requires_find_command
+      fallback_num_sub_suites: 4
+
 - <<: *task_template
   name: sharded_multi_stmt_txn_jscore_passthrough
   depends_on:
@@ -6074,6 +5814,19 @@ tasks:
       resmoke_args: --suites=multi_shard_multi_stmt_txn_jscore_passthrough --storageEngine=wiredTiger
       resmoke_jobs_max: 0  # No cap on number of jobs.
 
+- name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: multi_shard_multi_stmt_txn_jscore_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 28
+      resmoke_jobs_max: 0  # No cap on number of jobs.
+
 - <<: *task_template
   name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough
   depends_on:
@@ -6084,6 +5837,17 @@ tasks:
     vars:
       resmoke_args: --suites=multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough --storageEngine=wiredTiger
 
+- name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 4
+
 - <<: *task_template
   name: multi_stmt_txn_jscore_passthrough_with_migration
   depends_on:
@@ -6093,6 +5857,18 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=multi_stmt_txn_jscore_passthrough_with_migration --storageEngine=wiredTiger
+
+- name: multi_stmt_txn_jscore_passthrough_with_migration_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: multi_stmt_txn_jscore_passthrough_with_migration
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 19
 
 - <<: *task_template
   name: parallel
@@ -6224,6 +6000,15 @@ tasks:
       resmoke_args: --suites=concurrency_sharded_causal_consistency --storageEngine=wiredTiger
       resmoke_jobs_max: 1
 
+- name: concurrency_sharded_causal_consistency_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: concurrency_sharded_causal_consistency
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 3
+      resmoke_jobs_max: 1
+
 - <<: *task_template
   name: concurrency_sharded_causal_consistency_and_balancer
   commands:
@@ -6325,6 +6110,18 @@ tasks:
     vars:
       resmoke_args: --suites=read_concern_majority_passthrough --storageEngine=wiredTiger
 
+- name: read_concern_majority_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: read_concern_majority_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
+
 - <<: *task_template
   name: write_concern_majority_passthrough
   depends_on:
@@ -6345,6 +6142,18 @@ tasks:
     vars:
       resmoke_args: --suites=secondary_reads_passthrough --storageEngine=wiredTiger
 
+- name: secondary_reads_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: secondary_reads_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 11
+
 - <<: *task_template
   name: replica_sets
   commands:
@@ -6361,69 +6170,14 @@ tasks:
     vars:
       resmoke_args: --suites=replica_sets_ese --storageEngine=wiredTiger
 
-- <<: *task_template
-  name: replica_sets_ese_0
+- name: replica_sets_ese_gen
   commands:
-  - func: "do setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      resmoke_args: --suites=replica_sets_ese_0 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_1
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_1 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_2
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_2 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_3
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_3 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_4
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_4 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_5
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_5 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_6
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_6 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_ese_misc
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_ese_misc --storageEngine=wiredTiger
+      task: replica_sets_ese
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
 
 - <<: *task_template
   name: replica_sets_auth
@@ -6433,69 +6187,14 @@ tasks:
     vars:
       resmoke_args: --suites=replica_sets_auth --storageEngine=wiredTiger
 
-- <<: *task_template
-  name: replica_sets_auth_0
+- name: replica_sets_auth_gen
   commands:
-  - func: "do setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      resmoke_args: --suites=replica_sets_auth_0 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_1
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_1 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_2
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_2 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_3
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_3 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_4
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_4 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_5
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_5 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_6
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_6 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: replica_sets_auth_misc
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=replica_sets_auth_misc --storageEngine=wiredTiger
+      task: replica_sets_auth
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
 
 - <<: *task_template
   name: sasl
@@ -6506,7 +6205,6 @@ tasks:
       resmoke_args: --suites=sasl --storageEngine=wiredTiger
 
 - name: sharding_gen
-  depends_on: []
   commands:
   - func: "generate resmoke tasks"
     vars:
@@ -6524,140 +6222,22 @@ tasks:
       resmoke_args: --suites=sharding --storageEngine=wiredTiger
 
 - <<: *task_template
-  name: sharding_0
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_0 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_1
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_1 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_2
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_2 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_3
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_3 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_4
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_4 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_5
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_5 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_6
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_6 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_7
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_7 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_8
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_8 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_9
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_9 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_10
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_10 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_11
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_11 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_12
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_12 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_13
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_13 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_14
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_14 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_misc
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_misc --storageEngine=wiredTiger
-
-- <<: *task_template
   name: sharding_csrs_continuous_config_stepdown
   commands:
   - func: "do setup"
   - func: "run tests"
     vars:
       resmoke_args: --suites=sharding_continuous_config_stepdown --storageEngine=wiredTiger
+
+- name: sharding_csrs_continuous_config_stepdown_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: sharding_csrs_continuous_config_stepdown
+      suite: sharding_continuous_config_stepdown
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 22
 
 - <<: *task_template
   name: sharding_ese
@@ -6667,181 +6247,14 @@ tasks:
     vars:
       resmoke_args: --suites=sharding_ese --storageEngine=wiredTiger
 
-- <<: *task_template
-  name: sharding_ese_0
+- name: sharding_ese_gen
   commands:
-  - func: "do setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      resmoke_args: --suites=sharding_ese_0 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_1
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_1 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_2
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_2 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_3
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_3 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_4
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_4 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_5
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_5 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_6
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_6 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_7
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_7 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_8
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_8 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_9
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_9 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_10
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_10 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_11
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_11 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_12
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_12 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_13
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_13 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_14
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_14 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_15
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_15 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_16
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_16 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_17
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_17 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_18
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_18 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_19
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_19 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_20
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_20 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_ese_misc
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_ese_misc --storageEngine=wiredTiger
+      task: sharding_ese
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 21
 
 - <<: *task_template
   name: sharding_op_query
@@ -6851,109 +6264,15 @@ tasks:
     vars:
       resmoke_args: --suites=sharding --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
 
-- <<: *task_template
-  name: sharding_op_query_0
+- name: sharding_op_query_gen
   commands:
-  - func: "do setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      resmoke_args: --suites=sharding_0 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_1
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_1 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_2
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_2 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_3
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_3 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_4
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_4 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_5
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_5 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_6
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_6 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_7
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_7 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_8
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_8 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_9
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_9 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_10
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_10 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_11
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_11 --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
-
-- <<: *task_template
-  name: sharding_op_query_misc
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_misc --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
+      task: sharding_op_query
+      suite: sharding
+      use_large_distro: "true"
+      resmoke_args: --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
+      fallback_num_sub_suites: 12
 
 - <<: *task_template
   name: sharding_auth
@@ -6963,173 +6282,14 @@ tasks:
     vars:
       resmoke_args: --suites=sharding_auth --storageEngine=wiredTiger
 
-- <<: *task_template
-  name: sharding_auth_0
+- name: sharding_auth_gen
   commands:
-  - func: "do setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      resmoke_args: --suites=sharding_auth_0 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_1
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_1 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_2
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_2 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_3
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_3 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_4
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_4 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_5
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_5 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_6
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_6 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_7
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_7 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_8
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_8 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_9
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_9 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_10
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_10 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_11
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_11 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_12
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_12 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_13
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_13 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_14
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_14 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_15
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_15 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_16
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_16 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_17
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_17 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_18
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_18 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_19
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_19 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_misc
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_misc --storageEngine=wiredTiger
+      task: sharding_auth
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 20
 
 - <<: *task_template
   name: sharding_auth_audit
@@ -7141,206 +6301,17 @@ tasks:
     vars:
       resmoke_args: --suites=sharding_auth_audit --storageEngine=wiredTiger
 
-- <<: *task_template
-  name: sharding_auth_audit_0
-  depends_on: &sharding_auth_all
-  - name: sharding_auth_0
-  - name: sharding_auth_1
-  - name: sharding_auth_2
-  - name: sharding_auth_3
-  - name: sharding_auth_4
-  - name: sharding_auth_5
-  - name: sharding_auth_6
-  - name: sharding_auth_7
-  - name: sharding_auth_8
-  - name: sharding_auth_9
-  - name: sharding_auth_10
-  - name: sharding_auth_11
-  - name: sharding_auth_12
-  - name: sharding_auth_13
-  - name: sharding_auth_14
-  - name: sharding_auth_15
-  - name: sharding_auth_16
-  - name: sharding_auth_17
-  - name: sharding_auth_18
-  - name: sharding_auth_19
-  - name: sharding_auth_misc
+- name: sharding_auth_audit_gen
+  depends_on:
+  - name: sharding_auth_gen
   commands:
-  - func: "do setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      resmoke_args: --suites=sharding_auth_audit_0 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_1
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_1 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_2
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_2 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_3
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_3 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_4
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_4 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_5
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_5 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_6
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_6 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_7
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_7 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_8
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_8 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_9
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_9 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_10
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_10 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_11
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_11 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_12
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_12 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_13
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_13 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_14
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_14 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_15
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_15 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_16
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_16 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_17
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_17 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_18
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_18 --storageEngine=wiredTiger
-
-- <<: *task_template
-  name: sharding_auth_audit_misc
-  depends_on: *sharding_auth_all
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=sharding_auth_audit_misc --storageEngine=wiredTiger
+      task: sharding_auth_audit
+      depends_on: sharding_auth
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 20
 
 - <<: *task_template
   name: sharding_last_stable_mongos_and_mixed_shards
@@ -7352,135 +6323,14 @@ tasks:
       task_path_suffix: /data/multiversion
       resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards
 
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_0
+- name: sharding_last_stable_mongos_and_mixed_shards_gen
   commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
+  - func: "generate resmoke tasks"
     vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_0
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_1
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_1
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_2
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_2
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_3
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_3
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_4
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_4
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_5
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_5
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_6
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_6
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_7
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_7
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_8
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_8
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_9
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_9
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_10
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_10
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_11
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_11
-
-- <<: *task_template
-  name: sharding_last_stable_mongos_and_mixed_shards_misc
-  commands:
-  - func: "do setup"
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion
-      resmoke_args: --suites=sharding_last_stable_mongos_and_mixed_shards_misc
+      task: sharding_last_stable_mongos_and_mixed_shards
+      use_multiversion: /data/multiversion
+      resmoke_args: ""
+      fallback_num_sub_suites: 12
 
 - <<: *task_template
   name: snmp
@@ -7514,6 +6364,14 @@ tasks:
     vars:
       resmoke_args: --suites=ssl --storageEngine=wiredTiger
 
+- name: ssl_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: ssl
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 5
+
 - <<: *task_template
   name: sslSpecial
   commands:
@@ -7521,6 +6379,15 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=ssl_special --storageEngine=wiredTiger
+
+- name: sslSpecial_gen
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: sslSpecial
+      suite: ssl_special
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 3
 
 - <<: *task_template
   name: tool
@@ -7574,6 +6441,17 @@ tasks:
     vars:
       resmoke_args: --suites=causally_consistent_jscore_passthrough --storageEngine=wiredTiger
 
+- name: causally_consistent_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: causally_consistent_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 6
+
 - <<: *task_template
   name: causally_consistent_jscore_passthrough_auth
   depends_on:
@@ -7583,6 +6461,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=causally_consistent_jscore_passthrough_auth --storageEngine=wiredTiger
+
+- name: causally_consistent_jscore_passthrough_auth_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: causally_consistent_jscore_passthrough_auth
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
 
 - <<: *task_template
   name: sharded_causally_consistent_jscore_passthrough
@@ -7594,6 +6483,17 @@ tasks:
     vars:
       resmoke_args: --suites=sharded_causally_consistent_jscore_passthrough --storageEngine=wiredTiger
 
+- name: sharded_causally_consistent_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: sharded_causally_consistent_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 6
+
 - <<: *task_template
   name: retryable_writes_jscore_passthrough
   depends_on:
@@ -7603,6 +6503,18 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=retryable_writes_jscore_passthrough --storageEngine=wiredTiger
+
+- name: retryable_writes_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: retryable_writes_jscore_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 8
 
 - <<: *task_template
   name: logical_session_cache_replication_default_refresh_jscore_passthrough
@@ -7614,6 +6526,17 @@ tasks:
     vars:
       resmoke_args: --suites=logical_session_cache_replication_default_refresh_jscore_passthrough --storageEngine=wiredTiger
 
+- name: logical_session_cache_replication_default_refresh_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: logical_session_cache_replication_default_refresh_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
+
 - <<: *task_template
   name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
   depends_on:
@@ -7623,6 +6546,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=logical_session_cache_replication_100ms_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- name: logical_session_cache_replication_100ms_refresh_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: logical_session_cache_replication_100ms_refresh_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 8
 
 - <<: *task_template
   name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
@@ -7634,6 +6568,17 @@ tasks:
     vars:
       resmoke_args: --suites=logical_session_cache_replication_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
 
+- name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
+
 - <<: *task_template
   name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
   depends_on:
@@ -7643,6 +6588,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=logical_session_cache_replication_10sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- name: logical_session_cache_replication_10sec_refresh_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: logical_session_cache_replication_10sec_refresh_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 7
 
 - <<: *task_template
   name: logical_session_cache_sharding_default_refresh_jscore_passthrough
@@ -7673,6 +6629,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=logical_session_cache_sharding_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 3
 
 - <<: *task_template
   name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
@@ -7713,6 +6680,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=logical_session_cache_standalone_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+      depends_on: jsCore
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 3
 
 - <<: *task_template
   name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
@@ -8615,30 +7593,6 @@ buildvariants:
 #         Linux buildvariants             #
 ###########################################
 
-- name: linux-64
-  display_name: Linux
-  run_on:
-  - rhel62-small
-  batchtime: 1440 # 1 day
-  expansions:
-    push_path: linux
-    push_bucket: downloads.mongodb.org
-    push_name: linux
-    push_arch: x86_64
-    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --ssl=off --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off --enable-http-client=off --release
-    scons_cache_scope: shared
-    test_flags: --excludeWithAnyTags=requires_http_client
-    tooltags: ""
-    build_mongoreplay: true
-  tasks:
-  - name: compile_TG
-    distros:
-    - rhel62-large
-  - name: dbtest_TG
-  - name: replica_sets_jscore_passthrough
-  - name: jsCore
-  - name: push
-
 - name: linux-64-repeated-execution
   stepback: false
   display_name: ~ Linux Repeated Execution
@@ -8728,11 +7682,9 @@ buildvariants:
     test_flags: --excludeWithAnyTags=requires_http_client
     tooltags: ""
     build_mongoreplay: true
+    target_resmoke_time: 15
   display_tasks:
   - *dbtest
-  - *replica_sets_auth
-  - *sharding
-  - *sharding_auth
   - *unittests
   tasks:
   - name: compile_all_run_unittests_TG
@@ -8743,10 +7695,10 @@ buildvariants:
   - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
-  - name: auth
+  - name: auth_gen
   - name: bulk_gle_passthrough
-  - name: causally_consistent_jscore_passthrough
-  - name: causally_consistent_jscore_passthrough_auth
+  - name: causally_consistent_jscore_passthrough_gen
+  - name: causally_consistent_jscore_passthrough_auth_gen
   - name: change_streams
   - name: change_streams_mongos_passthrough
   - name: change_streams_mongos_sessions_passthrough
@@ -8767,7 +7719,7 @@ buildvariants:
   #- name: concurrency_sharded_replication_multi_stmt_txn # Removed until SERVER-38499 is resolved.
   #- name: concurrency_sharded_replication_multi_stmt_txn_with_balancer # Removed until SERVER-38499 is resolved.
   - name: concurrency_sharded_replication_with_balancer
-  - name: concurrency_sharded_causal_consistency
+  - name: concurrency_sharded_causal_consistency_gen
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
   - name: concurrency_sharded_with_stepdowns_and_balancer
@@ -8786,99 +7738,57 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
-  - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
-  - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
+  - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough_gen
   - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
   - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
-  - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_replication_default_refresh_jscore_passthrough_gen
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_default_refresh_jscore_passthrough
   - name: mongosTest
-  - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough
-  - name: multi_shard_multi_stmt_txn_jscore_passthrough
-  - name: multi_stmt_txn_jscore_passthrough_with_migration
-  - name: noPassthrough
-  - name: noPassthroughWithMongod
+  - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
+  - name: noPassthrough_gen
+  - name: noPassthroughWithMongod_gen
   - name: parallel
   - name: parallel_compatibility
   - name: read_concern_linearizable_passthrough
-  - name: read_concern_majority_passthrough
+  - name: read_concern_majority_passthrough_gen
   - name: read_only
   - name: read_only_sharded
   - name: replica_sets
-  - name: replica_sets_auth_0
-  - name: replica_sets_auth_1
-  - name: replica_sets_auth_2
-  - name: replica_sets_auth_3
-  - name: replica_sets_auth_4
-  - name: replica_sets_auth_5
-  - name: replica_sets_auth_6
-  - name: replica_sets_auth_misc
+  - name: replica_sets_auth_gen
   - name: replica_sets_initsync_jscore_passthrough
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
-  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
   - name: replica_sets_kill_primary_jscore_passthrough
   - name: replica_sets_terminate_primary_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
-  - name: retryable_writes_jscore_passthrough
+  - name: retryable_writes_jscore_passthrough_gen
   - name: retryable_writes_jscore_stepdown_passthrough
   - name: serial_run
   - name: session_jscore_passthrough
-  - name: sharded_causally_consistent_jscore_passthrough
-  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_causally_consistent_jscore_passthrough_gen
+  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_jscore_txns
   - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
-  - name: sharding_0
-  - name: sharding_1
-  - name: sharding_2
-  - name: sharding_3
-  - name: sharding_4
-  - name: sharding_5
-  - name: sharding_6
-  - name: sharding_7
-  - name: sharding_8
-  - name: sharding_9
-  - name: sharding_10
-  - name: sharding_11
-  - name: sharding_12
-  - name: sharding_13
-  - name: sharding_14
-  - name: sharding_misc
-  - name: sharding_auth_0
-  - name: sharding_auth_1
-  - name: sharding_auth_2
-  - name: sharding_auth_3
-  - name: sharding_auth_4
-  - name: sharding_auth_5
-  - name: sharding_auth_6
-  - name: sharding_auth_7
-  - name: sharding_auth_8
-  - name: sharding_auth_9
-  - name: sharding_auth_10
-  - name: sharding_auth_11
-  - name: sharding_auth_12
-  - name: sharding_auth_13
-  - name: sharding_auth_14
-  - name: sharding_auth_15
-  - name: sharding_auth_16
-  - name: sharding_auth_17
-  - name: sharding_auth_18
-  - name: sharding_auth_19
-  - name: sharding_auth_misc
+  - name: sharding_gen
+  - name: sharding_auth_gen
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
-  - name: sharding_jscore_passthrough_wire_ops
-  - name: slow1
+  - name: sharding_jscore_passthrough_wire_ops_gen
+  - name: slow1_gen
   - name: stitch_support_lib_build_and_test
   - name: stitch_support_lib_build_and_archive
   - name: tool
@@ -9263,7 +8173,6 @@ buildvariants:
       CXX=g++-7
       --cxx-std=17
       --disable-warnings-as-errors
-      --allocator=system
     repo_edition: enterprise
     scons_cache_scope: shared
     tooltags: "ssl sasl"
@@ -9304,7 +8213,6 @@ buildvariants:
       --libc++
       --cxx-std=17
       --disable-warnings-as-errors
-      --allocator=system
       CXXFLAGS="-Wno-register"
     repo_edition: enterprise
     scons_cache_scope: shared
@@ -9587,6 +8495,140 @@ buildvariants:
     distros:
     - ubuntu1604-test
 
+- name: enterprise-ubuntu1804-arm64
+  display_name: Enterprise Ubuntu 18.04 arm64
+  modules:
+  - enterprise
+  run_on:
+  - ubuntu1804-arm64-build
+  batchtime: 1440 # 1 day
+  expansions:
+    push_path: linux
+    push_bucket: downloads.10gen.com
+    push_name: linux
+    push_arch: arm64-enterprise-ubuntu1804
+    compile_flags: --ssl MONGO_DISTMOD=ubuntu1804 -j$(grep -c ^processor /proc/cpuinfo) CCFLAGS="-march=armv8-a+crc -mtune=generic" --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    resmoke_jobs_max: 8 # Avoid starting too many mongod's on ARM test servers
+    has_packages: true
+    packager_script: packager_enterprise.py
+    packager_arch: arm64
+    packager_distro: ubuntu1804
+    repo_edition: enterprise
+    tooltags: "ssl sasl"
+    build_mongoreplay: true
+    multiversion_platform: ubuntu1804
+    multiversion_architecture: arm64
+    multiversion_edition: enterprise
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+  - name: aggregation
+  - name: aggregation_auth
+  - name: auth
+  - name: failpoints
+  - name: failpoints_auth
+  - name: gle_auth
+  - name: gle_auth_write_cmd
+  - name: gle_auth_basics_passthrough
+  - name: gle_auth_basics_passthrough_write_cmd
+  - name: sharding_gle_auth_basics_passthrough
+  - name: sharding_gle_auth_basics_passthrough_write_cmd
+  - name: jsCore
+  - name: jsCore_compatibility
+  - name: jsCore_decimal
+  - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: aggregation_wildcard_fuzzer_gen
+  - name: jstestfuzz_gen
+  - name: jstestfuzz_concurrent_gen
+  - name: jstestfuzz_concurrent_replication_gen
+  - name: jstestfuzz_concurrent_sharded_gen
+  - name: jstestfuzz_replication_gen
+  - name: jstestfuzz_sharded_gen
+  - name: mongosTest
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
+  - name: bulk_gle_passthrough
+  - name: parallel
+  - name: parallel_compatibility
+  - name: concurrency
+  - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
+  - name: concurrency_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication
+  #- name: concurrency_sharded_replication_local_read_write_multi_stmt_txn # Removed until SERVER-38499 is resolved.
+  #- name: concurrency_sharded_replication_local_read_write_multi_stmt_txn_with_balancer # Removed until SERVER-38499 is resolved.
+  #- name: concurrency_sharded_replication_multi_stmt_txn # Removed until SERVER-38499 is resolved.
+  #- name: concurrency_sharded_replication_multi_stmt_txn_with_balancer # Removed until SERVER-38499 is resolved.
+  - name: concurrency_sharded_replication_with_balancer
+  - name: concurrency_simultaneous
+  - name: concurrency_simultaneous_replication
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: replica_sets
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: sharding
+  - name: sharding_auth
+  - name: slow1
+  - name: serial_run
+  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
+  - name: sharding_jscore_passthrough
+  - name: ssl
+  - name: sslSpecial
+  - name: stitch_support_lib_build_and_test
+  - name: stitch_support_lib_build_and_archive
+  - name: tool
+  - name: publish_packages
+    distros:
+    - ubuntu1804-test
+  - name: push
+    distros:
+    - ubuntu1804-test
+
+- name: ubuntu1804-arm64
+  display_name: SSL Ubuntu 18.04 arm64
+  run_on:
+  - ubuntu1804-arm64-build
+  batchtime: 1440 # 1 day
+  expansions:
+    push_path: linux
+    push_bucket: downloads.mongodb.org
+    push_name: linux
+    push_arch: arm64-ubuntu1804
+    compile_flags: --ssl MONGO_DISTMOD=ubuntu1804 -j$(grep -c ^processor /proc/cpuinfo) --release CCFLAGS="-march=armv8-a+crc -mtune=generic" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    resmoke_jobs_max: 8 # Avoid starting too many mongod's on ARM test servers
+    has_packages: true
+    packager_script: packager.py
+    packager_arch: arm64
+    packager_distro: ubuntu1804
+    repo_edition: org
+    tooltags: "ssl"
+    build_mongoreplay: true
+    multiversion_platform: ubuntu1804
+    multiversion_architecture: arm64
+    multiversion_edition: targeted
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+  - name: free_monitoring
+  - name: jsCore
+  - name: replica_sets_jscore_passthrough
+  - name: publish_packages
+    distros:
+    - ubuntu1804-test
+  - name: push
+    distros:
+    - ubuntu1804-test
+
 - name: enterprise-ubuntu1604-ppc64le
   display_name: Enterprise Ubuntu 16.04 PPC64LE
   modules:
@@ -9839,66 +8881,9 @@ buildvariants:
   - name: compile_all_run_unittests_TG
     distros:
     - ubuntu1804-zseries-build
-  - name: aggregation
-  - name: aggregation_auth
-  - name: auth
-  - name: disk_wiredtiger
-  - name: failpoints
-  - name: failpoints_auth
-  - name: free_monitoring
-  - name: gle_auth
-  - name: gle_auth_write_cmd
-  - name: gle_auth_write_cmd
-  - name: gle_auth_basics_passthrough
-  - name: gle_auth_basics_passthrough_write_cmd
-  - name: sharding_gle_auth_basics_passthrough
-  - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: jsCore
-  - name: jsCore_auth
-  - name: jsCore_compatibility
-  - name: jsCore_decimal
-  - name: jsCore_txns
-  - name: aggregation_wildcard_fuzzer_gen
-  - name: jstestfuzz_gen
-  - name: jstestfuzz_concurrent_gen
-  - name: jstestfuzz_concurrent_replication_gen
-  - name: jstestfuzz_concurrent_sharded_gen
-  - name: jstestfuzz_replication_gen
-  - name: jstestfuzz_sharded_gen
-  - name: mongosTest
-  - name: noPassthrough
-  - name: noPassthroughWithMongod
-  - name: bulk_gle_passthrough
-  - name: parallel
-  - name: parallel_compatibility
-  - name: concurrency
-  - name: concurrency_replication
-  - name: concurrency_replication_causal_consistency
-    distros:
-    - ubuntu1804-zseries-build
-  - name: concurrency_replication_multi_stmt_txn
-  - name: concurrency_sharded_replication
-  - name: concurrency_sharded_replication_with_balancer
-  - name: concurrency_simultaneous
-  - name: concurrency_simultaneous_replication
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
-  - name: replica_sets
-  - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: sharding
-  - name: sharding_auth
-  - name: slow1
-  - name: serial_run
-  - name: sharded_causally_consistent_jscore_txns_passthrough
-  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
-  - name: sharded_jscore_txns
-  - name: sharded_jscore_txns_sharded_collections
-  - name: sharding_jscore_passthrough
   - name: ssl
-  - name: sslSpecial
-  - name: tool
   - name: publish_packages
     distros:
     - ubuntu1804-test
@@ -10623,13 +9608,10 @@ buildvariants:
     tooltags: "ssl sasl"
     build_mongoreplay: false
     jstestfuzz_num_generated_files: 35
+    target_resmoke_time: 20
+    large_distro_name: windows-64-vs2017-compile
   display_tasks:
   - *dbtest
-  - *replica_sets_auth
-  - *replica_sets_ese
-  - *sharding_auth
-  - *sharding_auth_audit
-  - *sharding_ese
   tasks:
   - name: compile_TG
     requires:
@@ -10643,7 +9625,7 @@ buildvariants:
   - name: burn_in_tests
   - name: verify_pip
   - name: audit
-  - name: auth_audit
+  - name: auth_audit_gen
   - name: benchmarks_orphaned
   - name: benchmarks_sharding
   - name: buildscripts_test
@@ -10669,222 +9651,22 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded_gen
   - name: jstestfuzz_replication_gen
   - name: jstestfuzz_sharded_gen
-  - name: noPassthrough
-  - name: noPassthroughWithMongod
-  - name: replica_sets_auth_0
-  - name: replica_sets_auth_1
-  - name: replica_sets_auth_2
-  - name: replica_sets_auth_3
-  - name: replica_sets_auth_4
-  - name: replica_sets_auth_5
-  - name: replica_sets_auth_6
-  - name: replica_sets_auth_misc
-  - name: replica_sets_ese_0
-  - name: replica_sets_ese_1
-  - name: replica_sets_ese_2
-  - name: replica_sets_ese_3
-  - name: replica_sets_ese_4
-  - name: replica_sets_ese_5
-  - name: replica_sets_ese_6
-  - name: replica_sets_ese_misc
+  - name: noPassthrough_gen
+  - name: noPassthroughWithMongod_gen
+  - name: replica_sets_auth_gen
+  - name: replica_sets_ese_gen
   - name: replica_sets_jscore_passthrough
   - name: sasl
-  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_jscore_txns
   - name: sharded_jscore_txns_sharded_collections
-  - name: sharding_auth_0
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_1
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_2
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_3
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_4
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_5
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_6
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_7
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_8
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_9
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_10
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_11
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_12
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_13
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_14
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_15
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_16
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_17
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_18
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_19
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_misc
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_0
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_1
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_2
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_3
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_4
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_5
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_6
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_7
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_8
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_9
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_10
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_11
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_12
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_13
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_14
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_15
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_16
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_17
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_18
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_auth_audit_misc
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_0
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_1
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_2
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_3
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_4
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_5
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_6
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_7
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_8
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_9
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_10
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_11
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_12
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_13
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_14
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_15
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_16
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_17
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_18
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_19
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_20
-    distros:
-    - windows-64-vs2017-compile
-  - name: sharding_ese_misc
-    distros:
-    - windows-64-vs2017-compile
+  - name: sharding_auth_gen
+  - name: sharding_auth_audit_gen
+  - name: sharding_ese_gen
   - name: snmp
-  - name: ssl
-  - name: sslSpecial
+  - name: ssl_gen
+  - name: sslSpecial_gen
   - name: push
     distros:
     - rhel70-small
@@ -11328,7 +10110,7 @@ buildvariants:
   expansions:
     resmoke_jobs_max: 1
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: --dbg=on --opt=on -j$(sysctl -n hw.logicalcpu) --libc++ CCFLAGS="-mmacosx-version-min=10.11" LINKFLAGS="-mmacosx-version-min=10.11"
+    compile_flags: --ssl --dbg=on --opt=on -j$(sysctl -n hw.logicalcpu) --libc++ CCFLAGS="-mmacosx-version-min=10.11" LINKFLAGS="-mmacosx-version-min=10.11"
     tooltags: ""
     build_mongoreplay: true
   display_tasks:
@@ -11347,6 +10129,8 @@ buildvariants:
   - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: replica_sets
+  - name: ssl
+  - name: sslSpecial
   - name: stitch_support_lib_build_and_test
   - name: stitch_support_lib_build_and_archive
   - name: tool
@@ -11993,17 +10777,10 @@ buildvariants:
     build_mongoreplay: true
     jstestfuzz_num_generated_files: 40
     jstestfuzz_concurrent_num_files: 10
-    target_resmoke_time: 20
+    target_resmoke_time: 10
     large_distro_name: rhel62-large
   display_tasks:
   - *dbtest
-  - *replica_sets_auth
-  - *replica_sets_ese
-  - *sharding_auth
-  - *sharding_auth_audit
-  - *sharding_ese
-  - *sharding_last_stable_mongos_and_mixed_shards
-  - *sharding_op_query
   - *unittests
   tasks:
   - name: compile_all_run_unittests_TG
@@ -12033,8 +10810,8 @@ buildvariants:
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: audit
-  - name: auth
-  - name: auth_audit
+  - name: auth_gen
+  - name: auth_audit_gen
   - name: benchmarks_orphaned
     distros:
     - centos6-perf
@@ -12043,9 +10820,9 @@ buildvariants:
     - centos6-perf
   - name: buildscripts_test
   - name: bulk_gle_passthrough
-  - name: causally_consistent_jscore_passthrough
-  - name: causally_consistent_jscore_passthrough_auth
-  - name: sharded_causally_consistent_jscore_passthrough
+  - name: causally_consistent_jscore_passthrough_gen
+  - name: causally_consistent_jscore_passthrough_auth_gen
+  - name: sharded_causally_consistent_jscore_passthrough_gen
   - name: change_streams
   - name: change_streams_mongos_passthrough
   - name: change_streams_mongos_sessions_passthrough
@@ -12071,7 +10848,7 @@ buildvariants:
   #- name: concurrency_sharded_replication_multi_stmt_txn # Removed until SERVER-38499 is resolved.
   #- name: concurrency_sharded_replication_multi_stmt_txn_with_balancer # Removed until SERVER-38499 is resolved.
   - name: concurrency_sharded_replication_with_balancer
-  - name: concurrency_sharded_causal_consistency
+  - name: concurrency_sharded_causal_consistency_gen
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
   - name: concurrency_sharded_with_stepdowns_and_balancer
@@ -12120,94 +10897,40 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency_gen
   - name: jstestfuzz_sharded_continuous_stepdown_gen
   - name: jstestfuzz_sharded_session_gen
-  - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
-  - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough
-  - name: logical_session_cache_replication_default_refresh_jscore_passthrough
+  - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_default_refresh_jscore_passthrough_gen
   - name: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
   - name: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_sharding_default_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
   - name: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
   - name: logical_session_cache_standalone_default_refresh_jscore_passthrough
   - name: mongosTest
-  - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough
-  - name: multi_shard_multi_stmt_txn_jscore_passthrough
-    distros:
-    - rhel62-large
-  - name: multi_stmt_txn_jscore_passthrough_with_migration
-    distros:
-    - rhel62-large
+  - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
   - name: multiversion_auth
   - name: multiversion
-  - name: noPassthroughWithMongod
-  - name: noPassthrough
+  - name: noPassthroughWithMongod_gen
+  - name: noPassthrough_gen
   - name: parallel
   - name: parallel_compatibility
   - name: read_concern_linearizable_passthrough
     distros:
     - rhel62-large
-  - name: read_concern_majority_passthrough
-    distros:
-    - rhel62-large
+  - name: read_concern_majority_passthrough_gen
   - name: read_only
   - name: read_only_sharded
   - name: replica_sets
     distros:
     - rhel62-large
-  - name: replica_sets_auth_0
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_1
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_2
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_3
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_4
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_5
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_6
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_misc
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_0
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_1
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_2
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_3
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_4
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_5
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_6
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_misc
-    distros:
-    - rhel62-large
+  - name: replica_sets_auth_gen
+  - name: replica_sets_ese_gen
   - name: replica_sets_jscore_passthrough
-    distros:
-    - rhel62-large
   - name: replica_sets_initsync_jscore_passthrough
     distros:
     - rhel62-large
@@ -12217,9 +10940,7 @@ buildvariants:
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
-  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
-    distros:
-    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
   - name: replica_sets_kill_primary_jscore_passthrough
     distros:
     - rhel62-large
@@ -12229,15 +10950,13 @@ buildvariants:
   - name: replica_sets_kill_secondaries_jscore_passthrough
     distros:
     - rhel62-large
-  - name: retryable_writes_jscore_passthrough
-    distros:
-    - rhel62-large
+  - name: retryable_writes_jscore_passthrough_gen
   - name: retryable_writes_jscore_stepdown_passthrough
     distros:
     - rhel62-large
   - name: sasl
   - name: session_jscore_passthrough
-  - name: sharded_causally_consistent_jscore_txns_passthrough
+  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_jscore_txns
@@ -12246,286 +10965,22 @@ buildvariants:
     distros:
     - rhel62-large
   - name: sharding_gen
-  - name: sharding_auth_0
-    distros:
-    - rhel62-large
-  - name: sharding_auth_1
-    distros:
-    - rhel62-large
-  - name: sharding_auth_2
-    distros:
-    - rhel62-large
-  - name: sharding_auth_3
-    distros:
-    - rhel62-large
-  - name: sharding_auth_4
-    distros:
-    - rhel62-large
-  - name: sharding_auth_5
-    distros:
-    - rhel62-large
-  - name: sharding_auth_6
-    distros:
-    - rhel62-large
-  - name: sharding_auth_7
-    distros:
-    - rhel62-large
-  - name: sharding_auth_8
-    distros:
-    - rhel62-large
-  - name: sharding_auth_9
-    distros:
-    - rhel62-large
-  - name: sharding_auth_10
-    distros:
-    - rhel62-large
-  - name: sharding_auth_11
-    distros:
-    - rhel62-large
-  - name: sharding_auth_12
-    distros:
-    - rhel62-large
-  - name: sharding_auth_13
-    distros:
-    - rhel62-large
-  - name: sharding_auth_14
-    distros:
-    - rhel62-large
-  - name: sharding_auth_15
-    distros:
-    - rhel62-large
-  - name: sharding_auth_16
-    distros:
-    - rhel62-large
-  - name: sharding_auth_17
-    distros:
-    - rhel62-large
-  - name: sharding_auth_18
-    distros:
-    - rhel62-large
-  - name: sharding_auth_19
-    distros:
-    - rhel62-large
-  - name: sharding_auth_misc
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_0
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_1
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_2
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_3
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_4
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_5
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_6
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_7
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_8
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_9
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_10
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_11
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_12
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_13
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_14
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_15
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_16
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_17
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_18
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_misc
-    distros:
-    - rhel62-large
-  - name: sharding_ese_0
-    distros:
-    - rhel62-large
-  - name: sharding_ese_1
-    distros:
-    - rhel62-large
-  - name: sharding_ese_2
-    distros:
-    - rhel62-large
-  - name: sharding_ese_3
-    distros:
-    - rhel62-large
-  - name: sharding_ese_4
-    distros:
-    - rhel62-large
-  - name: sharding_ese_5
-    distros:
-    - rhel62-large
-  - name: sharding_ese_6
-    distros:
-    - rhel62-large
-  - name: sharding_ese_7
-    distros:
-    - rhel62-large
-  - name: sharding_ese_8
-    distros:
-    - rhel62-large
-  - name: sharding_ese_9
-    distros:
-    - rhel62-large
-  - name: sharding_ese_10
-    distros:
-    - rhel62-large
-  - name: sharding_ese_11
-    distros:
-    - rhel62-large
-  - name: sharding_ese_12
-    distros:
-    - rhel62-large
-  - name: sharding_ese_13
-    distros:
-    - rhel62-large
-  - name: sharding_ese_14
-    distros:
-    - rhel62-large
-  - name: sharding_ese_15
-    distros:
-    - rhel62-large
-  - name: sharding_ese_16
-    distros:
-    - rhel62-large
-  - name: sharding_ese_17
-    distros:
-    - rhel62-large
-  - name: sharding_ese_18
-    distros:
-    - rhel62-large
-  - name: sharding_ese_19
-    distros:
-    - rhel62-large
-  - name: sharding_ese_20
-    distros:
-    - rhel62-large
-  - name: sharding_ese_misc
-    distros:
-    - rhel62-large
+  - name: sharding_auth_gen
+  - name: sharding_auth_audit_gen
+  - name: sharding_ese_gen
   - name: sharding_gle_auth_basics_passthrough
   - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
-  - name: sharding_jscore_passthrough_wire_ops
-  - name: sharding_last_stable_mongos_and_mixed_shards_0
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_1
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_2
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_3
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_4
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_5
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_6
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_7
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_8
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_9
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_10
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_11
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_misc
-    distros:
-    - rhel62-large
-  - name: sharding_csrs_continuous_config_stepdown
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_0
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_1
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_2
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_3
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_4
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_5
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_6
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_7
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_8
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_9
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_10
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_11
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_misc
-    distros:
-    - rhel62-large
-  - name: slow1
+  - name: sharding_jscore_passthrough_wire_ops_gen
+  - name: sharding_last_stable_mongos_and_mixed_shards_gen
+  - name: sharding_csrs_continuous_config_stepdown_gen
+  - name: sharding_op_query_gen
+  - name: slow1_gen
   - name: serial_run
   - name: snmp
-  - name: ssl
-  - name: sslSpecial
+  - name: ssl_gen
+  - name: sslSpecial_gen
   - name: stitch_support_lib_build_and_test
   - name: stitch_support_lib_build_and_archive
   - name: tool
@@ -12534,9 +10989,7 @@ buildvariants:
   - name: write_concern_majority_passthrough
     distros:
     - rhel62-large
-  - name: secondary_reads_passthrough
-    distros:
-    - rhel62-large
+  - name: secondary_reads_passthrough_gen
   - name: package
     distros:
     - ubuntu1604-packer
@@ -12568,16 +11021,9 @@ buildvariants:
     scons_cache_scope: shared
     tooltags: "ssl sasl"
     build_mongoreplay: true
+    large_distro_name: rhel62-large
   display_tasks:
   - *dbtest
-  - *replica_sets_auth
-  - *replica_sets_ese
-  - *sharding
-  - *sharding_auth
-  - *sharding_auth_audit
-  - *sharding_ese
-  - *sharding_last_stable_mongos_and_mixed_shards
-  - *sharding_op_query
   - *unittests
   tasks:
   - name: compile_all_run_unittests_TG
@@ -12684,54 +11130,8 @@ buildvariants:
   - name: replica_sets
     distros:
     - rhel62-large
-  - name: replica_sets_auth_0
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_1
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_2
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_3
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_4
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_5
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_6
-    distros:
-    - rhel62-large
-  - name: replica_sets_auth_misc
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_0
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_1
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_2
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_3
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_4
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_5
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_6
-    distros:
-    - rhel62-large
-  - name: replica_sets_ese_misc
-    distros:
-    - rhel62-large
+  - name: replica_sets_auth_gen
+  - name: replica_sets_ese_gen
   - name: replica_sets_jscore_passthrough
     distros:
     - rhel62-large
@@ -12756,329 +11156,20 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_jscore_txns
   - name: sharded_multi_stmt_txn_jscore_passthrough
-  - name: sharding_0
-    distros:
-    - rhel62-large
-  - name: sharding_1
-    distros:
-    - rhel62-large
-  - name: sharding_2
-    distros:
-    - rhel62-large
-  - name: sharding_3
-    distros:
-    - rhel62-large
-  - name: sharding_4
-    distros:
-    - rhel62-large
-  - name: sharding_5
-    distros:
-    - rhel62-large
-  - name: sharding_6
-    distros:
-    - rhel62-large
-  - name: sharding_7
-    distros:
-    - rhel62-large
-  - name: sharding_8
-    distros:
-    - rhel62-large
-  - name: sharding_9
-    distros:
-    - rhel62-large
-  - name: sharding_10
-    distros:
-    - rhel62-large
-  - name: sharding_11
-    distros:
-    - rhel62-large
-  - name: sharding_12
-    distros:
-    - rhel62-large
-  - name: sharding_13
-    distros:
-    - rhel62-large
-  - name: sharding_14
-    distros:
-    - rhel62-large
-  - name: sharding_misc
-    distros:
-    - rhel62-large
-  - name: sharding_auth_0
-    distros:
-    - rhel62-large
-  - name: sharding_auth_1
-    distros:
-    - rhel62-large
-  - name: sharding_auth_2
-    distros:
-    - rhel62-large
-  - name: sharding_auth_3
-    distros:
-    - rhel62-large
-  - name: sharding_auth_4
-    distros:
-    - rhel62-large
-  - name: sharding_auth_5
-    distros:
-    - rhel62-large
-  - name: sharding_auth_6
-    distros:
-    - rhel62-large
-  - name: sharding_auth_7
-    distros:
-    - rhel62-large
-  - name: sharding_auth_8
-    distros:
-    - rhel62-large
-  - name: sharding_auth_9
-    distros:
-    - rhel62-large
-  - name: sharding_auth_10
-    distros:
-    - rhel62-large
-  - name: sharding_auth_11
-    distros:
-    - rhel62-large
-  - name: sharding_auth_12
-    distros:
-    - rhel62-large
-  - name: sharding_auth_13
-    distros:
-    - rhel62-large
-  - name: sharding_auth_14
-    distros:
-    - rhel62-large
-  - name: sharding_auth_15
-    distros:
-    - rhel62-large
-  - name: sharding_auth_16
-    distros:
-    - rhel62-large
-  - name: sharding_auth_17
-    distros:
-    - rhel62-large
-  - name: sharding_auth_18
-    distros:
-    - rhel62-large
-  - name: sharding_auth_19
-    distros:
-    - rhel62-large
-  - name: sharding_auth_misc
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_0
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_1
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_2
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_3
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_4
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_5
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_6
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_7
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_8
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_9
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_10
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_11
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_12
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_13
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_14
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_15
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_16
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_17
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_18
-    distros:
-    - rhel62-large
-  - name: sharding_auth_audit_misc
-    distros:
-    - rhel62-large
-  - name: sharding_ese_0
-    distros:
-    - rhel62-large
-  - name: sharding_ese_1
-    distros:
-    - rhel62-large
-  - name: sharding_ese_2
-    distros:
-    - rhel62-large
-  - name: sharding_ese_3
-    distros:
-    - rhel62-large
-  - name: sharding_ese_4
-    distros:
-    - rhel62-large
-  - name: sharding_ese_5
-    distros:
-    - rhel62-large
-  - name: sharding_ese_6
-    distros:
-    - rhel62-large
-  - name: sharding_ese_7
-    distros:
-    - rhel62-large
-  - name: sharding_ese_8
-    distros:
-    - rhel62-large
-  - name: sharding_ese_9
-    distros:
-    - rhel62-large
-  - name: sharding_ese_10
-    distros:
-    - rhel62-large
-  - name: sharding_ese_11
-    distros:
-    - rhel62-large
-  - name: sharding_ese_12
-    distros:
-    - rhel62-large
-  - name: sharding_ese_13
-    distros:
-    - rhel62-large
-  - name: sharding_ese_14
-    distros:
-    - rhel62-large
-  - name: sharding_ese_15
-    distros:
-    - rhel62-large
-  - name: sharding_ese_16
-    distros:
-    - rhel62-large
-  - name: sharding_ese_17
-    distros:
-    - rhel62-large
-  - name: sharding_ese_18
-    distros:
-    - rhel62-large
-  - name: sharding_ese_19
-    distros:
-    - rhel62-large
-  - name: sharding_ese_20
-    distros:
-    - rhel62-large
-  - name: sharding_ese_misc
-    distros:
-    - rhel62-large
+  - name: sharding_gen
+  - name: sharding_auth_gen
+  - name: sharding_auth_audit_gen
+  - name: sharding_ese_gen
   - name: sharding_gle_auth_basics_passthrough
   - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
   - name: sharding_jscore_passthrough_wire_ops
-  - name: sharding_last_stable_mongos_and_mixed_shards_0
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_1
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_2
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_3
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_4
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_5
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_6
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_7
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_8
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_9
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_10
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_11
-    distros:
-    - rhel62-large
-  - name: sharding_last_stable_mongos_and_mixed_shards_misc
-    distros:
-    - rhel62-large
+  - name: sharding_last_stable_mongos_and_mixed_shards_gen
   - name: sharding_csrs_continuous_config_stepdown
     distros:
     - rhel62-large
-  - name: sharding_op_query_0
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_1
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_2
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_3
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_4
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_5
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_6
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_7
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_8
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_9
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_10
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_11
-    distros:
-    - rhel62-large
-  - name: sharding_op_query_misc
-    distros:
-    - rhel62-large
+  - name: sharding_op_query_gen
   - name: slow1
   - name: serial_run
   - name: snmp
@@ -13999,6 +12090,41 @@ buildvariants:
     distros:
     - rhel62-large
 
+- name: rhel-72-s390x
+  display_name: SSL RHEL 7.2 s390x
+  run_on:
+  - rhel72-zseries-test
+  batchtime: 1440 # 1 day
+  expansions:
+    compile_flags: --ssl MONGO_DISTMOD=rhel72 --release -j3 CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    has_packages: true
+    packager_script: packager.py
+    packager_arch: s390x
+    packager_distro: rhel72
+    push_path: linux
+    push_bucket: downloads.mongodb.org
+    push_name: linux
+    push_arch: s390x-rhel72
+    repo_edition: org
+    build_mongoreplay: true
+    tooltags: "ssl"
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - rhel72-zseries-build
+  - name: jsCore
+  - name: replica_sets_jscore_passthrough
+  - name: ssl
+  - name: publish_packages
+    distros:
+    - rhel70
+  - name: push
+    distros:
+    - rhel70
+
 - name: rhel-67-s390x
   display_name: SSL RHEL 6.7 s390x
   run_on:
@@ -14403,6 +12529,46 @@ buildvariants:
   - name: push
     distros:
     - suse12-test
+
+- name: suse12-s390x
+  display_name: SSL SLES 12 s390x
+  run_on:
+  - suse12-zseries-test
+  batchtime: 10080 # 7 days
+  stepback: false
+  expansions:
+    push_path: linux
+    push_bucket: downloads.mongodb.org
+    push_name: linux
+    push_arch: s390x-suse12
+    compile_flags: --ssl MONGO_DISTMOD=suse12 --release -j3 CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    has_packages: true
+    packager_script: packager.py
+    packager_arch: s390x
+    packager_distro: suse12
+    repo_edition: org
+    tooltags: "ssl sasl"
+    build_mongoreplay: true
+    multiversion_platform: suse12
+    multiversion_architecture: s390x
+    multiversion_edition: targeted
+  display_tasks:
+  - *dbtest
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - suse12-zseries-build
+  - name: jsCore
+  - name: replica_sets_jscore_passthrough
+  - name: ssl
+  - name: publish_packages
+    distros:
+    - suse12-test
+  - name: push
+    distros:
+    - suse12-test
+
 
 - name: suse12
   display_name: SSL SUSE 12
@@ -14916,19 +13082,35 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication_causal_consistency
     distros:
-    - rhel62-large
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_sharded_replication
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_sharded_replication_with_balancer
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_sharded_causal_consistency
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_sharded_causal_consistency_and_balancer
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_sharded_with_stepdowns
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_sharded_with_stepdowns_and_balancer
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_simultaneous
+    distros:
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_simultaneous_replication
     distros:
-    - rhel62-large
+    - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: failpoints
   - name: failpoints_auth
   - name: gle_auth
@@ -15267,7 +13449,8 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     # Transactions are not explicitly supported on the ephemeralForTest storage engine.
-    test_flags: --storageEngine=ephemeralForTest --excludeWithAnyTags=requires_persistence,requires_fsync,SERVER-21420,SERVER-21658,requires_journaling,requires_wiredtiger,uses_transactions,requires_document_locking
+    # Speculative majority reads are currently only allowed for change streams, which are only supported on WiredTiger.
+    test_flags: --storageEngine=ephemeralForTest --excludeWithAnyTags=requires_persistence,requires_fsync,SERVER-21420,SERVER-21658,requires_journaling,requires_wiredtiger,uses_transactions,requires_document_locking,uses_speculative_majority
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --dbg=off --opt=on --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     scons_cache_scope: shared
     tooltags: ""
@@ -15478,6 +13661,7 @@ buildvariants:
   - name: concurrency_replication_causal_consistency
     distros:
     - rhel72-zseries-build
+  - name: concurrency_replication_multi_stmt_txn
     distros:
     - rhel72-zseries-build
   - name: concurrency_sharded_replication
@@ -15730,6 +13914,7 @@ buildvariants:
     build_mongoreplay: true
     hang_analyzer_dump_core: false
     scons_cache_scope: shared
+    target_resmoke_time: 15
   display_tasks:
   - *dbtest
   - *unittests
@@ -15933,9 +14118,9 @@ buildvariants:
   - name: jsCore
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
   - name: watchdog_wiredtiger
 
 - name: ubuntu1604-debug-aubsan-async

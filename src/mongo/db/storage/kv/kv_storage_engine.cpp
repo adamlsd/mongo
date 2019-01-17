@@ -578,7 +578,7 @@ Status KVStorageEngine::_dropCollectionsNoTimestamp(OperationContext* opCtx,
     }
 
     // Ensure the method exits with the same "commit timestamp" state that it was called with.
-    auto addCommitTimestamp = MakeGuard([&opCtx, commitTs] {
+    auto addCommitTimestamp = makeGuard([&opCtx, commitTs] {
         if (!commitTs.isNull()) {
             opCtx->recoveryUnit()->setCommitTimestamp(commitTs);
         }
@@ -705,10 +705,6 @@ void KVStorageEngine::setCachePressureForTest(int pressure) {
     return _engine->setCachePressureForTest(pressure);
 }
 
-bool KVStorageEngine::supportsRecoverToStableTimestamp() const {
-    return _engine->supportsRecoverToStableTimestamp();
-}
-
 bool KVStorageEngine::supportsRecoveryTimestamp() const {
     return _engine->supportsRecoveryTimestamp();
 }
@@ -756,7 +752,7 @@ bool KVStorageEngine::supportsReadConcernMajority() const {
 }
 
 bool KVStorageEngine::supportsPendingDrops() const {
-    return enableKVPendingDrops && supportsRecoverToStableTimestamp();
+    return enableKVPendingDrops && supportsReadConcernMajority();
 }
 
 void KVStorageEngine::clearDropPendingState() {

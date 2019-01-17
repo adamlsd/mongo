@@ -52,7 +52,6 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
-#include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_metadata.h"
@@ -66,10 +65,6 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
-
-using std::string;
-
-using IndexVersion = IndexDescriptor::IndexVersion;
 
 MONGO_FAIL_POINT_DEFINE(hangAfterIndexBuildFirstDrain);
 MONGO_FAIL_POINT_DEFINE(hangAfterIndexBuildSecondDrain);
@@ -168,57 +163,6 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
 }
 
 /**
- * Returns index specifications with attributes (such as "collation") that are inherited from the
- * collection filled in.
- *
- * The returned index specifications will not be equivalent to the ones specified as 'indexSpecs' if
- * any missing attributes were filled in; however, the returned index specifications will match the
- * form stored in the IndexCatalog should any of these indexes already exist.
- */
-StatusWith<std::vector<BSONObj>> resolveCollectionDefaultProperties(
-    OperationContext* opCtx, const Collection* collection, std::vector<BSONObj> indexSpecs) {
-    std::vector<BSONObj> indexSpecsWithDefaults = std::move(indexSpecs);
-
-    for (size_t i = 0, numIndexSpecs = indexSpecsWithDefaults.size(); i < numIndexSpecs; ++i) {
-        auto indexSpecStatus = index_key_validate::validateIndexSpecCollation(
-            opCtx, indexSpecsWithDefaults[i], collection->getDefaultCollator());
-        if (!indexSpecStatus.isOK()) {
-            return indexSpecStatus.getStatus();
-        }
-        auto indexSpec = indexSpecStatus.getValue();
-
-        if (IndexDescriptor::isIdIndexPattern(
-                indexSpec[IndexDescriptor::kKeyPatternFieldName].Obj())) {
-            std::unique_ptr<CollatorInterface> indexCollator;
-            if (auto collationElem = indexSpec[IndexDescriptor::kCollationFieldName]) {
-                auto collatorStatus = CollatorFactoryInterface::get(opCtx->getServiceContext())
-                                          ->makeFromBSON(collationElem.Obj());
-                // validateIndexSpecCollation() should have checked that the index collation spec is
-                // valid.
-                invariant(collatorStatus.getStatus());
-                indexCollator = std::move(collatorStatus.getValue());
-            }
-            if (!CollatorInterface::collatorsMatch(collection->getDefaultCollator(),
-                                                   indexCollator.get())) {
-                return {ErrorCodes::BadValue,
-                        str::stream() << "The _id index must have the same collation as the "
-                                         "collection. Index collation: "
-                                      << (indexCollator.get() ? indexCollator->getSpec().toBSON()
-                                                              : CollationSpec::kSimpleSpec)
-                                      << ", collection collation: "
-                                      << (collection->getDefaultCollator()
-                                              ? collection->getDefaultCollator()->getSpec().toBSON()
-                                              : CollationSpec::kSimpleSpec)};
-            }
-        }
-
-        indexSpecsWithDefaults[i] = indexSpec;
-    }
-
-    return indexSpecsWithDefaults;
-}
-
-/**
  * Returns a vector of index specs with the filled in collection default options and removes any
  * indexes that already exist on the collection. If the returned vector is empty after returning, no
  * new indexes need to be built. Throws on error.
@@ -226,22 +170,11 @@ StatusWith<std::vector<BSONObj>> resolveCollectionDefaultProperties(
 std::vector<BSONObj> resolveDefaultsAndRemoveExistingIndexes(OperationContext* opCtx,
                                                              const Collection* collection,
                                                              std::vector<BSONObj> validatedSpecs) {
-    auto swDefaults =
-        resolveCollectionDefaultProperties(opCtx, collection, std::move(validatedSpecs));
+    auto swDefaults = collection->addCollationDefaultsToIndexSpecsForCreate(opCtx, validatedSpecs);
     uassertStatusOK(swDefaults.getStatus());
 
-    auto specs = std::move(swDefaults.getValue());
-    for (size_t i = 0; i < specs.size(); i++) {
-        Status status =
-            collection->getIndexCatalog()->prepareSpecForCreate(opCtx, specs.at(i)).getStatus();
-        if (status.code() == ErrorCodes::IndexAlreadyExists) {
-            specs.erase(specs.begin() + i);
-            i--;
-            continue;
-        }
-        uassertStatusOK(status);
-    }
-    return specs;
+    auto indexCatalog = collection->getIndexCatalog();
+    return indexCatalog->removeExistingIndexes(opCtx, swDefaults.getValue(), /*throwOnError=*/true);
 }
 
 void checkUniqueIndexConstraints(OperationContext* opCtx,
@@ -262,9 +195,9 @@ void checkUniqueIndexConstraints(OperationContext* opCtx,
 }
 
 bool runCreateIndexes(OperationContext* opCtx,
-                      const string& dbname,
+                      const std::string& dbname,
                       const BSONObj& cmdObj,
-                      string& errmsg,
+                      std::string& errmsg,
                       BSONObjBuilder& result,
                       bool runTwoPhaseBuild) {
     const NamespaceString ns(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
@@ -354,8 +287,6 @@ bool runCreateIndexes(OperationContext* opCtx,
 
 
     MultiIndexBlock indexer(opCtx, collection);
-    indexer.allowBackgroundBuilding();
-    indexer.allowInterruption();
 
     const size_t origSpecsSize = specs.size();
     specs = resolveDefaultsAndRemoveExistingIndexes(opCtx, collection, std::move(specs));
@@ -385,15 +316,15 @@ bool runCreateIndexes(OperationContext* opCtx,
 
     // If we're a background index, replace exclusive db lock with an intent lock, so that
     // other readers and writers can proceed during this phase.
-    if (indexer.getBuildInBackground()) {
+    if (indexer.isBackgroundBuilding()) {
         opCtx->recoveryUnit()->abandonSnapshot();
         dbLock.relockWithMode(MODE_IX);
     }
 
-    auto relockOnErrorGuard = MakeGuard([&] {
+    auto relockOnErrorGuard = makeGuard([&] {
         // Must have exclusive DB lock before we clean up the index build via the
         // destructor of 'indexer'.
-        if (indexer.getBuildInBackground()) {
+        if (indexer.isBackgroundBuilding()) {
             try {
                 // This function cannot throw today, but we will preemptively prepare for
                 // that day, to avoid data corruption due to lack of index cleanup.
@@ -422,7 +353,7 @@ bool runCreateIndexes(OperationContext* opCtx,
         opCtx->recoveryUnit()->abandonSnapshot();
         Lock::CollectionLock colLock(opCtx->lockState(), ns.ns(), MODE_IS);
 
-        uassertStatusOK(indexer.drainBackgroundWritesIfNeeded());
+        uassertStatusOK(indexer.drainBackgroundWrites());
     }
 
     if (MONGO_FAIL_POINT(hangAfterIndexBuildFirstDrain)) {
@@ -435,7 +366,7 @@ bool runCreateIndexes(OperationContext* opCtx,
         opCtx->recoveryUnit()->abandonSnapshot();
         Lock::CollectionLock colLock(opCtx->lockState(), ns.ns(), MODE_S);
 
-        uassertStatusOK(indexer.drainBackgroundWritesIfNeeded());
+        uassertStatusOK(indexer.drainBackgroundWrites());
     }
 
     if (MONGO_FAIL_POINT(hangAfterIndexBuildSecondDrain)) {
@@ -443,10 +374,10 @@ bool runCreateIndexes(OperationContext* opCtx,
         MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterIndexBuildSecondDrain);
     }
 
-    relockOnErrorGuard.Dismiss();
+    relockOnErrorGuard.dismiss();
 
     // Need to return db lock back to exclusive, to complete the index build.
-    if (indexer.getBuildInBackground()) {
+    if (indexer.isBackgroundBuilding()) {
         opCtx->recoveryUnit()->abandonSnapshot();
         dbLock.relockWithMode(MODE_X);
 
@@ -461,7 +392,7 @@ bool runCreateIndexes(OperationContext* opCtx,
 
     // Perform the third and final drain after releasing a shared lock and reacquiring an
     // exclusive lock on the database.
-    uassertStatusOK(indexer.drainBackgroundWritesIfNeeded());
+    uassertStatusOK(indexer.drainBackgroundWrites());
 
     // This is required before completion.
     uassertStatusOK(indexer.checkConstraints());
@@ -509,9 +440,9 @@ public:
     }
 
     bool errmsgRun(OperationContext* opCtx,
-                   const string& dbname,
+                   const std::string& dbname,
                    const BSONObj& cmdObj,
-                   string& errmsg,
+                   std::string& errmsg,
                    BSONObjBuilder& result) override {
         return runCreateIndexes(opCtx, dbname, cmdObj, errmsg, result, false /*two phase build*/);
     }
@@ -550,9 +481,9 @@ public:
     }
 
     bool errmsgRun(OperationContext* opCtx,
-                   const string& dbname,
+                   const std::string& dbname,
                    const BSONObj& cmdObj,
-                   string& errmsg,
+                   std::string& errmsg,
                    BSONObjBuilder& result) override {
         return runCreateIndexes(opCtx, dbname, cmdObj, errmsg, result, true /*two phase build*/);
     }

@@ -161,8 +161,6 @@ public:
 
     virtual void setCachePressureForTest(int pressure) override;
 
-    virtual bool supportsRecoverToStableTimestamp() const override;
-
     virtual bool supportsRecoveryTimestamp() const override;
 
     virtual StatusWith<Timestamp> recoverToStableTimestamp(OperationContext* opCtx) override;
@@ -355,6 +353,10 @@ public:
 
     TimestampMonitor* getTimestampMonitor() const {
         return _timestampMonitor.get();
+    }
+
+    std::set<std::string> getDropPendingIdents() const {
+        return _dropPendingIdentReaper.getAllIdents();
     }
 
 private:

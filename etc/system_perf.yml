@@ -301,6 +301,11 @@ functions:
         script: |
           ../src/dsi/dsi/run-dsi detect-changes
     - command: shell.exec
+      params:
+        working_dir: work
+        script: |
+          ../src/dsi/dsi/run-dsi detect-outliers
+    - command: shell.exec
       type : test
       params:
         working_dir: work
@@ -898,6 +903,7 @@ buildvariants:
     - name: change_streams_throughput
     - name: industry_benchmarks
     - name: industry_benchmarks_wmajority
+    - name: linkbench
     - name: mixed_workloads
     - name: mongos_workloads
     - name: mongos_large_catalog_workloads

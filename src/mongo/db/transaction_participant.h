@@ -74,6 +74,14 @@ enum class SpeculativeTransactionOpTime {
 };
 
 /**
+ * Reason a transaction was terminated.
+ */
+enum class TerminationCause {
+    kCommitted,
+    kAborted,
+};
+
+/**
  * A state machine that coordinates a distributed transaction commit with the transaction
  * coordinator.
  */
@@ -87,11 +95,13 @@ public:
      */
     class TxnResources {
     public:
+        enum class StashStyle { kPrimary, kSecondary, kSideTransaction };
+
         /**
          * Stashes transaction state from 'opCtx' in the newly constructed TxnResources.
          * Ephemerally holds the Client lock associated with opCtx.
          */
-        TxnResources(OperationContext* opCtx, bool keepTicket = false);
+        TxnResources(OperationContext* opCtx, StashStyle stashStyle);
         ~TxnResources();
 
         // Rule of 5: because we have a class-defined destructor, we need to explictly specify
@@ -160,6 +170,17 @@ public:
      */
     static TransactionParticipant* get(OperationContext* opCtx);
     static TransactionParticipant* get(Session* session);
+
+    /**
+     * When the server returns a NoSuchTransaction error for a command, it performs a noop write if
+     * there is a writeConcern on the command. The TransientTransactionError label is only appended
+     * to a NoSuchTransaction response for 'commitTransaction' if there is no writeConcern error.
+     * This ensures that if 'commitTransaction' is run with w:majority, then the
+     * TransientTransactionError label is only returned if the transaction is not committed on any
+     * valid branch of history, so the driver or application can safely retry the entire
+     * transaction.
+     */
+    static void performNoopWriteForNoSuchTransaction(OperationContext* opCtx);
 
     /**
      * Blocking method, which loads the transaction state from storage if it has been marked as
@@ -288,6 +309,11 @@ public:
      * transaction after this is called.
      */
     std::vector<repl::ReplOperation> endTransactionAndRetrieveOperations(OperationContext* opCtx);
+
+    /**
+     * Yield or reacquire locks for prepared transacitons, used on replication state transition.
+     */
+    void refreshLocksForPreparedTransaction(OperationContext* opCtx, bool yieldLocks);
 
     /**
      * May only be called while a multi-document transaction is not committed and adds the multi-key
@@ -472,8 +498,8 @@ public:
         bool committed,
         const repl::ReadConcernArgs& readConcernArgs) const {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
-        TransactionState::StateFlag terminationCause =
-            committed ? TransactionState::kCommitted : TransactionState::kAborted;
+        TerminationCause terminationCause =
+            committed ? TerminationCause::kCommitted : TerminationCause::kAborted;
         return _transactionInfoForLog(lockStats, terminationCause, readConcernArgs);
     }
 
@@ -503,9 +529,14 @@ public:
         _txnState.transitionTo(lk, TransactionState::kPrepared);
     }
 
-    void transitionToAbortedforTest() {
+    void transitionToAbortedWithoutPrepareforTest() {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
-        _txnState.transitionTo(lk, TransactionState::kAborted);
+        _txnState.transitionTo(lk, TransactionState::kAbortedWithoutPrepare);
+    }
+
+    void transitionToAbortedWithPrepareforTest() {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        _txnState.transitionTo(lk, TransactionState::kAbortedWithPrepare);
     }
 
 private:
@@ -553,7 +584,8 @@ private:
             kCommittingWithoutPrepare = 1 << 3,
             kCommittingWithPrepare = 1 << 4,
             kCommitted = 1 << 5,
-            kAborted = 1 << 6
+            kAbortedWithoutPrepare = 1 << 6,
+            kAbortedWithPrepare = 1 << 7
         };
 
         using StateSet = int;
@@ -600,7 +632,7 @@ private:
         }
 
         bool isAborted(WithLock) const {
-            return _state == kAborted;
+            return _state == kAbortedWithoutPrepare || _state == kAbortedWithPrepare;
         }
 
         std::string toString() const {
@@ -689,7 +721,7 @@ private:
     // Clean up the transaction resources unstashed on operation context.
     void _cleanUpTxnResourceOnOpCtx(WithLock wl,
                                     OperationContext* opCtx,
-                                    TransactionState::StateFlag terminationCause);
+                                    TerminationCause terminationCause);
 
     // Checks if the current transaction number of this transaction still matches with the
     // parent session as well as the transaction number of the current operation context.
@@ -706,7 +738,7 @@ private:
     // transaction must be committed or aborted when this function is called.
     void _logSlowTransaction(WithLock wl,
                              const SingleThreadedLockStats* lockStats,
-                             TransactionState::StateFlag terminationCause,
+                             TerminationCause terminationCause,
                              repl::ReadConcernArgs readConcernArgs);
 
     // This method returns a string with information about a slow transaction. The format of the
@@ -714,7 +746,7 @@ private:
     // transaction must be completed (committed or aborted) and a valid LockStats reference must be
     // passed in order for this method to be called.
     std::string _transactionInfoForLog(const SingleThreadedLockStats* lockStats,
-                                       TransactionState::StateFlag terminationCause,
+                                       TerminationCause terminationCause,
                                        repl::ReadConcernArgs readConcernArgs) const;
 
     // Reports transaction stats for both active and inactive transactions using the provided

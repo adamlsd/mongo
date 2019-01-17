@@ -247,7 +247,6 @@ env.CppUnitTest(
         'logical_session_id_helpers',
         'service_context',
         '$BUILD_DIR/mongo/db/auth/authmocks',
-        '$BUILD_DIR/mongo/unittest/concurrency',
         '$BUILD_DIR/mongo/util/clock_source_mock',
     ],
 )
@@ -668,7 +667,6 @@ env.Library(
     target='session_catalog',
     source=[
         'session_catalog.cpp',
-        'session.cpp',
     ],
     LIBDEPS=[
         'kill_sessions',
@@ -729,6 +727,7 @@ env.CppUnitTest(
         'transaction_coordinator_catalog_test.cpp',
         'transaction_coordinator_futures_util_test.cpp',
         'transaction_coordinator_service_test.cpp',
+        'transaction_coordinator_test_fixture.cpp',
         'transaction_coordinator_test.cpp',
     ],
     LIBDEPS=[
@@ -836,6 +835,21 @@ env.Library(
 )
 
 env.Library(
+    target="op_observer_util",
+    source=[
+        "op_observer_util.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+    LIBDEPS_PRIVATE=[
+        'catalog/collection_options',
+        'index/index_descriptor',
+    ],
+)
+
+
+env.Library(
     target="op_observer_impl",
     source=[
         "op_observer_impl.cpp",
@@ -843,6 +857,7 @@ env.Library(
     LIBDEPS=[
         'catalog/collection_options',
         'op_observer',
+        'op_observer_util',
         'repl/oplog',
         's/sharding_api_d',
         'views/views_mongod',
@@ -1121,7 +1136,6 @@ env.Library(
         'exec/working_set_common.cpp',
         'exec/write_stage_common.cpp',
         'ops/parsed_delete.cpp',
-        'ops/parsed_update.cpp',
         'ops/update_result.cpp',
         'pipeline/document_source_cursor.cpp',
         'pipeline/document_source_geo_near_cursor.cpp',
@@ -1164,6 +1178,7 @@ env.Library(
         'index/key_generator',
         'logical_session_cache',
         'matcher/expressions_mongod_only',
+        'ops/parsed_update',
         'pipeline/pipeline',
         'query/query_common',
         'query/query_planner',
@@ -1172,6 +1187,7 @@ env.Library(
         'stats/serveronly_stats',
         'storage/oplog_hack',
         'storage/storage_options',
+        'storage/remove_saver',
         'update/update_driver',
     ],
     LIBDEPS_PRIVATE=[
@@ -1967,7 +1983,6 @@ env.CppUnitTest(
         'session_catalog_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/unittest/concurrency',
         'auth/authmocks',
         'service_context_test_fixture',
         'session_catalog',

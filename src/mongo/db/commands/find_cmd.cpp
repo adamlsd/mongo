@@ -152,11 +152,11 @@ public:
         void explain(OperationContext* opCtx,
                      ExplainOptions::Verbosity verbosity,
                      rpc::ReplyBuilderInterface* result) override {
-            // Acquire locks and resolve possible UUID. The RAII object is optional, because in the
-            // case of a view, the locks need to be released.
+            // Acquire locks. The RAII object is optional, because in the case of a view, the locks
+            // need to be released.
             boost::optional<AutoGetCollectionForReadCommand> ctx;
             ctx.emplace(opCtx,
-                        CommandHelpers::parseNsOrUUID(_dbName, _request.body),
+                        CommandHelpers::parseNsCollectionRequired(_dbName, _request.body),
                         AutoGetCollection::ViewMode::kViewsPermitted);
             const auto nss = ctx->getNss();
 
@@ -388,13 +388,15 @@ public:
             if (shouldSaveCursor(opCtx, collection, state, exec.get())) {
                 // Create a ClientCursor containing this plan executor and register it with the
                 // cursor manager.
-                ClientCursorPin pinnedCursor = collection->getCursorManager()->registerCursor(
-                    opCtx,
-                    {std::move(exec),
-                     nss,
-                     AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-                     repl::ReadConcernArgs::get(opCtx),
-                     _request.body});
+                ClientCursorPin pinnedCursor =
+                    CursorManager::getGlobalCursorManager()->registerCursor(
+                        opCtx,
+                        {std::move(exec),
+                         nss,
+                         AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
+                         repl::ReadConcernArgs::get(opCtx),
+                         _request.body,
+                         ClientCursorParams::LockPolicy::kLockExternally});
                 cursorId = pinnedCursor.getCursor()->cursorid();
 
                 invariant(!exec);

@@ -141,9 +141,9 @@ public:
     StatusWith(StatusWith<Alien> alien,
                typename std::enable_if_t<std::is_convertible<Alien, T>::value, TagType> = makeTag(),
                typename std::enable_if_t<!std::is_same<Alien, T>::value, TagType> = makeTag())
-        : _status(std::move( alien.getStatus())) {
+        : _status(std::move(alien.getStatus())) {
         if (alien.isOK())
-            this->_t = std::move( alien.getValue() );
+            this->_t = std::move(alien.getValue());
     }
 
     const T& getValue() const {

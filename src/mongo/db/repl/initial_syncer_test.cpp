@@ -111,7 +111,7 @@ using NetworkGuard = executor::NetworkInterfaceMock::InNetworkGuard;
 using UniqueLock = stdx::unique_lock<stdx::mutex>;
 
 struct CollectionCloneInfo {
-    std::shared_ptr<CollectionMockStats> stats= std::make_shared<CollectionMockStats>();
+    std::shared_ptr<CollectionMockStats> stats = std::make_shared<CollectionMockStats>();
     CollectionBulkLoaderMock* loader = nullptr;
     Status status{ErrorCodes::NotYetInitialized, ""};
 };

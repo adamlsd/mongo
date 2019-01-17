@@ -175,12 +175,27 @@ void tearDownFCV() {
     serverGlobalParams.featureCompatibility.reset();
 }
 
-void setupDBEnvironment() {
-    setUpFCV();
-}
-void teardownDBEnvironment() {
-    tearDownFCV();
-}
+struct TestSuiteEnvironment {
+    explicit TestSuiteEnvironment() {
+        setUpFCV();
+    }
+
+    ~TestSuiteEnvironment() noexcept(false) {
+        tearDownFCV();
+    }
+};
+
+struct UnitTestEnvironment {
+    explicit UnitTestEnvironment(Test* const t) : test(t) {
+        test->setUp();
+    }
+
+    ~UnitTestEnvironment() noexcept(false) {
+        test->tearDown();
+    }
+
+    Test* const test;
+};
 
 }  // namespace
 
@@ -193,8 +208,7 @@ Test::~Test() {
 }
 
 void Test::run() {
-    _setUp();
-    auto guard = MakeUnsafeScopeGuard([this] { _tearDown(); });
+    UnitTestEnvironment environment(this);
 
     // An uncaught exception does not prevent the tear down from running. But
     // such an event still constitutes an error. To test this behavior we use a
@@ -205,15 +219,6 @@ void Test::run() {
     } catch (const FixtureExceptionForTesting&) {
         return;
     }
-}
-
-void Test::_setUp() {
-    setupDBEnvironment();
-    this->setUp();
-}
-void Test::_tearDown() {
-    this->tearDown();
-    teardownDBEnvironment();
 }
 
 namespace {
@@ -324,9 +329,9 @@ Result* Suite::run(const std::string& filter, int runsPerTest) {
                 if (runsPerTest > 1) {
                     runTimes << "  (" << x + 1 << "/" << runsPerTest << ")";
                 }
-                setupDBEnvironment();
-                auto guard = MakeUnsafeScopeGuard([this] { teardownDBEnvironment(); });
+
                 log() << "\t going to run test: " << tc->getName() << runTimes.str();
+                TestSuiteEnvironment environment;
                 tc->run();
             }
             passes = true;

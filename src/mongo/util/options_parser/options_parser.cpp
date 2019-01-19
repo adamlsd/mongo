@@ -630,7 +630,7 @@ Status YAMLNodeToValue(const YAML::Node& YAMLNode,
 
         for (YAML::const_iterator it = YAMLNode.begin(); it != YAMLNode.end(); ++it) {
             auto elementKey = it->first.Scalar();
-            const auto& elementVal = it->second;
+            const auto elementVal = it->second;
 
             if (elementVal.IsMap()) {
                 auto swExpansion = runYAMLExpansion(

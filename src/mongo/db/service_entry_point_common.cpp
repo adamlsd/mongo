@@ -73,6 +73,7 @@
 #include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/snapshot_window_util.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/stats/server_read_concern_metrics.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/transaction_coordinator_factory.h"
 #include "mongo/db/transaction_participant.h"
@@ -327,7 +328,7 @@ void appendClusterAndOperationTime(OperationContext* opCtx,
         auto signedTime = SignedLogicalTime(
             LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
 
-        // TODO SERVER-35663: invariant that signedTime.getTime() >= operationTime.
+        dassert(signedTime.getTime() >= operationTime);
         rpc::LogicalTimeMetadata(signedTime).writeToMetadata(metadataBob);
         operationTime.appendAsOperationTime(commandBodyFieldsBob);
 
@@ -349,7 +350,7 @@ void appendClusterAndOperationTime(OperationContext* opCtx,
         return;
     }
 
-    // TODO SERVER-35663: invariant that signedTime.getTime() >= operationTime.
+    dassert(signedTime.getTime() >= operationTime);
     rpc::LogicalTimeMetadata(signedTime).writeToMetadata(metadataBob);
     operationTime.appendAsOperationTime(commandBodyFieldsBob);
 }
@@ -952,6 +953,7 @@ DbResponse receivedQuery(OperationContext* opCtx,
                          const ServiceEntryPointCommon::Hooks& behaviors) {
     invariant(!nss.isCommand());
     globalOpCounters.gotQuery();
+    ServerReadConcernMetrics::get(opCtx)->recordReadConcern(repl::ReadConcernArgs::get(opCtx));
 
     DbMessage d(m);
     QueryMessage q(d);

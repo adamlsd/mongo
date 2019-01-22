@@ -63,6 +63,7 @@ public:
     Status sideWrite(OperationContext* opCtx,
                      IndexAccessMethod* indexAccessMethod,
                      const BSONObj* obj,
+                     const InsertDeleteOptions& options,
                      RecordId loc,
                      Op op,
                      int64_t* const numKeysOut);
@@ -116,6 +117,12 @@ private:
                        const InsertDeleteOptions& options,
                        int64_t* const keysInserted,
                        int64_t* const keysDeleted);
+
+    /**
+     * Yield lock manager locks, but only when holding intent locks. Does nothing otherwise. If this
+     * yields locks, it will also abandon the current storage engine snapshot.
+     */
+    void _tryYield(OperationContext*);
 
     // The entry for the index that is being built.
     IndexCatalogEntry* _indexCatalogEntry;

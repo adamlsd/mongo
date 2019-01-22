@@ -34,6 +34,7 @@ from buildscripts import utils
 from buildscripts import moduleconfig
 
 import libdeps
+import psutil
 
 atexit.register(mongo.print_build_failures)
 
@@ -548,9 +549,14 @@ add_option('msvc-debugging-format',
 )
 
 add_option('jlink',
-        help="Limit link concurrency to given value",
-        nargs=1,
-        type=int)
+        help="Limit link concurrency. Takes either an integer to limit to or a"
+        " float between 0 and 1.0 whereby jobs will be multiplied to get the final"
+        " jlink value."
+        "\n\nExample: --jlink=0.75 --jobs 8 will result in a jlink value of 6",
+        const=0.5,
+        default=None,
+        nargs='?',
+        type=float)
 
 try:
     with open("version.json", "r") as version_fp:
@@ -3751,6 +3757,20 @@ env.Alias("distsrc-tgz", env.GZip(
 env.Alias("distsrc-zip", env.DistSrc("mongodb-src-${MONGO_VERSION}.zip"))
 env.Alias("distsrc", "distsrc-tgz")
 
+# Defaults for SCons provided flags. SetOption only sets the option to our value
+# if the user did not provide it. So for any flag here if it's explicitly passed
+# the values below set with SetOption will be overwritten.
+#
+# Default j to the number of CPUs on the system. Note: in containers this
+# reports the number of CPUs for the host system. Perhaps in a future version of
+# psutil it will instead report the correct number when in a container.
+#
+# psutil.cpu_count returns None when it can't determine the number. This always
+# fails on BSD's for example.
+if psutil.cpu_count() is not None:
+    env.SetOption('num_jobs', psutil.cpu_count())
+
+
 # Do this as close to last as possible before reading SConscripts, so
 # that any tools that may have injected other things via emitters are included
 # among the side effect adornments.
@@ -3758,9 +3778,16 @@ env.Alias("distsrc", "distsrc-tgz")
 # TODO: Move this to a tool.
 if has_option('jlink'):
     jlink = get_option('jlink')
-    if jlink < 1:
-        env.FatalError("The argument to jlink must be a positive integer")
+    if jlink <= 0:
+        env.FatalError("The argument to jlink must be a positive integer or float")
+    elif jlink < 1 and jlink > 0:
+        jlink = env.GetOption('num_jobs') * jlink
+        jlink = round(jlink)
+        if jlink < 1.0:
+            print("Computed jlink value was less than 1; Defaulting to 1")
+            jlink = 1.0
 
+    jlink = int(jlink)
     target_builders = ['Program', 'SharedLibrary', 'LoadableModule']
 
     # A bound map of stream (as in stream of work) name to side-effect

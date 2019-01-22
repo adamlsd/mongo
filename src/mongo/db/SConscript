@@ -727,6 +727,7 @@ env.CppUnitTest(
         'transaction_coordinator_catalog_test.cpp',
         'transaction_coordinator_futures_util_test.cpp',
         'transaction_coordinator_service_test.cpp',
+        'transaction_coordinator_test_fixture.cpp',
         'transaction_coordinator_test.cpp',
     ],
     LIBDEPS=[
@@ -892,6 +893,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/rw_concern_d',
         '$BUILD_DIR/mongo/db/s/sharding_api_d',
         '$BUILD_DIR/mongo/db/stats/counters',
+        '$BUILD_DIR/mongo/db/stats/server_read_concern_write_concern_metrics',
         '$BUILD_DIR/mongo/db/stats/top',
         '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
         '$BUILD_DIR/mongo/db/storage/storage_engine_metadata',

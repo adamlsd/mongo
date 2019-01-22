@@ -32,11 +32,79 @@
 
 #include <vector>
 
-#include "mongo/util/concurrency/thread_pool.h"
+#include "mongo/client/read_preference.h"
+#include "mongo/executor/task_executor.h"
+#include "mongo/executor/task_executor_pool.h"
+#include "mongo/s/grid.h"
+#include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/future.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 namespace txn {
+
+/**
+ * This class groups all the asynchronous work scheduled by a given TransactionCoordinatorDriver.
+ */
+class AsyncWorkScheduler {
+public:
+    AsyncWorkScheduler(ServiceContext* serviceContext);
+    ~AsyncWorkScheduler();
+
+    template <class Callable>
+    Future<FutureContinuationResult<Callable, OperationContext*>> scheduleWork(
+        Callable&& task) noexcept {
+        return scheduleWorkIn(Milliseconds(0), std::forward<Callable>(task));
+    }
+
+    template <class Callable>
+    Future<FutureContinuationResult<Callable, OperationContext*>> scheduleWorkIn(
+        Milliseconds millis, Callable&& task) noexcept {
+        return scheduleWorkAt(_executor->now() + millis, std::forward<Callable>(task));
+    }
+
+    template <class Callable>
+    Future<FutureContinuationResult<Callable, OperationContext*>> scheduleWorkAt(
+        Date_t when, Callable&& task) noexcept {
+        using ReturnType = FutureContinuationResult<Callable, OperationContext*>;
+        auto pf = makePromiseFuture<ReturnType>();
+        auto taskCompletionPromise = std::make_shared<Promise<ReturnType>>(std::move(pf.promise));
+        try {
+            uassertStatusOK(_executor->scheduleWorkAt(
+                when,
+                [ this, task = std::forward<Callable>(task), taskCompletionPromise ](
+                    const executor::TaskExecutor::CallbackArgs&) mutable noexcept {
+                    ThreadClient tc("TransactionCoordinator", _serviceContext);
+                    auto uniqueOpCtx = Client::getCurrent()->makeOperationContext();
+                    taskCompletionPromise->setWith([&] { return task(uniqueOpCtx.get()); });
+                }));
+        } catch (const DBException& ex) {
+            taskCompletionPromise->setError(ex.toStatus());
+        }
+
+        return std::move(pf.future);
+    }
+
+    /**
+     * Sends a command asynchronously to the given shard and returns a Future when that request
+     * completes (with error or not).
+     */
+    Future<executor::TaskExecutor::ResponseStatus> scheduleRemoteCommand(
+        const ShardId& shardId, const ReadPreferenceSetting& readPref, const BSONObj& commandObj);
+
+private:
+    /**
+     * Finds the host and port for a shard.
+     */
+    Future<HostAndPort> _targetHostAsync(const ShardId& shardId,
+                                         const ReadPreferenceSetting& readPref);
+
+    // Service context under which this executor runs
+    ServiceContext* const _serviceContext;
+
+    // Cached reference to the executor to use
+    executor::TaskExecutor* const _executor;
+};
 
 enum class ShouldStopIteration { kYes, kNo };
 
@@ -173,27 +241,6 @@ Future<GlobalResult> collect(std::vector<Future<IndividualResult>>&& futures,
 }
 
 /**
- * A thin wrapper around ThreadPool::schedule that returns a future that will be resolved on the
- * completion of the task or rejected if the task errors.
- */
-template <class Callable>
-Future<FutureContinuationResult<Callable>> async(ThreadPool* pool, Callable&& task) {
-    using ReturnType = decltype(task());
-    auto pf = makePromiseFuture<ReturnType>();
-    auto taskCompletionPromise = std::make_shared<Promise<ReturnType>>(std::move(pf.promise));
-    auto scheduleStatus = pool->schedule(
-        [ task = std::forward<Callable>(task), taskCompletionPromise ]() mutable noexcept {
-            taskCompletionPromise->setWith(task);
-        });
-
-    if (!scheduleStatus.isOK()) {
-        taskCompletionPromise->setError(scheduleStatus);
-    }
-
-    return std::move(pf.future);
-}
-
-/**
  * Returns a future that will be resolved when all of the input futures have resolved, or rejected
  * when any of the futures is rejected.
  */
@@ -202,23 +249,34 @@ Future<void> whenAll(std::vector<Future<void>>& futures);
 /**
  * Executes a function returning a Future until the function does not return an error status or
  * until one of the provided error codes is returned.
- *
- * TODO (SERVER-37880): Implement backoff for retries.
  */
-template <class Callable>
-Future<FutureContinuationResult<Callable>> doUntilSuccessOrOneOf(
-    std::set<ErrorCodes::Error>&& errorsToHaltOn, Callable&& f) {
+template <class LoopBodyFn, class ShouldRetryFn>
+Future<FutureContinuationResult<LoopBodyFn>> doWhile(AsyncWorkScheduler& scheduler,
+                                                     boost::optional<Backoff> backoff,
+                                                     ShouldRetryFn&& shouldRetryFn,
+                                                     LoopBodyFn&& f) {
+    using ReturnType = typename decltype(f())::value_type;
     auto future = f();
-    return std::move(future).onError(
-        [ errorsToHaltOn = std::move(errorsToHaltOn),
-          f = std::forward<Callable>(f) ](Status s) mutable {
-            // If this error is one of the errors we should halt on, rethrow the error and don't
-            // retry.
-            if (errorsToHaltOn.find(s.code()) != errorsToHaltOn.end()) {
-                uassertStatusOK(s);
-            }
-            return doUntilSuccessOrOneOf(std::move(errorsToHaltOn), std::forward<Callable>(f));
+    return std::move(future).onCompletion([
+        &scheduler,
+        backoff = std::move(backoff),
+        shouldRetryFn = std::forward<ShouldRetryFn>(shouldRetryFn),
+        f = std::forward<LoopBodyFn>(f)
+    ](StatusOrStatusWith<ReturnType> s) mutable {
+        if (!shouldRetryFn(s))
+            return Future<ReturnType>(std::move(s));
+
+        // Retry after a delay.
+        const auto delayMillis = (backoff ? backoff->nextSleep() : Milliseconds(0));
+        return scheduler.scheduleWorkIn(delayMillis, [](OperationContext* opCtx) {}).then([
+            &scheduler,
+            backoff = std::move(backoff),
+            shouldRetryFn = std::move(shouldRetryFn),
+            f = std::move(f)
+        ]() mutable {
+            return doWhile(scheduler, std::move(backoff), std::move(shouldRetryFn), std::move(f));
         });
+    });
 }
 
 }  // namespace txn

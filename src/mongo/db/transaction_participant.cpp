@@ -300,6 +300,37 @@ TransactionParticipant* TransactionParticipant::get(Session* session) {
     return &getTransactionParticipant(session);
 }
 
+void TransactionParticipant::performNoopWriteForNoSuchTransaction(OperationContext* opCtx) {
+    repl::ReplicationCoordinator* replCoord =
+        repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+
+    // The locker must not have a max lock timeout when this noop write is performed, since if it
+    // threw LockTimeout, this would be treated as a TransientTransactionError, which would indicate
+    // it's resafe to retry the entire transaction. We cannot know it is safe to attach
+    // TransientTransactionError until the noop write has been performed and the writeConcern has
+    // been satisfied.
+    invariant(!opCtx->lockState()->hasMaxLockTimeout());
+
+    {
+        Lock::DBLock dbLock(opCtx, "local", MODE_IX);
+        Lock::CollectionLock collectionLock(opCtx->lockState(), "local.oplog.rs", MODE_IX);
+
+        uassert(ErrorCodes::NotMaster,
+                "Not primary when performing noop write for NoSuchTransaction error",
+                replCoord->canAcceptWritesForDatabase(opCtx, "admin"));
+
+        writeConflictRetry(
+            opCtx, "performNoopWriteForNoSuchTransaction", "local.rs.oplog", [&opCtx] {
+                WriteUnitOfWork wuow(opCtx);
+                opCtx->getClient()->getServiceContext()->getOpObserver()->onOpMessage(
+                    opCtx,
+                    BSON("msg"
+                         << "NoSuchTransaction"));
+                wuow.commit();
+            });
+    }
+}
+
 const LogicalSessionId& TransactionParticipant::_sessionId() const {
     const auto* owningSession = getTransactionParticipant.owner(this);
     return owningSession->getSessionId();
@@ -509,6 +540,9 @@ TransactionParticipant::OplogSlotReserver::OplogSlotReserver(OperationContext* o
     opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(
         _locker->shouldConflictWithSecondaryBatchApplication());
     _locker->unsetThreadId();
+    if (opCtx->getLogicalSessionId()) {
+        _locker->setDebugInfo("lsid: " + opCtx->getLogicalSessionId()->toBSON().toString());
+    }
 
     // OplogSlotReserver is only used by primary, so always set max transaction lock timeout.
     invariant(opCtx->writesAreReplicated());
@@ -552,6 +586,9 @@ TransactionParticipant::TxnResources::TxnResources(OperationContext* opCtx, Stas
         _locker->releaseTicket();
     }
     _locker->unsetThreadId();
+    if (opCtx->getLogicalSessionId()) {
+        _locker->setDebugInfo("lsid: " + opCtx->getLogicalSessionId()->toBSON().toString());
+    }
 
     // On secondaries, we yield the locks for transactions.
     if (stashStyle == StashStyle::kSecondary) {
@@ -1015,7 +1052,7 @@ void TransactionParticipant::commitPreparedTransaction(OperationContext* opCtx,
     if (opCtx->writesAreReplicated()) {
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
         uassert(ErrorCodes::NotMaster,
-                "Not primary so we cannot commit a transaction",
+                "Not primary so we cannot commit a prepared transaction",
                 replCoord->canAcceptWritesForDatabase(opCtx, "admin"));
     }
 
@@ -1128,6 +1165,12 @@ void TransactionParticipant::_finishCommitTransaction(WithLock lk, OperationCont
             CurOp::get(opCtx)->debug().additiveMetrics,
             CurOp::get(opCtx)->debug().storageStats);
     }
+
+    // After writing down the commit oplog entry and adding a finishOpTime to
+    // ServerTransactionsMetrics, recalculate the stable optime to ensure we correctly advance
+    // the stable timestamp.
+    auto replCoord = repl::ReplicationCoordinator::get(opCtx);
+    replCoord->recalculateStableOpTime();
 
     // We must clear the recovery unit and locker so any post-transaction writes can run without
     // transactional settings such as a read timestamp.
@@ -1621,10 +1664,6 @@ std::string TransactionParticipant::_transactionInfoForLog(
     if (singleTransactionStats.getOpDebug()->storageStats)
         s << " storage:" << singleTransactionStats.getOpDebug()->storageStats->toBSON().toString();
 
-    // Total duration of the transaction.
-    s << " "
-      << duration_cast<Milliseconds>(singleTransactionStats.getDuration(tickSource, curTick));
-
     // It is possible for a slow transaction to have aborted in the prepared state if an
     // exception was thrown before prepareTransaction succeeds.
     const auto totalPreparedDuration = durationCount<Microseconds>(
@@ -1633,7 +1672,20 @@ std::string TransactionParticipant::_transactionInfoForLog(
     s << " wasPrepared:" << txnWasPrepared;
     if (txnWasPrepared) {
         s << " totalPreparedDurationMicros:" << totalPreparedDuration;
+        s << " prepareOpTime:" << _prepareOpTime.toString();
     }
+
+    if (_oldestOplogEntryOpTime) {
+        s << " oldestOplogEntryOpTime:" << _oldestOplogEntryOpTime->toString();
+    }
+
+    if (_finishOpTime) {
+        s << " finishOpTime:" << _finishOpTime->toString();
+    }
+
+    // Total duration of the transaction.
+    s << ", "
+      << duration_cast<Milliseconds>(singleTransactionStats.getDuration(tickSource, curTick));
 
     return s.str();
 }

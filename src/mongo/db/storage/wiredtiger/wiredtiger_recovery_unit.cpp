@@ -117,14 +117,10 @@ void WiredTigerOperationStats::fetchStats(WT_SESSION* session,
 
     const char* desc;
     uint64_t value;
-    uint64_t key;
+    uint32_t key;
     while (c->next(c) == 0 && c->get_key(c, &key) == 0) {
         fassert(51035, c->get_value(c, &desc, nullptr, &value) == 0);
-#if defined(__s390x__)
-        _stats[key >> 32] = WiredTigerUtil::castStatisticsValue<long long>(value);
-#else
         _stats[key] = WiredTigerUtil::castStatisticsValue<long long>(value);
-#endif  // __s390x__
     }
 
     // Reset the statistics so that the next fetch gives the recent values.
@@ -441,21 +437,43 @@ Status WiredTigerRecoveryUnit::obtainMajorityCommittedSnapshot() {
     return Status::OK();
 }
 
-boost::optional<Timestamp> WiredTigerRecoveryUnit::getPointInTimeReadTimestamp() const {
-    if (_timestampReadSource == ReadSource::kProvided ||
-        _timestampReadSource == ReadSource::kLastAppliedSnapshot ||
+boost::optional<Timestamp> WiredTigerRecoveryUnit::getPointInTimeReadTimestamp() {
+    // After a ReadSource has been set on this RecoveryUnit, callers expect that this method returns
+    // the read timestamp that will be used for current or future transactions. Because callers use
+    // this timestamp to inform visiblity of operations, it is therefore necessary to open a
+    // transaction to establish a read timestamp, but only for ReadSources that are expected to have
+    // read timestamps.
+    if (_timestampReadSource == ReadSource::kUnset ||
+        _timestampReadSource == ReadSource::kNoTimestamp) {
+        return boost::none;
+    }
+
+    // This ReadSource depends on a previous call to obtainMajorityCommittedSnapshot() and does not
+    // require an open transaction to return a valid timestamp.
+    if (_timestampReadSource == ReadSource::kMajorityCommitted) {
+        invariant(!_majorityCommittedSnapshot.isNull());
+        return _majorityCommittedSnapshot;
+    }
+
+    // The read timestamp is set by the user and does not require a transaction to be open.
+    if (_timestampReadSource == ReadSource::kProvided) {
+        invariant(!_readAtTimestamp.isNull());
+        return _readAtTimestamp;
+    }
+
+    // The following ReadSources can only establish a read timestamp when a transaction is opened.
+    getSession();
+
+    if (_timestampReadSource == ReadSource::kLastAppliedSnapshot ||
         _timestampReadSource == ReadSource::kAllCommittedSnapshot) {
         invariant(!_readAtTimestamp.isNull());
         return _readAtTimestamp;
     }
 
+    // The lastApplied timestamp is not always available, so it is not possible to invariant that
+    // it exists as other ReadSources do.
     if (_timestampReadSource == ReadSource::kLastApplied && !_readAtTimestamp.isNull()) {
         return _readAtTimestamp;
-    }
-
-    if (_timestampReadSource == ReadSource::kMajorityCommitted) {
-        invariant(!_majorityCommittedSnapshot.isNull());
-        return _majorityCommittedSnapshot;
     }
 
     return boost::none;

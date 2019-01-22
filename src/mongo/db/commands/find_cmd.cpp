@@ -51,6 +51,7 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/stats/server_read_concern_metrics.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/log.h"
@@ -227,6 +228,8 @@ public:
         void run(OperationContext* opCtx, rpc::ReplyBuilderInterface* result) {
             // Although it is a command, a find command gets counted as a query.
             globalOpCounters.gotQuery();
+            ServerReadConcernMetrics::get(opCtx)->recordReadConcern(
+                repl::ReadConcernArgs::get(opCtx));
 
             // Parse the command BSON to a QueryRequest.
             const bool isExplain = false;
@@ -388,13 +391,15 @@ public:
             if (shouldSaveCursor(opCtx, collection, state, exec.get())) {
                 // Create a ClientCursor containing this plan executor and register it with the
                 // cursor manager.
-                ClientCursorPin pinnedCursor = collection->getCursorManager()->registerCursor(
-                    opCtx,
-                    {std::move(exec),
-                     nss,
-                     AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-                     repl::ReadConcernArgs::get(opCtx),
-                     _request.body});
+                ClientCursorPin pinnedCursor =
+                    CursorManager::getGlobalCursorManager()->registerCursor(
+                        opCtx,
+                        {std::move(exec),
+                         nss,
+                         AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
+                         repl::ReadConcernArgs::get(opCtx),
+                         _request.body,
+                         ClientCursorParams::LockPolicy::kLockExternally});
                 cursorId = pinnedCursor.getCursor()->cursorid();
 
                 invariant(!exec);

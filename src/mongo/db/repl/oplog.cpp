@@ -83,6 +83,7 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/stats/server_write_concern_metrics.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/transaction_participant.h"
@@ -212,6 +213,36 @@ private:
     BSONObj _oField;
 };
 
+bool shouldBuildInForeground(OperationContext* opCtx,
+                             const BSONObj& index,
+                             const NamespaceString& indexNss,
+                             repl::OplogApplication::Mode mode) {
+    if (mode == OplogApplication::Mode::kRecovering) {
+        LOG(3) << "apply op: building background index " << index
+               << " in the foreground because the node is in recovery";
+        return true;
+    }
+
+    // Primaries should build indexes in the foreground because failures cannot be handled
+    // by the background thread.
+    const bool isPrimary =
+        repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, indexNss);
+    if (isPrimary) {
+        LOG(3) << "apply op: not building background index " << index
+               << " in a background thread because this is a primary";
+        return true;
+    }
+
+    // Without hybrid builds enabled, indexes should build with the behavior of their specs.
+    bool hybrid = IndexBuilder::canBuildInBackground();
+    if (!hybrid) {
+        return !index["background"].trueValue();
+    }
+
+    return false;
+}
+
+
 }  // namespace
 
 void setOplogCollectionName(ServiceContext* service) {
@@ -245,51 +276,39 @@ void createIndexForApplyOps(OperationContext* opCtx,
 
     OpCounters* opCounters = opCtx->writesAreReplicated() ? &globalOpCounters : &replOpCounters;
     opCounters->gotInsert();
+    if (opCtx->writesAreReplicated()) {
+        ServerWriteConcernMetrics::get(opCtx)->recordWriteConcernForInsert(
+            opCtx->getWriteConcern());
+    }
 
-    const IndexBuilder::IndexConstraints constraints =
+    const auto constraints =
         ReplicationCoordinator::get(opCtx)->shouldRelaxIndexConstraints(opCtx, indexNss)
         ? IndexBuilder::IndexConstraints::kRelax
         : IndexBuilder::IndexConstraints::kEnforce;
 
-    const IndexBuilder::ReplicatedWrites replicatedWrites = opCtx->writesAreReplicated()
+    const auto replicatedWrites = opCtx->writesAreReplicated()
         ? IndexBuilder::ReplicatedWrites::kReplicated
         : IndexBuilder::ReplicatedWrites::kUnreplicated;
 
-    if (indexSpec["background"].trueValue()) {
-        if (mode == OplogApplication::Mode::kRecovering) {
-            LOG(3) << "apply op: building background index " << indexSpec
-                   << " in the foreground because the node is in recovery";
-            IndexBuilder builder(indexSpec, constraints, replicatedWrites);
-            Status status = builder.buildInForeground(opCtx, db);
-            uassertStatusOK(status);
-        } else {
-            Lock::TempRelease release(opCtx->lockState());
-            if (opCtx->lockState()->isLocked()) {
-                // If TempRelease fails, background index build will deadlock.
-                LOG(3) << "apply op: building background index " << indexSpec
-                       << " in the foreground because temp release failed";
-                IndexBuilder builder(indexSpec, constraints, replicatedWrites);
-                Status status = builder.buildInForeground(opCtx, db);
-                uassertStatusOK(status);
-            } else {
-                IndexBuilder* builder =
-                    new IndexBuilder(indexSpec,
-                                     constraints,
-                                     replicatedWrites,
-                                     opCtx->recoveryUnit()->getCommitTimestamp());
-                // This spawns a new thread and returns immediately.
-                builder->go();
-                // Wait for thread to start and register itself
-                IndexBuilder::waitForBgIndexStarting();
-            }
-        }
-
-        opCtx->recoveryUnit()->abandonSnapshot();
-    } else {
+    if (shouldBuildInForeground(opCtx, indexSpec, indexNss, mode)) {
         IndexBuilder builder(indexSpec, constraints, replicatedWrites);
         Status status = builder.buildInForeground(opCtx, db);
         uassertStatusOK(status);
+    } else {
+        Lock::TempRelease release(opCtx->lockState());
+        // TempRelease cannot fail because no recursive locks should be taken.
+        invariant(!opCtx->lockState()->isLocked());
+
+        IndexBuilder* builder = new IndexBuilder(
+            indexSpec, constraints, replicatedWrites, opCtx->recoveryUnit()->getCommitTimestamp());
+        // This spawns a new thread and returns immediately.
+        builder->go();
+        // Wait for thread to start and register itself
+        IndexBuilder::waitForBgIndexStarting();
     }
+
+    opCtx->recoveryUnit()->abandonSnapshot();
+
     if (incrementOpsAppliedStats) {
         incrementOpsAppliedStats();
     }
@@ -1088,10 +1107,9 @@ Status applyOperation_inlock(OperationContext* opCtx,
     // Choose opCounters based on running on standalone/primary or secondary by checking
     // whether writes are replicated. Atomic applyOps command is an exception, which runs
     // on primary/standalone but disables write replication.
-    OpCounters* opCounters =
-        (mode == repl::OplogApplication::Mode::kApplyOpsCmd || opCtx->writesAreReplicated())
-        ? &globalOpCounters
-        : &replOpCounters;
+    const bool shouldUseGlobalOpCounters =
+        mode == repl::OplogApplication::Mode::kApplyOpsCmd || opCtx->writesAreReplicated();
+    OpCounters* opCounters = shouldUseGlobalOpCounters ? &globalOpCounters : &replOpCounters;
 
     std::array<StringData, 8> names = {"ts", "t", "o", "ui", "ns", "op", "b", "o2"};
     std::array<BSONElement, 8> fields;
@@ -1303,6 +1321,10 @@ Status applyOperation_inlock(OperationContext* opCtx,
             wuow.commit();
             for (auto entry : insertObjs) {
                 opCounters->gotInsert();
+                if (shouldUseGlobalOpCounters) {
+                    ServerWriteConcernMetrics::get(opCtx)->recordWriteConcernForInsert(
+                        opCtx->getWriteConcern());
+                }
                 if (incrementOpsAppliedStats) {
                     incrementOpsAppliedStats();
                 }
@@ -1310,6 +1332,10 @@ Status applyOperation_inlock(OperationContext* opCtx,
         } else {
             // Single insert.
             opCounters->gotInsert();
+            if (shouldUseGlobalOpCounters) {
+                ServerWriteConcernMetrics::get(opCtx)->recordWriteConcernForInsert(
+                    opCtx->getWriteConcern());
+            }
 
             // No _id.
             // This indicates an issue with the upstream server:
@@ -1406,6 +1432,10 @@ Status applyOperation_inlock(OperationContext* opCtx,
         }
     } else if (*opType == 'u') {
         opCounters->gotUpdate();
+        if (shouldUseGlobalOpCounters) {
+            ServerWriteConcernMetrics::get(opCtx)->recordWriteConcernForUpdate(
+                opCtx->getWriteConcern());
+        }
 
         auto idField = o2["_id"];
         uassert(ErrorCodes::NoSuchKey,
@@ -1488,6 +1518,10 @@ Status applyOperation_inlock(OperationContext* opCtx,
         }
     } else if (*opType == 'd') {
         opCounters->gotDelete();
+        if (shouldUseGlobalOpCounters) {
+            ServerWriteConcernMetrics::get(opCtx)->recordWriteConcernForDelete(
+                opCtx->getWriteConcern());
+        }
 
         auto idField = o["_id"];
         uassert(ErrorCodes::NoSuchKey,

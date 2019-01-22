@@ -388,7 +388,7 @@ protected:
         _externalState = dataReplicatorExternalState.get();
 
         _lastApplied = getDetectableErrorStatus();
-        _onCompletion = [this](const StatusWith<OpTimeWithHash>& lastApplied) {
+        _onCompletion = [this](const StatusWith<OpTime>& lastApplied) {
             _lastApplied = lastApplied;
         };
 
@@ -402,9 +402,7 @@ protected:
                 _dbWorkThreadPool.get(),
                 _storageInterface.get(),
                 _replicationProcess.get(),
-                [this](const StatusWith<OpTimeWithHash>& lastApplied) {
-                    _onCompletion(lastApplied);
-                });
+                [this](const StatusWith<OpTime>& lastApplied) { _onCompletion(lastApplied); });
             _initialSyncer->setScheduleDbWorkFn_forTest(
                 [this](executor::TaskExecutor::CallbackFn work) {
                     return getExecutor().scheduleWork(std::move(work));
@@ -475,7 +473,7 @@ protected:
     std::map<NamespaceString, CollectionMockStats> _collectionStats;
     std::map<NamespaceString, CollectionCloneInfo> _collections;
 
-    StatusWith<OpTimeWithHash> _lastApplied = Status(ErrorCodes::NotYetInitialized, "");
+    StatusWith<OpTime> _lastApplied = Status(ErrorCodes::NotYetInitialized, "");
     InitialSyncer::OnCompletionFn _onCompletion;
 
 private:
@@ -566,7 +564,7 @@ OplogEntry makeOplogEntry(int t,
                       << "a_1");
     }
     return OplogEntry(OpTime(Timestamp(t, 1), 1),  // optime
-                      static_cast<long long>(t),   // hash
+                      boost::none,                 // hash
                       opType,                      // op type
                       NamespaceString("a.a"),      // namespace
                       boost::none,                 // uuid
@@ -633,7 +631,7 @@ TEST_F(InitialSyncerTest, InvalidConstruction) {
                                  ReplicationCoordinator::DataConsistency consistency) {};
     options.resetOptimes = []() {};
     options.syncSourceSelector = this;
-    auto callback = [](const StatusWith<OpTimeWithHash>&) {};
+    auto callback = [](const StatusWith<OpTime>&) {};
 
     // Null task executor in external state.
     {
@@ -955,7 +953,7 @@ TEST_F(InitialSyncerTest, InitialSyncerTransitionsToCompleteWhenFinishCallbackTh
     auto initialSyncer = &getInitialSyncer();
     auto opCtx = makeOpCtx();
 
-    _onCompletion = [this](const StatusWith<OpTimeWithHash>& lastApplied) {
+    _onCompletion = [this](const StatusWith<OpTime>& lastApplied) {
         _lastApplied = lastApplied;
         uassert(ErrorCodes::InternalError, "", false);
     };
@@ -996,7 +994,7 @@ TEST_F(InitialSyncerTest, InitialSyncerResetsOnCompletionCallbackFunctionPointer
         _dbWorkThreadPool.get(),
         _storageInterface.get(),
         _replicationProcess.get(),
-        [&lastApplied, sharedCallbackData](const StatusWith<OpTimeWithHash>& result) {
+        [&lastApplied, sharedCallbackData](const StatusWith<OpTime>& result) {
             lastApplied = result;
         });
     ON_BLOCK_EXIT([this]() { getExecutor().shutdown(); });
@@ -1297,30 +1295,6 @@ TEST_F(InitialSyncerTest,
 }
 
 TEST_F(InitialSyncerTest,
-       InitialSyncerReturnsNoSuchKeyIfLastOplogEntryFetcherReturnsEntryWithMissingHash) {
-    auto initialSyncer = &getInitialSyncer();
-    auto opCtx = makeOpCtx();
-
-    _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
-    ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
-
-    auto net = getNet();
-    {
-        executor::NetworkInterfaceMock::InNetworkGuard guard(net);
-
-        // Base rollback ID.
-        net->scheduleSuccessfulResponse(makeRollbackCheckerResponse(1));
-        net->runReadyNetworkOperations();
-
-        // Last oplog entry.
-        processSuccessfulLastOplogEntryFetcherResponse({BSONObj()});
-    }
-
-    initialSyncer->join();
-    ASSERT_EQUALS(ErrorCodes::NoSuchKey, _lastApplied);
-}
-
-TEST_F(InitialSyncerTest,
        InitialSyncerReturnsNoSuchKeyIfLastOplogEntryFetcherReturnsEntryWithMissingTimestamp) {
     auto initialSyncer = &getInitialSyncer();
     auto opCtx = makeOpCtx();
@@ -1337,7 +1311,7 @@ TEST_F(InitialSyncerTest,
         net->runReadyNetworkOperations();
 
         // Last oplog entry.
-        processSuccessfulLastOplogEntryFetcherResponse({BSON("h" << 1LL)});
+        processSuccessfulLastOplogEntryFetcherResponse({BSONObj()});
     }
 
     initialSyncer->join();
@@ -1738,7 +1712,7 @@ TEST_F(InitialSyncerTest,
     }
 
     initialSyncer->join();
-    ASSERT_EQUALS(makeOplogEntry(1).getOpTime(), unittest::assertGet(_lastApplied).opTime);
+    ASSERT_EQUALS(makeOplogEntry(1).getOpTime(), unittest::assertGet(_lastApplied));
 }
 
 TEST_F(
@@ -1791,7 +1765,7 @@ TEST_F(
     }
 
     initialSyncer->join();
-    ASSERT_EQUALS(makeOplogEntry(3).getOpTime(), unittest::assertGet(_lastApplied).opTime);
+    ASSERT_EQUALS(makeOplogEntry(3).getOpTime(), unittest::assertGet(_lastApplied));
 }
 
 TEST_F(
@@ -2356,8 +2330,10 @@ TEST_F(
         net->blackHole(noi);
 
         // Second last oplog entry fetcher.
-        processSuccessfulLastOplogEntryFetcherResponse({BSON("ts" << Timestamp(1) << "t" << 1 << "h"
-                                                                  << "not a hash")});
+        processSuccessfulLastOplogEntryFetcherResponse({BSON("ts"
+                                                             << "not a timestamp"
+                                                             << "t"
+                                                             << 1)});
 
         // _lastOplogEntryFetcherCallbackAfterCloningData() will shut down the OplogFetcher after
         // setting the completion status.
@@ -2934,8 +2910,7 @@ TEST_F(InitialSyncerTest, LastOpTimeShouldBeSetEvenIfNoOperationsAreAppliedAfter
     }
 
     initialSyncer->join();
-    ASSERT_EQUALS(oplogEntry.getOpTime(), unittest::assertGet(_lastApplied).opTime);
-    ASSERT_EQUALS(oplogEntry.getHash(), unittest::assertGet(_lastApplied).value);
+    ASSERT_EQUALS(oplogEntry.getOpTime(), unittest::assertGet(_lastApplied));
     ASSERT_FALSE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 }
 
@@ -3486,8 +3461,7 @@ OplogEntry InitialSyncerTest::doInitialSyncWithOneBatch(bool shouldSetFCV) {
 void InitialSyncerTest::doSuccessfulInitialSyncWithOneBatch(bool shouldSetFCV) {
     auto lastOp = doInitialSyncWithOneBatch(shouldSetFCV);
     serverGlobalParams.featureCompatibility.reset();
-    ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied).opTime);
-    ASSERT_EQUALS(lastOp.getHash(), unittest::assertGet(_lastApplied).value);
+    ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied));
 
     ASSERT_EQUALS(lastOp.getOpTime().getTimestamp(), _storageInterface->getInitialDataTimestamp());
 }
@@ -3600,8 +3574,7 @@ TEST_F(InitialSyncerTest,
     }
 
     initialSyncer->join();
-    ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied).opTime);
-    ASSERT_EQUALS(lastOp.getHash(), unittest::assertGet(_lastApplied).value);
+    ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied));
 }
 
 TEST_F(
@@ -3690,8 +3663,7 @@ TEST_F(
     }
 
     initialSyncer->join();
-    ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied).opTime);
-    ASSERT_EQUALS(lastOp.getHash(), unittest::assertGet(_lastApplied).value);
+    ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied));
 
     ASSERT_TRUE(fetchCountIncremented);
 
@@ -3995,7 +3967,7 @@ TEST_F(InitialSyncerTest, GetInitialSyncProgressReturnsCorrectProgress) {
 
     log() << "waiting for initial sync to verify it completed OK";
     initialSyncer->join();
-    ASSERT_EQUALS(makeOplogEntry(7).getOpTime(), unittest::assertGet(_lastApplied).opTime);
+    ASSERT_EQUALS(makeOplogEntry(7).getOpTime(), unittest::assertGet(_lastApplied));
 
     progress = initialSyncer->getInitialSyncProgress();
     log() << "Progress at end: " << progress;

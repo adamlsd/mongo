@@ -79,6 +79,7 @@
 #include "mongo/db/index_names.h"
 #include "mongo/db/index_rebuilder.h"
 #include "mongo/db/initialize_server_global_state.h"
+#include "mongo/db/initialize_server_security_state.h"
 #include "mongo/db/initialize_snmp.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/json.h"
@@ -129,6 +130,7 @@
 #include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
+#include "mongo/db/storage/storage_engine_lock_file.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/system_index.h"
 #include "mongo/db/ttl.h"
@@ -757,7 +759,8 @@ void startupConfigActions(const std::vector<std::string>& args) {
         bool failed = false;
 
         std::string name =
-            (boost::filesystem::path(storageGlobalParams.dbpath) / "mongod.lock").string();
+            (boost::filesystem::path(storageGlobalParams.dbpath) / kLockFileBasename.toString())
+                .string();
         if (!boost::filesystem::exists(name) || boost::filesystem::file_size(name) == 0)
             failed = true;
 
@@ -1050,6 +1053,9 @@ int mongoDbMain(int argc, char* argv[], char** envp) {
     cmdline_utils::censorArgvArray(argc, argv);
 
     if (!initializeServerGlobalState(service))
+        quickExit(EXIT_FAILURE);
+
+    if (!initializeServerSecurityGlobalState(service))
         quickExit(EXIT_FAILURE);
 
     // Per SERVER-7434, startSignalProcessingThread must run after any forks (i.e.

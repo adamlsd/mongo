@@ -287,7 +287,7 @@ void ServiceContext::setKillAllOperations() {
         stdx::lock_guard<Client> lk(*client);
         auto opCtxToKill = client->getOperationContext();
         if (opCtxToKill) {
-            killOperation(opCtxToKill, ErrorCodes::InterruptedAtShutdown);
+            killOperation(lk, opCtxToKill, ErrorCodes::InterruptedAtShutdown);
         }
     }
 
@@ -301,7 +301,7 @@ void ServiceContext::setKillAllOperations() {
     }
 }
 
-void ServiceContext::killOperation(OperationContext* opCtx, ErrorCodes::Error killCode) {
+void ServiceContext::killOperation(WithLock, OperationContext* opCtx, ErrorCodes::Error killCode) {
     opCtx->markKilled(killCode);
 
     for (const auto listener : _killOpListeners) {
@@ -309,24 +309,6 @@ void ServiceContext::killOperation(OperationContext* opCtx, ErrorCodes::Error ki
             listener->interrupt(opCtx->getOpID());
         } catch (...) {
             std::terminate();
-        }
-    }
-}
-
-void ServiceContext::killAllUserOperations(const OperationContext* opCtx,
-                                           ErrorCodes::Error killCode) {
-    for (LockedClientsCursor cursor(this); Client* client = cursor.next();) {
-        if (!client->isFromUserConnection()) {
-            // Don't kill system operations.
-            continue;
-        }
-
-        stdx::lock_guard<Client> lk(*client);
-        OperationContext* toKill = client->getOperationContext();
-
-        // Don't kill ourself.
-        if (toKill && toKill->getOpID() != opCtx->getOpID()) {
-            killOperation(toKill, killCode);
         }
     }
 }

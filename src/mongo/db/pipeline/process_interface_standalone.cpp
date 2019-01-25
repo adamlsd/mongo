@@ -41,10 +41,12 @@
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/cursor_manager.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/pipeline/document_source_cursor.h"
 #include "mongo/db/pipeline/pipeline_d.h"
+#include "mongo/db/repl/speculative_majority_read_info.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/session_catalog.h"
@@ -432,6 +434,18 @@ boost::optional<Document> MongoInterfaceStandalone::lookupSingleDocument(
                                 << next->toString()
                                 << "]");
     }
+
+    // Set the speculative read optime appropriately after we do a document lookup locally. We don't
+    // know exactly what optime the document reflects, we so set the speculative read optime to the
+    // most recent applied optime.
+    repl::SpeculativeMajorityReadInfo& speculativeMajorityReadInfo =
+        repl::SpeculativeMajorityReadInfo::get(expCtx->opCtx);
+    if (speculativeMajorityReadInfo.isSpeculativeRead()) {
+        auto replCoord = repl::ReplicationCoordinator::get(expCtx->opCtx);
+        speculativeMajorityReadInfo.setSpeculativeReadOpTimeForward(
+            replCoord->getMyLastAppliedOpTime());
+    }
+
     return lookedUpDocument;
 }
 

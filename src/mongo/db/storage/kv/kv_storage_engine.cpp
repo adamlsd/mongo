@@ -303,7 +303,7 @@ Status KVStorageEngine::_recoverOrphanedCollection(OperationContext* opCtx,
     }
     if (dataModified) {
         StorageRepairObserver::get(getGlobalServiceContext())
-            ->onModification(str::stream() << "Collection " << collectionName.ns() << " recovered: "
+            ->onModification(str::stream() << "Collection " << collectionName << " recovered: "
                                            << status.reason());
     }
     wuow.commit();
@@ -705,6 +705,10 @@ void KVStorageEngine::setCachePressureForTest(int pressure) {
     return _engine->setCachePressureForTest(pressure);
 }
 
+bool KVStorageEngine::supportsRecoverToStableTimestamp() const {
+    return _engine->supportsRecoverToStableTimestamp();
+}
+
 bool KVStorageEngine::supportsRecoveryTimestamp() const {
     return _engine->supportsRecoveryTimestamp();
 }
@@ -752,7 +756,7 @@ bool KVStorageEngine::supportsReadConcernMajority() const {
 }
 
 bool KVStorageEngine::supportsPendingDrops() const {
-    return enableKVPendingDrops && supportsReadConcernMajority();
+    return enableKVPendingDrops && supportsRecoverToStableTimestamp();
 }
 
 void KVStorageEngine::clearDropPendingState() {

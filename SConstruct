@@ -3840,7 +3840,10 @@ env.SConscript(
     variant_dir='$BUILD_DIR',
 )
 
-all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests', 'benchmarks'])
+if not has_option('noshell') and usemozjs:
+    all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests', 'benchmarks'])
+else:
+    all = env.Alias('all', ['core', 'tools', 'unittests', 'integration_tests', 'benchmarks'])
 
 # run the Dagger tool if it's installed
 if should_dagger:

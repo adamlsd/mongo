@@ -222,7 +222,8 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::killAnySession
         << ActionType::killop
         << ActionType::replSetResizeOplog
-        << ActionType::resync;  // clusterManager gets this also
+        << ActionType::resync  // clusterManager gets this also
+        << ActionType::trafficRecord;
 
     // hostManager role actions that target the database resource
     hostManagerRoleDatabaseActions
@@ -329,6 +330,10 @@ void addReadWriteAnyDbPrivileges(PrivilegeVector* privileges) {
 void addUserAdminAnyDbPrivileges(PrivilegeVector* privileges) {
     Privilege::addPrivilegeToPrivilegeVector(
         privileges, Privilege(ResourcePattern::forAnyNormalResource(), userAdminRoleActions));
+    Privilege::addPrivilegeToPrivilegeVector(
+        privileges, Privilege(ResourcePattern::forDatabaseName("local"), userAdminRoleActions));
+    Privilege::addPrivilegeToPrivilegeVector(
+        privileges, Privilege(ResourcePattern::forDatabaseName("config"), userAdminRoleActions));
     Privilege::addPrivilegeToPrivilegeVector(
         privileges, Privilege(ResourcePattern::forClusterResource(), ActionType::listDatabases));
     Privilege::addPrivilegeToPrivilegeVector(

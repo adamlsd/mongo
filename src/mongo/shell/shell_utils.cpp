@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -33,6 +32,11 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/shell/shell_utils.h"
+
+#ifndef _WIN32
+#include <pwd.h>
+#include <sys/types.h>
+#endif
 
 #include "mongo/client/dbclient_base.h"
 #include "mongo/client/replica_set_monitor.h"
@@ -98,11 +102,37 @@ BSONElement singleArg(const BSONObj& args) {
     return args.firstElement();
 }
 
-const char* getUserDir() {
+boost::optional<std::string> getUserDir() {
 #ifdef _WIN32
-    return getenv("USERPROFILE");
+    auto envp = getenv("USERPROFILE");
+    if (envp)
+        return std::string(envp);
+
+    return boost::none;
 #else
-    return getenv("HOME");
+    const auto homeDir = getenv("HOME");
+    if (homeDir)
+        return std::string(homeDir);
+
+    // The storage for these variables has to live until the value is captured into a std::string at
+    // the end of this function.  This is because getpwuid_r(3) doesn't use static storage, but
+    // storage provided by the caller.  So following lambda makes calling easy, but the storage has
+    // to live outside of the lambda.
+    struct passwd pwent;
+    std::vector<char> buffer(4096);
+
+    auto getHomeForUid = [&](const auto uid) -> const char* {
+        struct passwd* res;
+        const auto ec = getpwuid_r(uid, &pwent, &buffer[0], buffer.size(), &res);
+        return ec == 0 ? nullptr : pwent.pw_dir;
+    };
+
+    const auto pwdHomeDir = getHomeForUid(getuid());
+
+    if (pwdHomeDir)
+        return std::string(pwdHomeDir);
+
+    return boost::none;
 #endif
 }
 

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -156,9 +155,9 @@ void completionHook(const char* text, linenoiseCompletions* lc) {
 
 void shellHistoryInit() {
     stringstream ss;
-    const char* h = shell_utils::getUserDir();
+    const boost::optional<std::string> h = shell_utils::getUserDir();
     if (h)
-        ss << h << "/";
+        ss << *h << "/";
     ss << ".dbshell";
     historyFile = ss.str();
 

@@ -1,5 +1,3 @@
-// mongo/shell/shell_utils.h
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -31,6 +29,10 @@
 
 #pragma once
 
+#include <string>
+
+#include <boost/optional.hpp>
+
 #include "mongo/db/jsobj.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/mutex.h"
@@ -50,7 +52,7 @@ void installShellUtils(Scope& scope);
 void initScope(Scope& scope);
 void onConnect(DBClientBase& c);
 
-const char* getUserDir();
+boost::optional<std::string> getUserDir();
 
 BSONElement singleArg(const BSONObj& args);
 extern const BSONObj undefinedReturn;

@@ -121,13 +121,8 @@ boost::optional<std::string> getUserDir() {
     struct passwd pwent;
     std::vector<char> buffer(4096);
 
-    auto getHomeForUid = [&](const auto uid) -> const char* {
-        struct passwd* res;
-        const auto ec = getpwuid_r(uid, &pwent, &buffer[0], buffer.size(), &res);
-        return ec == 0 ? nullptr : pwent.pw_dir;
-    };
-
-    const auto pwdHomeDir = getHomeForUid(getuid());
+    struct passwd *res;
+    const auto ec = getpwuid_r(getuid(), &pwent, &buffer[0], buffer.size(), &res);
 
     if (pwdHomeDir)
         return std::string(pwdHomeDir);

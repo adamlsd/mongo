@@ -40,7 +40,7 @@
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/value.h"
-#include "mongo/db/query/query_knobs.h"
+#include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
@@ -202,6 +202,13 @@ StageConstraints DocumentSourceLookUp::constraints(Pipeline::SplitState) const {
         (pExpCtx->inMongos && pExpCtx->mongoProcessInterface->isSharded(pExpCtx->opCtx, _fromNs))
         ? HostTypeRequirement::kNone
         : HostTypeRequirement::kPrimaryShard;
+
+    const bool foreignShardedAllowed =
+        getTestCommandsEnabled() && internalQueryAllowShardedLookup.load();
+    if (!foreignShardedAllowed) {
+        // Always run on the primary shard.
+        hostRequirement = HostTypeRequirement::kPrimaryShard;
+    }
 
     StageConstraints constraints(StreamType::kStreaming,
                                  PositionRequirement::kNone,

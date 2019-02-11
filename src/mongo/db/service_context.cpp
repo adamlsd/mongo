@@ -38,6 +38,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/locker_noop.h"
+#include "mongo/db/default_baton.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/recovery_unit_noop.h"
@@ -153,7 +154,6 @@ void onCreate(T* object, const ObserversContainer& observers) {
     onCreate(object, observers.cbegin(), observers.cend());
 }
 
-
 }  // namespace
 
 ServiceContext::UniqueClient ServiceContext::makeClient(std::string desc,
@@ -253,10 +253,17 @@ ServiceContext::UniqueOperationContext ServiceContext::makeOperationContext(Clie
         stdx::lock_guard<Client> lk(*client);
         client->setOperationContext(opCtx.get());
     }
+    if (_transportLayer) {
+        _transportLayer->makeBaton(opCtx.get());
+    } else {
+        makeBaton(opCtx.get());
+    }
     return UniqueOperationContext(opCtx.release());
 };
 
 void ServiceContext::OperationContextDeleter::operator()(OperationContext* opCtx) const {
+    opCtx->getBaton()->detach();
+
     auto client = opCtx->getClient();
     if (client && client->session()) {
         _numCurrentOps.subtractAndFetch(1);
@@ -404,6 +411,18 @@ ServiceContext::UniqueServiceContext ServiceContext::make() {
 void ServiceContext::ServiceContextDeleter::operator()(ServiceContext* service) const {
     onDestroy(service, registeredConstructorActions());
     delete service;
+}
+
+BatonHandle ServiceContext::makeBaton(OperationContext* opCtx) const {
+    auto baton = std::make_shared<DefaultBaton>(opCtx);
+
+    {
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        invariant(!opCtx->getBaton());
+        opCtx->setBaton(baton);
+    }
+
+    return baton;
 }
 
 }  // namespace mongo

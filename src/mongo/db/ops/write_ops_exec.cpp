@@ -60,7 +60,6 @@
 #include "mongo/db/ops/write_ops_retryability.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
-#include "mongo/db/query/query_knobs.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/retryable_writes_stats.h"
@@ -96,6 +95,11 @@ MONGO_FAIL_POINT_DEFINE(hangAfterAllChildRemoveOpsArePopped);
 MONGO_FAIL_POINT_DEFINE(hangDuringBatchInsert);
 MONGO_FAIL_POINT_DEFINE(hangDuringBatchUpdate);
 MONGO_FAIL_POINT_DEFINE(hangDuringBatchRemove);
+// The withLock fail points are for testing interruptability of these operations, so they will not
+// themselves check for interrupt.
+MONGO_FAIL_POINT_DEFINE(hangWithLockDuringBatchInsert);
+MONGO_FAIL_POINT_DEFINE(hangWithLockDuringBatchUpdate);
+MONGO_FAIL_POINT_DEFINE(hangWithLockDuringBatchRemove);
 
 void updateRetryStats(OperationContext* opCtx, bool containsRetry) {
     if (containsRetry) {
@@ -379,6 +383,9 @@ bool insertBatchAndHandleErrors(OperationContext* opCtx,
 
         curOp.raiseDbProfileLevel(collection->getDb()->getProfilingLevel());
         assertCanWrite_inlock(opCtx, wholeOp.getNamespace());
+
+        CurOpFailpointHelpers::waitWhileFailPointEnabled(
+            &hangWithLockDuringBatchInsert, opCtx, "hangWithLockDuringBatchInsert");
     };
 
     try {
@@ -515,6 +522,7 @@ WriteResult performInserts(OperationContext* opCtx,
     size_t bytesInBatch = 0;
     std::vector<InsertStatement> batch;
     const size_t maxBatchSize = internalInsertMaxBatchSize.load();
+    const size_t maxBatchBytes = write_ops::insertVectorMaxBytes;
     batch.reserve(std::min(wholeOp.getDocuments().size(), maxBatchSize));
 
     for (auto&& doc : wholeOp.getDocuments()) {
@@ -539,7 +547,7 @@ WriteResult performInserts(OperationContext* opCtx,
             BSONObj toInsert = fixedDoc.getValue().isEmpty() ? doc : std::move(fixedDoc.getValue());
             batch.emplace_back(stmtId, toInsert);
             bytesInBatch += batch.back().doc.objsize();
-            if (!isLastDoc && batch.size() < maxBatchSize && bytesInBatch < insertVectorMaxBytes)
+            if (!isLastDoc && batch.size() < maxBatchSize && bytesInBatch < maxBatchBytes)
                 continue;  // Add more to batch before inserting.
         }
 
@@ -604,6 +612,9 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
         collection.reset();  // unlock.
         makeCollection(opCtx, ns);
     }
+
+    CurOpFailpointHelpers::waitWhileFailPointEnabled(
+        &hangWithLockDuringBatchUpdate, opCtx, "hangWithLockDuringBatchUpdate");
 
     auto& curOp = *CurOp::get(opCtx);
 
@@ -840,6 +851,9 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
     }
 
     assertCanWrite_inlock(opCtx, ns);
+
+    CurOpFailpointHelpers::waitWhileFailPointEnabled(
+        &hangWithLockDuringBatchRemove, opCtx, "hangWithLockDuringBatchRemove");
 
     auto exec = uassertStatusOK(
         getExecutorDelete(opCtx, &curOp.debug(), collection.getCollection(), &parsedDelete));

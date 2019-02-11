@@ -36,6 +36,8 @@
 #ifndef _WIN32
 #include <pwd.h>
 #include <sys/types.h>
+#else
+#include <Shlobj.h>
 #endif
 
 #include "mongo/client/dbclient_base.h"
@@ -102,13 +104,17 @@ BSONElement singleArg(const BSONObj& args) {
     return args.firstElement();
 }
 
-boost::optional<std::string> getUserDir() {
+std::string getUserDir() {
 #ifdef _WIN32
     auto envp = getenv("USERPROFILE");
     if (envp)
         return std::string(envp);
 
-    return boost::none;
+    char path[MAX_PATH];
+    if (!SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, path)))
+        uasserted(InternalError, "Unable to get home directory for the current user.");
+
+    return path;
 #else
     const auto homeDir = getenv("HOME");
     if (homeDir)
@@ -118,16 +124,21 @@ boost::optional<std::string> getUserDir() {
     // the end of this function.  This is because getpwuid_r(3) doesn't use static storage, but
     // storage provided by the caller.  So following lambda makes calling easy, but the storage has
     // to live outside of the lambda.
+    const long pwentBufferSize = sysconf(_SC_GETPW_R_SIZE_MAX);
+    if (pwentBufferSize < 0)
+        uasserted(InternalError, "Unable to get system configuration for password database");
+
     struct passwd pwent;
-    std::vector<char> buffer(4096);
+    struct passwd* res;
 
-    struct passwd *res;
-    const auto ec = getpwuid_r(getuid(), &pwent, &buffer[0], buffer.size(), &res);
+    std::vector<char> buffer(pwentBufferSize);
 
-    if (pwdHomeDir)
-        return std::string(pwdHomeDir);
+    const int ec = getpwuid_r(getuid(), &pwent, &buffer[0], buffer.size(), &res);
 
-    return boost::none;
+    if (ec)
+        uasserted(InternalError, "Unable to get home directory for the current user.");
+
+    return std::string(pwent.pw_dir);
 #endif
 }
 

@@ -107,6 +107,12 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion42, ("EndStar
     return Status::OK();
 }
 const auto kAuthParam = "authSource"s;
+
+void
+setHistoryFile()
+{
+    historyFile = shell_utils::getUserDir() + "/.dbshell";
+}
 }  // namespace
 
 namespace mongo {
@@ -154,12 +160,7 @@ void completionHook(const char* text, linenoiseCompletions* lc) {
 }
 
 void shellHistoryInit() {
-    stringstream ss;
-    const boost::optional<std::string> h = shell_utils::getUserDir();
-    if (h)
-        ss << *h << "/";
-    ss << ".dbshell";
-    historyFile = ss.str();
+    setHistoryFile();
 
     Status res = linenoiseHistoryLoad(historyFile.c_str());
     if (!res.isOK()) {

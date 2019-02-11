@@ -52,7 +52,7 @@ void installShellUtils(Scope& scope);
 void initScope(Scope& scope);
 void onConnect(DBClientBase& c);
 
-boost::optional<std::string> getUserDir();
+std::string getUserDir();
 
 BSONElement singleArg(const BSONObj& args);
 extern const BSONObj undefinedReturn;

@@ -112,7 +112,7 @@ std::string getUserDir() {
 
     char path[MAX_PATH];
     if (!SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, path)))
-        uasserted(InternalError, "Unable to get home directory for the current user.");
+        uasserted(mongo::InternalError, "Unable to get home directory for the current user.");
 
     return path;
 #else
@@ -126,7 +126,7 @@ std::string getUserDir() {
     // to live outside of the lambda.
     const long pwentBufferSize = sysconf(_SC_GETPW_R_SIZE_MAX);
     if (pwentBufferSize < 0)
-        uasserted(InternalError, "Unable to get system configuration for password database");
+        uasserted(mongo::InternalError, "Unable to get system configuration for password database");
 
     struct passwd pwent;
     struct passwd* res;

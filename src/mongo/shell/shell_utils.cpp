@@ -67,7 +67,7 @@ extern const JSFile shardingtest;
 extern const JSFile servers_misc;
 extern const JSFile replsettest;
 extern const JSFile bridge;
-}
+} // namespace JSFiles
 
 MONGO_REGISTER_SHIM(BenchRunConfig::createConnectionImpl)
 (const BenchRunConfig& config)->std::unique_ptr<DBClientBase> {
@@ -132,7 +132,8 @@ std::string getUserDir() {
     const int ec = getpwuid_r(getuid(), &pwent, &buffer[0], buffer.size(), &res);
 
     if (ec)
-        uasserted(mongo::ErrorCodes::InternalError, "Unable to get home directory for the current user.");
+        uasserted(mongo::ErrorCodes::InternalError,
+                  "Unable to get home directory for the current user.");
 
     return pwent.pw_dir;
 #endif
@@ -511,5 +512,5 @@ bool fileExists(const std::string& file) {
 
 
 stdx::mutex& mongoProgramOutputMutex(*(new stdx::mutex()));
-}
+}  // namespace shell_utils
 }  // namespace mongo

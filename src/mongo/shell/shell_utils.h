@@ -44,7 +44,7 @@ class DBClientBase;
 
 namespace shell_utils {
 
-extern std::string _dbConnect;
+extern std::string dbConnect;
 
 void RecordMyLocation(const char* _argv0);
 void installShellUtils(Scope& scope);

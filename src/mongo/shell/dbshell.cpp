@@ -804,14 +804,14 @@ int _main(int argc, char* argv[], char** envp) {
         stringstream ss;
         ss << "DB.prototype._defaultAuthenticationMechanism = \"" << escape(authMechanisms.get())
            << "\";" << endl;
-        mongo::shell_utils::_dbConnect += ss.str();
+        mongo::shell_utils::dbConnect += ss.str();
     }
 
     if (const auto gssapiServiveName = parsedURI.getOption("gssapiServiceName")) {
         stringstream ss;
         ss << "DB.prototype._defaultGssapiServiceName = \"" << escape(gssapiServiveName.get())
            << "\";" << endl;
-        mongo::shell_utils::_dbConnect += ss.str();
+        mongo::shell_utils::dbConnect += ss.str();
     }
 
     if (!shellGlobalParams.nodb) {  // connect to db
@@ -848,7 +848,7 @@ int _main(int argc, char* argv[], char** envp) {
             ss << "db = db.getMongo().startSession().getDatabase(db.getName());" << endl;
         }
 
-        mongo::shell_utils::_dbConnect += ss.str();
+        mongo::shell_utils::dbConnect += ss.str();
     }
 
     mongo::ScriptEngine::setConnectCallback(mongo::shell_utils::onConnect);

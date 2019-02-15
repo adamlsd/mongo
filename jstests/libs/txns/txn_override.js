@@ -7,6 +7,7 @@
 (function() {
     'use strict';
 
+    load("jstests/libs/error_code_utils.js");
     load("jstests/libs/override_methods/read_and_write_concern_helpers.js");
     load('jstests/libs/override_methods/override_helpers.js');
     load("jstests/libs/retryable_writes_util.js");
@@ -288,7 +289,7 @@
             // retry the command. If the collection did exist, we'll return the original
             // response because it failed for a different reason. Tests that expect collections
             // to not exist will have to be skipped.
-            if (res.code === ErrorCodes.OperationNotSupportedInTransaction) {
+            if (includesErrorCode(res, ErrorCodes.OperationNotSupportedInTransaction)) {
                 const createCmdRes = runCommandOriginal.call(conn,
                                                              dbName,
                                                              {
@@ -476,7 +477,8 @@
 
         let res = func.apply(conn, makeFuncArgs(commandObj));
 
-        if ((res.ok !== 1) && (conn.txnOverrideState === TransactionStates.kActive)) {
+        if ((res.ok !== 1 || res.writeErrors) &&
+            (conn.txnOverrideState === TransactionStates.kActive)) {
             abortTransaction(conn, cmdObjUnwrapped.lsid, txnOptions.txnNumber);
             res = retryOnImplicitCollectionCreationIfNeeded(conn,
                                                             dbName,

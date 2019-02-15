@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -281,7 +280,7 @@ public:
      * CallbackCanceled error.
      */
     void _interruptWithResponse_inlock(const TaskExecutor::CallbackHandle& cbHandle,
-                                       const std::vector<NetworkOperationList*> queuesToCheck,
+                                       const std::vector<NetworkOperationList*>& queuesToCheck,
                                        const TaskExecutor::ResponseStatus& response);
 
 private:

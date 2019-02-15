@@ -1,6 +1,3 @@
-//@file indexupdatetests.cpp : mongo/db/index_update.{h,cpp} tests
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -78,10 +75,11 @@ protected:
         try {
             MultiIndexBlock indexer(&_opCtx, collection());
 
-            uassertStatusOK(indexer.init(key));
+            uassertStatusOK(indexer.init(key, MultiIndexBlock::kNoopOnInitFn));
             uassertStatusOK(indexer.insertAllDocumentsInCollection());
             WriteUnitOfWork wunit(&_opCtx);
-            ASSERT_OK(indexer.commit());
+            ASSERT_OK(indexer.commit(MultiIndexBlock::kNoopOnCreateEachFn,
+                                     MultiIndexBlock::kNoopOnCommitFn));
             wunit.commit();
         } catch (const DBException& e) {
             if (ErrorCodes::isInterruption(e.code()))
@@ -143,11 +141,12 @@ public:
                                   << "background"
                                   << background);
 
-        ASSERT_OK(indexer.init(spec).getStatus());
+        ASSERT_OK(indexer.init(spec, MultiIndexBlock::kNoopOnInitFn).getStatus());
         ASSERT_OK(indexer.insertAllDocumentsInCollection());
 
         WriteUnitOfWork wunit(&_opCtx);
-        ASSERT_OK(indexer.commit());
+        ASSERT_OK(
+            indexer.commit(MultiIndexBlock::kNoopOnCreateEachFn, MultiIndexBlock::kNoopOnCommitFn));
         wunit.commit();
     }
 };
@@ -195,7 +194,7 @@ public:
                                   << "background"
                                   << background);
 
-        ASSERT_OK(indexer.init(spec).getStatus());
+        ASSERT_OK(indexer.init(spec, MultiIndexBlock::kNoopOnInitFn).getStatus());
         auto desc =
             coll->getIndexCatalog()->findIndexByName(&_opCtx, "a", true /* includeUnfinished */);
         ASSERT(desc);
@@ -290,7 +289,7 @@ public:
 
 Status IndexBuildBase::createIndex(const std::string& dbname, const BSONObj& indexSpec) {
     MultiIndexBlock indexer(&_opCtx, collection());
-    Status status = indexer.init(indexSpec).getStatus();
+    Status status = indexer.init(indexSpec, MultiIndexBlock::kNoopOnInitFn).getStatus();
     if (status == ErrorCodes::IndexAlreadyExists) {
         return Status::OK();
     }
@@ -302,7 +301,8 @@ Status IndexBuildBase::createIndex(const std::string& dbname, const BSONObj& ind
         return status;
     }
     WriteUnitOfWork wunit(&_opCtx);
-    ASSERT_OK(indexer.commit());
+    ASSERT_OK(
+        indexer.commit(MultiIndexBlock::kNoopOnCreateEachFn, MultiIndexBlock::kNoopOnCommitFn));
     wunit.commit();
     return Status::OK();
 }

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -82,9 +81,16 @@ AsyncRequestsSender::AsyncRequestsSender(OperationContext* opCtx,
 AsyncRequestsSender::~AsyncRequestsSender() {
     _cancelPendingRequests();
 
-    // Wait on remaining callbacks to run.
-    while (!done()) {
-        next();
+    try {
+        // Wait on remaining callbacks to run.
+        while (!done()) {
+            next();
+        }
+    } catch (const ExceptionFor<ErrorCodes::InterruptedAtShutdown>&) {
+        // Ignore interrupted at shutdown.  No need to cleanup if we're going into process-wide
+        // shutdown.
+        //
+        // TODO: Figure out how to do actual NonInterruptibility in SERVER-39427
     }
 }
 

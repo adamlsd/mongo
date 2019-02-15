@@ -408,6 +408,17 @@ env.Library(
     ],
 )
 
+if env.TargetOSIs('windows'):
+    env.Library(
+        target='windows_options',
+        source=[
+            env.Idlc('windows_options.idl')[0],
+        ],
+        LIBDEPS_PRIVATE=[
+            '$BUILD_DIR/mongo/util/options_parser/options_parser',
+        ],
+    )
+
 env.Clone().InjectModule("enterprise").Library(
     target="server_options_servers",
     source=[
@@ -668,29 +679,6 @@ env.Library(
 )
 
 env.Library(
-    target='transaction_coordinator',
-    source=[
-        'transaction_coordinator_catalog.cpp',
-        'transaction_coordinator_driver.cpp',
-        'transaction_coordinator_factory_mongod.cpp',
-        'transaction_coordinator_futures_util.cpp',
-        'transaction_coordinator_service.cpp',
-        'transaction_coordinator.cpp',
-        env.Idlc('transaction_coordinator_document.idl')[0],
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        'catalog_raii',
-        'rw_concern_d',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/commands/txn_cmd_request',
-        '$BUILD_DIR/mongo/s/async_requests_sender',
-        '$BUILD_DIR/mongo/s/grid',
-    ]
-)
-
-env.Library(
     target='session_catalog',
     source=[
         'session_catalog.cpp',
@@ -712,7 +700,6 @@ env.Library(
         'server_transactions_metrics.cpp',
         'session_catalog_mongod.cpp',
         'single_transaction_stats.cpp',
-        'transaction_coordinator_factory.cpp',
         'transaction_history_iterator.cpp',
         'transaction_metrics_observer.cpp',
         'transaction_participant.cpp',
@@ -745,23 +732,6 @@ env.Library(
         'commands/server_status',
         'update/update_driver',
     ]
-)
-
-env.CppUnitTest(
-    target='transaction_coordinator_test',
-    source=[
-        'transaction_coordinator_catalog_test.cpp',
-        'transaction_coordinator_futures_util_test.cpp',
-        'transaction_coordinator_service_test.cpp',
-        'transaction_coordinator_test_fixture.cpp',
-        'transaction_coordinator_test.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_mock',
-        '$BUILD_DIR/mongo/s/shard_server_test_fixture',
-        'auth/authmocks',
-        'transaction_coordinator',
-    ],
 )
 
 env.CppUnitTest(
@@ -818,6 +788,7 @@ env.Library(
         'catalog/index_key_validate',
         'catalog/multi_index_block',
         'concurrency/write_conflict_exception',
+        'index_builds_coordinator_interface',
     ],
 )
 
@@ -923,6 +894,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/stats/top',
         '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
         '$BUILD_DIR/mongo/db/storage/storage_engine_metadata',
+        'commands/server_status_core',
     ],
 )
 
@@ -983,6 +955,45 @@ env.CppUnitTest(
         "$BUILD_DIR/mongo/db/catalog/catalog_test_fixture",
         "index_builds_coordinator_mongod",
     ]
+)
+
+
+env.Library(
+    target='index_build_entry_helpers',
+    source=[
+        "index_build_entry_helpers.cpp",
+    ],
+    LIBDEPS_PRIVATE=[
+        "catalog_raii",
+        "dbhelpers",
+        "db_raii",
+        "namespace_string",
+        "query_exec",
+        "service_context",
+        "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/catalog/catalog_helpers",
+        "$BUILD_DIR/mongo/db/catalog/catalog_impl",
+        "$BUILD_DIR/mongo/db/catalog/commit_quorum_options",
+        "$BUILD_DIR/mongo/db/catalog/index_build_entry_idl",
+        "$BUILD_DIR/mongo/db/matcher/expressions_mongod_only",
+        "$BUILD_DIR/mongo/db/storage/write_unit_of_work",
+        "$BUILD_DIR/mongo/db/query/query_request",
+        "$BUILD_DIR/mongo/db/query/query_planner",
+        "$BUILD_DIR/mongo/util/net/network",
+    ],
+)
+
+env.CppUnitTest(
+    target='index_build_entry_helpers_test',
+    source=[
+        'index_build_entry_helpers_test.cpp',
+    ],
+    LIBDEPS=[
+        'index_build_entry_helpers',
+        '$BUILD_DIR/mongo/db/catalog/catalog_test_fixture',
+        '$BUILD_DIR/mongo/db/catalog/index_build_entry_idl',
+        '$BUILD_DIR/mongo/util/net/network',
+    ],
 )
 
 env.Library(
@@ -1093,6 +1104,7 @@ env.Library(
         'logical_clock',
     ],
     LIBDEPS_PRIVATE=[
+        'index_builds_coordinator_interface',
         '$BUILD_DIR/mongo/db/catalog/document_validation',
         '$BUILD_DIR/mongo/db/catalog/index_key_validate',
         '$BUILD_DIR/mongo/db/catalog/multi_index_block',

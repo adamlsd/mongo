@@ -11,8 +11,7 @@
     const dbName = testName;
     const collName = "testcoll";
 
-    const rst = new ReplSetTest(
-        {nodes: [{setParameter: {closeConnectionsOnStepdown: false}}, {rsConfig: {priority: 0}}]});
+    const rst = new ReplSetTest({nodes: [{}, {rsConfig: {priority: 0}}]});
     rst.startSet();
     rst.initiate();
 
@@ -62,7 +61,6 @@
 
         jsTestLog("Making primary step down");
         const joinStepDownThread = startParallelShell(() => {
-
             assert.commandWorked(db.adminCommand({"replSetStepDown": 30 * 60, "force": true}));
         }, primary.port);
 

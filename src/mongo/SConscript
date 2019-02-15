@@ -72,6 +72,7 @@ env.Library(
         'base/simple_string_data_comparator.cpp',
         'base/status.cpp',
         'base/string_data.cpp',
+        'base/transaction_error.cpp',
         'base/validate_locale.cpp',
         'bson/bson_comparator_interface_base.cpp',
         'bson/bson_depth.cpp',
@@ -403,6 +404,7 @@ mongod = env.Program(
         'db/update/update_driver',
         'db/update_index_data',
         'db/views/views_mongod',
+        'db/windows_options' if env.TargetOSIs('windows') else [],
         'executor/network_interface_factory',
         'mongod_options_init',
         'rpc/rpc',
@@ -476,6 +478,7 @@ mongos = env.Program(
         's/cluster_cursor_stats.cpp',
         's/mongos_options.cpp',
         's/mongos_options_init.cpp',
+        env.Idlc('s/mongos_options.idl')[0],
         's/s_sharding_server_status.cpp',
         's/server.cpp',
         's/service_entry_point_mongos.cpp',
@@ -495,6 +498,7 @@ mongos = env.Program(
         'db/server_options',
         'db/startup_warnings_common',
         'db/stats/counters',
+        'db/windows_options' if env.TargetOSIs('windows') else [],
         's/commands/cluster_commands',
         's/commands/shared_cluster_commands',
         's/committed_optime_metadata_hook',
@@ -511,8 +515,11 @@ mongos = env.Program(
         'util/fail_point',
         'util/net/ssl_options_server' if get_option('ssl') == 'on' else '',
         'util/ntservice',
-        'util/options_parser/options_parser_init',
         'util/version_impl',
+    ],
+    LIBDEPS_PRIVATE=[
+        'util/options_parser/options_parser_init',
+        'util/options_parser/options_parser',
     ],
     INSTALL_ALIAS=[
         'servers',
@@ -671,17 +678,20 @@ def installBinary( e, name ):
             name,
             debug_sym_cmd
         )
+        e.NoCache(debug_sym)
         e.Install("#/", debug_sym)
         e.Alias('debugsymbols', debug_sym)
         distDebugSymbols.append(debug_sym)
 
     if env.TargetOSIs('linux', 'solaris') and (not has_option("nostrip")):
+        stripped_name = 'stripped/%s' % name
         strip_cmd = e.Command(
-            'stripped/%s' % name,
+            stripped_name,
             [name, debug_sym],
             '${OBJCOPY} --strip-debug --add-gnu-debuglink ${SOURCES[1]} ${SOURCES[0]} $TARGET'
         )
-        distBinaries.append('stripped/%s' % name)
+        e.NoCache(stripped_name)
+        distBinaries.append(stripped_name)
     else:
         distBinaries.append(name)
 
@@ -805,7 +815,7 @@ if env.TargetOSIs('posix'):
 # "dist" target is valid only when --use-new-tools is specified
 # Attempts to build release artifacts without tools must fail
 if has_option("use-new-tools"):
-    env.Command(
+    server_archive = env.Command(
         target='#/${SERVER_ARCHIVE}',
         source=['#buildscripts/make_archive.py'] + env["MODULE_BANNERS"] + env["ARCHIVE_ADDITIONS"] + distBinaries,
         action=' '.join(
@@ -826,7 +836,8 @@ if has_option("use-new-tools"):
         BUILD_DIR=env.Dir('$BUILD_DIR').path
     )
 
-    env.Alias("dist", source='#/${SERVER_ARCHIVE}')
+    env.Alias("dist", server_archive)
+    env.NoCache(server_archive)
 else:
     def failDist(env, target, source):
         env.FatalError("ERROR: 'dist' target only valid with --use-new-tools.")
@@ -848,6 +859,7 @@ debug_symbols_dist = env.Command(
 )
 
 env.Alias('dist-debugsymbols', debug_symbols_dist)
+env.NoCache(debug_symbols_dist)
 
 #final alias
 if not hygienic:

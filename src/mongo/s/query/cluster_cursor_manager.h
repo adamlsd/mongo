@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -192,6 +191,13 @@ public:
          * Returns the command object which originally created this cursor.
          */
         BSONObj getOriginatingCommand() const;
+
+        /**
+         * Returns the privleges for the original command object which created this cursor.
+         */
+
+        const PrivilegeVector& getOriginatingPrivileges() const&;
+        void getOriginatingPrivileges() && = delete;
 
         /**
          * Returns a reference to the vector of remote hosts involved in this operation.

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -168,8 +167,8 @@ void DoTxnTest::setUp() {
     _ocs.emplace(_opCtx.get());
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), false, true);
-    txnParticipant->unstashTransactionResources(opCtx(), "doTxn");
+    txnParticipant.beginOrContinue(opCtx(), *opCtx()->getTxnNumber(), false, true);
+    txnParticipant.unstashTransactionResources(opCtx(), "doTxn");
 }
 
 void DoTxnTest::tearDown() {

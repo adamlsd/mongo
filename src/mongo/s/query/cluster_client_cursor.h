@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -111,6 +110,13 @@ public:
      * Returns the original command object which created this cursor.
      */
     virtual BSONObj getOriginatingCommand() const = 0;
+
+    /**
+     * Returns the privileges required to run a getMore against this cursor. This is the same as the
+     * set of privileges which would have been required to create the cursor in the first place.
+     */
+    virtual const PrivilegeVector& getOriginatingPrivileges() const& = 0;
+    void getOriginatingPrivileges() && = delete;
 
     /**
      * Returns a reference to the vector of remote hosts involved in this operation.

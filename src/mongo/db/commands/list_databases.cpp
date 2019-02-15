@@ -1,6 +1,3 @@
-// list_databases.cpp
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -96,6 +93,7 @@ public:
              const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
+        CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
         IDLParserErrorContext ctx("listDatabases");
         auto cmd = ListDatabasesCommand::parse(ctx, cmdObj);
         auto* as = AuthorizationSession::get(opCtx->getClient());

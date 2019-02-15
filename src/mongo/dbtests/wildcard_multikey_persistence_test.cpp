@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -197,11 +196,12 @@ protected:
         MultiIndexBlock indexer(opCtx(), coll);
 
         // Initialize the index builder and add all documents currently in the collection.
-        ASSERT_OK(indexer.init(indexSpec).getStatus());
+        ASSERT_OK(indexer.init(indexSpec, MultiIndexBlock::kNoopOnInitFn).getStatus());
         ASSERT_OK(indexer.insertAllDocumentsInCollection());
 
         WriteUnitOfWork wunit(opCtx());
-        ASSERT_OK(indexer.commit());
+        ASSERT_OK(
+            indexer.commit(MultiIndexBlock::kNoopOnCreateEachFn, MultiIndexBlock::kNoopOnCommitFn));
         wunit.commit();
     }
 

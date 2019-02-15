@@ -44,6 +44,7 @@ selector:
   - jstests/sharding/lookup_stale_mongos.js
   - jstests/sharding/out_cannot_run_on_mongos.js
   - jstests/sharding/out_command_options.js
+  - jstests/sharding/out_does_not_force_merge.js
   - jstests/sharding/out_from_stale_mongos.js
   - jstests/sharding/out_hashed_shard_key.js
   - jstests/sharding/out_stale_unique_key.js
@@ -59,6 +60,7 @@ selector:
   - jstests/sharding/shard7.js
   - jstests/sharding/shard_config_db_collections.js
   - jstests/sharding/lookup_on_shard.js
+  - jstests/sharding/unsharded_collection_targetting.js
   # TODO: SERVER-38541 remove from blacklist
   - jstests/sharding/shard_collection_existing_zones.js
   - jstests/sharding/single_shard_transaction_with_arbiter.js

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -147,6 +146,11 @@ void ClusterCursorManager::PinnedCursor::returnCursor(CursorState cursorState) {
 BSONObj ClusterCursorManager::PinnedCursor::getOriginatingCommand() const {
     invariant(_cursor);
     return _cursor->getOriginatingCommand();
+}
+
+const PrivilegeVector& ClusterCursorManager::PinnedCursor::getOriginatingPrivileges() const& {
+    invariant(_cursor);
+    return _cursor->getOriginatingPrivileges();
 }
 
 std::size_t ClusterCursorManager::PinnedCursor::getNumRemotes() const {

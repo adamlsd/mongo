@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -233,7 +232,7 @@ public:
 
         AuthorizationSession* authzSession = AuthorizationSession::get(client);
 
-        if (authzSession->isAuthorizedToListCollections(dbname, cmdObj)) {
+        if (authzSession->checkAuthorizedToListCollections(dbname, cmdObj).isOK()) {
             return Status::OK();
         }
 
@@ -247,6 +246,7 @@ public:
              const string& dbname,
              const BSONObj& jsobj,
              BSONObjBuilder& result) final {
+        CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
         unique_ptr<MatchExpression> matcher;
         const auto as = AuthorizationSession::get(opCtx->getClient());
 
@@ -379,14 +379,16 @@ public:
             exec->detachFromOperationContext();
         }  // Drop db lock. Global cursor registration must be done without holding any locks.
 
-        auto pinnedCursor = CursorManager::getGlobalCursorManager()->registerCursor(
+        auto pinnedCursor = CursorManager::get(opCtx)->registerCursor(
             opCtx,
             {std::move(exec),
              cursorNss,
              AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
              repl::ReadConcernArgs::get(opCtx),
              jsobj,
-             ClientCursorParams::LockPolicy::kLocksInternally});
+             ClientCursorParams::LockPolicy::kLocksInternally,
+             uassertStatusOK(AuthorizationSession::get(opCtx->getClient())
+                                 ->checkAuthorizedToListCollections(dbname, jsobj))});
 
         appendCursorResponseObject(
             pinnedCursor.getCursor()->cursorid(), cursorNss.ns(), firstBatch.arr(), &result);

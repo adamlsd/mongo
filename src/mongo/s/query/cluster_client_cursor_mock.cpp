@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -69,6 +68,10 @@ StatusWith<ClusterQueryResult> ClusterClientCursorMock::next(
 
 BSONObj ClusterClientCursorMock::getOriginatingCommand() const {
     return _originatingCommand;
+}
+
+const PrivilegeVector& ClusterClientCursorMock::getOriginatingPrivileges() const& {
+    return _originatingPrivileges;
 }
 
 std::size_t ClusterClientCursorMock::getNumRemotes() const {

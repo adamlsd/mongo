@@ -49,6 +49,7 @@
 #include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
 #include "mongo/db/concurrency/replication_state_transition_lock_guard.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time.h"
@@ -98,7 +99,15 @@ MONGO_FAIL_POINT_DEFINE(stepdownHangBeforePerformingPostMemberStateUpdateActions
 MONGO_FAIL_POINT_DEFINE(transitionToPrimaryHangBeforeTakingGlobalExclusiveLock);
 MONGO_FAIL_POINT_DEFINE(holdStableTimestampAtSpecificTimestamp);
 
-MONGO_EXPORT_SERVER_PARAMETER(closeConnectionsOnStepdown, bool, true);
+// Tracks the number of operations killed on step down.
+Counter64 userOpsKilled;
+ServerStatusMetricField<Counter64> displayuserOpsKilled("repl.stepDown.userOperationsKilled",
+                                                        &userOpsKilled);
+
+// Tracks the number of operations left running on step down.
+Counter64 userOpsRunning;
+ServerStatusMetricField<Counter64> displayUserOpsRunning("repl.stepDown.userOperationsRunning",
+                                                         &userOpsRunning);
 
 using CallbackArgs = executor::TaskExecutor::CallbackArgs;
 using CallbackFn = executor::TaskExecutor::CallbackFn;
@@ -1041,6 +1050,10 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* opCtx,
         invariant(status);
     }
 
+    // Reset the counters on step up.
+    userOpsKilled.decrement(userOpsKilled.get());
+    userOpsRunning.decrement(userOpsRunning.get());
+
     // Must calculate the commit level again because firstOpTimeOfMyTerm wasn't set when we logged
     // our election in onTransitionToPrimary(), above.
     _updateLastCommittedOpTime(lk);
@@ -1752,8 +1765,18 @@ void ReplicationCoordinatorImpl::waitForStepDownAttempt_forTest() {
     }
 }
 
+void ReplicationCoordinatorImpl::_updateAndLogStatsOnStepDown(const KillOpContainer* koc) const {
+    userOpsRunning.increment(koc->getUserOpsRunning());
+
+    BSONObjBuilder bob;
+    bob.appendNumber("userOpsKilled", userOpsKilled.get());
+    bob.appendNumber("userOpsRunning", userOpsRunning.get());
+
+    log() << "Successfully stepped down from primary, stats: " << bob.obj();
+}
+
 void ReplicationCoordinatorImpl::_killUserOperationsOnStepDown(
-    const OperationContext* stepDownOpCtx) {
+    const OperationContext* stepDownOpCtx, KillOpContainer* koc) {
     ServiceContext* serviceCtx = stepDownOpCtx->getServiceContext();
     invariant(serviceCtx);
 
@@ -1767,12 +1790,15 @@ void ReplicationCoordinatorImpl::_killUserOperationsOnStepDown(
         OperationContext* toKill = client->getOperationContext();
 
         // Don't kill the stepdown thread.
-        if (toKill && toKill->getOpID() != stepDownOpCtx->getOpID()) {
+        if (toKill && !toKill->isKillPending() && toKill->getOpID() != stepDownOpCtx->getOpID()) {
             const GlobalLockAcquisitionTracker& globalLockTracker =
                 GlobalLockAcquisitionTracker::get(toKill);
-            if (closeConnectionsOnStepdown.load() || globalLockTracker.getGlobalWriteLocked() ||
+            if (globalLockTracker.getGlobalWriteLocked() ||
                 globalLockTracker.getGlobalSharedLockTaken()) {
                 serviceCtx->killOperation(lk, toKill, ErrorCodes::InterruptedDueToStepDown);
+                userOpsKilled.increment();
+            } else {
+                koc->incrUserOpsRunningBy();
             }
         }
     }
@@ -1793,7 +1819,10 @@ void ReplicationCoordinatorImpl::KillOpContainer::killOpThreadFn() {
     OperationContext* opCtx = uniqueOpCtx.get();
 
     while (true) {
-        _replCord->_killUserOperationsOnStepDown(_stepDownOpCtx);
+        // Reset the value before killing user operations as we only want to track the number
+        // of operations that's running after step down.
+        _userOpsRunning = 0;
+        _replCord->_killUserOperationsOnStepDown(_stepDownOpCtx, this);
 
         // Destroy all stashed transaction resources, in order to release locks.
         SessionKiller::Matcher matcherAllSessions(
@@ -1830,6 +1859,14 @@ void ReplicationCoordinatorImpl::KillOpContainer::stopAndWaitForKillOpThread() {
     }
     _killOpThread->join();
     _killOpThread.reset();
+}
+
+size_t ReplicationCoordinatorImpl::KillOpContainer::getUserOpsRunning() const {
+    return _userOpsRunning;
+}
+
+void ReplicationCoordinatorImpl::KillOpContainer::incrUserOpsRunningBy(size_t val) {
+    _userOpsRunning += val;
 }
 
 void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
@@ -1980,6 +2017,7 @@ void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
 
     onExitGuard.dismiss();
     updateMemberState();
+    _updateAndLogStatsOnStepDown(&koc);
 
     // Schedule work to (potentially) step back up once the stepdown period has ended.
     _scheduleWorkAt(stepDownUntil, [=](const executor::TaskExecutor::CallbackArgs& cbData) {
@@ -2050,8 +2088,8 @@ bool ReplicationCoordinatorImpl::isMasterForReportingPurposes() {
 
 bool ReplicationCoordinatorImpl::canAcceptWritesForDatabase(OperationContext* opCtx,
                                                             StringData dbName) {
-    // The answer isn't meaningful unless we hold the global lock.
-    invariant(opCtx->lockState()->isLocked());
+    // The answer isn't meaningful unless we hold the ReplicationStateTransitionLock.
+    invariant(opCtx->lockState()->isRSTLLocked());
     return canAcceptWritesForDatabase_UNSAFE(opCtx, dbName);
 }
 
@@ -2073,7 +2111,7 @@ bool ReplicationCoordinatorImpl::canAcceptWritesForDatabase_UNSAFE(OperationCont
 
 bool ReplicationCoordinatorImpl::canAcceptWritesFor(OperationContext* opCtx,
                                                     const NamespaceString& ns) {
-    invariant(opCtx->lockState()->isLocked());
+    invariant(opCtx->lockState()->isRSTLLocked());
     return canAcceptWritesFor_UNSAFE(opCtx, ns);
 }
 
@@ -2109,7 +2147,7 @@ bool ReplicationCoordinatorImpl::canAcceptWritesFor_UNSAFE(OperationContext* opC
 Status ReplicationCoordinatorImpl::checkCanServeReadsFor(OperationContext* opCtx,
                                                          const NamespaceString& ns,
                                                          bool slaveOk) {
-    invariant(opCtx->lockState()->isLocked());
+    invariant(opCtx->lockState()->isRSTLLocked());
     return checkCanServeReadsFor_UNSAFE(opCtx, ns, slaveOk);
 }
 
@@ -2141,7 +2179,7 @@ Status ReplicationCoordinatorImpl::checkCanServeReadsFor_UNSAFE(OperationContext
     }
 
     auto txnParticipant = TransactionParticipant::get(opCtx);
-    if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
+    if (txnParticipant && txnParticipant.inMultiDocumentTransaction()) {
         if (!_readWriteAbility->canAcceptNonLocalWrites_UNSAFE() && !getTestCommandsEnabled()) {
             return Status(ErrorCodes::NotMaster,
                           "Multi-document transactions are only allowed on replica set primaries.");
@@ -2555,6 +2593,9 @@ void ReplicationCoordinatorImpl::_finishReplSetReconfig(
     lk.unlock();
     _performPostMemberStateUpdateAction(action);
     _replExecutor->signalEvent(finishedEvent);
+
+    // Inform the index builds coordinator of the replica set reconfig.
+    IndexBuildsCoordinator::get(opCtx.get())->onReplicaSetReconfig();
 }
 
 Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCtx,
@@ -2700,7 +2741,8 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator(WithLock l
         invariant(!_readWriteAbility->canAcceptNonLocalWrites(lk));
 
         serverGlobalParams.validateFeaturesAsMaster.store(false);
-        result = kActionSteppedDownOrRemoved;
+        result = (newState.removed() || newState.rollback()) ? kActionRollbackOrRemoved
+                                                             : kActionSteppedDown;
     } else {
         result = kActionFollowerModeStateChange;
     }
@@ -2805,10 +2847,10 @@ void ReplicationCoordinatorImpl::_performPostMemberStateUpdateAction(
         case kActionFollowerModeStateChange:
             _onFollowerModeStateChange();
             break;
-        case kActionSteppedDownOrRemoved:
-            if (closeConnectionsOnStepdown.load()) {
-                _externalState->closeConnections();
-            }
+        case kActionRollbackOrRemoved:
+            _externalState->closeConnections();
+        /* FALLTHROUGH */
+        case kActionSteppedDown:
             _externalState->shardingOnStepDownHook();
             _externalState->stopNoopWriter();
             break;

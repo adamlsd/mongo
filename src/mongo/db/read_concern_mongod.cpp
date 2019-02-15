@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -134,13 +133,16 @@ Status makeNoopWriteIfNeeded(OperationContext* opCtx, LogicalTime clusterTime) {
     // one that waits for the notification gets the later clusterTime, so when the request finishes
     // it needs to be repeated with the later time.
     while (clusterTime > lastAppliedOpTime) {
-        auto shardingState = ShardingState::get(opCtx);
         // standalone replica set, so there is no need to advance the OpLog on the primary.
-        if (!shardingState->enabled()) {
+        if (serverGlobalParams.clusterRole == ClusterRole::None) {
             return Status::OK();
         }
 
-        auto myShard = Grid::get(opCtx)->shardRegistry()->getShard(opCtx, shardingState->shardId());
+        bool isConfig = (serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
+        auto myShard = isConfig ? Grid::get(opCtx)->shardRegistry()->getConfigShard()
+                                : Grid::get(opCtx)->shardRegistry()->getShard(
+                                      opCtx, ShardingState::get(opCtx)->shardId());
+
         if (!myShard.isOK()) {
             return myShard.getStatus();
         }
@@ -345,8 +347,8 @@ MONGO_REGISTER_SHIM(waitForReadConcern)
     return Status::OK();
 }
 
-MONGO_REGISTER_SHIM(waitForLinearizableReadConcern)(OperationContext* opCtx)->Status {
-
+MONGO_REGISTER_SHIM(waitForLinearizableReadConcern)
+(OperationContext* opCtx, const int readConcernTimeout)->Status {
     CurOpFailpointHelpers::waitWhileFailPointEnabled(
         &hangBeforeLinearizableReadConcern, opCtx, "hangBeforeLinearizableReadConcern", [opCtx]() {
             log() << "batch update - hangBeforeLinearizableReadConcern fail point enabled. "
@@ -375,7 +377,7 @@ MONGO_REGISTER_SHIM(waitForLinearizableReadConcern)(OperationContext* opCtx)->St
         });
     }
     WriteConcernOptions wc = WriteConcernOptions(
-        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, 0);
+        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, readConcernTimeout);
 
     repl::OpTime lastOpApplied = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
     auto awaitReplResult = replCoord->awaitReplication(opCtx, lastOpApplied, wc);

@@ -467,6 +467,7 @@ functions:
           exit 0
         fi
         ${activate_virtualenv}
+        $python -m pip install -r etc/pip/evgtest-requirements.txt
         bin_ver=$($python -c "import yaml; print(yaml.safe_load(open('compile_expansions.yml'))['version']);" | tr -d '[ \r\n]')
         # Due to SERVER-23810, we cannot use $mongo_binary --quiet --nodb --eval "version();"
         mongo_ver=$($mongo_binary --version | perl -pe '/version v(.*)$/; $_ = $1;' | tr -d '[ \r\n]')
@@ -863,49 +864,58 @@ functions:
     command: shell.exec
     type: system
     params:
+      shell: bash
       working_dir: src
       script: |
         set -o errexit
         set -o verbose
         # removes files from the shared scons cache.
 
-        set +o errexit
-        mount | grep "\/efs" > /dev/null
-        if [ $? -eq 0 ]; then
-          echo "Shared cache is already mounted"
-        else
-          echo "Shared cache - mounting file system"
-          sudo mount /efs
-        fi
-        set -o errexit
+        # Only prune on master branch
+        if [[ "${project}" == "mongodb-mongo-master" ]]; then
 
-        dirs=$(ls -l /efs | grep -v total | awk '{print $NF}')
 
-        echo "Pruning shared SCons directories"
-
-        for dir in $dirs; do
-          echo "Pruning /efs/$dir/scons-cache"
-
-          if [ -e /efs/$dir/info/distro_name ]; then
-            distro=$(cat /efs/$dir/info/distro_name)
+          set +o errexit
+          mount | grep "\/efs" > /dev/null
+          if [ $? -eq 0 ]; then
+            echo "Shared cache is already mounted"
+          else
+            echo "Shared cache - mounting file system"
+            sudo mount /efs
           fi
+          set -o errexit
 
-          # Set cache sizes by distro
-          case $distro in
-               ubuntu1604|ubuntu1804|rhel62|rhel70)
-                    cache_size=300
-                    ;;
-               *)
-                    # default
-                    cache_size=200
-                    ;;
-          esac
+          dirs=$(ls -l /efs | grep -v total | awk '{print $NF}')
 
-          sudo python buildscripts/scons_cache_prune.py --cache-dir /efs/$dir/scons-cache --cache-size $cache_size --prune-ratio 1.0
-          echo ""
-        done
+          echo "Pruning shared SCons directories"
 
-        sudo umount /efs || true
+          for dir in $dirs; do
+            echo "Pruning /efs/$dir/scons-cache"
+
+            if [ -e /efs/$dir/info/distro_name ]; then
+              distro=$(cat /efs/$dir/info/distro_name)
+            fi
+
+            # Set cache sizes by distro
+            case $distro in
+                 ubuntu1604|ubuntu1804|rhel62|rhel70)
+                      cache_size=600
+                      ;;
+                 *)
+                      # default
+                      cache_size=400
+                      ;;
+            esac
+
+            sudo python buildscripts/scons_cache_prune.py --cache-dir /efs/$dir/scons-cache --cache-size $cache_size --prune-ratio 1.0
+            echo ""
+          done
+
+          sudo umount /efs || true
+
+        else
+          echo "Not on master, shared SCons cache pruning skipped"
+        fi
 
   "scons cache pruning" :
     command: shell.exec
@@ -1429,6 +1439,10 @@ functions:
         if [ -n "${num_scons_link_jobs_available|}" ]; then
           echo "Changing SCons to run with --jlink=${num_scons_link_jobs_available|}"
           extra_args="$extra_args --jlink=${num_scons_link_jobs_available|}"
+        fi
+
+        if [ "${scons_cache_scope|}" = "shared" ]; then
+          extra_args="$extra_args --cache-debug=scons_cache.log"
         fi
 
         ${activate_virtualenv}
@@ -3489,6 +3503,17 @@ tasks:
         # We only need to upload the source tarball from one of the build variants
         # because it should be the same everywhere, so just use rhel70/windows-64-2k8-ssl.
         build_variants: [ rhel70, windows-64-2k8-ssl ]
+    - command: s3.put
+      params:
+        optional: true
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        local_file: src/scons_cache.log
+        content_type: text/plain
+        remote_file: ${project}/${build_variant}/${revision}/scons-cache-${build_id}-${execution}.log
+        bucket: mciuploads
+        permissions: public-read
+        display_name: SCons cache debug log
     # For patch builds that bypass compile, we upload links to pre-existing tarballs, except for the
     # artifacts.tgz.
     - command: attach.artifacts
@@ -5206,6 +5231,224 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=audit --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: auth
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=auth --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: causally_consistent_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=causally_consistent_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: causally_consistent_jscore_passthrough_auth
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=causally_consistent_jscore_passthrough_auth --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: sharded_causally_consistent_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=sharded_causally_consistent_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=logical_session_cache_sharding_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=logical_session_cache_replication_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=logical_session_cache_standalone_1sec_refresh_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: multi_shard_multi_stmt_txn_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=multi_shard_multi_stmt_txn_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: multi_stmt_txn_jscore_passthrough_with_migration
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=multi_stmt_txn_jscore_passthrough_with_migration --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: noPassthrough
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=no_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: noPassthroughWithMongod
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=no_passthrough_with_mongod --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: read_concern_majority_passthrough
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=read_concern_majority_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: retryable_writes_jscore_passthrough
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=retryable_writes_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: ssl
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=ssl --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: sslSpecial
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=ssl_special --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: slow1
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=slow1 --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: concurrency_sharded_causal_consistency
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=concurrency_sharded_causal_consistency --storageEngine=wiredTiger
+        resmoke_jobs_max: 1
+
+- <<: *task_template
+  name: parallel
+  depends_on:
+  - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=parallel --storageEngine=wiredTiger
+        resmoke_jobs_max: 1
+
+- <<: *task_template
+  name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=replica_sets_multi_stmt_txn_stepdown_jscore_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: sharded_causally_consistent_jscore_txns_passthrough
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=sharded_causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: sharding_jscore_passthrough_wire_ops
+  depends_on:
+    - name: jsCore
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=sharding_jscore_passthrough --storageEngine=wiredTiger --shellReadMode=legacy --shellWriteMode=compatibility --excludeWithAnyTags=requires_find_command
+
+- <<: *task_template
+  name: auth_audit
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=auth_audit --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: sharding_auth
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=sharding_auth --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: sharding_auth_audit
+  commands:
+    - func: "do setup"
+    - func: "run tests"
+      vars:
+        resmoke_args: --suites=sharding_auth_audit --storageEngine=wiredTiger
 
 - name: auth_gen
   commands:
@@ -7390,9 +7633,10 @@ buildvariants:
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars --enable-free-mon=off --enable-http-client=off
     test_flags: >-
       --excludeWithAnyTags=requires_http_client
-      --repeatSuites=10
+      --repeatSuites=5
       --shuffle
-    resmoke_repeat_suites: 10
+    # TODO: SERVER-39479 Increase the number of executions back to 10
+    resmoke_repeat_suites: 5
     # TODO: There are currently 2 ways of repeating suites, one for regular suites and one for
     # generated suites. Once everything is converted to generated suites, we should remove the
     # '--repeatSuites=10' from the test_flags. This will be done in SERVER-38817.
@@ -7604,7 +7848,7 @@ buildvariants:
   run_on:
   - rhel62-small
   batchtime: 1440 # 1 day
-  expansions:
+  expansions: &linux-64-required-duroff-expansions
     push_path: linux
     push_bucket: downloads.mongodb.org
     push_name: linux-duroff
@@ -7653,6 +7897,25 @@ buildvariants:
   - name: sharding_jscore_passthrough
   - name: slow1_gen
   - name: tool
+
+- name: linux-64-required-duroff
+  display_name: "! Linux (No Journal)"
+  run_on:
+  - rhel62-small
+  expansions:
+    <<: *linux-64-required-duroff-expansions
+    burn_in_tests_build_variant: linux-64-duroff
+  tasks:
+  # This build variants exists specifically to test that newly added or modified JavaScript tests
+  # are correctly tagged with "requires_journaling" prior to the changes being pushed. It uses the
+  # task list from the linux-64-duroff build variant to determine the resmoke.py YAML suite
+  # configurations to run the tests under. Do not add more tasks to this list.
+  - name: compile_TG
+    requires:
+    - name: burn_in_tests
+    distros:
+    - rhel62-large
+  - name: burn_in_tests
 
 - name: linux-64-lsm
   stepback: false
@@ -8582,7 +8845,6 @@ buildvariants:
     packager_arch: s390x
     packager_distro: ubuntu1804
     repo_edition: org
-    scons_cache_scope: local
     tooltags: "ssl"
     build_mongoreplay: true
   display_tasks:
@@ -8627,7 +8889,6 @@ buildvariants:
     multiversion_platform: ubuntu1804
     multiversion_architecture: s390x
     multiversion_edition: enterprise
-    scons_cache_scope: local
   display_tasks:
   - *dbtest
   - *unittests
@@ -9153,10 +9414,10 @@ buildvariants:
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: aggregation_expression_multiversion_fuzzer_gen
-  - name: auth_gen
-  - name: causally_consistent_jscore_passthrough_gen
-  - name: causally_consistent_jscore_passthrough_auth_gen
-  - name: sharded_causally_consistent_jscore_passthrough_gen
+  - name: auth
+  - name: causally_consistent_jscore_passthrough
+  - name: causally_consistent_jscore_passthrough_auth
+  - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
   - name: change_streams_mongos_sessions_passthrough
@@ -9179,19 +9440,19 @@ buildvariants:
   - name: jsCore_txns
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
-  - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
-  - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
-  - name: noPassthrough_gen
-  - name: noPassthroughWithMongod_gen
+  - name: multi_shard_multi_stmt_txn_jscore_passthrough
+  - name: multi_stmt_txn_jscore_passthrough_with_migration
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
   - name: rollback_fuzzer_gen
   - name: rollback_fuzzer_clean_shutdowns_gen
   - name: rollback_fuzzer_unclean_shutdowns_gen
   - name: bulk_gle_passthrough
-  - name: parallel_gen
+  - name: parallel
   - name: parallel_compatibility
     # Some concurrency workloads require a lot of memory, so we use machines
     # with more RAM for these suites.
@@ -9225,7 +9486,7 @@ buildvariants:
   - name: concurrency_sharded_replication_with_balancer
     distros:
     - windows-64-vs2017-compile
-  - name: concurrency_sharded_causal_consistency_gen
+  - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
     distros:
     - windows-64-vs2017-compile
@@ -9244,7 +9505,7 @@ buildvariants:
   - name: read_concern_linearizable_passthrough
     distros:
     - windows-64-vs2017-compile
-  - name: read_concern_majority_passthrough_gen
+  - name: read_concern_majority_passthrough
   - name: read_only
   - name: read_only_sharded
   - name: replica_sets
@@ -9262,7 +9523,7 @@ buildvariants:
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
     distros:
     - windows-64-vs2017-compile
-  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
   - name: replica_sets_kill_primary_jscore_passthrough
     distros:
     - windows-64-vs2017-compile
@@ -9272,7 +9533,7 @@ buildvariants:
   - name: replica_sets_kill_secondaries_jscore_passthrough
     distros:
     - windows-64-vs2017-compile
-  - name: retryable_writes_jscore_passthrough_gen
+  - name: retryable_writes_jscore_passthrough
   - name: retryable_writes_jscore_stepdown_passthrough
     distros:
     - windows-64-vs2017-compile
@@ -9330,7 +9591,7 @@ buildvariants:
   - name: burn_in_tests
   - name: verify_pip
   - name: audit
-  - name: auth_audit_gen
+  - name: auth_audit
   - name: benchmarks_orphaned
   - name: benchmarks_sharding
   - name: buildscripts_test
@@ -9357,22 +9618,22 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded_gen
   - name: jstestfuzz_replication_gen
   - name: jstestfuzz_sharded_gen
-  - name: noPassthrough_gen
-  - name: noPassthroughWithMongod_gen
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
   - name: replica_sets_auth_gen
   - name: replica_sets_ese_gen
   - name: replica_sets_jscore_passthrough
   - name: sasl
-  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_jscore_txns
   - name: sharded_jscore_txns_sharded_collections
-  - name: sharding_auth_gen
-  - name: sharding_auth_audit_gen
+  - name: sharding_auth
+  - name: sharding_auth_audit
   - name: sharding_ese_gen
   - name: snmp
-  - name: ssl_gen
-  - name: sslSpecial_gen
+  - name: ssl
+  - name: sslSpecial
   - name: push
     distros:
     - rhel70-small
@@ -9432,7 +9693,10 @@ buildvariants:
     python3: '/cygdrive/c/python/python36/python.exe'
     ext: zip
     use_scons_cache: true
-    test_flags: --serviceExecutor=adaptive
+    test_flags: |- # Use the ServiceExecutorAdaptive with a reasonable number of starting threads
+        --serviceExecutor=adaptive \
+        --mongodSetParameters="adaptiveServiceExecutorReservedThreads: 8" \
+        --mongosSetParameters="adaptiveServiceExecutorReservedThreads: 8"
     tooltags: "ssl sasl"
     build_mongoreplay: false
   tasks:
@@ -9477,7 +9741,7 @@ buildvariants:
     distros:
     - windows-64-vs2017-compile
   - name: audit
-  - name: auth_audit_gen
+  - name: auth_audit
   - name: concurrency
   - name: concurrency_replication
   - name: concurrency_replication_causal_consistency
@@ -9504,22 +9768,22 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded_gen
   - name: jstestfuzz_replication_gen
   - name: jstestfuzz_sharded_gen
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: read_concern_linearizable_passthrough
   - name: replica_sets_auth_gen
   - name: replica_sets_jscore_passthrough
   - name: sasl
-  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_jscore_txns
   - name: sharded_jscore_txns_sharded_collections
-  - name: sharding_auth_gen
-  - name: sharding_auth_audit_gen
+  - name: sharding_auth
+  - name: sharding_auth_audit
   - name: snmp
-  - name: ssl_gen
-  - name: sslSpecial_gen
+  - name: ssl
+  - name: sslSpecial
 
 - name: windows-64-2k8-ssl
   display_name: Windows 2008R2
@@ -9559,7 +9823,7 @@ buildvariants:
   - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
-  - name: auth_gen
+  - name: auth
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
@@ -9601,15 +9865,15 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency_gen
   - name: jstestfuzz_sharded_continuous_stepdown_gen
   - name: jstestfuzz_sharded_session_gen
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
+  - name: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
   - name: mongosTest
   - name: multiversion
   - name: multiversion_auth
-  - name: noPassthroughWithMongod_gen
-  - name: noPassthrough_gen
-  - name: parallel_gen
+  - name: noPassthroughWithMongod
+  - name: noPassthrough
+  - name: parallel
   - name: parallel_compatibility
   - name: powercycle
   - name: powercycle_fcv4.0
@@ -9617,11 +9881,11 @@ buildvariants:
   - name: powercycle_replication
   - name: powercycle_syncdelay
   - name: read_concern_linearizable_passthrough
-  - name: read_concern_majority_passthrough_gen
+  - name: read_concern_majority_passthrough
   - name: replica_sets
   - name: replica_sets_jscore_passthrough
   - name: serial_run
-  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
+  - name: sharded_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharded_collections_jscore_passthrough
   - name: sharded_jscore_txns
@@ -9631,11 +9895,11 @@ buildvariants:
   - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: sharding_jscore_passthrough
   - name: sharding_jscore_op_query_passthrough
-  - name: sharding_jscore_passthrough_wire_ops_gen
+  - name: sharding_jscore_passthrough_wire_ops
   - name: sharding_last_stable_mongos_and_mixed_shards_gen
-  - name: slow1_gen
-  - name: ssl_gen
-  - name: sslSpecial_gen
+  - name: slow1
+  - name: ssl
+  - name: sslSpecial
   - name: stitch_support_lib_build_and_test
   - name: stitch_support_lib_build_and_archive
   - name: tool
@@ -13751,7 +14015,10 @@ buildvariants:
     tooltags: "ssl"
     build_mongoreplay: false
     hang_analyzer_dump_core: false
-    test_flags: --serviceExecutor=adaptive
+    test_flags: |- # Use the ServiceExecutorAdaptive with a reasonable number of starting threads
+        --serviceExecutor=adaptive \
+        --mongodSetParameters="adaptiveServiceExecutorReservedThreads: 8" \
+        --mongosSetParameters="adaptiveServiceExecutorReservedThreads: 8"
     scons_cache_scope: shared
   display_tasks:
   - *dbtest

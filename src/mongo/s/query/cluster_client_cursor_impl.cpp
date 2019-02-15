@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -156,6 +155,10 @@ bool ClusterClientCursorImpl::isTailableAndAwaitData() const {
 
 BSONObj ClusterClientCursorImpl::getOriginatingCommand() const {
     return _params.originatingCommandObj;
+}
+
+const PrivilegeVector& ClusterClientCursorImpl::getOriginatingPrivileges() const& {
+    return _params.originatingPrivileges;
 }
 
 std::size_t ClusterClientCursorImpl::getNumRemotes() const {

@@ -158,8 +158,7 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 
             assert.commandWorked(coordPrimary.adminCommand({
                 configureFailPoint: failpointData.failpoint,
-                mode: "alwaysOn",
-                skip: (failpointData.skip ? failpointData.skip : 0),
+                mode: {skip: (failpointData.skip ? failpointData.skip : 0)},
             }));
 
             // Run commitTransaction through a parallel shell.
@@ -175,12 +174,8 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
                              failpointData.numTimesShouldBeHit);
 
             // Induce the coordinator primary to step down.
-            const stepDownResult = assert.throws(function() {
-                coordPrimary.adminCommand({replSetStepDown: stepDownSecs, force: true});
-            });
-            assert(isNetworkError(stepDownResult),
-                   'Expected exception from stepping down coordinator primary ' +
-                       coordPrimary.host + ': ' + tojson(stepDownResult));
+            assert.commandWorked(
+                coordPrimary.adminCommand({replSetStepDown: stepDownSecs, force: true}));
             assert.commandWorked(coordPrimary.adminCommand({
                 configureFailPoint: failpointData.failpoint,
                 mode: "off",
@@ -269,6 +264,9 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     failpointDataArr.forEach(function(failpointData) {
         if (failpointData.failpoint == "hangWhileTargetingRemoteHost") {
             failpointData.numTimesShouldBeHit++;
+            if (failpointData.skip) {
+                failpointData.skip++;
+            }
         }
     });
 

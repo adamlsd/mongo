@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -97,8 +96,7 @@ private:
             transport::ReactorHandle reactor;
 
             void operator()(ConnectionPool::ConnectionInterface* ptr) const {
-                reactor->schedule(transport::Reactor::kDispatch,
-                                  [ ret = returner, ptr ] { ret(ptr); });
+                reactor->dispatch([ ret = returner, ptr ] { ret(ptr); });
             }
         };
         using ConnHandle = std::unique_ptr<ConnectionPool::ConnectionInterface, Deleter>;

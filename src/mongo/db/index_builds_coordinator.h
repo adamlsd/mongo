@@ -38,6 +38,7 @@
 #include "mongo/db/catalog/commit_quorum_options.h"
 #include "mongo/db/catalog/index_builds_manager.h"
 #include "mongo/db/collection_index_builds_tracker.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/database_index_builds_tracker.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl_index_build_state.h"
@@ -102,7 +103,23 @@ public:
         OperationContext* opCtx,
         CollectionUUID collectionUUID,
         const std::vector<BSONObj>& specs,
-        const UUID& buildUUID) = 0;
+        const UUID& buildUUID,
+        IndexBuildProtocol protocol) = 0;
+
+    /**
+     * Sets up the in-memory and persisted state of the index build.
+     *
+     * This function should only be called when in recovery mode, because we use the DatabaseHolder
+     * to create a temporary collection using the collection catalog entry to allow us to rebuild
+     * the indexes on the collection without initializing it fully.
+     *
+     * Returns the number of records and the size of the data iterated over, if successful.
+     */
+    StatusWith<std::pair<long long, long long>> startIndexRebuildForRecovery(
+        OperationContext* opCtx,
+        std::unique_ptr<Collection> collection,
+        const std::vector<BSONObj>& specs,
+        const UUID& buildUUID);
 
     /**
      * TODO: not yet implemented.
@@ -262,6 +279,15 @@ public:
      */
     void awaitNoBgOpInProgForDb(StringData db) const;
 
+    /**
+     * Called by the replication coordinator when a replica set reconfig occurs, which could affect
+     * any index build to make their commit quorum unachievable.
+     *
+     * Checks if the commit quorum is still satisfiable for each index build, if it is no longer
+     * satisfiable, then those index builds are aborted.
+     */
+    void onReplicaSetReconfig();
+
     void sleepIndexBuilds_forTestOnly(bool sleep);
 
     void verifyNoIndexBuilds_forTestOnly();
@@ -310,6 +336,49 @@ protected:
      * Runs the index build on the caller thread.
      */
     virtual void _runIndexBuild(OperationContext* opCtx, const UUID& buildUUID) noexcept;
+
+    /**
+     * Modularizes the _indexBuildsManager calls part of _runIndexBuild. Throws on error.
+     */
+    void _buildIndex(OperationContext* opCtx,
+                     Collection* collection,
+                     const NamespaceString& nss,
+                     std::shared_ptr<ReplIndexBuildState> replState,
+                     const std::vector<BSONObj>& filteredSpecs,
+                     Lock::DBLock* dbLock);
+    /**
+     * Returns total number of indexes in collection, including unfinished/in-progress indexes.
+     *
+     * Helper function that is used in sub-classes. Used to set statistics on index build results.
+     *
+     * Expects a lock to be held by the caller, so that 'collection' is safe to use.
+     */
+    int _getNumIndexesTotal(OperationContext* opCtx, Collection* collection);
+
+    /**
+     * Adds collation defaults to 'indexSpecs', as well as filtering out existing indexes (ready or
+     * building) and checking uniqueness constraints are compatible with sharding.
+     *
+     * Helper function that is used in sub-classes. Produces final specs that the Coordinator will
+     * register and use for the build, if the result is non-empty.
+     *
+     * This function throws on error. Expects a DB X lock to be held by the caller.
+     */
+    std::vector<BSONObj> _addDefaultsAndFilterExistingIndexes(
+        OperationContext* opCtx,
+        Collection* collection,
+        const NamespaceString& nss,
+        const std::vector<BSONObj>& indexSpecs);
+
+    /**
+     * Runs the index build.
+     * Rebuilding an index in recovery mode verifies each document to ensure that it is a valid
+     * BSON object. It will remove any documents with invalid BSON.
+     *
+     * Returns the number of records and the size of the data iterated over, if successful.
+     */
+    StatusWith<std::pair<long long, long long>> _runIndexRebuildForRecovery(
+        OperationContext* opCtx, Collection* collection, const UUID& buildUUID) noexcept;
 
     // Protects the below state.
     mutable stdx::mutex _mutex;

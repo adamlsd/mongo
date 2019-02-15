@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -524,13 +523,14 @@ int DocumentSourceSort::compare(const Value& lhs, const Value& rhs) const {
     return 0;
 }
 
-intrusive_ptr<DocumentSource> DocumentSourceSort::getShardSource() {
-    return this;
-}
-
-NeedsMergerDocumentSource::MergingLogic DocumentSourceSort::mergingLogic() {
-    return {_limitSrc ? DocumentSourceLimit::create(pExpCtx, _limitSrc->getLimit()) : nullptr,
-            sortKeyPattern(SortKeySerialization::kForSortKeyMerging).toBson()};
+boost::optional<DocumentSource::MergingLogic> DocumentSourceSort::mergingLogic() {
+    MergingLogic split;
+    split.shardsStage = this;
+    split.inputSortPattern = sortKeyPattern(SortKeySerialization::kForSortKeyMerging).toBson();
+    if (_limitSrc) {
+        split.mergingStage = DocumentSourceLimit::create(pExpCtx, _limitSrc->getLimit());
+    }
+    return split;
 }
 
 bool DocumentSourceSort::canRunInParallelBeforeOut(

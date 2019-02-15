@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -63,15 +62,6 @@ Status addMongodOptions(moe::OptionSection* options) {
     if (!ret.isOK()) {
         return ret;
     }
-
-#if defined(_WIN32)
-    moe::OptionSection windows_scm_options("Windows Service Control Manager options");
-
-    ret = addWindowsServerOptions(&windows_scm_options);
-    if (!ret.isOK()) {
-        return ret;
-    }
-#endif
 
     moe::OptionSection rs_options("Replica set options");
     moe::OptionSection replication_options("Replication options");
@@ -356,9 +346,6 @@ Status addMongodOptions(moe::OptionSection* options) {
 
 
     options->addSection(general_options).transitional_ignore();
-#if defined(_WIN32)
-    options->addSection(windows_scm_options).transitional_ignore();
-#endif
     options->addSection(replication_options).transitional_ignore();
     options->addSection(rs_options).transitional_ignore();
     options->addSection(sharding_options).transitional_ignore();

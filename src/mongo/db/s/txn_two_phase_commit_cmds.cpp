@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -38,8 +37,7 @@
 #include "mongo/db/commands/txn_two_phase_commit_cmds_gen.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/sharding_state.h"
-#include "mongo/db/session_catalog_mongod.h"
-#include "mongo/db/transaction_coordinator_service.h"
+#include "mongo/db/s/transaction_coordinator_service.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -90,7 +88,7 @@ public:
                     "'prepareTransaction' is not supported for replica sets with arbiters",
                     !replCoord->setContainsArbiter());
 
-            const auto txnParticipant = TransactionParticipant::get(opCtx);
+            auto txnParticipant = TransactionParticipant::get(opCtx);
             uassert(ErrorCodes::CommandFailed,
                     "prepareTransaction must be run within a transaction",
                     txnParticipant);
@@ -107,11 +105,11 @@ public:
 
             uassert(ErrorCodes::NoSuchTransaction,
                     "Transaction isn't in progress",
-                    txnParticipant->inMultiDocumentTransaction());
+                    txnParticipant.inMultiDocumentTransaction());
 
-            if (txnParticipant->transactionIsPrepared()) {
+            if (txnParticipant.transactionIsPrepared()) {
                 auto& replClient = repl::ReplClientInfo::forClient(opCtx->getClient());
-                auto prepareOpTime = txnParticipant->getPrepareOpTime();
+                auto prepareOpTime = txnParticipant.getPrepareOpTime();
 
                 // Set the client optime to be prepareOpTime if it's not already later than
                 // prepareOpTime. This ensures that we wait for writeConcern and that prepareOpTime
@@ -135,7 +133,7 @@ public:
                 return PrepareTimestamp(prepareOpTime.getTimestamp());
             }
 
-            const auto prepareTimestamp = txnParticipant->prepareTransaction(opCtx, {});
+            const auto prepareTimestamp = txnParticipant.prepareTransaction(opCtx, {});
             if (MONGO_FAIL_POINT(
                     participantReturnNetworkErrorForPrepareAfterExecutingPrepareLogic)) {
                 uasserted(ErrorCodes::HostUnreachable,

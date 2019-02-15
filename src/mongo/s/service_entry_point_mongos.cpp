@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -125,6 +124,7 @@ DbResponse ServiceEntryPointMongos::handleRequest(OperationContext* opCtx, const
             case dbQuery:
                 // Commands are handled above through Strategy::clientCommand().
                 invariant(!nss.isCommand());
+                opCtx->markKillOnClientDisconnect();
                 dbResponse = Strategy::queryOp(opCtx, nss, &dbm);
                 break;
 

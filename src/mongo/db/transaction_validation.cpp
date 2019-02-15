@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -50,7 +49,6 @@ const StringMap<int> sessionCheckOutList = {{"abortTransaction", 1},
                                             {"applyOps", 1},
                                             {"commitTransaction", 1},
                                             {"count", 1},
-                                            {"dbHash", 1},
                                             {"delete", 1},
                                             {"distinct", 1},
                                             {"doTxn", 1},

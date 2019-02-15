@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -69,9 +68,20 @@ class PlanExecutor;
 class CursorManager {
 public:
     /**
-     * Returns a pointer to the process-global cursor manager.
+     * Returns a pointer to the cursor manager defined within the specified ServiceContext.
      */
-    static CursorManager* getGlobalCursorManager();
+    static CursorManager* get(ServiceContext* svcCtx);
+
+    /**
+     * Returns a pointer to the cursor manager defined within the specified OperationContext.
+     */
+    static CursorManager* get(OperationContext* opCtx);
+
+    /**
+     * Registers the new cursor manager within the specified ServiceContext.
+     */
+    static void set(ServiceContext* svcCtx, std::unique_ptr<CursorManager> newCursorManager);
+
 
     CursorManager();
 

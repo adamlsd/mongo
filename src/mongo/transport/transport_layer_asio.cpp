@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -183,12 +182,12 @@ public:
         return Date_t(asio::system_timer::clock_type::now());
     }
 
-    void schedule(ScheduleMode mode, Task task) override {
-        if (mode == kDispatch) {
-            asio::dispatch(_ioContext, std::move(task));
-        } else {
-            asio::post(_ioContext, std::move(task));
-        }
+    void schedule(Task task) override {
+        asio::post(_ioContext, std::move(task));
+    }
+
+    void dispatch(Task task) override {
+        asio::dispatch(_ioContext, std::move(task));
     }
 
     bool onReactorThread() const override {

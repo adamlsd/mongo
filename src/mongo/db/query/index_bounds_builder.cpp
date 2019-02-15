@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -426,6 +425,8 @@ void IndexBoundsBuilder::_translatePredicate(const MatchExpression* expr,
             static_cast<ComparisonMatchExpression*>(child)->getData().type() == BSONType::jstNULL) {
             *tightnessOut = IndexBoundsBuilder::EXACT;
         }
+
+        invariant(*tightnessOut == IndexBoundsBuilder::EXACT);
 
         // If the index is multikey on this path, it doesn't matter what the tightness of the child
         // is, we must return INEXACT_FETCH. Consider a multikey index on 'a' with document

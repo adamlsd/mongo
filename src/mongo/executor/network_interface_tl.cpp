@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -456,7 +455,7 @@ Status NetworkInterfaceTL::setAlarm(Date_t when, unique_function<void()> action)
     }
 
     if (when <= now()) {
-        _reactor->schedule(transport::Reactor::kPost, std::move(action));
+        _reactor->schedule(std::move(action));
         return Status::OK();
     }
 
@@ -491,7 +490,7 @@ Status NetworkInterfaceTL::setAlarm(Date_t when, unique_function<void()> action)
             }
 
             if (status.isOK()) {
-                _reactor->schedule(transport::Reactor::kPost, std::move(action));
+                _reactor->schedule(std::move(action));
             } else if (status != ErrorCodes::CallbackCanceled) {
                 warning() << "setAlarm() received an error: " << status;
             }

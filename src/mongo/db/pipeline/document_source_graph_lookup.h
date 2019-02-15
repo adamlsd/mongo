@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -38,7 +37,7 @@
 
 namespace mongo {
 
-class DocumentSourceGraphLookUp final : public DocumentSource, public NeedsMergerDocumentSource {
+class DocumentSourceGraphLookUp final : public DocumentSource {
 public:
     static std::unique_ptr<LiteParsedDocumentSourceForeignCollections> liteParse(
         const AggregationRequest& request, const BSONElement& spec);
@@ -74,22 +73,17 @@ public:
         return constraints;
     }
 
+    boost::optional<MergingLogic> mergingLogic() final {
+        // {shardsStage, mergingStage, sortPattern}
+        return MergingLogic{nullptr, this, boost::none};
+    }
+
     DepsTracker::State getDependencies(DepsTracker* deps) const final {
         _startWith->addDependencies(deps);
         return DepsTracker::State::SEE_NEXT;
     };
 
-    boost::intrusive_ptr<DocumentSource> getShardSource() final {
-        return nullptr;
-    }
-
-    MergingLogic mergingLogic() final {
-        return {this};
-    }
-
-    void addInvolvedCollections(std::vector<NamespaceString>* collections) const final {
-        collections->push_back(_from);
-    }
+    void addInvolvedCollections(stdx::unordered_set<NamespaceString>* collectionNames) const final;
 
     void detachFromOperationContext() final;
 

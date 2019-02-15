@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -60,7 +59,6 @@
 
 namespace mongo {
 namespace {
-MONGO_FAIL_POINT_DEFINE(hangDuringViewResolution);
 
 StatusWith<std::unique_ptr<CollatorInterface>> parseCollator(OperationContext* opCtx,
                                                              BSONObj collationSpec) {
@@ -460,13 +458,6 @@ StatusWith<ResolvedView> ViewCatalog::resolveView(OperationContext* opCtx,
 
         int depth = 0;
         for (; depth < ViewGraph::kMaxViewDepth; depth++) {
-            while (MONGO_FAIL_POINT(hangDuringViewResolution)) {
-                log() << "Yielding mutex and hanging due to 'hangDuringViewResolution' failpoint";
-                lock.unlock();
-                sleepmillis(1000);
-                lock.lock();
-            }
-
             // If the catalog has been invalidated, bail and restart.
             if (!_valid.load()) {
                 uassertStatusOK(_reloadIfNeeded(lock, opCtx));

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -279,7 +278,7 @@ Message getMore(OperationContext* opCtx,
     // These are set in the QueryResult msg we return.
     int resultFlags = ResultFlag_AwaitCapable;
 
-    auto cursorManager = CursorManager::getGlobalCursorManager();
+    auto cursorManager = CursorManager::get(opCtx);
     auto statusWithCursorPin = cursorManager->pinCursor(opCtx, cursorid);
     if (statusWithCursorPin == ErrorCodes::CursorNotFound) {
         return makeCursorNotFoundResponse();
@@ -354,12 +353,12 @@ Message getMore(OperationContext* opCtx,
     *isCursorAuthorized = true;
 
     // Only used by the failpoints.
-    const auto dropAndReaquireReadLock = [&] {
+    stdx::function<void()> dropAndReaquireReadLock = [&] {
         // Make sure an interrupted operation does not prevent us from reacquiring the lock.
         UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 
         readLock.reset();
-        readLock.emplace(opCtx, NamespaceString(ns));
+        readLock.emplace(opCtx, nss);
     };
 
     // On early return, get rid of the cursor.
@@ -370,11 +369,18 @@ Message getMore(OperationContext* opCtx,
     // repeatedly release and re-acquire the collection readLock at regular intervals until
     // the failpoint is released. This is done in order to avoid deadlocks caused by the
     // pinned-cursor failpoints in this file (see SERVER-21997).
-    if (MONGO_FAIL_POINT(waitAfterPinningCursorBeforeGetMoreBatch)) {
+    MONGO_FAIL_POINT_BLOCK(waitAfterPinningCursorBeforeGetMoreBatch, options) {
+        const BSONObj& data = options.getData();
+        if (data["shouldNotdropLock"].booleanSafe()) {
+            dropAndReaquireReadLock = []() {};
+        }
+
         CurOpFailpointHelpers::waitWhileFailPointEnabled(&waitAfterPinningCursorBeforeGetMoreBatch,
                                                          opCtx,
                                                          "waitAfterPinningCursorBeforeGetMoreBatch",
-                                                         dropAndReaquireReadLock);
+                                                         dropAndReaquireReadLock,
+                                                         false,
+                                                         nss);
     }
 
 
@@ -710,14 +716,15 @@ std::string runQuery(OperationContext* opCtx,
 
         const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
         // Allocate a new ClientCursor and register it with the cursor manager.
-        ClientCursorPin pinnedCursor = CursorManager::getGlobalCursorManager()->registerCursor(
+        ClientCursorPin pinnedCursor = CursorManager::get(opCtx)->registerCursor(
             opCtx,
             {std::move(exec),
              nss,
              AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
              readConcernArgs,
              upconvertedQuery,
-             ClientCursorParams::LockPolicy::kLockExternally});
+             ClientCursorParams::LockPolicy::kLockExternally,
+             {Privilege(ResourcePattern::forExactNamespace(nss), ActionType::find)}});
         ccId = pinnedCursor.getCursor()->cursorid();
 
         LOG(5) << "caching executor with cursorid " << ccId << " after returning " << numResults

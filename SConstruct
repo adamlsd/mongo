@@ -1288,27 +1288,6 @@ if has_option("cache"):
         env.FatalError("Mixing --cache and --gcov doesn't work correctly yet. See SERVER-11084")
     env.CacheDir(str(env.Dir(cacheDir)))
 
-    if get_option("cache") == "nolinked":
-        def noCacheEmitter(target, source, env):
-            for t in target:
-                env.NoCache(t)
-            return target, source
-
-        def addNoCacheEmitter(builder):
-            origEmitter = builder.emitter
-            if SCons.Util.is_Dict(origEmitter):
-                for k,v in origEmitter:
-                    origEmitter[k] = SCons.Builder.ListEmitter([v, noCacheEmitter])
-            elif SCons.Util.is_List(origEmitter):
-                emitter.append(noCacheEmitter)
-            else:
-                builder.emitter = SCons.Builder.ListEmitter([origEmitter, noCacheEmitter])
-
-        addNoCacheEmitter(env['BUILDERS']['Program'])
-        addNoCacheEmitter(env['BUILDERS']['StaticLibrary'])
-        addNoCacheEmitter(env['BUILDERS']['SharedLibrary'])
-        addNoCacheEmitter(env['BUILDERS']['LoadableModule'])
-
 # Normalize the link model. If it is auto, then for now both developer and release builds
 # use the "static" mode. Somday later, we probably want to make the developer build default
 # dynamic, but that will require the hygienic builds project.
@@ -1403,6 +1382,10 @@ if link_model.startswith("dynamic"):
     # If that condition is met, then the graph will be acyclic.
 
     if env.TargetOSIs('darwin'):
+        if link_model.startswith('dynamic'):
+            print("WARNING: Building MongoDB server with dynamic linking " +
+                  "on macOS is not supported. Static linking is recommended.")
+
         if link_model == "dynamic-strict":
             # Darwin is strict by default
             pass
@@ -2026,7 +2009,7 @@ def doConfigure(myenv):
         #endif
 
         #if defined(__apple_build_version__)
-        #if __apple_build_version__ < 10001145
+        #if __apple_build_version__ < 10001044
         #error %s or newer is required to build MongoDB
         #endif
         #elif (__clang_major__ < 7) || (__clang_major__ == 7 && __clang_minor__ < 0)
@@ -3765,12 +3748,20 @@ vcxprojFile = env.Command(
     r"$PYTHON buildscripts\make_vcxproj.py mongodb")
 vcxproj = env.Alias("vcxproj", vcxprojFile)
 
-env.Alias("distsrc-tar", env.DistSrc("mongodb-src-${MONGO_VERSION}.tar"))
-env.Alias("distsrc-tgz", env.GZip(
+distSrc = env.DistSrc("mongodb-src-${MONGO_VERSION}.tar")
+env.NoCache(distSrc)
+env.Alias("distsrc-tar", distSrc)
+
+distSrcGzip = env.GZip(
     target="mongodb-src-${MONGO_VERSION}.tgz",
-    source=["mongodb-src-${MONGO_VERSION}.tar"])
-)
-env.Alias("distsrc-zip", env.DistSrc("mongodb-src-${MONGO_VERSION}.zip"))
+    source=[distSrc])
+env.NoCache(distSrcGzip)
+env.Alias("distsrc-tgz", distSrcGzip)
+
+distSrcZip = env.DistSrc("mongodb-src-${MONGO_VERSION}.zip")
+env.NoCache(distSrcZip)
+env.Alias("distsrc-zip", distSrcZip)
+
 env.Alias("distsrc", "distsrc-tgz")
 
 # Defaults for SCons provided flags. SetOption only sets the option to our value
@@ -3829,6 +3820,34 @@ if has_option('jlink'):
         base_emitter = builder.emitter
         new_emitter = SCons.Builder.ListEmitter([base_emitter, jlink_emitter])
         builder.emitter = new_emitter
+
+# Keep this late in the game so that we can investigate attributes set by all the tools that have run.
+if has_option("cache"):
+    if get_option("cache") == "nolinked":
+        def noCacheEmitter(target, source, env):
+            for t in target:
+                try:
+                    if getattr(t.attributes, 'thin_archive', False):
+                        continue
+                except(AttributeError):
+                    pass
+                env.NoCache(t)
+            return target, source
+
+        def addNoCacheEmitter(builder):
+            origEmitter = builder.emitter
+            if SCons.Util.is_Dict(origEmitter):
+                for k,v in origEmitter:
+                    origEmitter[k] = SCons.Builder.ListEmitter([v, noCacheEmitter])
+            elif SCons.Util.is_List(origEmitter):
+                origEmitter.append(noCacheEmitter)
+            else:
+                builder.emitter = SCons.Builder.ListEmitter([origEmitter, noCacheEmitter])
+
+        addNoCacheEmitter(env['BUILDERS']['Program'])
+        addNoCacheEmitter(env['BUILDERS']['StaticLibrary'])
+        addNoCacheEmitter(env['BUILDERS']['SharedLibrary'])
+        addNoCacheEmitter(env['BUILDERS']['LoadableModule'])
 
 env.SConscript(
     dirs=[

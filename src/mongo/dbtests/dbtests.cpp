@@ -1,7 +1,3 @@
-// #file dbtests.cpp : Runs db unit tests.
-//
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -29,6 +25,10 @@
  *    delete this exception statement from your version. If you delete this
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
+ */
+
+/**
+ * Runs db unit tests.
  */
 
 #include "mongo/platform/basic.h"
@@ -105,7 +105,7 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
         wunit.commit();
     }
     MultiIndexBlock indexer(opCtx, coll);
-    Status status = indexer.init(spec).getStatus();
+    Status status = indexer.init(spec, MultiIndexBlock::kNoopOnInitFn).getStatus();
     if (status == ErrorCodes::IndexAlreadyExists) {
         return Status::OK();
     }
@@ -121,7 +121,8 @@ Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj
         return status;
     }
     WriteUnitOfWork wunit(opCtx);
-    ASSERT_OK(indexer.commit());
+    ASSERT_OK(
+        indexer.commit(MultiIndexBlock::kNoopOnCreateEachFn, MultiIndexBlock::kNoopOnCommitFn));
     wunit.commit();
     return Status::OK();
 }

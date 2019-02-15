@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -229,6 +228,20 @@ Status OperationContext::checkForInterruptNoAssert() noexcept {
         return Status(killStatus, "operation was interrupted");
     }
 
+    if (_markKillOnClientDisconnect) {
+        const auto now = getServiceContext()->getFastClockSource()->now();
+
+        if (now > _lastClientCheck + Milliseconds(500)) {
+            _lastClientCheck = now;
+
+            if (!getClient()->session()->isConnected()) {
+                markKilled(ErrorCodes::ClientDisconnect);
+                return Status(ErrorCodes::ClientDisconnect,
+                              "operation was interrupted because a client disconnected");
+            }
+        }
+    }
+
     return Status::OK();
 }
 
@@ -332,6 +345,11 @@ StatusWith<stdx::cv_status> OperationContext::waitForConditionOrInterruptNoAsser
 
 void OperationContext::markKilled(ErrorCodes::Error killCode) {
     invariant(killCode != ErrorCodes::OK);
+
+    if (killCode == ErrorCodes::ClientDisconnect) {
+        log() << "operation was interrupted because a client disconnected";
+    }
+
     stdx::unique_lock<stdx::mutex> lkWaitMutex;
 
     // If we have a _waitMutex, it means this opCtx is currently blocked in
@@ -359,6 +377,26 @@ void OperationContext::markKilled(ErrorCodes::Error killCode) {
     if (lkWaitMutex && _numKillers == 0) {
         invariant(_waitCV);
         _waitCV->notify_all();
+    }
+}
+
+void OperationContext::markKillOnClientDisconnect() {
+    if (getClient()->isInDirectClient()) {
+        return;
+    }
+
+    if (_markKillOnClientDisconnect) {
+        return;
+    }
+
+    if (getClient() && getClient()->session()) {
+        _lastClientCheck = getServiceContext()->getFastClockSource()->now();
+
+        _markKillOnClientDisconnect = true;
+
+        if (_baton) {
+            _baton->markKillOnClientDisconnect();
+        }
     }
 }
 

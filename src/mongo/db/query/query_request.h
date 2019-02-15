@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -394,6 +393,10 @@ public:
         return _allowSpeculativeMajorityRead;
     }
 
+    boost::optional<Timestamp> getReadAtClusterTime() const {
+        return _internalReadAtClusterTime;
+    }
+
     /**
      * Return options as a bit vector.
      */
@@ -522,6 +525,10 @@ private:
     bool _allowSpeculativeMajorityRead = false;
 
     boost::optional<long long> _replicationTerm;
+
+    // The Timestamp that RecoveryUnit::setTimestampReadSource() should be called with. The optional
+    // should only ever be engaged when testing commands are enabled.
+    boost::optional<Timestamp> _internalReadAtClusterTime;
 };
 
 }  // namespace mongo

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -115,6 +114,9 @@ public:
     bool isTailableAndAwaitData() const final;
 
     BSONObj getOriginatingCommand() const final;
+
+    const PrivilegeVector& getOriginatingPrivileges() const& final;
+    void getOriginatingPrivileges() && = delete;
 
     std::size_t getNumRemotes() const final;
 

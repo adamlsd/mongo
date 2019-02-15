@@ -1,6 +1,3 @@
-// wiredtiger_kv_engine.cpp
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -124,7 +121,10 @@ bool WiredTigerFileVersion::shouldDowngrade(bool readOnly,
     const auto replCoord = repl::ReplicationCoordinator::get(getGlobalServiceContext());
     const auto memberState = replCoord->getMemberState();
     if (memberState.arbiter()) {
-        return true;
+        // SERVER-35361: Arbiters will no longer downgrade their data files. To downgrade
+        // binaries, the user must delete the dbpath. It's not particularly expensive for a
+        // replica set to re-initialize an arbiter that comes online.
+        return false;
     }
 
     if (!serverGlobalParams.featureCompatibility.isVersionInitialized()) {

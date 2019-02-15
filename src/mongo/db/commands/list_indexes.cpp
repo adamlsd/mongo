@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -128,6 +127,7 @@ public:
              const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
+        CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
         const long long defaultBatchSize = std::numeric_limits<long long>::max();
         long long batchSize;
         uassertStatusOK(
@@ -219,14 +219,15 @@ public:
         }  // Drop collection lock. Global cursor registration must be done without holding any
            // locks.
 
-        const auto pinnedCursor = CursorManager::getGlobalCursorManager()->registerCursor(
+        const auto pinnedCursor = CursorManager::get(opCtx)->registerCursor(
             opCtx,
             {std::move(exec),
              nss,
              AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
              repl::ReadConcernArgs::get(opCtx),
              cmdObj,
-             ClientCursorParams::LockPolicy::kLocksInternally});
+             ClientCursorParams::LockPolicy::kLocksInternally,
+             {Privilege(ResourcePattern::forExactNamespace(nss), ActionType::listIndexes)}});
 
         appendCursorResponseObject(
             pinnedCursor.getCursor()->cursorid(), nss.ns(), firstBatch.arr(), &result);

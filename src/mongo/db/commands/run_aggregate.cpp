@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -296,11 +295,11 @@ StatusWith<StringMap<ExpressionContext::ResolvedNamespace>> resolveInvolvedNames
 Status collatorCompatibleWithPipeline(OperationContext* opCtx,
                                       Database* db,
                                       const CollatorInterface* collator,
-                                      const Pipeline* pipeline) {
-    if (!db || !pipeline) {
+                                      const LiteParsedPipeline& liteParsedPipeline) {
+    if (!db) {
         return Status::OK();
     }
-    for (auto&& potentialViewNs : pipeline->getInvolvedCollections()) {
+    for (auto&& potentialViewNs : liteParsedPipeline.getInvolvedNamespaces()) {
         if (db->getCollection(opCtx, potentialViewNs)) {
             continue;
         }
@@ -350,7 +349,7 @@ boost::intrusive_ptr<ExpressionContext> makeExpressionContext(
     expCtx->tempDir = storageGlobalParams.dbpath + "/_tmp";
     auto txnParticipant = TransactionParticipant::get(opCtx);
     expCtx->inMultiDocumentTransaction =
-        txnParticipant && txnParticipant->inMultiDocumentTransaction();
+        txnParticipant && txnParticipant.inMultiDocumentTransaction();
 
     return expCtx;
 }
@@ -392,6 +391,7 @@ Status runAggregate(OperationContext* opCtx,
                     const NamespaceString& origNss,
                     const AggregationRequest& request,
                     const BSONObj& cmdObj,
+                    const PrivilegeVector& privileges,
                     rpc::ReplyBuilderInterface* result) {
     // For operations on views, this will be the underlying namespace.
     NamespaceString nss = request.getNamespaceString();
@@ -418,7 +418,7 @@ Status runAggregate(OperationContext* opCtx,
             auto txnParticipant = TransactionParticipant::get(opCtx);
             // If we are in a multi-document transaction, we intercept the 'readConcern'
             // assertion in order to provide a more descriptive error message and code.
-            if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
+            if (txnParticipant && txnParticipant.inMultiDocumentTransaction()) {
                 return {ErrorCodes::OperationNotSupportedInTransaction,
                         ex.toStatus("Operation not permitted in transaction").reason()};
             }
@@ -516,7 +516,7 @@ Status runAggregate(OperationContext* opCtx,
             auto newRequest = resolvedView.asExpandedViewAggregation(request);
             auto newCmd = newRequest.serializeToCommandObj().toBson();
 
-            auto status = runAggregate(opCtx, origNss, newRequest, newCmd, result);
+            auto status = runAggregate(opCtx, origNss, newRequest, newCmd, privileges, result);
 
             {
                 // Set the namespace of the curop back to the view namespace so ctx records
@@ -538,7 +538,7 @@ Status runAggregate(OperationContext* opCtx,
         if (!pipelineInvolvedNamespaces.empty()) {
             invariant(ctx);
             auto pipelineCollationStatus = collatorCompatibleWithPipeline(
-                opCtx, ctx->getDb(), expCtx->getCollator(), pipeline.get());
+                opCtx, ctx->getDb(), expCtx->getCollator(), liteParsedPipeline);
             if (!pipelineCollationStatus.isOK()) {
                 return pipelineCollationStatus;
             }
@@ -628,7 +628,6 @@ Status runAggregate(OperationContext* opCtx,
             p.deleteUnderlying();
         }
     });
-
     for (size_t idx = 0; idx < execs.size(); ++idx) {
         ClientCursorParams cursorParams(
             std::move(execs[idx]),
@@ -636,7 +635,8 @@ Status runAggregate(OperationContext* opCtx,
             AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
             repl::ReadConcernArgs::get(opCtx),
             cmdObj,
-            ClientCursorParams::LockPolicy::kLocksInternally);
+            ClientCursorParams::LockPolicy::kLocksInternally,
+            privileges);
         if (expCtx->tailableMode == TailableModeEnum::kTailable) {
             cursorParams.setTailable(true);
         } else if (expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
@@ -644,8 +644,7 @@ Status runAggregate(OperationContext* opCtx,
             cursorParams.setAwaitData(true);
         }
 
-        auto pin =
-            CursorManager::getGlobalCursorManager()->registerCursor(opCtx, std::move(cursorParams));
+        auto pin = CursorManager::get(opCtx)->registerCursor(opCtx, std::move(cursorParams));
         cursors.emplace_back(pin.getCursor());
         pins.emplace_back(std::move(pin));
     }

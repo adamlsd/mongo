@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -120,7 +119,7 @@ StatusWith<CompactStats> compactCollection(OperationContext* opCtx,
     MultiIndexBlock indexer(opCtx, collection);
     indexer.ignoreUniqueConstraint();  // in compact we should be doing no checking
 
-    Status status = indexer.init(indexSpecs).getStatus();
+    Status status = indexer.init(indexSpecs, MultiIndexBlock::kNoopOnInitFn).getStatus();
     if (!status.isOK())
         return StatusWith<CompactStats>(status);
 
@@ -135,7 +134,8 @@ StatusWith<CompactStats> compactCollection(OperationContext* opCtx,
 
     {
         WriteUnitOfWork wunit(opCtx);
-        status = indexer.commit();
+        status =
+            indexer.commit(MultiIndexBlock::kNoopOnCreateEachFn, MultiIndexBlock::kNoopOnCommitFn);
         if (!status.isOK()) {
             return StatusWith<CompactStats>(status);
         }

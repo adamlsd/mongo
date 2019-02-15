@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -44,7 +43,7 @@ NetworkTestEnv::NetworkTestEnv(TaskExecutor* executor, NetworkInterfaceMock* net
     : _executor(executor), _mockNetwork(network) {}
 
 void NetworkTestEnv::onCommand(OnCommandFunction func) {
-    _mockNetwork->enterNetwork();
+    executor::NetworkInterfaceMock::InNetworkGuard guard(_mockNetwork);
 
     const NetworkInterfaceMock::NetworkOperationIterator noi = _mockNetwork->getNextReadyRequest();
     const RemoteCommandRequest& request = noi->getRequest();
@@ -63,11 +62,10 @@ void NetworkTestEnv::onCommand(OnCommandFunction func) {
     }
 
     _mockNetwork->runReadyNetworkOperations();
-    _mockNetwork->exitNetwork();
 }
 
 void NetworkTestEnv::onCommandWithMetadata(OnCommandWithMetadataFunction func) {
-    _mockNetwork->enterNetwork();
+    executor::NetworkInterfaceMock::InNetworkGuard guard(_mockNetwork);
 
     const NetworkInterfaceMock::NetworkOperationIterator noi = _mockNetwork->getNextReadyRequest();
     const RemoteCommandRequest& request = noi->getRequest();
@@ -85,7 +83,6 @@ void NetworkTestEnv::onCommandWithMetadata(OnCommandWithMetadataFunction func) {
     }
 
     _mockNetwork->runReadyNetworkOperations();
-    _mockNetwork->exitNetwork();
 }
 
 void NetworkTestEnv::onFindCommand(OnFindCommandFunction func) {

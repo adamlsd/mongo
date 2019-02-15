@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -90,6 +89,7 @@ ClientCursor::ClientCursor(ClientCursorParams params,
       _txnNumber(operationUsingCursor->getTxnNumber()),
       _readConcernArgs(params.readConcernArgs),
       _originatingCommand(params.originatingCommandObj),
+      _originatingPrivileges(std::move(params.originatingPrivileges)),
       _queryOptions(params.queryOptions),
       _lockPolicy(params.lockPolicy),
       _exec(std::move(params.exec)),
@@ -279,7 +279,7 @@ public:
                 const ServiceContext::UniqueOperationContext opCtx = cc().makeOperationContext();
                 auto now = opCtx->getServiceContext()->getPreciseClockSource()->now();
                 cursorStatsTimedOut.increment(
-                    CursorManager::getGlobalCursorManager()->timeoutCursors(opCtx.get(), now));
+                    CursorManager::get(opCtx.get())->timeoutCursors(opCtx.get(), now));
             }
             MONGO_IDLE_THREAD_BLOCK;
             sleepsecs(getClientCursorMonitorFrequencySecs());

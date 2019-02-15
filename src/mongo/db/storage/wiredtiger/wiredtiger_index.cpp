@@ -1,6 +1,3 @@
-// wiredtiger_index.cpp
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -1730,28 +1727,6 @@ void WiredTigerIndexStandard::_unindex(OperationContext* opCtx,
         setKey(c, item.Get());
         invariantWTOK(WT_OP_CHECK(c->remove(c)));
     }
-}
-
-// ---------------- for compatability with rc4 and previous ------
-
-int index_collator_customize(WT_COLLATOR* coll,
-                             WT_SESSION* s,
-                             const char* uri,
-                             WT_CONFIG_ITEM* metadata,
-                             WT_COLLATOR** collp) {
-    fassertFailedWithStatusNoTrace(28580,
-                                   Status(ErrorCodes::UnsupportedFormat,
-                                          str::stream()
-                                              << "Found an index from an unsupported RC version."
-                                              << " Please restart with --repair to fix."));
-}
-
-extern "C" MONGO_COMPILER_API_EXPORT int index_collator_extension(WT_CONNECTION* conn,
-                                                                  WT_CONFIG_ARG* cfg) {
-    static WT_COLLATOR idx_static;
-
-    idx_static.customize = index_collator_customize;
-    return conn->add_collator(conn, "mongo_index", &idx_static, NULL);
 }
 
 }  // namespace mongo

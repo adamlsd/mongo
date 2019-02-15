@@ -1,6 +1,3 @@
-// expression_parser.cpp
-
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -549,15 +546,28 @@ StatusWithMatchExpression parseRegexDocument(StringData name, const BSONObj& doc
                     regex = e.valueStringData();
                 } else if (e.type() == BSONType::RegEx) {
                     regex = e.regex();
-                    regexOptions = e.regexFlags();
+                    if (!StringData{e.regexFlags()}.empty()) {
+                        if (!regexOptions.empty()) {
+                            return {Status(ErrorCodes::Error(51074),
+                                           "options set in both $regex and $options")};
+                        }
+                        regexOptions = e.regexFlags();
+                    }
                 } else {
                     return {Status(ErrorCodes::BadValue, "$regex has to be a string")};
                 }
 
                 break;
             case PathAcceptingKeyword::OPTIONS:
-                if (e.type() != BSONType::String)
+                if (e.type() != BSONType::String) {
                     return {Status(ErrorCodes::BadValue, "$options has to be a string")};
+                }
+
+                if (!regexOptions.empty()) {
+                    return {Status(ErrorCodes::Error(51075),
+                                   "options set in both $regex and $options")};
+                }
+
                 regexOptions = e.valueStringData();
                 break;
             default:

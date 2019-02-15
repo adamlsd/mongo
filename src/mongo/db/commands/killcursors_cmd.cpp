@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -67,7 +66,7 @@ public:
 private:
     Status _checkAuth(Client* client, const NamespaceString& nss, CursorId id) const final {
         auto opCtx = client->getOperationContext();
-        return CursorManager::getGlobalCursorManager()->checkAuthForKillCursors(opCtx, id);
+        return CursorManager::get(opCtx)->checkAuthForKillCursors(opCtx, id);
     }
 
     Status _killCursor(OperationContext* opCtx,
@@ -83,7 +82,7 @@ private:
                                  dbProfilingLevel);
         }
 
-        auto cursorManager = CursorManager::getGlobalCursorManager();
+        auto cursorManager = CursorManager::get(opCtx);
         return cursorManager->killCursor(opCtx, id, true /* shouldAudit */);
     }
 } killCursorsCmd;

@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -198,6 +197,7 @@ bool MozJSImplScope::_interruptCallback(JSContext* cx) {
     // Check our initial kill status (which might be fine).
     auto status = [&scope]() -> Status {
         stdx::lock_guard<stdx::mutex> lk(scope->_mutex);
+
         return scope->_killStatus;
     }();
 

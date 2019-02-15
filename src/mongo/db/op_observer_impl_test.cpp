@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -439,17 +438,17 @@ public:
      * statement id.
      */
     void simulateSessionWrite(OperationContext* opCtx,
-                              TransactionParticipant* txnParticipant,
+                              TransactionParticipant::Participant txnParticipant,
                               NamespaceString nss,
                               TxnNumber txnNum,
                               StmtId stmtId) {
-        txnParticipant->beginOrContinue(txnNum, boost::none, boost::none);
+        txnParticipant.beginOrContinue(opCtx, txnNum, boost::none, boost::none);
 
         {
             AutoGetCollection autoColl(opCtx, nss, MODE_IX);
             WriteUnitOfWork wuow(opCtx);
             auto opTime = repl::OpTime(Timestamp(10, 1), 1);  // Dummy timestamp.
-            txnParticipant->onWriteOpCompletedOnPrimary(
+            txnParticipant.onWriteOpCompletedOnPrimary(
                 opCtx, txnNum, {stmtId}, opTime, Date_t::now(), boost::none);
             wuow.commit();
         }
@@ -469,14 +468,14 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
         auto opCtx = cc().makeOperationContext();
         opCtx->setLogicalSessionId(sessionId);
         MongoDOperationContextSession ocs(opCtx.get());
-        const auto txnParticipant = TransactionParticipant::get(opCtx.get());
-        txnParticipant->refreshFromStorageIfNeeded();
+        auto txnParticipant = TransactionParticipant::get(opCtx.get());
+        txnParticipant.refreshFromStorageIfNeeded(opCtx.get());
 
         // Simulate a write occurring on that session
         simulateSessionWrite(opCtx.get(), txnParticipant, nss, txnNum, stmtId);
 
         // Check that the statement executed
-        ASSERT(txnParticipant->checkStatementExecutedNoOplogEntryFetch(stmtId));
+        ASSERT(txnParticipant.checkStatementExecutedNoOplogEntryFetch(stmtId));
     }
 
     // Because there are no sessions to rollback, the OpObserver should not invalidate the in-memory
@@ -493,8 +492,8 @@ TEST_F(OpObserverSessionCatalogRollbackTest,
         auto opCtx = cc().makeOperationContext();
         opCtx->setLogicalSessionId(sessionId);
         MongoDOperationContextSession ocs(opCtx.get());
-        const auto txnParticipant = TransactionParticipant::get(opCtx.get());
-        ASSERT(txnParticipant->checkStatementExecutedNoOplogEntryFetch(stmtId));
+        auto txnParticipant = TransactionParticipant::get(opCtx.get());
+        ASSERT(txnParticipant.checkStatementExecutedNoOplogEntryFetch(stmtId));
     }
 }
 
@@ -559,8 +558,8 @@ public:
         opCtx()->setTxnNumber(txnNum());
         _sessionCheckout = std::make_unique<MongoDOperationContextSession>(opCtx());
 
-        const auto txnParticipant = TransactionParticipant::get(opCtx());
-        txnParticipant->beginOrContinue(*opCtx()->getTxnNumber(), false, true);
+        auto txnParticipant = TransactionParticipant::get(opCtx());
+        txnParticipant.beginOrContinue(opCtx(), *opCtx()->getTxnNumber(), false, true);
     }
 
     void tearDown() override {
@@ -600,12 +599,12 @@ protected:
         ASSERT_EQ(txnState != boost::none,
                   txnRecordObj.hasField(SessionTxnRecord::kStateFieldName));
 
-        const auto txnParticipant = TransactionParticipant::get(session());
+        auto txnParticipant = TransactionParticipant::get(opCtx());
         if (!opTime.isNull()) {
             ASSERT_EQ(opTime, txnRecord.getLastWriteOpTime());
-            ASSERT_EQ(opTime, txnParticipant->getLastWriteOpTime());
+            ASSERT_EQ(opTime, txnParticipant.getLastWriteOpTime());
         } else {
-            ASSERT_EQ(txnRecord.getLastWriteOpTime(), txnParticipant->getLastWriteOpTime());
+            ASSERT_EQ(txnRecord.getLastWriteOpTime(), txnParticipant.getLastWriteOpTime());
         }
     }
 
@@ -669,7 +668,7 @@ TEST_F(OpObserverLargeTransactionTest, TransactionTooLargeWhileCommitting) {
     auto uuid = CollectionUUID::gen();
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    txnParticipant.unstashTransactionResources(opCtx(), "insert");
 
     // This size is crafted such that two operations of this size are not too big to fit in a single
     // oplog entry, but two operations plus oplog overhead are too big to fit in a single oplog
@@ -682,13 +681,13 @@ TEST_F(OpObserverLargeTransactionTest, TransactionTooLargeWhileCommitting) {
         BSON(
             "_id" << 0 << "data"
                   << BSONBinData(halfTransactionData.get(), kHalfTransactionSize, BinDataGeneral)));
-    txnParticipant->addTransactionOperation(opCtx(), operation);
-    txnParticipant->addTransactionOperation(opCtx(), operation);
+    txnParticipant.addTransactionOperation(opCtx(), operation);
+    txnParticipant.addTransactionOperation(opCtx(), operation);
     ASSERT_THROWS_CODE(opObserver().onTransactionCommit(
                            opCtx(),
                            boost::none,
                            boost::none,
-                           txnParticipant->retrieveCompletedTransactionOperations(opCtx())),
+                           txnParticipant.retrieveCompletedTransactionOperations(opCtx())),
                        AssertionException,
                        ErrorCodes::TransactionTooLarge);
 }
@@ -699,7 +698,7 @@ TEST_F(OpObserverTransactionTest, TransactionalPrepareTest) {
     auto uuid1 = CollectionUUID::gen();
     auto uuid2 = CollectionUUID::gen();
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    txnParticipant.unstashTransactionResources(opCtx(), "insert");
 
     WriteUnitOfWork wuow(opCtx());
     AutoGetCollection autoColl1(opCtx(), nss1, MODE_IX);
@@ -730,12 +729,12 @@ TEST_F(OpObserverTransactionTest, TransactionalPrepareTest) {
                                           << "x"));
     opObserver().onDelete(opCtx(), nss1, uuid1, 0, false, boost::none);
 
-    txnParticipant->transitionToPreparedforTest();
+    txnParticipant.transitionToPreparedforTest(opCtx());
     {
         WriteUnitOfWork wuow(opCtx());
         OplogSlot slot = repl::getNextOpTime(opCtx());
         opObserver().onTransactionPrepare(
-            opCtx(), slot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), slot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
         opCtx()->recoveryUnit()->setPrepareTimestamp(slot.opTime.getTimestamp());
     }
 
@@ -795,7 +794,7 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedCommitTest) {
                                 << "x");
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    txnParticipant.unstashTransactionResources(opCtx(), "insert");
 
     std::vector<InsertStatement> insert;
     insert.emplace_back(0, doc);
@@ -807,11 +806,11 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedCommitTest) {
         AutoGetCollection autoColl(opCtx(), nss, MODE_IX);
         opObserver().onInserts(opCtx(), nss, uuid, insert.begin(), insert.end(), false);
 
-        txnParticipant->transitionToPreparedforTest();
+        txnParticipant.transitionToPreparedforTest(opCtx());
         const auto prepareSlot = repl::getNextOpTime(opCtx());
         prepareTimestamp = prepareSlot.opTime.getTimestamp();
         opObserver().onTransactionPrepare(
-            opCtx(), prepareSlot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), prepareSlot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
 
         commitSlot = repl::getNextOpTime(opCtx());
     }
@@ -820,12 +819,12 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedCommitTest) {
     opCtx()->setWriteUnitOfWork(nullptr);
     opCtx()->lockState()->unsetMaxLockTimeout();
 
-    txnParticipant->transitionToCommittingWithPrepareforTest();
+    txnParticipant.transitionToCommittingWithPrepareforTest(opCtx());
     opObserver().onTransactionCommit(
         opCtx(),
         commitSlot,
         prepareTimestamp,
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
 
     repl::OplogInterfaceLocal oplogInterface(opCtx(), NamespaceString::kRsOplogNamespace.ns());
     auto oplogIter = oplogInterface.makeIterator();
@@ -868,7 +867,7 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedAbortTest) {
                                 << "x");
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    txnParticipant.unstashTransactionResources(opCtx(), "insert");
 
     std::vector<InsertStatement> insert;
     insert.emplace_back(0, doc);
@@ -879,10 +878,10 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedAbortTest) {
         AutoGetCollection autoColl(opCtx(), nss, MODE_IX);
         opObserver().onInserts(opCtx(), nss, uuid, insert.begin(), insert.end(), false);
 
-        txnParticipant->transitionToPreparedforTest();
+        txnParticipant.transitionToPreparedforTest(opCtx());
         const auto prepareSlot = repl::getNextOpTime(opCtx());
         opObserver().onTransactionPrepare(
-            opCtx(), prepareSlot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), prepareSlot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
         abortSlot = repl::getNextOpTime(opCtx());
     }
 
@@ -890,7 +889,7 @@ TEST_F(OpObserverTransactionTest, TransactionalPreparedAbortTest) {
     opCtx()->setWriteUnitOfWork(nullptr);
     opCtx()->lockState()->unsetMaxLockTimeout();
     opObserver().onTransactionAbort(opCtx(), abortSlot);
-    txnParticipant->transitionToAbortedWithPrepareforTest();
+    txnParticipant.transitionToAbortedWithPrepareforTest(opCtx());
 
     repl::OplogInterfaceLocal oplogInterface(opCtx(), NamespaceString::kRsOplogNamespace.ns());
     auto oplogIter = oplogInterface.makeIterator();
@@ -930,7 +929,7 @@ TEST_F(OpObserverTransactionTest, TransactionalUnpreparedAbortTest) {
     const NamespaceString nss("testDB", "testColl");
     const auto uuid = CollectionUUID::gen();
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    txnParticipant.unstashTransactionResources(opCtx(), "insert");
 
     std::vector<InsertStatement> insert;
     insert.emplace_back(0,
@@ -942,7 +941,7 @@ TEST_F(OpObserverTransactionTest, TransactionalUnpreparedAbortTest) {
         AutoGetCollection autoColl(opCtx(), nss, MODE_IX);
         opObserver().onInserts(opCtx(), nss, uuid, insert.begin(), insert.end(), false);
 
-        txnParticipant->transitionToAbortedWithoutPrepareforTest();
+        txnParticipant.transitionToAbortedWithoutPrepareforTest(opCtx());
         opObserver().onTransactionAbort(opCtx(), boost::none);
     }
 
@@ -954,14 +953,14 @@ TEST_F(OpObserverTransactionTest, TransactionalUnpreparedAbortTest) {
 
 TEST_F(OpObserverTransactionTest, PreparingEmptyTransactionLogsEmptyApplyOps) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
-    txnParticipant->transitionToPreparedforTest();
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.transitionToPreparedforTest(opCtx());
 
     {
         WriteUnitOfWork wuow(opCtx());
         OplogSlot slot = repl::getNextOpTime(opCtx());
         opObserver().onTransactionPrepare(
-            opCtx(), slot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), slot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
         opCtx()->recoveryUnit()->setPrepareTimestamp(slot.opTime.getTimestamp());
     }
 
@@ -978,8 +977,8 @@ TEST_F(OpObserverTransactionTest, PreparingEmptyTransactionLogsEmptyApplyOps) {
 
 TEST_F(OpObserverTransactionTest, PreparingTransactionWritesToTransactionTable) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
-    txnParticipant->transitionToPreparedforTest();
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.transitionToPreparedforTest(opCtx());
 
     repl::OpTime prepareOpTime;
     {
@@ -987,41 +986,41 @@ TEST_F(OpObserverTransactionTest, PreparingTransactionWritesToTransactionTable) 
         OplogSlot slot = repl::getNextOpTime(opCtx());
         prepareOpTime = slot.opTime;
         opObserver().onTransactionPrepare(
-            opCtx(), slot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), slot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
         opCtx()->recoveryUnit()->setPrepareTimestamp(slot.opTime.getTimestamp());
     }
 
     ASSERT_EQ(prepareOpTime.getTimestamp(), opCtx()->recoveryUnit()->getPrepareTimestamp());
-    txnParticipant->stashTransactionResources(opCtx());
+    txnParticipant.stashTransactionResources(opCtx());
     assertTxnRecord(txnNum(), prepareOpTime, DurableTxnStateEnum::kPrepared);
-    txnParticipant->unstashTransactionResources(opCtx(), "abortTransaction");
+    txnParticipant.unstashTransactionResources(opCtx(), "abortTransaction");
 }
 
 TEST_F(OpObserverTransactionTest, AbortingUnpreparedTransactionDoesNotWriteToTransactionTable) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
 
     opObserver().onTransactionAbort(opCtx(), boost::none);
-    txnParticipant->stashTransactionResources(opCtx());
+    txnParticipant.stashTransactionResources(opCtx());
 
     // Abort the storage-transaction without calling the OpObserver.
-    txnParticipant->shutdown();
+    txnParticipant.shutdown(opCtx());
 
     assertNoTxnRecord();
 }
 
 TEST_F(OpObserverTransactionTest, AbortingPreparedTransactionWritesToTransactionTable) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
 
     OplogSlot abortSlot;
     {
         WriteUnitOfWork wuow(opCtx());
         OplogSlot slot = repl::getNextOpTime(opCtx());
         opObserver().onTransactionPrepare(
-            opCtx(), slot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), slot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
         opCtx()->recoveryUnit()->setPrepareTimestamp(slot.opTime.getTimestamp());
-        txnParticipant->transitionToPreparedforTest();
+        txnParticipant.transitionToPreparedforTest(opCtx());
         abortSlot = repl::getNextOpTime(opCtx());
     }
 
@@ -1029,12 +1028,12 @@ TEST_F(OpObserverTransactionTest, AbortingPreparedTransactionWritesToTransaction
     opCtx()->setWriteUnitOfWork(nullptr);
     opCtx()->lockState()->unsetMaxLockTimeout();
     opObserver().onTransactionAbort(opCtx(), abortSlot);
-    txnParticipant->transitionToAbortedWithPrepareforTest();
+    txnParticipant.transitionToAbortedWithPrepareforTest(opCtx());
 
-    txnParticipant->stashTransactionResources(opCtx());
+    txnParticipant.stashTransactionResources(opCtx());
 
     // Abort the storage-transaction without calling the OpObserver.
-    txnParticipant->shutdown();
+    txnParticipant.shutdown(opCtx());
 
     assertTxnRecord(txnNum(), {}, DurableTxnStateEnum::kAborted);
 }
@@ -1043,7 +1042,7 @@ TEST_F(OpObserverTransactionTest, CommittingUnpreparedNonEmptyTransactionWritesT
     const NamespaceString nss("testDB", "testColl");
     const auto uuid = CollectionUUID::gen();
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
 
     std::vector<InsertStatement> insert;
     insert.emplace_back(0,
@@ -1059,7 +1058,7 @@ TEST_F(OpObserverTransactionTest, CommittingUnpreparedNonEmptyTransactionWritesT
         opCtx(),
         boost::none,
         boost::none,
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
     opCtx()->getWriteUnitOfWork()->commit();
 
     assertTxnRecord(txnNum(), {}, DurableTxnStateEnum::kCommitted);
@@ -1068,25 +1067,25 @@ TEST_F(OpObserverTransactionTest, CommittingUnpreparedNonEmptyTransactionWritesT
 TEST_F(OpObserverTransactionTest,
        CommittingUnpreparedEmptyTransactionDoesNotWriteToTransactionTable) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
 
     opObserver().onTransactionCommit(
         opCtx(),
         boost::none,
         boost::none,
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
 
-    txnParticipant->stashTransactionResources(opCtx());
+    txnParticipant.stashTransactionResources(opCtx());
 
     // Abort the storage-transaction without calling the OpObserver.
-    txnParticipant->shutdown();
+    txnParticipant.shutdown(opCtx());
 
     assertNoTxnRecord();
 }
 
 TEST_F(OpObserverTransactionTest, CommittingPreparedTransactionWritesToTransactionTable) {
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "prepareTransaction");
+    txnParticipant.unstashTransactionResources(opCtx(), "prepareTransaction");
 
     repl::OpTime prepareOpTime;
     {
@@ -1094,9 +1093,9 @@ TEST_F(OpObserverTransactionTest, CommittingPreparedTransactionWritesToTransacti
         OplogSlot slot = repl::getNextOpTime(opCtx());
         prepareOpTime = slot.opTime;
         opObserver().onTransactionPrepare(
-            opCtx(), slot, txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+            opCtx(), slot, txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
         opCtx()->recoveryUnit()->setPrepareTimestamp(slot.opTime.getTimestamp());
-        txnParticipant->transitionToPreparedforTest();
+        txnParticipant.transitionToPreparedforTest(opCtx());
     }
 
     OplogSlot commitSlot = repl::getNextOpTime(opCtx());
@@ -1107,12 +1106,12 @@ TEST_F(OpObserverTransactionTest, CommittingPreparedTransactionWritesToTransacti
     opCtx()->setWriteUnitOfWork(nullptr);
     opCtx()->lockState()->unsetMaxLockTimeout();
 
-    txnParticipant->transitionToCommittingWithPrepareforTest();
+    txnParticipant.transitionToCommittingWithPrepareforTest(opCtx());
     opObserver().onTransactionCommit(
         opCtx(),
         commitSlot,
         prepareOpTime.getTimestamp(),
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
 
     assertTxnRecord(txnNum(), commitOpTime, DurableTxnStateEnum::kCommitted);
 }
@@ -1123,7 +1122,7 @@ TEST_F(OpObserverTransactionTest, TransactionalInsertTest) {
     auto uuid1 = CollectionUUID::gen();
     auto uuid2 = CollectionUUID::gen();
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "insert");
+    txnParticipant.unstashTransactionResources(opCtx(), "insert");
 
     std::vector<InsertStatement> inserts1;
     inserts1.emplace_back(0,
@@ -1148,7 +1147,7 @@ TEST_F(OpObserverTransactionTest, TransactionalInsertTest) {
         opCtx(),
         boost::none,
         boost::none,
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
     auto oplogEntryObj = getSingleOplogEntry(opCtx());
     checkCommonFields(oplogEntryObj);
     OplogEntry oplogEntry = assertGet(OplogEntry::parse(oplogEntryObj));
@@ -1200,7 +1199,7 @@ TEST_F(OpObserverTransactionTest, TransactionalUpdateTest) {
     auto uuid1 = CollectionUUID::gen();
     auto uuid2 = CollectionUUID::gen();
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "update");
+    txnParticipant.unstashTransactionResources(opCtx(), "update");
 
     CollectionUpdateArgs updateArgs1;
     updateArgs1.stmtId = 0;
@@ -1229,7 +1228,7 @@ TEST_F(OpObserverTransactionTest, TransactionalUpdateTest) {
         opCtx(),
         boost::none,
         boost::none,
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
     auto oplogEntry = getSingleOplogEntry(opCtx());
     checkCommonFields(oplogEntry);
     auto o = oplogEntry.getObjectField("o");
@@ -1267,7 +1266,7 @@ TEST_F(OpObserverTransactionTest, TransactionalDeleteTest) {
     auto uuid2 = CollectionUUID::gen();
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
-    txnParticipant->unstashTransactionResources(opCtx(), "delete");
+    txnParticipant.unstashTransactionResources(opCtx(), "delete");
 
     WriteUnitOfWork wuow(opCtx());
     AutoGetCollection autoColl1(opCtx(), nss1, MODE_IX);
@@ -1286,7 +1285,7 @@ TEST_F(OpObserverTransactionTest, TransactionalDeleteTest) {
         opCtx(),
         boost::none,
         boost::none,
-        txnParticipant->retrieveCompletedTransactionOperations(opCtx()));
+        txnParticipant.retrieveCompletedTransactionOperations(opCtx()));
     auto oplogEntry = getSingleOplogEntry(opCtx());
     checkCommonFields(oplogEntry);
     auto o = oplogEntry.getObjectField("o");

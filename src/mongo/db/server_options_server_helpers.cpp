@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2018-present MongoDB, Inc.
  *
@@ -63,6 +62,8 @@
 
 using std::endl;
 using std::string;
+
+namespace moe = ::mongo::optionenvironment;
 
 namespace mongo {
 
@@ -295,53 +296,6 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
                             moe::Double,
                             "fraction of slow ops to include in the profile and console log")
         .setDefault(moe::Value(1.0));
-
-    return Status::OK();
-}
-
-Status addWindowsServerOptions(moe::OptionSection* options) {
-    options->addOptionChaining("install", "install", moe::Switch, "install Windows service")
-        .setSources(moe::SourceAllLegacy);
-
-    options->addOptionChaining("remove", "remove", moe::Switch, "remove Windows service")
-        .setSources(moe::SourceAllLegacy);
-
-    options
-        ->addOptionChaining(
-            "reinstall",
-            "reinstall",
-            moe::Switch,
-            "reinstall Windows service (equivalent to --remove followed by --install)")
-        .setSources(moe::SourceAllLegacy);
-
-    options->addOptionChaining("processManagement.windowsService.serviceName",
-                               "serviceName",
-                               moe::String,
-                               "Windows service name");
-
-    options->addOptionChaining("processManagement.windowsService.displayName",
-                               "serviceDisplayName",
-                               moe::String,
-                               "Windows service display name");
-
-    options->addOptionChaining("processManagement.windowsService.description",
-                               "serviceDescription",
-                               moe::String,
-                               "Windows service description");
-
-    options->addOptionChaining("processManagement.windowsService.serviceUser",
-                               "serviceUser",
-                               moe::String,
-                               "account for service execution");
-
-    options->addOptionChaining("processManagement.windowsService.servicePassword",
-                               "servicePassword",
-                               moe::String,
-                               "password used to authenticate serviceUser");
-
-    options->addOptionChaining("service", "service", moe::Switch, "start mongodb service")
-        .hidden()
-        .setSources(moe::SourceAllLegacy);
 
     return Status::OK();
 }

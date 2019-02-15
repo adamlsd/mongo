@@ -295,11 +295,11 @@ StatusWith<StringMap<ExpressionContext::ResolvedNamespace>> resolveInvolvedNames
 Status collatorCompatibleWithPipeline(OperationContext* opCtx,
                                       Database* db,
                                       const CollatorInterface* collator,
-                                      const Pipeline* pipeline) {
-    if (!db || !pipeline) {
+                                      const LiteParsedPipeline& liteParsedPipeline) {
+    if (!db) {
         return Status::OK();
     }
-    for (auto&& potentialViewNs : pipeline->getInvolvedCollections()) {
+    for (auto&& potentialViewNs : liteParsedPipeline.getInvolvedNamespaces()) {
         if (db->getCollection(opCtx, potentialViewNs)) {
             continue;
         }
@@ -349,7 +349,7 @@ boost::intrusive_ptr<ExpressionContext> makeExpressionContext(
     expCtx->tempDir = storageGlobalParams.dbpath + "/_tmp";
     auto txnParticipant = TransactionParticipant::get(opCtx);
     expCtx->inMultiDocumentTransaction =
-        txnParticipant && txnParticipant->inMultiDocumentTransaction();
+        txnParticipant && txnParticipant.inMultiDocumentTransaction();
 
     return expCtx;
 }
@@ -418,7 +418,7 @@ Status runAggregate(OperationContext* opCtx,
             auto txnParticipant = TransactionParticipant::get(opCtx);
             // If we are in a multi-document transaction, we intercept the 'readConcern'
             // assertion in order to provide a more descriptive error message and code.
-            if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
+            if (txnParticipant && txnParticipant.inMultiDocumentTransaction()) {
                 return {ErrorCodes::OperationNotSupportedInTransaction,
                         ex.toStatus("Operation not permitted in transaction").reason()};
             }
@@ -538,7 +538,7 @@ Status runAggregate(OperationContext* opCtx,
         if (!pipelineInvolvedNamespaces.empty()) {
             invariant(ctx);
             auto pipelineCollationStatus = collatorCompatibleWithPipeline(
-                opCtx, ctx->getDb(), expCtx->getCollator(), pipeline.get());
+                opCtx, ctx->getDb(), expCtx->getCollator(), liteParsedPipeline);
             if (!pipelineCollationStatus.isOK()) {
                 return pipelineCollationStatus;
             }

@@ -111,7 +111,7 @@ const auto kAuthParam = "authSource"s;
 void
 setHistoryFile()
 {
-    historyFile = shell_utils::getUserDir() + "/.dbshell";
+    historyFile = ( shell_utils::getUserDir() / ".dbshell" ).string();
 }
 }  // namespace
 

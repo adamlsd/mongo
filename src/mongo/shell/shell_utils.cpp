@@ -33,6 +33,8 @@
 
 #include "mongo/shell/shell_utils.h"
 
+#include <filesystem>
+
 #ifndef _WIN32
 #include <pwd.h>
 #include <sys/types.h>
@@ -55,8 +57,6 @@
 #include "mongo/util/version.h"
 
 namespace mongo {
-
-using namespace std::literals::string_literals;
 
 namespace JSFiles {
 extern const JSFile servers;
@@ -100,13 +100,13 @@ BSONElement singleArg(const BSONObj& args) {
     return args.firstElement();
 }
 
-std::string getUserDir() {
+std::filesystem::path getUserDir() {
 #ifdef _WIN32
     auto envp = getenv("USERPROFILE");
     if (envp)
-        return std::string(envp);
+        return envp;
 
-    return "./"s;
+    return "./";
 #else
     const auto homeDir = getenv("HOME");
     if (homeDir)
@@ -114,8 +114,7 @@ std::string getUserDir() {
 
     // The storage for these variables has to live until the value is captured into a std::string at
     // the end of this function.  This is because getpwuid_r(3) doesn't use static storage, but
-    // storage provided by the caller.  So following lambda makes calling easy, but the storage has
-    // to live outside of the lambda.  As a fallback, reserve enough space to store 8 paths, on the
+    // storage provided by the caller.  As a fallback, reserve enough space to store 8 paths, on the
     // theory that the pwent buffer probably needs about that many paths, to fully describe a user
     // -- shell paths, home directory paths, etc.
 

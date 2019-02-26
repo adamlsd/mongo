@@ -29,9 +29,8 @@
 
 #pragma once
 
+#include <filesystem>
 #include <string>
-
-#include <boost/optional.hpp>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/stdx/mutex.h"
@@ -52,7 +51,7 @@ void installShellUtils(Scope& scope);
 void initScope(Scope& scope);
 void onConnect(DBClientBase& c);
 
-std::string getUserDir();
+std::filesystem::path getUserDir();
 
 BSONElement singleArg(const BSONObj& args);
 extern const BSONObj undefinedReturn;

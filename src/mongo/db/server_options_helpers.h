@@ -43,13 +43,6 @@ class Environment;
 namespace moe = mongo::optionenvironment;
 
 /**
- * Base server options that are available in all applications, standalone and embedded.
- *
- * Included by addGeneralServerOptions, don't call both.
- */
-Status addBaseServerOptions(moe::OptionSection* options);
-
-/**
 * Handle custom validation of base options that can not currently be done by using
 * Constraints in the Environment.  See the "validate" function in the Environment class for
 * more details.

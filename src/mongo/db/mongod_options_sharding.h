@@ -1,5 +1,6 @@
+
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,26 +28,24 @@
  *    it in the license file.
  */
 
-#include "mongo/db/repl/repl_settings.h"
+#pragma once
 
-#include "mongo/base/init.h"
+#include <string>
+
 #include "mongo/base/status.h"
-#include "mongo/db/server_parameters.h"
 
 namespace mongo {
-namespace repl {
 
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(maxSyncSourceLagSecs, int, 30);
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(replElectionTimeoutOffsetLimitFraction, double, 0.15);
+inline Status validateShardingClusterRoleSetting(const std::string& value) {
+    constexpr auto kConfigSvr = "configsvr"_sd;
+    constexpr auto kShardSvr = "shardsvr"_sd;
 
-MONGO_INITIALIZER(replSettingsCheck)(InitializerContext*) {
-    if (maxSyncSourceLagSecs < 1) {
-        return Status(ErrorCodes::BadValue, "maxSyncSourceLagSecs must be > 0");
+    if (!kConfigSvr.equalCaseInsensitive(value) && !kShardSvr.equalCaseInsensitive(value)) {
+        return {ErrorCodes::BadValue,
+                "sharding.clusterRole must be one of 'configsvr' or 'shardsvr'"};
     }
-    if (replElectionTimeoutOffsetLimitFraction <= 0.01) {
-        return Status(ErrorCodes::BadValue, "electionTimeoutOffsetLimitFraction must be > 0.01");
-    }
+
     return Status::OK();
 }
-}
-}
+
+}  // namespace mongo

@@ -53,6 +53,7 @@
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/retryable_writes_stats.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/db/server_recovery.h"
 #include "mongo/db/server_transactions_metrics.h"
 #include "mongo/db/session.h"
 #include "mongo/db/session_catalog.h"
@@ -123,7 +124,8 @@ void fassertOnRepeatedExecution(const LogicalSessionId& lsid,
 struct ActiveTransactionHistory {
     boost::optional<SessionTxnRecord> lastTxnRecord;
     TransactionParticipant::CommittedStatementTimestampMap committedStatements;
-    bool transactionCommitted{false};
+    enum TxnRecordState { kNone, kCommitted, kAbortedWithPrepare, kPrepared };
+    TxnRecordState state = TxnRecordState::kNone;
     bool hasIncompleteHistory{false};
 };
 
@@ -155,6 +157,29 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
         return result;
     }
 
+    // State is a new field in FCV 4.2 that indicates if a transaction committed, so check it in FCV
+    // 4.2 and upgrading to 4.2. Check when downgrading as well so sessions refreshed at the start
+    // of downgrade enter the correct state.
+    if ((serverGlobalParams.featureCompatibility.getVersion() >=
+         ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo40)) {
+
+        // The state being kCommitted marks the commit of a transaction.
+        if (result.lastTxnRecord->getState() == DurableTxnStateEnum::kCommitted) {
+            result.state = result.TxnRecordState::kCommitted;
+        }
+
+        // The state being kAborted marks the abort of a prepared transaction since we do not write
+        // down abortTransaction oplog entries in 4.0.
+        if (result.lastTxnRecord->getState() == DurableTxnStateEnum::kAborted) {
+            result.state = result.TxnRecordState::kAbortedWithPrepare;
+        }
+
+        // The state being kPrepared marks a prepared transaction. We should never be refreshing
+        // a prepared transaction from storage since it should already be in a valid state after
+        // replication recovery.
+        invariant(result.lastTxnRecord->getState() != DurableTxnStateEnum::kPrepared);
+    }
+
     auto it = TransactionHistoryIterator(result.lastTxnRecord->getLastWriteOpTime());
     while (it.hasNext()) {
         try {
@@ -181,12 +206,15 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
                                            entry.getOpTime());
             }
 
-            // Either an applyOps oplog entry without a prepare flag or the state being kCommitted
-            // marks the commit of a transaction.
-            if ((entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps &&
-                 !entry.shouldPrepare()) ||
-                (result.lastTxnRecord->getState() == DurableTxnStateEnum::kCommitted)) {
-                result.transactionCommitted = true;
+            // State is a new field in FCV 4.2, so look for an applyOps oplog entry without a
+            // prepare flag to mark a committed transaction in FCV 4.0 or downgrading to 4.0. Check
+            // when upgrading as well so sessions refreshed at the beginning of upgrade enter the
+            // correct state.
+            if ((serverGlobalParams.featureCompatibility.getVersion() <=
+                 ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo42) &&
+                (entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps &&
+                 !entry.shouldPrepare())) {
+                result.state = result.TxnRecordState::kCommitted;
             }
         } catch (const DBException& ex) {
             if (ex.code() == ErrorCodes::IncompleteTransactionHistory) {
@@ -304,7 +332,7 @@ TransactionParticipant::Participant::Participant(OperationContext* opCtx)
 TransactionParticipant::Participant::Participant(const SessionToKill& session)
     : Observer(&getTransactionParticipant(session.get())) {}
 
-void TransactionParticipant::performNoopWriteForNoSuchTransaction(OperationContext* opCtx) {
+void TransactionParticipant::performNoopWrite(OperationContext* opCtx, StringData msg) {
     repl::ReplicationCoordinator* replCoord =
         repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
 
@@ -323,15 +351,12 @@ void TransactionParticipant::performNoopWriteForNoSuchTransaction(OperationConte
                 "Not primary when performing noop write for NoSuchTransaction error",
                 replCoord->canAcceptWritesForDatabase(opCtx, "admin"));
 
-        writeConflictRetry(
-            opCtx, "performNoopWriteForNoSuchTransaction", "local.rs.oplog", [&opCtx] {
-                WriteUnitOfWork wuow(opCtx);
-                opCtx->getClient()->getServiceContext()->getOpObserver()->onOpMessage(
-                    opCtx,
-                    BSON("msg"
-                         << "NoSuchTransaction"));
-                wuow.commit();
-            });
+        writeConflictRetry(opCtx, "performNoopWrite", "local.rs.oplog", [&opCtx, &msg] {
+            WriteUnitOfWork wuow(opCtx);
+            opCtx->getClient()->getServiceContext()->getOpObserver()->onOpMessage(
+                opCtx, BSON("msg" << msg));
+            wuow.commit();
+        });
     }
 }
 
@@ -386,7 +411,6 @@ void TransactionParticipant::Participant::_continueMultiDocumentTransaction(Oper
                 << txnNumber
                 << " has been aborted because an earlier command in this transaction failed.");
     }
-
     return;
 }
 
@@ -422,6 +446,17 @@ void TransactionParticipant::Participant::beginOrContinue(OperationContext* opCt
                                                           TxnNumber txnNumber,
                                                           boost::optional<bool> autocommit,
                                                           boost::optional<bool> startTransaction) {
+    // Make sure we are still a primary. We need to hold on to the RSTL through the end of this
+    // method, as we otherwise risk stepping down in the interim and incorrectly updating the
+    // transaction number, which can abort active transactions.
+    Lock::ResourceLock rstl(opCtx->lockState(), resourceIdReplicationStateTransitionLock, MODE_IX);
+    if (opCtx->writesAreReplicated()) {
+        auto replCoord = repl::ReplicationCoordinator::get(opCtx);
+        uassert(ErrorCodes::NotMaster,
+                "Not primary so we cannot begin or continue a transaction",
+                replCoord->canAcceptWritesForDatabase(opCtx, "admin"));
+    }
+
     uassert(ErrorCodes::TransactionTooOld,
             str::stream() << "Cannot start transaction " << txnNumber << " on session "
                           << _sessionId()
@@ -493,17 +528,23 @@ void TransactionParticipant::Participant::_setSpeculativeTransactionOpTime(
     OperationContext* opCtx, SpeculativeTransactionOpTime opTimeChoice) {
     repl::ReplicationCoordinator* replCoord =
         repl::ReplicationCoordinator::get(opCtx->getServiceContext());
-    opCtx->recoveryUnit()->setTimestampReadSource(
-        opTimeChoice == SpeculativeTransactionOpTime::kAllCommitted
-            ? RecoveryUnit::ReadSource::kAllCommittedSnapshot
-            : RecoveryUnit::ReadSource::kLastAppliedSnapshot);
+
+    boost::optional<Timestamp> readTimestamp;
+
+    if (opTimeChoice == SpeculativeTransactionOpTime::kAllCommitted) {
+        opCtx->recoveryUnit()->setTimestampReadSource(
+            RecoveryUnit::ReadSource::kAllCommittedSnapshot);
+        readTimestamp = repl::StorageInterface::get(opCtx)->getPointInTimeReadTimestamp(opCtx);
+        // Transactions do not survive term changes, so combining "getTerm" here with the
+        // recovery unit timestamp does not cause races.
+        p().speculativeTransactionReadOpTime = {*readTimestamp, replCoord->getTerm()};
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        o(lk).transactionMetricsObserver.onChooseReadTimestamp(*readTimestamp);
+    } else {
+        opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNoTimestamp);
+    }
+
     opCtx->recoveryUnit()->preallocateSnapshot();
-    auto readTimestamp = repl::StorageInterface::get(opCtx)->getPointInTimeReadTimestamp(opCtx);
-    // Transactions do not survive term changes, so combining "getTerm" here with the
-    // recovery unit timestamp does not cause races.
-    p().speculativeTransactionReadOpTime = {readTimestamp, replCoord->getTerm()};
-    stdx::lock_guard<Client> lk(*opCtx->getClient());
-    o(lk).transactionMetricsObserver.onChooseReadTimestamp(readTimestamp);
 }
 
 void TransactionParticipant::Participant::_setSpeculativeTransactionReadTimestamp(
@@ -828,7 +869,7 @@ void TransactionParticipant::Participant::unstashTransactionResources(OperationC
                                              readConcernArgs.getOriginalLevel() ==
                                                      repl::ReadConcernLevel::kSnapshotReadConcern
                                                  ? SpeculativeTransactionOpTime::kAllCommitted
-                                                 : SpeculativeTransactionOpTime::kLastApplied);
+                                                 : SpeculativeTransactionOpTime::kNoTimestamp);
         }
     } else {
         opCtx->recoveryUnit()->preallocateSnapshot();
@@ -1035,10 +1076,13 @@ void TransactionParticipant::Participant::commitUnpreparedTransaction(OperationC
                             << "this transaction is not prepared. But, it is currently "
                             << p().oldestOplogEntryOpTime->toString());
 
+    auto txnOps = retrieveCompletedTransactionOperations(opCtx);
     auto opObserver = opCtx->getServiceContext()->getOpObserver();
     invariant(opObserver);
-    opObserver->onTransactionCommit(
-        opCtx, boost::none, boost::none, retrieveCompletedTransactionOperations(opCtx));
+    opObserver->onUnpreparedTransactionCommit(opCtx, txnOps);
+
+    auto wc = opCtx->getWriteConcern();
+    auto needsNoopWrite = txnOps.empty() && !opCtx->getWriteConcern().usedDefault;
     clearOperationsInMemory(opCtx);
     {
         stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -1052,6 +1096,12 @@ void TransactionParticipant::Participant::commitUnpreparedTransaction(OperationC
     _commitStorageTransaction(opCtx);
     invariant(o().txnState.isCommittingWithoutPrepare(),
               str::stream() << "Current State: " << o().txnState);
+
+    if (needsNoopWrite) {
+        performNoopWrite(
+            opCtx, str::stream() << "read-only transaction with writeConcern " << wc.toBSON());
+    }
+
     _finishCommitTransaction(opCtx);
 }
 
@@ -1111,13 +1161,19 @@ void TransactionParticipant::Participant::commitPreparedTransaction(
             invariant(commitOplogEntryOpTime);
         }
 
+        // If commitOplogEntryOpTime is a nullopt, then we grab the OpTime from the commitOplogSlot
+        // which will only be set if we are primary. Otherwise, the commitOplogEntryOpTime must have
+        // been passed in during secondary oplog application.
+        auto commitOplogSlotOpTime = commitOplogEntryOpTime.value_or(commitOplogSlot.opTime);
+        opCtx->recoveryUnit()->setDurableTimestamp(commitOplogSlotOpTime.getTimestamp());
+
         _commitStorageTransaction(opCtx);
 
         auto opObserver = opCtx->getServiceContext()->getOpObserver();
         invariant(opObserver);
 
         // Once the transaction is committed, the oplog entry must be written.
-        opObserver->onTransactionCommit(
+        opObserver->onPreparedTransactionCommit(
             opCtx, commitOplogSlot, commitTimestamp, retrieveCompletedTransactionOperations(opCtx));
 
         clearOperationsInMemory(opCtx);
@@ -1125,10 +1181,7 @@ void TransactionParticipant::Participant::commitPreparedTransaction(
         // If we are committing a prepared transaction, then we must have already recorded this
         // transaction's oldest oplog entry optime.
         invariant(p().oldestOplogEntryOpTime);
-        // If commitOplogEntryOpTime is a nullopt, then we grab the OpTime from the commitOplogSlot
-        // which will only be set if we are primary. Otherwise, the commitOplogEntryOpTime must have
-        // been passed in during secondary oplog application.
-        p().finishOpTime = commitOplogEntryOpTime.value_or(commitOplogSlot.opTime);
+        p().finishOpTime = commitOplogSlotOpTime;
 
         _finishCommitTransaction(opCtx);
     } catch (...) {
@@ -1725,10 +1778,24 @@ void TransactionParticipant::Participant::refreshFromStorageIfNeeded(OperationCo
         p().activeTxnCommittedStatements = std::move(activeTxnHistory.committedStatements);
         p().hasIncompleteHistory = activeTxnHistory.hasIncompleteHistory;
 
-        if (activeTxnHistory.transactionCommitted) {
-            o(lg).txnState.transitionTo(
-                TransactionState::kCommitted,
-                TransactionState::TransitionValidation::kRelaxTransitionValidation);
+        switch (activeTxnHistory.state) {
+            case ActiveTransactionHistory::TxnRecordState::kCommitted:
+                o(lg).txnState.transitionTo(
+                    TransactionState::kCommitted,
+                    TransactionState::TransitionValidation::kRelaxTransitionValidation);
+                break;
+            case ActiveTransactionHistory::TxnRecordState::kAbortedWithPrepare:
+                o(lg).txnState.transitionTo(
+                    TransactionState::kAbortedWithPrepare,
+                    TransactionState::TransitionValidation::kRelaxTransitionValidation);
+                break;
+            case ActiveTransactionHistory::TxnRecordState::kNone:
+                o(lg).txnState.transitionTo(
+                    TransactionState::kNone,
+                    TransactionState::TransitionValidation::kRelaxTransitionValidation);
+                break;
+            case ActiveTransactionHistory::TxnRecordState::kPrepared:
+                MONGO_UNREACHABLE;
         }
     }
 

@@ -58,7 +58,7 @@ void TransactionCoordinatorTestFixture::setUp() {
     ASSERT_OK(ServerParameterSet::getGlobal()
                   ->getMap()
                   .find("logComponentVerbosity")
-                  ->second->setFromString("{verbosity: 3}"));
+                  ->second->setFromString("{transaction: {verbosity: 3}}"));
 
     for (const auto& shardId : kThreeShardIdList) {
         auto shardTargeter = RemoteCommandTargeterMock::get(
@@ -101,7 +101,7 @@ void TransactionCoordinatorTestFixture::assertCommandSentAndRespondWith(
     const StatusWith<BSONObj>& response,
     boost::optional<BSONObj> expectedWriteConcern) {
     onCommand([&](const executor::RemoteCommandRequest& request) {
-        ASSERT_EQ(request.cmdObj.firstElement().fieldNameStringData(), commandName);
+        ASSERT_EQ(commandName, request.cmdObj.firstElement().fieldNameStringData());
         if (expectedWriteConcern) {
             ASSERT_BSONOBJ_EQ(
                 *expectedWriteConcern,

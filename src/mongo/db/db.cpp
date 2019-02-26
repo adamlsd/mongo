@@ -921,12 +921,11 @@ void shutdownTask() {
 
             rstl.waitForLockUntil(Date_t::max());
         }
-
-        // Interrupts all index builds, leaving the state intact to be recovered when the server
-        // restarts. This should be done after replication oplog application finishes, so foreground
-        // index builds begun by replication on secondaries do not invariant.
-        IndexBuildsCoordinator::get(serviceContext)->shutdown();
     }
+
+    // Shuts down the thread pool and waits for index builds to finish.
+    // Depends on setKillAllOperations() above to interrupt the index build operations.
+    IndexBuildsCoordinator::get(serviceContext)->shutdown();
 
     ReplicaSetMonitor::shutdown();
 
@@ -981,10 +980,8 @@ void shutdownTask() {
     LockerImpl* globalLocker = new LockerImpl();
     LockResult result = globalLocker->lockGlobalBegin(MODE_X, Date_t::max());
     if (result == LOCK_WAITING) {
-        result = globalLocker->lockGlobalComplete(Date_t::max());
+        globalLocker->lockGlobalComplete(Date_t::max());
     }
-
-    invariant(LOCK_OK == result);
 
     // Global storage engine may not be started in all cases before we exit
     if (serviceContext->getStorageEngine()) {

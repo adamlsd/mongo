@@ -90,9 +90,11 @@ TEST_F(IndexBuildsManagerTest, IndexBuildsManagerSetUpAndTearDown) {
                                                   autoColl.getCollection(),
                                                   specs,
                                                   _buildUUID,
-                                                  MultiIndexBlock::kNoopOnInitFn));
+                                                  MultiIndexBlock::kNoopOnInitFn,
+                                                  /*forRecovery=*/false));
 
-    _indexBuildsManager.tearDownIndexBuild(_buildUUID);
+    _indexBuildsManager.tearDownIndexBuild(
+        operationContext(), autoColl.getCollection(), _buildUUID);
 }
 
 }  // namespace

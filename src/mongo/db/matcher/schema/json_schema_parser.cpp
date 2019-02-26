@@ -40,6 +40,7 @@
 #include "mongo/db/matcher/expression_always_boolean.h"
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/matcher/matcher_type_set.h"
+#include "mongo/db/matcher/schema/encrypt_schema_gen.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_all_elem_match_from_index.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_allowed_properties.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_cond.h"
@@ -56,6 +57,7 @@
 #include "mongo/db/matcher/schema/expression_internal_schema_root_doc_eq.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_unique_items.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_xor.h"
+#include "mongo/db/matcher/schema/json_pointer.h"
 #include "mongo/logger/log_component_settings.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
@@ -1274,25 +1276,85 @@ Status translateScalarKeywords(StringMap<BSONElement>& keywordMap,
 }
 
 /**
+ * Parses the parameters to the 'encrypt' keyword. Returns an OK status if these parameters
+ * are valid, and a non-OK status otherwise."
+ */
+Status verifyEncryptOptions(BSONObj encryptObj) {
+    const IDLParserErrorContext encryptCtxt("encrypt");
+
+    // This checks the types of all the fields. Will throw on any parsing error.
+    EncryptionInfo encryptInfo;
+    try {
+        encryptInfo = EncryptionInfo::parse(encryptCtxt, encryptObj);
+    } catch (...) {
+        return exceptionToStatus();
+    }
+    auto typePointer = encryptInfo.getBsonType();
+    if (typePointer) {
+        auto it = kTypeAliasMap.find(typePointer.get());
+        if (it == kTypeAliasMap.end()) {
+            return {ErrorCodes::FailedToParse,
+                    "Invalid BSON type found in encrypt object: " + typePointer.get()};
+        }
+    }
+
+    return Status::OK();
+}
+
+/**
  * Parses JSON Schema encrypt keyword in 'keywordMap' and adds it to 'andExpr'. Returns a
  * non-OK status if an error occurs during parsing.
  */
 Status translateEncryptionKeywords(StringMap<BSONElement>& keywordMap,
                                    StringData path,
-                                   InternalSchemaTypeExpression* typeExpr,
                                    AndMatchExpression* andExpr) {
-    if (auto encryptElt = keywordMap[JSONSchemaParser::kSchemaEncryptKeyword]) {
-        if (encryptElt.type() != BSONType::Object) {
+    auto encryptElt = keywordMap[JSONSchemaParser::kSchemaEncryptKeyword];
+    auto encryptMetadataElt = keywordMap[JSONSchemaParser::kSchemaEncryptMetadataKeyword];
+
+    if (encryptElt && encryptMetadataElt) {
+        return Status(ErrorCodes::FailedToParse,
+                      str::stream() << "Cannot specify both $jsonSchema keywords '"
+                                    << JSONSchemaParser::kSchemaEncryptKeyword
+                                    << "' and '"
+                                    << JSONSchemaParser::kSchemaEncryptMetadataKeyword
+                                    << "'");
+    }
+
+    if (encryptMetadataElt) {
+        if (encryptMetadataElt.type() != BSONType::Object) {
+            return {ErrorCodes::TypeMismatch,
+                    str::stream() << "$jsonSchema keyword '"
+                                  << JSONSchemaParser::kSchemaEncryptMetadataKeyword
+                                  << "' must be an object "};
+        } else if (encryptMetadataElt.embeddedObject().isEmpty()) {
             return {ErrorCodes::FailedToParse,
+                    str::stream() << "$jsonSchema keyword '"
+                                  << JSONSchemaParser::kSchemaEncryptMetadataKeyword
+                                  << "' cannot be an empty object "};
+        }
+
+        const IDLParserErrorContext ctxt("encryptMetadata");
+        try {
+            // Discard the result as we are only concerned with validation.
+            EncryptionMetadata::parse(ctxt, encryptMetadataElt.embeddedObject());
+        } catch (const AssertionException&) {
+            return exceptionToStatus();
+        }
+    }
+
+    if (encryptElt) {
+        if (encryptElt.type() != BSONType::Object) {
+            return {ErrorCodes::TypeMismatch,
                     str::stream() << "$jsonSchema keyword '"
                                   << JSONSchemaParser::kSchemaEncryptKeyword
                                   << "' must be an object "};
-        } else if (!encryptElt.embeddedObject().isEmpty()) {
-            return {ErrorCodes::FailedToParse,
-                    str::stream() << "$jsonSchema keyword '"
-                                  << JSONSchemaParser::kSchemaEncryptKeyword
-                                  << "' must be an empty object "};
         }
+
+        auto encryptStatus = verifyEncryptOptions(encryptElt.embeddedObject());
+        if (!encryptStatus.isOK()) {
+            return encryptStatus;
+        }
+
         andExpr->add(new InternalSchemaBinDataSubTypeExpression(path, BinDataType::Encrypt));
     }
 
@@ -1337,6 +1399,7 @@ StatusWithMatchExpression _parse(StringData path, BSONObj schema, bool ignoreUnk
         {std::string(JSONSchemaParser::kSchemaDependenciesKeyword), {}},
         {std::string(JSONSchemaParser::kSchemaDescriptionKeyword), {}},
         {std::string(JSONSchemaParser::kSchemaEncryptKeyword), {}},
+        {std::string(JSONSchemaParser::kSchemaEncryptMetadataKeyword), {}},
         {std::string(JSONSchemaParser::kSchemaEnumKeyword), {}},
         {std::string(JSONSchemaParser::kSchemaExclusiveMaximumKeyword), {}},
         {std::string(JSONSchemaParser::kSchemaExclusiveMinimumKeyword), {}},
@@ -1458,8 +1521,7 @@ StatusWithMatchExpression _parse(StringData path, BSONObj schema, bool ignoreUnk
         return translationStatus;
     }
 
-    translationStatus =
-        translateEncryptionKeywords(keywordMap, path, typeExpr.get(), andExpr.get());
+    translationStatus = translateEncryptionKeywords(keywordMap, path, andExpr.get());
     if (!translationStatus.isOK()) {
         return translationStatus;
     }

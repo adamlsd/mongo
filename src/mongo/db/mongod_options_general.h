@@ -1,5 +1,6 @@
+
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,19 +28,37 @@
  *    it in the license file.
  */
 
-#include "mongo/db/query/expression_index_knobs.h"
-#include "mongo/db/server_options.h"
-#include "mongo/db/server_parameters.h"
+#pragma once
+
+#include <string>
+
+#include "mongo/base/status.h"
 
 namespace mongo {
 
-MONGO_EXPORT_SERVER_PARAMETER(internalGeoPredicateQuery2DMaxCoveringCells, int, 16);
+inline Status validateSecurityAuthorizationSetting(const std::string& value) {
+    constexpr auto kEnabled = "enabled"_sd;
+    constexpr auto kDisabled = "disabled"_sd;
 
-MONGO_EXPORT_SERVER_PARAMETER(internalGeoNearQuery2DMaxCoveringCells, int, 16);
+    if (!kEnabled.equalCaseInsensitive(value) && !kDisabled.equalCaseInsensitive(value)) {
+        return {ErrorCodes::BadValue,
+                "security.authorization expects either 'enabled' or 'disabled'"};
+    }
 
-// At level 23 the average cell length is about 1m.
-MONGO_EXPORT_SERVER_PARAMETER(internalQueryS2GeoFinestLevel, int, 23);
-MONGO_EXPORT_SERVER_PARAMETER(internalQueryS2GeoCoarsestLevel, int, 0);
-MONGO_EXPORT_SERVER_PARAMETER(internalQueryS2GeoMaxCells, int, 20);
+    return Status::OK();
+}
+
+inline Status validateOperationProfilingModeSetting(const std::string& value) {
+    constexpr auto kOff = "off"_sd;
+    constexpr auto kSlowOp = "slowOp"_sd;
+    constexpr auto kAll = "all"_sd;
+
+    if (!kOff.equalCaseInsensitive(value) && !kSlowOp.equalCaseInsensitive(value) &&
+        !kAll.equalCaseInsensitive(value)) {
+        return {ErrorCodes::BadValue, "operationProfiling.mode expects 'off', 'slowOp', or 'all'"};
+    }
+
+    return Status::OK();
+}
 
 }  // namespace mongo

@@ -570,7 +570,7 @@ class ConfigOption(common.SourceLocation):
         self.single_name = None  # type: unicode
         self.deprecated_short_name = []  # type: List[unicode]
 
-        self.description = None  # type: unicode
+        self.description = None  # type: Expression
         self.section = None  # type: unicode
         self.arg_vartype = None  # type: unicode
         self.cpp_vartype = None  # type: unicode
@@ -584,6 +584,7 @@ class ConfigOption(common.SourceLocation):
         self.default = None  # type: Expression
         self.implicit = None  # type: Expression
         self.source = []  # type: List[unicode]
+        self.canonicalize = None  # type: unicode
 
         self.duplicate_behavior = None  # type: unicode
         self.positional = None  # type unicode

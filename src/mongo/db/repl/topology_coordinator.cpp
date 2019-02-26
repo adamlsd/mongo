@@ -30,10 +30,13 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
 #define LOG_FOR_ELECTION(level) \
     MONGO_LOG_COMPONENT(level, ::mongo::logger::LogComponent::kReplicationElection)
+#define LOG_FOR_HEARTBEATS(level) \
+    MONGO_LOG_COMPONENT(level, ::mongo::logger::LogComponent::kReplicationHeartbeats)
 
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/repl/topology_coordinator.h"
+#include "mongo/db/repl/topology_coordinator_gen.h"
 
 #include <limits>
 #include <string>
@@ -66,10 +69,6 @@ namespace mongo {
 namespace repl {
 
 MONGO_FAIL_POINT_DEFINE(forceSyncSourceCandidate);
-
-// Controls how caught up in replication a secondary with higher priority than the current primary
-// must be before it will call for a priority takeover election.
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(priorityTakeoverFreshnessWindowSeconds, int, 2);
 
 // If this fail point is enabled, TopologyCoordinator::shouldChangeSyncSource() will ignore
 // the option TopologyCoordinator::Options::maxSyncSourceLagSecs. The sync source will not be
@@ -733,6 +732,12 @@ HeartbeatResponseAction TopologyCoordinator::processHeartbeatResponse(
         nextHeartbeatStartDate = now + heartbeatInterval;
     }
 
+    if (hbStats.failed()) {
+        LOG_FOR_HEARTBEATS(0) << "Heartbeat to " << target << " failed after "
+                              << kMaxHeartbeatRetries
+                              << " retries, response status: " << hbResponse.getStatus();
+    }
+
     if (hbResponse.isOK() && hbResponse.getValue().hasConfig()) {
         const long long currentConfigVersion =
             _rsConfig.isInitialized() ? _rsConfig.getConfigVersion() : -2;
@@ -1215,7 +1220,8 @@ bool TopologyCoordinator::_amIFreshEnoughForPriorityTakeover() const {
     }
 
     if (ourLastOpApplied.getTimestamp().getSecs() != latestKnownOpTime.getTimestamp().getSecs()) {
-        return ourLastOpApplied.getTimestamp().getSecs() + priorityTakeoverFreshnessWindowSeconds >=
+        return ourLastOpApplied.getTimestamp().getSecs() +
+            gPriorityTakeoverFreshnessWindowSeconds >=
             latestKnownOpTime.getTimestamp().getSecs();
     } else {
         return ourLastOpApplied.getTimestamp().getInc() + 1000 >=
@@ -1712,7 +1718,7 @@ void TopologyCoordinator::fillIsMasterForReplSet(IsMasterResponse* response) {
     // "ismaster" is false if we are not primary. If we're stepping down, we're waiting for the
     // Replication State Transition Lock before we can change to secondary, but we should report
     // "ismaster" false to indicate that we can't accept new writes.
-    response->setIsMaster(myState.primary() && _leaderMode != LeaderMode::kSteppingDown);
+    response->setIsMaster(myState.primary() && !isSteppingDown());
     response->setIsSecondary(myState.secondary());
 
     const MemberConfig* curPrimary = _currentPrimaryMember();
@@ -2025,7 +2031,7 @@ std::string TopologyCoordinator::_getUnelectableReasonString(const UnelectableRe
         hasWrittenToStream = true;
         ss << "member is not caught up enough to the most up-to-date member to call for priority "
               "takeover - must be within "
-           << priorityTakeoverFreshnessWindowSeconds << " seconds";
+           << gPriorityTakeoverFreshnessWindowSeconds << " seconds";
     }
     if (ur & NotFreshEnoughForCatchupTakeover) {
         if (hasWrittenToStream) {

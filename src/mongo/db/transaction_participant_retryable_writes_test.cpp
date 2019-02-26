@@ -103,27 +103,48 @@ public:
     bool transactionPrepared = false;
     stdx::function<void()> onTransactionPrepareFn = [this]() { transactionPrepared = true; };
 
-    void onTransactionCommit(OperationContext* opCtx,
-                             boost::optional<OplogSlot> commitOplogEntryOpTime,
-                             boost::optional<Timestamp> commitTimestamp,
-                             std::vector<repl::ReplOperation>& statements) override {
+    void onUnpreparedTransactionCommit(
+        OperationContext* opCtx, const std::vector<repl::ReplOperation>& statements) override {
         ASSERT_TRUE(opCtx->lockState()->inAWriteUnitOfWork());
-        OpObserverNoop::onTransactionCommit(
+        OpObserverNoop::onUnpreparedTransactionCommit(opCtx, statements);
+
+        uassert(ErrorCodes::OperationFailed,
+                "onUnpreparedTransactionCommit() failed",
+                !onUnpreparedTransactionCommitThrowsException);
+
+        onUnpreparedTransactionCommitFn();
+    }
+
+    bool onUnpreparedTransactionCommitThrowsException = false;
+    bool unpreparedTransactionCommitted = false;
+
+    stdx::function<void()> onUnpreparedTransactionCommitFn = [this]() {
+        unpreparedTransactionCommitted = true;
+    };
+
+
+    void onPreparedTransactionCommit(
+        OperationContext* opCtx,
+        OplogSlot commitOplogEntryOpTime,
+        Timestamp commitTimestamp,
+        const std::vector<repl::ReplOperation>& statements) noexcept override {
+        ASSERT_TRUE(opCtx->lockState()->inAWriteUnitOfWork());
+        OpObserverNoop::onPreparedTransactionCommit(
             opCtx, commitOplogEntryOpTime, commitTimestamp, statements);
 
         uassert(ErrorCodes::OperationFailed,
-                "onTransactionCommit() failed",
-                !onTransactionCommitThrowsException);
+                "onPreparedTransactionCommit() failed",
+                !onPreparedTransactionCommitThrowsException);
 
-        onTransactionCommitFn(commitOplogEntryOpTime, commitTimestamp);
+        onPreparedTransactionCommitFn(commitOplogEntryOpTime, commitTimestamp);
     }
 
-    bool onTransactionCommitThrowsException = false;
-    bool transactionCommitted = false;
-    stdx::function<void(boost::optional<OplogSlot>, boost::optional<Timestamp>)>
-        onTransactionCommitFn =
-            [this](boost::optional<OplogSlot> commitOplogEntryOpTime,
-                   boost::optional<Timestamp> commitTimestamp) { transactionCommitted = true; };
+    bool onPreparedTransactionCommitThrowsException = false;
+    bool preparedTransactionCommitted = false;
+    stdx::function<void(OplogSlot, Timestamp)> onPreparedTransactionCommitFn =
+        [this](OplogSlot commitOplogEntryOpTime, Timestamp commitTimestamp) {
+            preparedTransactionCommitted = true;
+        };
 
     repl::OpTime onDropCollection(OperationContext* opCtx,
                                   const NamespaceString& collectionName,
@@ -198,6 +219,7 @@ protected:
                            stmtId,
                            link,
                            false /* prepare */,
+                           false /* inTxn */,
                            OplogSlot());
     }
 
@@ -335,12 +357,10 @@ TEST_F(TransactionParticipantRetryableWritesTest, TransactionTableUpdatesReplace
 
     const auto firstOpTime = writeTxnRecord(100, 0, {}, boost::none);
     assertTxnRecord(100, 0, firstOpTime, boost::none);
-    const auto secondOpTime = writeTxnRecord(200, 1, firstOpTime, DurableTxnStateEnum::kPrepared);
-    assertTxnRecord(200, 1, secondOpTime, DurableTxnStateEnum::kPrepared);
-    const auto thirdOpTime = writeTxnRecord(300, 2, secondOpTime, DurableTxnStateEnum::kCommitted);
-    assertTxnRecord(300, 2, thirdOpTime, DurableTxnStateEnum::kCommitted);
-    const auto fourthOpTime = writeTxnRecord(400, 3, thirdOpTime, boost::none);
-    assertTxnRecord(400, 3, fourthOpTime, boost::none);
+    const auto secondOpTime = writeTxnRecord(300, 2, firstOpTime, DurableTxnStateEnum::kCommitted);
+    assertTxnRecord(300, 2, secondOpTime, DurableTxnStateEnum::kCommitted);
+    const auto thirdOpTime = writeTxnRecord(400, 3, secondOpTime, boost::none);
+    assertTxnRecord(400, 3, thirdOpTime, boost::none);
 }
 
 TEST_F(TransactionParticipantRetryableWritesTest, StartingOldTxnShouldAssert) {
@@ -568,6 +588,7 @@ TEST_F(TransactionParticipantRetryableWritesTest, ErrorOnlyWhenStmtIdBeingChecke
                                   1,
                                   {},
                                   false /* prepare */,
+                                  false /* inTxn */,
                                   OplogSlot());
         txnParticipant.onWriteOpCompletedOnPrimary(
             opCtx(), txnNum, {1}, opTime, wallClockTime, boost::none);
@@ -597,6 +618,7 @@ TEST_F(TransactionParticipantRetryableWritesTest, ErrorOnlyWhenStmtIdBeingChecke
                                   kIncompleteHistoryStmtId,
                                   link,
                                   false /* prepare */,
+                                  false /* inTxn */,
                                   OplogSlot());
 
         txnParticipant.onWriteOpCompletedOnPrimary(

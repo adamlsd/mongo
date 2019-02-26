@@ -1,5 +1,6 @@
+
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,37 +28,33 @@
  *    it in the license file.
  */
 
-#pragma once
+#include <string>
 
-#include "mongo/platform/atomic_word.h"
+#include "mongo/base/status.h"
+#include "mongo/util/options_parser/option_section.h"
 
 namespace mongo {
 
-//
-// Geo Query knobs
-//
+namespace optionenvironment {
+class Environment;
+}  // namespace optionenvironment
 
 /**
- * The maximum number of cells to use for 2D geo query covering for predicate queries
+ * Base server options that are available in all applications, standalone and embedded.
+ *
+ * Included by addGeneralServerOptions, don't call both.
  */
-extern AtomicWord<int> internalGeoPredicateQuery2DMaxCoveringCells;
+Status addBaseServerOptions(optionenvironment::OptionSection*);
 
 /**
- * The maximum number of cells to use for 2D geo query covering for predicate queries
+ * General server options for most standalone applications. Includes addBaseServerOptions.
  */
-extern AtomicWord<int> internalGeoNearQuery2DMaxCoveringCells;
+Status addGeneralServerOptions(optionenvironment::OptionSection*);
 
-//
-// Geo query.
-//
+Status validateSystemLogDestinationSetting(const std::string&);
+Status validateSecurityClusterAuthModeSetting(const std::string&);
+Status canonicalizeNetBindIpAll(optionenvironment::Environment*);
 
-// What is the finest level we will cover a queried region or geoNear annulus?
-extern AtomicWord<int> internalQueryS2GeoFinestLevel;
-
-// What is the coarsest level we will cover a queried region or geoNear annulus?
-extern AtomicWord<int> internalQueryS2GeoCoarsestLevel;
-
-// What is the maximum cell count that we want? (advisory, not a hard threshold)
-extern AtomicWord<int> internalQueryS2GeoMaxCells;
+std::string getUnixDomainSocketFilePermissionsHelpText();
 
 }  // namespace mongo

@@ -80,22 +80,8 @@ Status applyCommitTransaction(OperationContext* opCtx,
     IDLParserErrorContext ctx("commitTransaction");
     auto commitCommand = CommitTransactionOplogObject::parse(ctx, entry.getObject());
 
-    if (mode == repl::OplogApplication::Mode::kRecovering) {
-        const auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-        const auto recoveryTimestamp = replCoord->getRecoveryTimestamp();
-        invariant(recoveryTimestamp);
-
-        // If the commitTimestamp is before the recoveryTimestamp, then the data already
-        // reflects the operations from the transaction.
-        const auto& commitTimestamp = commitCommand.getCommitTimestamp();
-        if (recoveryTimestamp.get() > commitTimestamp) {
-            return Status::OK();
-        }
-
-        return _applyTransactionFromOplogChain(opCtx, entry, mode);
-    }
-
-    if (mode == repl::OplogApplication::Mode::kInitialSync) {
+    if (mode == repl::OplogApplication::Mode::kRecovering ||
+        mode == repl::OplogApplication::Mode::kInitialSync) {
         return _applyTransactionFromOplogChain(opCtx, entry, mode);
     }
 

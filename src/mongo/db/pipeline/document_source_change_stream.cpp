@@ -159,15 +159,17 @@ void DocumentSourceChangeStream::checkValueType(const Value v,
 namespace {
 
 /**
- * Constructs the filter which will match 'applyOps' oplog entries that are:
- * 1) Part of a transaction
- * 2) Have sub-entries which should be returned in the change stream
+ * Constructs a filter matching 'applyOps' oplog entries that:
+ * 1) Represent a committed transaction (i.e., not just the "prepare" part of a two-phase
+ *    transaction).
+ * 2) Have sub-entries which should be returned in the change stream.
  */
 BSONObj getTxnApplyOpsFilter(BSONElement nsMatch, const NamespaceString& nss) {
     BSONObjBuilder applyOpsBuilder;
     applyOpsBuilder.append("op", "c");
     applyOpsBuilder.append("lsid", BSON("$exists" << true));
     applyOpsBuilder.append("txnNumber", BSON("$exists" << true));
+    applyOpsBuilder.append("prepare", BSON("$not" << BSON("$eq" << true)));
     const std::string& kApplyOpsNs = "o.applyOps.ns";
     applyOpsBuilder.appendAs(nsMatch, kApplyOpsNs);
     return applyOpsBuilder.obj();
@@ -251,10 +253,13 @@ BSONObj DocumentSourceChangeStream::buildMatchFilter(
     // 1.2) Supported commands that have arbitrary db namespaces in "ns" field.
     auto renameDropTarget = BSON("o.to" << BSONRegEx(getNsRegexForChangeStream(nss)));
 
-    // All supported commands that are either (1.1) or (1.2).
+    // 1.3) Transaction commit commands.
+    auto transactionCommit = BSON("o.commitTransaction" << 1);
+
+    // All supported commands that are either (1.1), (1.2) or (1.3).
     BSONObj commandMatch = BSON("op"
                                 << "c"
-                                << OR(commandsOnTargetDb, renameDropTarget));
+                                << OR(commandsOnTargetDb, renameDropTarget, transactionCommit));
 
     // 2.1) Normal CRUD ops.
     auto normalOpTypeMatch = BSON("op" << NE << "n");
@@ -367,9 +372,9 @@ list<intrusive_ptr<DocumentSource>> buildPipeline(const intrusive_ptr<Expression
         // to a specific event; we thus only need to check (1), similar to 'startAtOperationTime'.
         startFrom = tokenData.clusterTime;
         if (expCtx->needsMerge || ResumeToken::isHighWaterMarkToken(tokenData)) {
-            resumeStage = DocumentSourceShardCheckResumability::create(expCtx, *startFrom);
+            resumeStage = DocumentSourceShardCheckResumability::create(expCtx, tokenData);
         } else {
-            resumeStage = DocumentSourceEnsureResumeTokenPresent::create(expCtx, std::move(token));
+            resumeStage = DocumentSourceEnsureResumeTokenPresent::create(expCtx, tokenData);
         }
     }
 

@@ -79,9 +79,6 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
         let participant1 = st.shard1;
         let participant2 = st.shard2;
 
-        let expectedParticipantList =
-            [participant0.shardName, participant1.shardName, participant2.shardName];
-
         const runCommitThroughMongosInParallelShellExpectSuccess = function() {
             const runCommitExpectSuccessCode = "assert.commandWorked(db.adminCommand({" +
                 "commitTransaction: 1," + "lsid: " + tojson(lsid) + "," + "txnNumber: NumberLong(" +
@@ -112,6 +109,8 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
                 st.s.adminCommand({moveChunk: ns, find: {_id: 0}, to: participant1.shardName}));
             assert.commandWorked(
                 st.s.adminCommand({moveChunk: ns, find: {_id: 10}, to: participant2.shardName}));
+
+            flushRoutersAndRefreshShardMetadata(st, {ns});
 
             // Start a new transaction by inserting a document onto each shard.
             assert.commandWorked(st.s.getDB(dbName).runCommand({
@@ -169,9 +168,17 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
                 awaitResult = runCommitThroughMongosInParallelShellExpectSuccess();
             }
 
-            // Wait for the desired failpoint to be hit.
-            waitForFailpoint("Hit " + failpointData.failpoint + " failpoint",
-                             failpointData.numTimesShouldBeHit);
+            // TODO(SERVER-39754): Rewrite this entire test as a unit-test instead
+            var numTimesShouldBeHit = failpointData.numTimesShouldBeHit;
+            if (!overrideCoordinatorToBeConfigServer &&  // Coordinator is co-located with a
+                                                         // participant
+                (failpointData.failpoint == "hangWhileTargetingRemoteHost" &&
+                 !failpointData.skip) &&  // We are testing the prepare phase
+                makeAParticipantAbort) {  // The local participant will vote abort
+                // Wait for those two to be scheduled as well
+                numTimesShouldBeHit += 2;
+            }
+            waitForFailpoint("Hit " + failpointData.failpoint + " failpoint", numTimesShouldBeHit);
 
             // Induce the coordinator primary to step down.
             assert.commandWorked(
@@ -272,5 +279,4 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
 
     runTest(true /* same node always steps up after stepping down */, true);
     runTest(false /* same node always steps up after stepping down */, true);
-
 })();

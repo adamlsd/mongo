@@ -274,7 +274,8 @@ LockMode fixLockModeForSystemDotViewsChanges(const NamespaceString& nss, LockMod
 // static
 Status SyncTail::syncApply(OperationContext* opCtx,
                            const BSONObj& op,
-                           OplogApplication::Mode oplogApplicationMode) {
+                           OplogApplication::Mode oplogApplicationMode,
+                           boost::optional<Timestamp> stableTimestampForRecovery) {
     // Count each log op application as a separate operation, for reporting purposes
     CurOp individualOp(opCtx);
 
@@ -375,8 +376,9 @@ Status SyncTail::syncApply(OperationContext* opCtx,
                 globalWriteLock.emplace(opCtx);
             }
 
-            // special case apply for commands to avoid implicit database creation
-            Status status = applyCommand_inlock(opCtx, op, entry, oplogApplicationMode);
+            // A special case apply for commands to avoid implicit database creation.
+            Status status = applyCommand_inlock(
+                opCtx, op, entry, oplogApplicationMode, stableTimestampForRecovery);
             incrementOpsAppliedStats();
             return status;
         }));
@@ -432,7 +434,8 @@ void applyOps(std::vector<MultiApplier::OperationPtrs>& writerVectors,
                 &workerMultikeyPathInfo = workerMultikeyPathInfo->at(i)
             ] {
                 auto opCtx = cc().makeOperationContext();
-                status = func(opCtx.get(), &writer, st, &workerMultikeyPathInfo);
+                status = opCtx->runWithoutInterruption(
+                    [&] { return func(opCtx.get(), &writer, st, &workerMultikeyPathInfo); });
             }));
         }
     }
@@ -907,12 +910,16 @@ bool SyncTail::tryPopAndWaitForMore(OperationContext* opCtx,
     // Commands must be processed one at a time. The only exception to this is applyOps because
     // applyOps oplog entries are effectively containers for CRUD operations. Therefore, it is safe
     // to batch applyOps commands with CRUD operations when reading from the oplog buffer.
+    //
     // Oplog entries on 'system.views' should also be processed one at a time. View catalog
     // immediately reflects changes for each oplog entry so we can see inconsistent view catalog if
     // multiple oplog entries on 'system.views' are being applied out of the original order.
+    //
+    // Process updates to 'admin.system.version' individually as well so the secondary's FCV when
+    // processing each operation matches the primary's when committing that operation.
     if ((entry.isCommand() &&
          (entry.getCommandType() != OplogEntry::CommandType::kApplyOps || entry.shouldPrepare())) ||
-        entry.getNss().isSystemDotViews()) {
+        entry.getNss().isSystemDotViews() || entry.getNss().isServerConfigurationCollection()) {
         if (ops->getCount() == 1) {
             // apply commands one-at-a-time
             _consume(opCtx, oplogBuffer);
@@ -1149,7 +1156,9 @@ Status multiSyncApply(OperationContext* opCtx,
 
             // If we didn't create a group, try to apply the op individually.
             try {
-                const Status status = SyncTail::syncApply(opCtx, entry.raw, oplogApplicationMode);
+                auto stableTimestampForRecovery = st->getOptions().stableTimestampForRecovery;
+                const Status status = SyncTail::syncApply(
+                    opCtx, entry.raw, oplogApplicationMode, stableTimestampForRecovery);
 
                 if (!status.isOK()) {
                     // In initial sync, update operations can cause documents to be missed during

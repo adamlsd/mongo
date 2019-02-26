@@ -35,12 +35,13 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/matcher/schema/json_pointer.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {
 
 /**
- * A string pointing to the key id or an array of UUIDs identifying a set of keys.
+ * A JSON Pointer to the key id or an array of UUIDs identifying a set of keys.
  */
 class EncryptSchemaKeyId {
     friend class EncryptionInfoNormalized;
@@ -55,8 +56,7 @@ public:
 
     static EncryptSchemaKeyId parseFromBSON(const BSONElement& element);
 
-    EncryptSchemaKeyId(const std::string key)
-        : _strKeyId(std::move(key)), _type(Type::kJSONPointer) {}
+    EncryptSchemaKeyId(std::string key) : _pointer(key), _type(Type::kJSONPointer) {}
 
     EncryptSchemaKeyId(std::vector<UUID> keys) : _uuids(std::move(keys)), _type(Type::kUUIDs) {}
 
@@ -77,9 +77,29 @@ public:
     /**
      * Callers must check that the result of type() is kJSONPointer first.
      */
-    const std::string& jsonPointer() const {
+    const JSONPointer& jsonPointer() const {
         invariant(_type == Type::kJSONPointer);
-        return _strKeyId;
+        return _pointer;
+    }
+
+    bool operator==(const EncryptSchemaKeyId& other) const {
+        if (_type != other.type()) {
+            return false;
+        }
+
+        return _type == Type::kUUIDs ? _uuids == other.uuids() : _pointer == other.jsonPointer();
+    }
+
+    /**
+     * IDL requires overload of all comparison operators, however for this class the only viable
+     * comparison is equality. These should be removed once SERVER-39677 is implemented.
+     */
+    bool operator>(const EncryptSchemaKeyId& other) const {
+        MONGO_UNREACHABLE;
+    }
+
+    bool operator<(const EncryptSchemaKeyId& other) const {
+        MONGO_UNREACHABLE;
     }
 
 private:
@@ -87,7 +107,7 @@ private:
     // construct a valid EncryptSchemaKeyId and should not be called.
     EncryptSchemaKeyId() = default;
 
-    std::string _strKeyId;
+    JSONPointer _pointer;
     std::vector<UUID> _uuids;
 
     Type _type;

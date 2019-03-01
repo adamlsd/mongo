@@ -84,7 +84,6 @@
 using namespace std::literals::string_literals;
 using namespace mongo;
 
-std::string historyFile;
 bool gotInterrupted = false;
 bool inMultiLine = false;
 static AtomicWord<bool> atPrompt(false);  // can eval before getting to prompt
@@ -106,12 +105,6 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion42, ("EndStar
     return Status::OK();
 }
 const auto kAuthParam = "authSource"s;
-
-void
-setHistoryFile()
-{
-    historyFile = ( shell_utils::getUserDir() / ".dbshell" ).string();
-}
 }  // namespace
 
 namespace mongo {
@@ -159,9 +152,7 @@ void completionHook(const char* text, linenoiseCompletions* lc) {
 }
 
 void shellHistoryInit() {
-    setHistoryFile();
-
-    Status res = linenoiseHistoryLoad(historyFile.c_str());
+    Status res = linenoiseHistoryLoad(shell_utils::getHistoryFilePath().string().c_str());
     if (!res.isOK()) {
         error() << "Error loading history file: " << res;
     }
@@ -169,7 +160,7 @@ void shellHistoryInit() {
 }
 
 void shellHistoryDone() {
-    Status res = linenoiseHistorySave(historyFile.c_str());
+    Status res = linenoiseHistorySave(shell_utils::getHistoryFilePath().string().c_str());
     if (!res.isOK()) {
         error() << "Error saving history file: " << res;
     }

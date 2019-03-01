@@ -51,7 +51,7 @@ void installShellUtils(Scope& scope);
 void initScope(Scope& scope);
 void onConnect(DBClientBase& c);
 
-std::filesystem::path getUserDir();
+std::filesystem::path getHistoryFilePath();
 
 BSONElement singleArg(const BSONObj& args);
 extern const BSONObj undefinedReturn;

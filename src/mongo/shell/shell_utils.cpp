@@ -56,50 +56,8 @@
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
 
-namespace mongo {
-
-namespace JSFiles {
-extern const JSFile servers;
-extern const JSFile shardingtest;
-extern const JSFile servers_misc;
-extern const JSFile replsettest;
-extern const JSFile bridge;
-}  // namespace JSFiles
-
-MONGO_REGISTER_SHIM(BenchRunConfig::createConnectionImpl)
-(const BenchRunConfig& config)->std::unique_ptr<DBClientBase> {
-    const ConnectionString connectionString = uassertStatusOK(ConnectionString::parse(config.host));
-
-    std::string errorMessage;
-    std::unique_ptr<DBClientBase> connection(connectionString.connect("BenchRun", errorMessage));
-    uassert(16158, errorMessage, connection);
-
-    return connection;
-}
-
-namespace shell_utils {
-
-std::string dbConnect;
-
-const char* argv0 = 0;
-void RecordMyLocation(const char* _argv0) {
-    argv0 = _argv0;
-}
-
-// helpers
-
-BSONObj makeUndefined() {
-    BSONObjBuilder b;
-    b.appendUndefined("");
-    return b.obj();
-}
-const BSONObj undefinedReturn = makeUndefined();
-
-BSONElement singleArg(const BSONObj& args) {
-    uassert(12597, "need to specify 1 argument", args.nFields() == 1);
-    return args.firstElement();
-}
-
+namespace mongo::shell_utils {
+namespace {
 std::filesystem::path getUserDir() {
 #ifdef _WIN32
     auto envp = getenv("USERPROFILE");
@@ -126,15 +84,70 @@ std::filesystem::path getUserDir() {
     std::vector<char> buffer(pwentBufferSize);
 
     do {
-        const int ec = getpwuid_r(getuid(), &pwent, &buffer[0], buffer.size(), &res);
+        if (!getpwuid_r(getuid(), &pwent, &buffer[0], buffer.size(), &res))
+            break;
 
-        if (ec && errno != EINTR)
+        if (errno != EINTR)
             uasserted(mongo::ErrorCodes::InternalError,
                       "Unable to get home directory for the current user.");
-    } while (ec && errno == EINTR);
+    } while (errno == EINTR);
 
     return pwent.pw_dir;
 #endif
+}
+
+}  // namespace
+}  // namespace mongo::shell_utils
+
+std::filesystem::path mongo::shell_utils::getHistoryFilePath() {
+    static const std::filesystem::path historyFile= getUserDir() / ".dbshell";
+
+    return historyFile;
+}
+
+
+namespace mongo {
+namespace JSFiles {
+extern const JSFile servers;
+extern const JSFile shardingtest;
+extern const JSFile servers_misc;
+extern const JSFile replsettest;
+extern const JSFile bridge;
+}  // namespace JSFiles
+
+MONGO_REGISTER_SHIM(BenchRunConfig::createConnectionImpl)
+(const BenchRunConfig& config)->std::unique_ptr<DBClientBase> {
+    const ConnectionString connectionString = uassertStatusOK(ConnectionString::parse(config.host));
+
+    std::string errorMessage;
+    std::unique_ptr<DBClientBase> connection(connectionString.connect("BenchRun", errorMessage));
+    uassert(16158, errorMessage, connection);
+
+    return connection;
+}
+
+namespace shell_utils {
+
+std::string dbConnect;
+
+static const char* argv0 = 0;
+
+void RecordMyLocation(const char* _argv0) {
+    argv0 = _argv0;
+}
+
+// helpers
+
+BSONObj makeUndefined() {
+    BSONObjBuilder b;
+    b.appendUndefined("");
+    return b.obj();
+}
+const BSONObj undefinedReturn = makeUndefined();
+
+BSONElement singleArg(const BSONObj& args) {
+    uassert(12597, "need to specify 1 argument", args.nFields() == 1);
+    return args.firstElement();
 }
 
 // real methods
@@ -413,69 +426,69 @@ void ConnectionRegistry::registerConnection(DBClientBase& client) {
 void ConnectionRegistry::killOperationsOnAllConnections(bool withPrompt) const {
     Prompter prompter("do you want to kill the current op(s) on the server?");
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-    for (auto& connection : _connectionUris)
+    for (auto& connection : _connectionUris) {
         auto status = ConnectionString::parse(connection.first);
-    if (!status.isOK()) {
-        continue;
-    }
-
-    const ConnectionString cs(status.getValue());
-
-    std::string errmsg;
-    std::unique_ptr<DBClientBase> conn(cs.connect("MongoDB Shell", errmsg));
-    if (!conn) {
-        continue;
-    }
-
-    const std::set<std::string>& uris = connection.second;
-
-    BSONObj currentOpRes;
-    conn->runPseudoCommand("admin", "currentOp", "$cmd.sys.inprog", {}, currentOpRes);
-    if (!currentOpRes["inprog"].isABSONObj()) {
-        // We don't have permissions (or the call didn't succeed) - go to the next connection.
-        continue;
-    }
-    auto inprog = currentOpRes["inprog"].embeddedObject();
-    for (const auto op : inprog) {
-        // For sharded clusters, `client_s` is used instead and `client` is not present.
-        string client;
-        if (auto elem = op["client"]) {
-            // mongod currentOp client
-            if (elem.type() != String) {
-                warning() << "Ignoring operation " << op["opid"].toString(false)
-                          << "; expected 'client' field in currentOp response to have type "
-                             "string, but found "
-                          << typeName(elem.type());
-                continue;
-            }
-            client = elem.str();
-        } else if (auto elem = op["client_s"]) {
-            // mongos currentOp client
-            if (elem.type() != String) {
-                warning() << "Ignoring operation " << op["opid"].toString(false)
-                          << "; expected 'client_s' field in currentOp response to have type "
-                             "string, but found "
-                          << typeName(elem.type());
-                continue;
-            }
-            client = elem.str();
-        } else {
-            // Internal operation, like TTL index.
+        if (!status.isOK()) {
             continue;
         }
-        if (uris.count(client)) {
-            if (!withPrompt || prompter.confirm()) {
-                BSONObjBuilder cmdBob;
-                BSONObj info;
-                cmdBob.appendAs(op["opid"], "op");
-                auto cmdArgs = cmdBob.done();
-                conn->runPseudoCommand("admin", "killOp", "$cmd.sys.killop", cmdArgs, info);
+
+        const ConnectionString cs(status.getValue());
+
+        std::string errmsg;
+        std::unique_ptr<DBClientBase> conn(cs.connect("MongoDB Shell", errmsg));
+        if (!conn) {
+            continue;
+        }
+
+        const std::set<std::string>& uris = connection.second;
+
+        BSONObj currentOpRes;
+        conn->runPseudoCommand("admin", "currentOp", "$cmd.sys.inprog", {}, currentOpRes);
+        if (!currentOpRes["inprog"].isABSONObj()) {
+            // We don't have permissions (or the call didn't succeed) - go to the next connection.
+            continue;
+        }
+        auto inprog = currentOpRes["inprog"].embeddedObject();
+        for (const auto op : inprog) {
+            // For sharded clusters, `client_s` is used instead and `client` is not present.
+            std::string client;
+            if (auto elem = op["client"]) {
+                // mongod currentOp client
+                if (elem.type() != String) {
+                    warning() << "Ignoring operation " << op["opid"].toString(false)
+                              << "; expected 'client' field in currentOp response to have type "
+                                 "string, but found "
+                              << typeName(elem.type());
+                    continue;
+                }
+                client = elem.str();
+            } else if (auto elem = op["client_s"]) {
+                // mongos currentOp client
+                if (elem.type() != String) {
+                    warning() << "Ignoring operation " << op["opid"].toString(false)
+                              << "; expected 'client_s' field in currentOp response to have type "
+                                 "string, but found "
+                              << typeName(elem.type());
+                    continue;
+                }
+                client = elem.str();
             } else {
-                return;
+                // Internal operation, like TTL index.
+                continue;
+            }
+            if (uris.count(client)) {
+                if (!withPrompt || prompter.confirm()) {
+                    BSONObjBuilder cmdBob;
+                    BSONObj info;
+                    cmdBob.appendAs(op["opid"], "op");
+                    auto cmdArgs = cmdBob.done();
+                    conn->runPseudoCommand("admin", "killOp", "$cmd.sys.killop", cmdArgs, info);
+                } else {
+                    return;
+                }
             }
         }
     }
-}
 }
 
 ConnectionRegistry connectionRegistry;

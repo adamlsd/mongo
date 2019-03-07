@@ -42,11 +42,15 @@
 #include "mongo/util/background.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/debug_util.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+MONGO_FAIL_POINT_DEFINE(failNonIntentLocksIfWaitNeeded);
+
 namespace {
 
 /**
@@ -103,10 +107,6 @@ private:
 
 // Global lock manager instance.
 LockManager globalLockManager;
-
-// Global lock. Every server operation, which uses the Locker must acquire this lock at least
-// once. See comments in the header file (begin/endTransaction) for more information.
-const ResourceId resourceIdGlobal = ResourceId(RESOURCE_GLOBAL, ResourceId::SINGLETON_GLOBAL);
 
 // How often (in millis) to check for deadlock if a lock has not been granted for some time
 const Milliseconds MaxWaitTime = Milliseconds(500);
@@ -292,7 +292,6 @@ Locker::ClientState LockerImpl::getClientState() const {
 
 void LockerImpl::lockGlobal(OperationContext* opCtx, LockMode mode) {
     LockResult result = _lockGlobalBegin(opCtx, mode, Date_t::max());
-
     if (result == LOCK_WAITING) {
         lockGlobalComplete(opCtx, Date_t::max());
     }
@@ -371,6 +370,7 @@ LockResult LockerImpl::_lockGlobalBegin(OperationContext* opCtx, LockMode mode, 
             actualLockMode = isSharedLockMode(mode) ? MODE_S : MODE_X;
         }
     }
+
     const LockResult result = lockBegin(opCtx, resourceIdGlobal, actualLockMode);
     invariant(result == LOCK_OK || result == LOCK_WAITING);
     return result;
@@ -465,6 +465,8 @@ void LockerImpl::restoreWriteUnitOfWork(OperationContext* opCtx,
 }
 
 void LockerImpl::lock(OperationContext* opCtx, ResourceId resId, LockMode mode, Date_t deadline) {
+    // `lockGlobal` must be called to lock `resourceIdGlobal`.
+    invariant(resId != resourceIdGlobal);
 
     const LockResult result = lockBegin(opCtx, resId, mode);
 
@@ -473,6 +475,15 @@ void LockerImpl::lock(OperationContext* opCtx, ResourceId resId, LockMode mode, 
         return;
 
     invariant(result == LOCK_WAITING);
+
+    // This failpoint is used to time out non-intent locks if they cannot be granted immediately.
+    // Testing-only.
+    if (MONGO_FAIL_POINT(failNonIntentLocksIfWaitNeeded)) {
+        uassert(ErrorCodes::LockTimeout,
+                str::stream() << "Cannot immediately acquire lock '" << resId.toString()
+                              << "'. Timing out due to failpoint.",
+                (mode == MODE_IS || mode == MODE_IX));
+    }
 
     lockComplete(opCtx, resId, mode, deadline);
 }
@@ -879,13 +890,12 @@ void LockerImpl::lockComplete(OperationContext* opCtx,
     unlockOnErrorGuard.dismiss();
 }
 
-LockResult LockerImpl::lockRSTLBegin(OperationContext* opCtx) {
-    invariant(!opCtx->lockState()->isLocked());
-    return lockBegin(opCtx, resourceIdReplicationStateTransitionLock, MODE_X);
+LockResult LockerImpl::lockRSTLBegin(OperationContext* opCtx, LockMode mode) {
+    return lockBegin(opCtx, resourceIdReplicationStateTransitionLock, mode);
 }
 
-void LockerImpl::lockRSTLComplete(OperationContext* opCtx, Date_t deadline) {
-    lockComplete(opCtx, resourceIdReplicationStateTransitionLock, MODE_X, deadline);
+void LockerImpl::lockRSTLComplete(OperationContext* opCtx, LockMode mode, Date_t deadline) {
+    lockComplete(opCtx, resourceIdReplicationStateTransitionLock, mode, deadline);
 }
 
 void LockerImpl::releaseTicket() {
@@ -972,6 +982,7 @@ void resetGlobalLockStats() {
 const ResourceId resourceIdLocalDB = ResourceId(RESOURCE_DATABASE, StringData("local"));
 const ResourceId resourceIdOplog = ResourceId(RESOURCE_COLLECTION, StringData("local.oplog.rs"));
 const ResourceId resourceIdAdminDB = ResourceId(RESOURCE_DATABASE, StringData("admin"));
+const ResourceId resourceIdGlobal = ResourceId(RESOURCE_GLOBAL, ResourceId::SINGLETON_GLOBAL);
 const ResourceId resourceIdParallelBatchWriterMode =
     ResourceId(RESOURCE_GLOBAL, ResourceId::SINGLETON_PARALLEL_BATCH_WRITER_MODE);
 const ResourceId resourceIdReplicationStateTransitionLock =

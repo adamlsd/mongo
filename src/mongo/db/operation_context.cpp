@@ -93,6 +93,7 @@ void OperationContext::setDeadlineAndMaxTime(Date_t when,
                                              ErrorCodes::Error timeoutError) {
     invariant(!getClient()->isInDirectClient() || _hasArtificialDeadline);
     invariant(ErrorCodes::isExceededTimeLimitError(timeoutError));
+    invariant(!ErrorExtraInfo::parserFor(timeoutError));
     uassert(40120,
             "Illegal attempt to change operation deadline",
             _hasArtificialDeadline || !hasDeadline());
@@ -201,7 +202,7 @@ Status OperationContext::checkForInterruptNoAssert() noexcept {
     // TODO: Remove the MONGO_likely(getClient()) once all operation contexts are constructed with
     // clients.
     if (MONGO_likely(getClient() && getServiceContext()) &&
-        getServiceContext()->getKillAllOperations()) {
+        getServiceContext()->getKillAllOperations() && !_isExecutingShutdown) {
         return Status(ErrorCodes::InterruptedAtShutdown, "interrupted at shutdown");
     }
 
@@ -345,6 +346,7 @@ StatusWith<stdx::cv_status> OperationContext::waitForConditionOrInterruptNoAsser
 
 void OperationContext::markKilled(ErrorCodes::Error killCode) {
     invariant(killCode != ErrorCodes::OK);
+    invariant(!ErrorExtraInfo::parserFor(killCode));
 
     if (killCode == ErrorCodes::ClientDisconnect) {
         log() << "operation was interrupted because a client disconnected";
@@ -398,6 +400,14 @@ void OperationContext::markKillOnClientDisconnect() {
             _baton->markKillOnClientDisconnect();
         }
     }
+}
+
+void OperationContext::setIsExecutingShutdown() {
+    invariant(!_isExecutingShutdown);
+
+    _isExecutingShutdown = true;
+
+    pushIgnoreInterrupts();
 }
 
 void OperationContext::setLogicalSessionId(LogicalSessionId lsid) {

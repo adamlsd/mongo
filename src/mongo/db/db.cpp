@@ -120,7 +120,6 @@
 #include "mongo/db/s/sharding_initialization_mongod.h"
 #include "mongo/db/s/sharding_state_recovery.h"
 #include "mongo/db/server_options.h"
-#include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_entry_point_mongod.h"
 #include "mongo/db/session_killer.h"
@@ -893,6 +892,7 @@ void shutdownTask() {
             uniqueOpCtx = client->makeOperationContext();
             opCtx = uniqueOpCtx.get();
         }
+        opCtx->setIsExecutingShutdown();
 
         // This can wait a long time while we drain the secondary's apply queue, especially if
         // it is building an index.
@@ -904,23 +904,16 @@ void shutdownTask() {
         // destroy all stashed transaction resources in order to release locks, and finally wait
         // until the lock request is granted.
         repl::ReplicationStateTransitionLockGuard rstl(
-            opCtx, repl::ReplicationStateTransitionLockGuard::EnqueueOnly());
+            opCtx, MODE_X, repl::ReplicationStateTransitionLockGuard::EnqueueOnly());
 
         // Kill all operations. After this point, the opCtx will have been marked as killed and will
         // not be usable other than to kill all transactions directly below.
         serviceContext->setKillAllOperations();
 
-        {
-            // Make this scope uninterruptible so that we can still abort all transactions even
-            // though the opCtx has been killed. While we don't currently check for an interrupt
-            // before checking out a session, we want to make sure that this completes.
-            UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+        // Destroy all stashed transaction resources, in order to release locks.
+        killSessionsLocalShutdownAllTransactions(opCtx);
 
-            // Destroy all stashed transaction resources, in order to release locks.
-            killSessionsLocalShutdownAllTransactions(opCtx);
-
-            rstl.waitForLockUntil(Date_t::max());
-        }
+        rstl.waitForLockUntil(Date_t::max());
     }
 
     // Shuts down the thread pool and waits for index builds to finish.

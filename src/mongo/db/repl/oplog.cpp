@@ -80,13 +80,13 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/timestamp_block.h"
 #include "mongo/db/repl/transaction_oplog_application.h"
-#include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/server_write_concern_metrics.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/transaction_participant.h"
+#include "mongo/db/views/view_catalog.h"
 #include "mongo/platform/random.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/memory.h"
@@ -366,13 +366,21 @@ void createIndexForApplyOps(OperationContext* opCtx,
         Lock::TempRelease release(opCtx->lockState());
         // TempRelease cannot fail because no recursive locks should be taken.
         invariant(!opCtx->lockState()->isLocked());
-
-        IndexBuilder* builder = new IndexBuilder(
-            indexSpec, constraints, replicatedWrites, opCtx->recoveryUnit()->getCommitTimestamp());
+        auto collUUID = *indexCollection->uuid();
+        auto indexBuildUUID = UUID::gen();
+        auto indexBuildsCoordinator = IndexBuildsCoordinator::get(opCtx);
+        // We don't pass in a commit quorum here because secondary nodes don't have any knowledge of
+        // it.
+        IndexBuildsCoordinator::IndexBuildOptions indexBuildOptions = {
+            /*commitQuorum=*/boost::none};
         // This spawns a new thread and returns immediately.
-        builder->go();
-        // Wait for thread to start and register itself
-        IndexBuilder::waitForBgIndexStarting();
+        MONGO_COMPILER_VARIABLE_UNUSED auto fut = uassertStatusOK(
+            indexBuildsCoordinator->startIndexBuild(opCtx,
+                                                    collUUID,
+                                                    {indexSpec},
+                                                    indexBuildUUID,
+                                                    IndexBuildProtocol::kSinglePhase,
+                                                    indexBuildOptions));
     }
 
     opCtx->recoveryUnit()->abandonSnapshot();
@@ -811,17 +819,6 @@ void createOplog(OperationContext* opCtx) {
     createOplog(opCtx, localOplogInfo(opCtx->getServiceContext()).oplogName, isReplSet);
 }
 
-MONGO_REGISTER_SHIM(GetNextOpTimeClass::getNextOpTime)(OperationContext* opCtx)->OplogSlot {
-    // The local oplog collection pointer must already be established by this point.
-    // We can't establish it here because that would require locking the local database, which would
-    // be a lock order violation.
-    auto oplog = localOplogInfo(opCtx->getServiceContext()).oplog;
-    invariant(oplog);
-    OplogSlot os;
-    _getNextOpTimes(opCtx, oplog, 1, &os);
-    return os;
-}
-
 OplogSlot getNextOpTimeNoPersistForTesting(OperationContext* opCtx) {
     auto oplog = localOplogInfo(opCtx->getServiceContext()).oplog;
     invariant(oplog);
@@ -831,7 +828,8 @@ OplogSlot getNextOpTimeNoPersistForTesting(OperationContext* opCtx) {
     return os;
 }
 
-std::vector<OplogSlot> getNextOpTimes(OperationContext* opCtx, std::size_t count) {
+MONGO_REGISTER_SHIM(GetNextOpTimeClass::getNextOpTimes)
+(OperationContext* opCtx, std::size_t count)->std::vector<OplogSlot> {
     // The local oplog collection pointer must already be established by this point.
     // We can't establish it here because that would require locking the local database, which would
     // be a lock order violation.
@@ -842,7 +840,6 @@ std::vector<OplogSlot> getNextOpTimes(OperationContext* opCtx, std::size_t count
     _getNextOpTimes(opCtx, oplog, count, &(*oplogSlot));
     return oplogSlots;
 }
-
 
 // -------------------------------------
 
@@ -969,7 +966,9 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
           createIndexForApplyOps(opCtx, indexSpec, nss, {}, mode);
           return Status::OK();
       },
-      {ErrorCodes::IndexAlreadyExists, ErrorCodes::NamespaceNotFound}}},
+      {ErrorCodes::IndexAlreadyExists,
+       ErrorCodes::IndexBuildAlreadyInProgress,
+       ErrorCodes::NamespaceNotFound}}},
     {"startIndexBuild",
      {[](OperationContext* opCtx,
          const char* ns,
@@ -1471,7 +1470,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
     const bool haveWrappingWriteUnitOfWork = opCtx->lockState()->inAWriteUnitOfWork();
     uassert(ErrorCodes::CommandNotSupportedOnView,
             str::stream() << "applyOps not supported on view: " << requestNss.ns(),
-            collection || !db->getViewCatalog()->lookup(opCtx, requestNss.ns()));
+            collection || !ViewCatalog::get(db)->lookup(opCtx, requestNss.ns()));
 
     // This code must decide what timestamp the storage engine should make the upcoming writes
     // visible with. The requirements and use-cases:
@@ -1886,7 +1885,7 @@ Status applyCommand_inlock(OperationContext* opCtx,
         Lock::DBLock lock(opCtx, nss.db(), MODE_IS);
         auto databaseHolder = DatabaseHolder::get(opCtx);
         auto db = databaseHolder->getDb(opCtx, nss.ns());
-        if (db && !db->getCollection(opCtx, nss) && db->getViewCatalog()->lookup(opCtx, nss.ns())) {
+        if (db && !db->getCollection(opCtx, nss) && ViewCatalog::get(db)->lookup(opCtx, nss.ns())) {
             return {ErrorCodes::CommandNotSupportedOnView,
                     str::stream() << "applyOps not supported on view:" << nss.ns()};
         }

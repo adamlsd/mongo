@@ -54,7 +54,6 @@
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/s/shard_identity_rollback_notifier.h"
 #include "mongo/db/s/type_shard_identity.h"
-#include "mongo/db/server_parameters.h"
 #include "mongo/db/server_recovery.h"
 #include "mongo/db/server_transactions_metrics.h"
 #include "mongo/db/session_catalog_mongod.h"
@@ -341,7 +340,7 @@ Status RollbackImpl::_transitionToRollback(OperationContext* opCtx) {
 
     log() << "transition to ROLLBACK";
     {
-        ReplicationStateTransitionLockGuard transitionGuard(opCtx);
+        ReplicationStateTransitionLockGuard transitionGuard(opCtx, MODE_X);
 
         auto status =
             _replicationCoordinator->setFollowerModeStrict(opCtx, MemberState::RS_ROLLBACK);
@@ -1044,7 +1043,7 @@ void RollbackImpl::_transitionFromRollbackToSecondary(OperationContext* opCtx) {
 
     log() << "transition to SECONDARY";
 
-    ReplicationStateTransitionLockGuard transitionGuard(opCtx);
+    ReplicationStateTransitionLockGuard transitionGuard(opCtx, MODE_X);
 
     auto status = _replicationCoordinator->setFollowerMode(MemberState::RS_SECONDARY);
     if (!status.isOK()) {

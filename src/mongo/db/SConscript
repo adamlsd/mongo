@@ -316,27 +316,6 @@ env.CppUnitTest(
 )
 
 env.Library(
-    target="server_parameters",
-    source=[
-        "server_parameters.cpp",
-    ],
-    LIBDEPS=[
-        "$BUILD_DIR/mongo/base",
-    ],
-)
-
-env.CppUnitTest(
-    target="server_parameters_test",
-    source=[
-        "server_parameters_test.cpp",
-    ],
-    LIBDEPS=[
-        "server_parameters",
-        '$BUILD_DIR/mongo/db/service_context',
-    ],
-)
-
-env.Library(
     target='update_index_data',
     source=[
         'update_index_data.cpp'
@@ -397,14 +376,17 @@ env.Library(
     target="server_options",
     source=[
         "server_options_helpers.cpp",
+        env.Idlc('server_options_helpers.idl')[0],
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/cmdline_utils/cmdline_utils',
+        'server_options_core',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/idl/server_parameter',
         '$BUILD_DIR/mongo/util/fail_point',
         '$BUILD_DIR/mongo/util/options_parser/options_parser',
-        'server_options_core',
-        'server_parameters',
     ],
 )
 
@@ -1077,6 +1059,7 @@ env.Library(
     LIBDEPS_PRIVATE=[
         "logical_clock",
         "server_options_core",
+        '$BUILD_DIR/mongo/db/repl/timestamp_block',
     ],
 )
 
@@ -1316,7 +1299,7 @@ env.Library(
         '$BUILD_DIR/mongo/crypto/sha256_block',
         '$BUILD_DIR/mongo/crypto/sha_block_${MONGO_CRYPTO}',
         '$BUILD_DIR/mongo/idl/idl_parser',
-        'server_parameters',
+        '$BUILD_DIR/mongo/idl/server_parameter',
     ],
 )
 
@@ -1528,7 +1511,6 @@ env.Library(
         'logical_session_id',
         'logical_session_id_helpers',
         'sessions_collection',
-        'server_parameters',
         'service_liaison',
         'kill_sessions',
     ],
@@ -1808,7 +1790,6 @@ env.Library(
     LIBDEPS=[
         'global_settings',
         'logical_time',
-        'server_parameters',
         'service_context',
     ],
 )

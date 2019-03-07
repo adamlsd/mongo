@@ -33,13 +33,20 @@
 
 #include "mongo/shell/shell_utils.h"
 
-#include <filesystem>
+#include <algorithm>
+#include <boost/filesystem.hpp>
+#include <memory>
+#include <set>
+#include <stdlib.h>
+#include <string>
+#include <vector>
 
 #ifndef _WIN32
 #include <pwd.h>
 #include <sys/types.h>
 #endif
 
+#include "mongo/base/shim.h"
 #include "mongo/client/dbclient_base.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/db/hasher.h"
@@ -49,6 +56,7 @@
 #include "mongo/shell/shell_options.h"
 #include "mongo/shell/shell_utils_extended.h"
 #include "mongo/shell/shell_utils_launcher.h"
+#include "mongo/stdx/mutex.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
@@ -99,8 +107,8 @@ std::filesystem::path getUserDir() {
 }  // namespace
 }  // namespace mongo::shell_utils
 
-std::filesystem::path mongo::shell_utils::getHistoryFilePath() {
-    static const std::filesystem::path historyFile= getUserDir() / ".dbshell";
+boost::filesystem::path mongo::shell_utils::getHistoryFilePath() {
+    static const auto& historyFile = *new boost::filesystem::path(getUserDir() / ".dbshell");
 
     return historyFile;
 }

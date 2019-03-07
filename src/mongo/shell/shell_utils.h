@@ -29,8 +29,10 @@
 
 #pragma once
 
-#include <filesystem>
+#include <boost/filesystem.hpp>
 #include <string>
+#include <map>
+#include <set>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/stdx/mutex.h"
@@ -51,7 +53,7 @@ void installShellUtils(Scope& scope);
 void initScope(Scope& scope);
 void onConnect(DBClientBase& c);
 
-std::filesystem::path getHistoryFilePath();
+boost::filesystem::path getHistoryFilePath();
 
 BSONElement singleArg(const BSONObj& args);
 extern const BSONObj undefinedReturn;

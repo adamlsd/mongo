@@ -66,7 +66,7 @@
 
 namespace mongo::shell_utils {
 namespace {
-std::filesystem::path getUserDir() {
+boost::filesystem::path getUserDir() {
 #ifdef _WIN32
     auto envp = getenv("USERPROFILE");
     if (envp)

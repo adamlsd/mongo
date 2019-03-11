@@ -407,6 +407,7 @@ env.Library(
         'server_options_base.cpp',
         env.Idlc('server_options_base.idl')[0],
         env.Idlc('server_options_general.idl')[0],
+        env.Idlc('server_options_nongeneral.idl')[0],
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -460,6 +461,7 @@ env.Library(
         "$BUILD_DIR/mongo/rpc/metadata",
         "$BUILD_DIR/mongo/rpc/rpc",
         "$BUILD_DIR/mongo/util/net/ssl_manager",
+        "$BUILD_DIR/mongo/util/net/ssl_parameters_auth",
         "auth/authorization_manager_global",
         "serverinit",
     ],
@@ -1059,6 +1061,7 @@ env.Library(
     LIBDEPS_PRIVATE=[
         "logical_clock",
         "server_options_core",
+        '$BUILD_DIR/mongo/db/catalog/index_timestamp_helper',
         '$BUILD_DIR/mongo/db/repl/timestamp_block',
     ],
 )
@@ -1975,6 +1978,9 @@ env.Library(
         'server_options_servers',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/net/network',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/util/processinfo',
     ],
 )
 

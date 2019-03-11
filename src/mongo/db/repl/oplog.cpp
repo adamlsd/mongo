@@ -819,6 +819,17 @@ void createOplog(OperationContext* opCtx) {
     createOplog(opCtx, localOplogInfo(opCtx->getServiceContext()).oplogName, isReplSet);
 }
 
+MONGO_REGISTER_SHIM(GetNextOpTimeClass::getNextOpTime)(OperationContext* opCtx)->OplogSlot {
+    // The local oplog collection pointer must already be established by this point.
+    // We can't establish it here because that would require locking the local database, which would
+    // be a lock order violation.
+    auto oplog = localOplogInfo(opCtx->getServiceContext()).oplog;
+    invariant(oplog);
+    OplogSlot os;
+    _getNextOpTimes(opCtx, oplog, 1, &os);
+    return os;
+}
+
 OplogSlot getNextOpTimeNoPersistForTesting(OperationContext* opCtx) {
     auto oplog = localOplogInfo(opCtx->getServiceContext()).oplog;
     invariant(oplog);
@@ -828,8 +839,7 @@ OplogSlot getNextOpTimeNoPersistForTesting(OperationContext* opCtx) {
     return os;
 }
 
-MONGO_REGISTER_SHIM(GetNextOpTimeClass::getNextOpTimes)
-(OperationContext* opCtx, std::size_t count)->std::vector<OplogSlot> {
+std::vector<OplogSlot> getNextOpTimes(OperationContext* opCtx, std::size_t count) {
     // The local oplog collection pointer must already be established by this point.
     // We can't establish it here because that would require locking the local database, which would
     // be a lock order violation.
@@ -840,6 +850,7 @@ MONGO_REGISTER_SHIM(GetNextOpTimeClass::getNextOpTimes)
     _getNextOpTimes(opCtx, oplog, count, &(*oplogSlot));
     return oplogSlots;
 }
+
 
 // -------------------------------------
 
@@ -1423,26 +1434,17 @@ Status applyOperation_inlock(OperationContext* opCtx,
                 collection);
         requestNss = collection->ns();
         dassert(opCtx->lockState()->isCollectionLockedForMode(
-                    requestNss.ns(), supportsDocLocking() ? MODE_IX : MODE_X),
-                requestNss.ns());
+            requestNss, supportsDocLocking() ? MODE_IX : MODE_X));
     } else {
         uassert(ErrorCodes::InvalidNamespace,
                 "'ns' must be of type String",
                 fieldNs.type() == BSONType::String);
         const StringData ns = fieldNs.valuestrsafe();
         requestNss = NamespaceString(ns);
-        if (nsIsFull(ns)) {
-            if (supportsDocLocking()) {
-                // WiredTiger, and others requires MODE_IX since the applier threads driving
-                // this allow writes to the same collection on any thread.
-                dassert(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_IX),
-                        requestNss.ns());
-            } else {
-                // mmapV1 ensures that all operations to the same collection are executed from
-                // the same worker thread, so it takes an exclusive lock (MODE_X)
-                dassert(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_X), requestNss.ns());
-            }
-        }
+        invariant(requestNss.coll().size());
+        dassert(opCtx->lockState()->isCollectionLockedForMode(
+                    requestNss, supportsDocLocking() ? MODE_IX : MODE_X),
+                requestNss.ns());
         collection = db->getCollection(opCtx, requestNss);
     }
 

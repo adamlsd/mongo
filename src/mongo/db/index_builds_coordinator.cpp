@@ -75,7 +75,11 @@ constexpr auto kKeyFieldName = "key"_sd;
 StatusWith<UUID> getCollectionUUID(OperationContext* opCtx, const NamespaceString& nss) {
     try {
         AutoGetCollection autoColl(opCtx, nss, MODE_IS);
-        return autoColl.getCollection()->uuid().get();
+        auto collection = autoColl.getCollection();
+        if (!collection) {
+            return {ErrorCodes::NamespaceNotFound, nss.ns()};
+        }
+        return collection->uuid().get();
     } catch (const DBException& ex) {
         invariant(ex.toStatus().code() == ErrorCodes::NamespaceNotFound);
         return ex.toStatus();
@@ -88,7 +92,7 @@ StatusWith<UUID> getCollectionUUID(OperationContext* opCtx, const NamespaceStrin
 void checkShardKeyRestrictions(OperationContext* opCtx,
                                const NamespaceString& nss,
                                const BSONObj& newIdxKey) {
-    invariant(opCtx->lockState()->isCollectionLockedForMode(nss.ns(), MODE_X));
+    invariant(opCtx->lockState()->isCollectionLockedForMode(nss, MODE_X));
 
     const auto metadata = CollectionShardingState::get(opCtx, nss)->getCurrentMetadata();
     if (!metadata->isSharded())
@@ -278,7 +282,8 @@ void IndexBuildsCoordinator::interruptAllIndexBuilds(const std::string& reason) 
 
     // Wait for all the index builds to stop.
     for (auto& dbIt : _databaseIndexBuilds) {
-        dbIt.second->waitUntilNoIndexBuildsRemain(lk);
+        auto dbIndexBuildsSharedPtr = dbIt.second;
+        dbIndexBuildsSharedPtr->waitUntilNoIndexBuildsRemain(lk);
     }
 }
 
@@ -297,7 +302,8 @@ void IndexBuildsCoordinator::abortCollectionIndexBuilds(const UUID& collectionUU
 
     collIndexBuildsIt->second->runOperationOnAllBuilds(
         lk, &_indexBuildsManager, abortIndexBuild, reason);
-    collIndexBuildsIt->second->waitUntilNoIndexBuildsRemain(lk);
+    auto collIndexBuildsSharedPtr = collIndexBuildsIt->second;
+    collIndexBuildsSharedPtr->waitUntilNoIndexBuildsRemain(lk);
 }
 
 void IndexBuildsCoordinator::abortDatabaseIndexBuilds(StringData db, const std::string& reason) {
@@ -407,7 +413,8 @@ void IndexBuildsCoordinator::awaitNoBgOpInProgForNs(OperationContext* opCtx, Str
         return;
     }
 
-    collIndexBuildsIt->second->waitUntilNoIndexBuildsRemain(lk);
+    auto collIndexBuildsSharedPtr = collIndexBuildsIt->second;
+    collIndexBuildsSharedPtr->waitUntilNoIndexBuildsRemain(lk);
 }
 
 void IndexBuildsCoordinator::awaitNoBgOpInProgForDb(StringData db) const {
@@ -418,7 +425,8 @@ void IndexBuildsCoordinator::awaitNoBgOpInProgForDb(StringData db) const {
         return;
     }
 
-    dbIndexBuildsIt->second->waitUntilNoIndexBuildsRemain(lk);
+    auto dbIndexBuildsSharedPtr = dbIndexBuildsIt->second;
+    dbIndexBuildsSharedPtr->waitUntilNoIndexBuildsRemain(lk);
 }
 
 void IndexBuildsCoordinator::onReplicaSetReconfig() {
@@ -1081,7 +1089,7 @@ std::vector<BSONObj> IndexBuildsCoordinator::_addDefaultsAndFilterExistingIndexe
     Collection* collection,
     const NamespaceString& nss,
     const std::vector<BSONObj>& indexSpecs) {
-    invariant(opCtx->lockState()->isCollectionLockedForMode(nss.ns(), MODE_X));
+    invariant(opCtx->lockState()->isCollectionLockedForMode(nss, MODE_X));
     invariant(collection);
 
     // During secondary oplog application, the index specs have already been normalized in the

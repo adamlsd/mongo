@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -26,15 +26,39 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/matcher/expression_type.h"
+#include "mongo/util/regex_util.h"
+
+#include "mongo/base/error_codes.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
-
-constexpr StringData InternalSchemaBinDataSubTypeExpression::kName;
-constexpr StringData InternalSchemaTypeExpression::kName;
-constexpr StringData TypeMatchExpression::kName;
-
-}  // namespace mongo
+namespace regex_util {
+pcrecpp::RE_Options flags2PcreOptions(StringData optionFlags, bool ignoreInvalidFlags) {
+    pcrecpp::RE_Options opt;
+    opt.set_utf8(true);
+    for (auto flag : optionFlags) {
+        switch (flag) {
+            case 'i':  // case incase sensitive
+                opt.set_caseless(true);
+                continue;
+            case 'm':  // newlines match ^ and $
+                opt.set_multiline(true);
+                continue;
+            case 'x':  // extended mode
+                opt.set_extended(true);
+                continue;
+            case 's':  // allows dot to include newline chars
+                opt.set_dotall(true);
+                continue;
+            default:
+                if (!ignoreInvalidFlags) {
+                    uasserted(51108, str::stream() << "Invalid flag: " << flag);
+                }
+        }
+    }
+    return opt;
+}
+}
+}

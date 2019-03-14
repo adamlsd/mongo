@@ -27,33 +27,17 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/db/pipeline/document_source_watch_for_uuid.h"
+#include <pcrecpp.h>
 
-#include "mongo/db/pipeline/document_source_change_stream.h"
-#include "mongo/db/pipeline/resume_token.h"
+#include "mongo/base/string_data.h"
 
 namespace mongo {
-
-DocumentSource::GetNextResult DocumentSourceWatchForUUID::getNext() {
-    pExpCtx->checkForInterrupt();
-
-    auto nextInput = pSource->getNext();
-    if (!nextInput.isAdvanced())
-        return nextInput;
-
-    // This single-collection stream was opened before the collection was created, and the pipeline
-    // does not know its UUID. When we see the first event, we update our expression context with
-    // the UUID drawn from that event's resume token.
-    if (!pExpCtx->uuid) {
-        auto resumeToken = ResumeToken::parse(
-            nextInput.getDocument()[DocumentSourceChangeStream::kIdField].getDocument());
-        pExpCtx->uuid = resumeToken.getData().uuid;
-    }
-
-    // Forward the result without modification.
-    return nextInput;
+namespace regex_util {
+/**
+ * Utility to build PCRE regex option from the input options string.
+ */
+pcrecpp::RE_Options flags2PcreOptions(StringData optionFlags, bool ignoreInvalidOptions);
 }
-
-}  // namespace mongo
+}

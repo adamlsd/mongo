@@ -29,6 +29,13 @@
 
 #include "mongo/util/functional.h"
 
+#include <functional>
+#include <iostream>
+#include <memory>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
 #include "mongo/unittest/unittest.h"
 
 namespace {
@@ -40,10 +47,8 @@ struct sfinae_check_recursion_disallowed<T, mongo::stdx::void_t<decltype(T{std::
     : std::false_type {};
 
 
-TEST(UniqueFunctionTest, check_recursion) {
-    using mongo::unique_function;
-
-    using function_type = unique_function<void(int)>;
+TEST(UniqueFunctionTest, checkRecursion) {
+    using function_type = mongo::unique_function<void(int)>;
 
     constexpr bool constReferenceCopyConstructionCheck =
         !std::is_constructible<function_type, function_type&>();
@@ -68,6 +73,17 @@ TEST(UniqueFunctionTest, check_recursion) {
     ASSERT_TRUE(referenceCopyConstructionCheck);
     ASSERT_TRUE(constReferenceCopyConstructionCheck);
     ASSERT_TRUE(sfinaeCheck);
+}
+
+TEST(UniqueFunctionTest, checkUniquePtrAbility) {
+    struct Resource {};
+
+    using dtor_type = mongo::unique_function<void(Resource*)>;
+
+    using ptr_type = std::unique_ptr<Resource, dtor_type>;
+
+    ASSERT_TRUE((std::is_constructible<dtor_type, dtor_type&&>::value));
+    ASSERT_TRUE((std::is_constructible<ptr_type, ptr_type&&>::value));
 }
 
 template <int channel>

@@ -32,6 +32,44 @@
 #include "mongo/unittest/unittest.h"
 
 namespace {
+template <typename T, typename = void>
+struct sfinae_check_recursion_disallowed : std::true_type {};
+
+template <typename T>
+struct sfinae_check_recursion_disallowed<T, mongo::stdx::void_t<decltype(T{std::declval<T&>()})>>
+    : std::false_type {};
+
+
+TEST(UniqueFunctionTest, check_recursion) {
+    using mongo::unique_function;
+
+    using function_type = unique_function<void(int)>;
+
+    constexpr bool constReferenceCopyConstructionCheck =
+        !std::is_constructible<function_type, function_type&>();
+    if (!constReferenceCopyConstructionCheck)
+        std::cerr << "Problem: Able to copy unique functions!" << std::endl;
+
+    constexpr bool referenceCopyConstructionCheck =
+        !std::is_constructible<function_type, const function_type&>();
+    if (!referenceCopyConstructionCheck)
+        std::cerr << "Problem: Able to copy unique functions!" << std::endl;
+
+    constexpr bool simpleMoveConstructionCheck =
+        std::is_constructible<function_type, function_type>();
+    if (!simpleMoveConstructionCheck)
+        std::cerr << "Problem: Unable to move unique functions!" << std::endl;
+
+    constexpr bool sfinaeCheck = sfinae_check_recursion_disallowed<function_type>();
+    if (!sfinaeCheck)
+        std::cerr << "Problem: Able to copy unique functions!" << std::endl;
+
+    ASSERT_TRUE(simpleMoveConstructionCheck);
+    ASSERT_TRUE(referenceCopyConstructionCheck);
+    ASSERT_TRUE(constReferenceCopyConstructionCheck);
+    ASSERT_TRUE(sfinaeCheck);
+}
+
 template <int channel>
 struct RunDetection {
     ~RunDetection() {

@@ -30,9 +30,9 @@
 #pragma once
 
 #include <boost/filesystem.hpp>
-#include <string>
 #include <map>
 #include <set>
+#include <string>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/stdx/mutex.h"

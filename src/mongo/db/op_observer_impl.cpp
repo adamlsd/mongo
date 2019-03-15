@@ -1203,7 +1203,7 @@ repl::OpTime logCommitForUnpreparedTransaction(OperationContext* opCtx,
     sessionInfo.setSessionId(*opCtx->getLogicalSessionId());
     sessionInfo.setTxnNumber(*opCtx->getTxnNumber());
     oplogLink.prevOpTime = prevOpTime;
-    cmdObj.setPrepare(false);
+    cmdObj.setPrepared(false);
 
     const auto oplogOpTime = logOperation(opCtx,
                                           "c",
@@ -1277,6 +1277,9 @@ void OpObserverImpl::onPreparedTransactionCommit(
 
     CommitTransactionOplogObject cmdObj;
     cmdObj.setCommitTimestamp(commitTimestamp);
+    if (gUseMultipleOplogEntryFormatForTransactions) {
+        cmdObj.setPrepared(true);
+    }
     logCommitOrAbortForPreparedTransaction(
         opCtx, commitOplogEntryOpTime, cmdObj.toBSON(), DurableTxnStateEnum::kCommitted);
 }

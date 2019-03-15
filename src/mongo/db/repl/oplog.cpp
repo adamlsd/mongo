@@ -113,6 +113,10 @@ namespace {
 
 MONGO_FAIL_POINT_DEFINE(sleepBetweenInsertOpTimeGenerationAndLogOp);
 
+// Failpoint to block after a write and its oplog entry have been written to the storage engine and
+// are visible, but before we have advanced 'lastApplied' for the write.
+MONGO_FAIL_POINT_DEFINE(hangBeforeLogOpAdvancesLastApplied);
+
 /**
  * This structure contains per-service-context state related to the oplog.
  */
@@ -524,6 +528,13 @@ void _logOpsInner(OperationContext* opCtx,
                           str::stream() << "Final OpTime: " << finalOpTime.toString()
                                         << ". Commit Time: "
                                         << commitTime->toString());
+            }
+
+            // Optionally hang before advancing lastApplied.
+            if (MONGO_FAIL_POINT(hangBeforeLogOpAdvancesLastApplied)) {
+                log() << "hangBeforeLogOpAdvancesLastApplied fail point enabled.";
+                MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(opCtx,
+                                                                hangBeforeLogOpAdvancesLastApplied);
             }
 
             // Optimes on the primary should always represent consistent database states.
@@ -1382,8 +1393,8 @@ Status applyOperation_inlock(OperationContext* opCtx,
         mode == repl::OplogApplication::Mode::kApplyOpsCmd || opCtx->writesAreReplicated();
     OpCounters* opCounters = shouldUseGlobalOpCounters ? &globalOpCounters : &replOpCounters;
 
-    std::array<StringData, 8> names = {"ts", "t", "o", "ui", "ns", "op", "b", "o2"};
-    std::array<BSONElement, 8> fields;
+    std::array<StringData, 9> names = {"ts", "t", "o", "ui", "ns", "op", "b", "o2", "inTxn"};
+    std::array<BSONElement, 9> fields;
     op.getFields(names, &fields);
     BSONElement& fieldTs = fields[0];
     BSONElement& fieldT = fields[1];
@@ -1393,10 +1404,16 @@ Status applyOperation_inlock(OperationContext* opCtx,
     BSONElement& fieldOp = fields[5];
     BSONElement& fieldB = fields[6];
     BSONElement& fieldO2 = fields[7];
+    BSONElement& fieldInTxn = fields[8];
 
     BSONObj o;
     if (fieldO.isABSONObj())
         o = fieldO.embeddedObject();
+
+    // Make sure we don't apply partial transactions through applyOps.
+    uassert(51117,
+            "Operations with 'inTxn' set are only used internally by secondaries.",
+            fieldInTxn.eoo());
 
     // operation type -- see logOp() comments for types
     const char* opType = fieldOp.valuestrsafe();

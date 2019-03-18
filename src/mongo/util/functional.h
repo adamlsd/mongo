@@ -92,9 +92,20 @@ public:
     unique_function(
         Functor&& functor,
         // The remaining arguments here are only for SFINAE purposes to enable this ctor when our
-        // requirements are met.  They must be concrete parameters not template parameters to work
-        // around bugs in some compilers that we presently use.  We may be able to revisit this
-        // design after toolchain upgrades for C++17.
+        // requirements are met.  Because C++ SFINAE must substitute the function parameters, in
+        // order, we need to reject the `is_same` case first.  In order to prevent the other
+        // `enable_if` clauses from causing the compiler to internally try to keep checking if this
+        // ctor can be used to satisfy one of the other clauses instead of a move constructor.  They
+        // have to be separate parameters, in order to allow independent rejection, rather than
+        // normal conjunction, due to the fact that template instantitation (of the argument types
+        // as `enable_if` specializations) doesn't have short circuit "instantiation", which would
+        // appear as "short circuit evaluation", for metaprogramming purposes.
+        //
+        // TL;DR: The order of these parameters is critical to how SFINAE rejection works, and they
+        // must be separate parameters.
+        //
+        // NOTE: They must be concrete parameters not template parameters to work around bugs in
+        // some compilers that we presently use.
         std::enable_if_t<!std::is_same<std::decay_t<Functor>, unique_function>::value, TagType> =
             makeTag(),
         std::enable_if_t<std::is_move_constructible<Functor>::value, TagType> = makeTag(),

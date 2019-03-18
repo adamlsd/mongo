@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
+
 #include "mongo/util/functional.h"
 
 #include <functional>
@@ -37,6 +39,7 @@
 #include <vector>
 
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/log.h"
 
 namespace {
 template <typename T, typename = void>
@@ -49,27 +52,34 @@ struct sfinae_check_recursion_disallowed<T, mongo::stdx::void_t<decltype(T{std::
 
 TEST(UniqueFunctionTest, checkRecursion) {
     using function_type = mongo::unique_function<void(int)>;
+    using ::mongo::log;
 
     constexpr bool constReferenceCopyConstructionCheck =
-        !std::is_constructible<function_type, function_type&>();
+        !std::is_constructible<function_type, const function_type&>();
     if (!constReferenceCopyConstructionCheck)
-        std::cerr << "Problem: Able to copy unique functions!" << std::endl;
+        log() << "Problem: Able to copy unique functions!";
 
     constexpr bool referenceCopyConstructionCheck =
-        !std::is_constructible<function_type, const function_type&>();
+        !std::is_constructible<function_type, function_type&>();
     if (!referenceCopyConstructionCheck)
-        std::cerr << "Problem: Able to copy unique functions!" << std::endl;
+        log() << "Problem: Able to copy unique functions!";
 
     constexpr bool simpleMoveConstructionCheck =
         std::is_constructible<function_type, function_type>();
     if (!simpleMoveConstructionCheck)
-        std::cerr << "Problem: Unable to move unique functions!" << std::endl;
+        log() << "Problem: Unable to move unique functions!";
+
+    constexpr bool simpleMoveConstructionCheck2 =
+        std::is_constructible<function_type, function_type&&>();
+    if (!simpleMoveConstructionCheck2)
+        log() << "Problem: Unable to move unique functions!";
 
     constexpr bool sfinaeCheck = sfinae_check_recursion_disallowed<function_type>();
     if (!sfinaeCheck)
-        std::cerr << "Problem: Able to copy unique functions!" << std::endl;
+        log() << "Problem: Able to copy unique functions!";
 
     ASSERT_TRUE(simpleMoveConstructionCheck);
+    ASSERT_TRUE(simpleMoveConstructionCheck2);
     ASSERT_TRUE(referenceCopyConstructionCheck);
     ASSERT_TRUE(constReferenceCopyConstructionCheck);
     ASSERT_TRUE(sfinaeCheck);

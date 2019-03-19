@@ -66,6 +66,8 @@ public:
 
     virtual void startup(OperationContext* opCtx);
 
+    virtual void enterTerminalShutdown();
+
     virtual void shutdown(OperationContext* opCtx);
 
     virtual void appendDiagnosticBSON(BSONObjBuilder* bob) override {}
@@ -229,6 +231,8 @@ public:
                                         boost::optional<rpc::OplogQueryMetadata> oqMetadata);
 
     virtual OpTime getLastCommittedOpTime() const;
+
+    virtual std::vector<MemberData> getMemberData() const override;
 
     virtual Status processReplSetRequestVotes(OperationContext* opCtx,
                                               const ReplSetRequestVotesArgs& args,

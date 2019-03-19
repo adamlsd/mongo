@@ -47,6 +47,8 @@ public:
 
     void startup(OperationContext* opCtx) override;
 
+    void enterTerminalShutdown() override;
+
     void shutdown(OperationContext* opCtx) override;
 
     // Returns the ServiceContext where this instance runs.
@@ -89,6 +91,8 @@ public:
 
 
     repl::MemberState getMemberState() const override;
+
+    std::vector<repl::MemberData> getMemberData() const override;
 
     Status waitForMemberState(repl::MemberState, Milliseconds) override;
 

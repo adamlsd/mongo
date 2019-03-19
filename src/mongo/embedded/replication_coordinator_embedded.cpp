@@ -49,6 +49,8 @@ ReplicationCoordinatorEmbedded::~ReplicationCoordinatorEmbedded() = default;
 
 void ReplicationCoordinatorEmbedded::startup(OperationContext* opCtx) {}
 
+void ReplicationCoordinatorEmbedded::enterTerminalShutdown() {}
+
 void ReplicationCoordinatorEmbedded::shutdown(OperationContext* opCtx) {}
 
 const ReplSettings& ReplicationCoordinatorEmbedded::getSettings() const {
@@ -146,6 +148,10 @@ void ReplicationCoordinatorEmbedded::appendConnectionStats(
 }
 
 MemberState ReplicationCoordinatorEmbedded::getMemberState() const {
+    UASSERT_NOT_IMPLEMENTED;
+}
+
+std::vector<repl::MemberData> ReplicationCoordinatorEmbedded::getMemberData() const {
     UASSERT_NOT_IMPLEMENTED;
 }
 

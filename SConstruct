@@ -400,6 +400,11 @@ add_option('use-system-mongo-c',
     type='choice',
 )
 
+add_option('use-system-kms-message',
+    help='use system version of kms-message library',
+    nargs=0,
+)
+
 add_option('use-system-all',
     help='use all system libraries',
     nargs=0,
@@ -1872,8 +1877,8 @@ if env.TargetOSIs('posix'):
             pass
 
     if env.TargetOSIs('linux') and has_option( "gcov" ):
-        env.Append( CCFLAGS=["-fprofile-arcs", "-ftest-coverage"] )
-        env.Append( LINKFLAGS=["-fprofile-arcs", "-ftest-coverage"] )
+        env.Append( CCFLAGS=["-fprofile-arcs", "-ftest-coverage", "-fprofile-update=single"] )
+        env.Append( LINKFLAGS=["-fprofile-arcs", "-ftest-coverage", "-fprofile-update=single"] )
 
     if optBuild and not optBuildForSize:
         env.Append( CCFLAGS=["-O2"] )
@@ -2392,14 +2397,11 @@ def doConfigure(myenv):
     if myenv.ToolchainIs('msvc'):
         myenv.AppendUnique(CCFLAGS=['/Zc:__cplusplus', '/permissive-'])
         if get_option('cxx-std') == "17":
-            myenv.AppendUnique(CCFLAGS=['/std:c++17', '/Zc:sizedDealloc'])
+            myenv.AppendUnique(CCFLAGS=['/std:c++17'])
     else:
         if get_option('cxx-std') == "17":
             if not AddToCXXFLAGSIfSupported(myenv, '-std=c++17'):
                 myenv.ConfError('Compiler does not honor -std=c++17')
-
-            if not AddToCXXFLAGSIfSupported(myenv, '-fsized-deallocation'):
-                myenv.ConfError('Compiler does not honor -fsized-deallocation')
 
         if not AddToCFLAGSIfSupported(myenv, '-std=c11'):
             myenv.ConfError("C++14/17 mode selected for C++ files, but can't enable C11 for C files")

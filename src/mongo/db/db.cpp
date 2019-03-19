@@ -176,6 +176,8 @@
 #include "mongo/util/time_support.h"
 #include "mongo/util/version.h"
 
+#include "mongo/db/storage/flow_control.h"
+
 #ifdef MONGO_CONFIG_SSL
 #include "mongo/util/net/ssl_options.h"
 #endif
@@ -323,6 +325,9 @@ ExitCode _initAndListen(int listenPort) {
     auto runner = makePeriodicRunner(serviceContext);
     runner->startup();
     serviceContext->setPeriodicRunner(std::move(runner));
+    FlowControl::set(serviceContext,
+                     stdx::make_unique<FlowControl>(
+                         serviceContext, repl::ReplicationCoordinator::get(serviceContext)));
 
     initializeStorageEngine(serviceContext, StorageEngineInitFlags::kNone);
 
@@ -855,7 +860,7 @@ MONGO_INITIALIZER_GENERAL(setSSLManagerType, MONGO_NO_PREREQUISITES, ("SSLManage
 
 // NOTE: This function may be called at any time after registerShutdownTask is called below. It
 // must not depend on the prior execution of mongo initializers or the existence of threads.
-void shutdownTask() {
+void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
     // This client initiation pattern is only to be used here, with plans to eliminate this pattern
     // down the line.
     if (!haveClient())
@@ -863,6 +868,29 @@ void shutdownTask() {
 
     auto const client = Client::getCurrent();
     auto const serviceContext = client->getServiceContext();
+
+    // If we don't have shutdownArgs, we're shutting down from a signal, or other clean shutdown
+    // path.
+    //
+    // In that case, do a default step down, still shutting down if stepDown fails.
+    if (auto replCoord = repl::ReplicationCoordinator::get(serviceContext);
+        replCoord && !shutdownArgs.isUserInitiated) {
+        replCoord->enterTerminalShutdown();
+        ServiceContext::UniqueOperationContext uniqueOpCtx;
+        OperationContext* opCtx = client->getOperationContext();
+        if (!opCtx) {
+            uniqueOpCtx = client->makeOperationContext();
+            opCtx = uniqueOpCtx.get();
+        }
+
+        try {
+            replCoord->stepDown(opCtx, false /* force */, Seconds(10), Seconds(120));
+        } catch (const ExceptionFor<ErrorCodes::NotMaster>&) {
+            // ignore not master errors
+        } catch (const DBException& e) {
+            log() << "Failed to stepDown in non-command initiated shutdown path " << e.toString();
+        }
+    }
 
     // Terminate the balancer thread so it doesn't leak memory.
     if (auto balancer = Balancer::get(serviceContext)) {

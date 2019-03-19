@@ -35,6 +35,7 @@
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/timestamp.h"
+#include "mongo/db/repl/member_data.h"
 #include "mongo/db/repl/member_state.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/sync_source_selector.h"
@@ -109,6 +110,15 @@ public:
      * initialization they need.
      */
     virtual void startup(OperationContext* opCtx) = 0;
+
+    /**
+     * Start terminal shutdown.  This causes the topology coordinator to refuse to vote in any
+     * further elections.  This should only be called from global shutdown after we've passed the
+     * point of no return.
+     *
+     * This should be called once we are sure to call shutdown().
+     */
+    virtual void enterTerminalShutdown() = 0;
 
     /**
      * Does whatever cleanup is required to stop replication, including instructing the other
@@ -724,6 +734,12 @@ public:
      * operation in their oplogs.  This implies such ops will never be rolled back.
      */
     virtual OpTime getLastCommittedOpTime() const = 0;
+
+    /**
+     * Returns a list of objects that contain this node's knowledge of the state of the members of
+     * the replica set.
+     */
+    virtual std::vector<MemberData> getMemberData() const = 0;
 
     /*
     * Handles an incoming replSetRequestVotes command.

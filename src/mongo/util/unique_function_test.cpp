@@ -31,9 +31,11 @@
 
 #include "mongo/util/functional.h"
 
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -94,6 +96,16 @@ TEST(UniqueFunctionTest, checkUniquePtrAbility) {
 
     ASSERT_TRUE((std::is_constructible<dtor_type, dtor_type&&>::value));
     ASSERT_TRUE((std::is_constructible<ptr_type, ptr_type&&>::value));
+
+    std::vector<ptr_type> v;
+
+    // This line is a syntax compile-only test case for a projected common use case of
+    // `unique_function` objects `std::unique_ptr` deleters.  This is the first case for which we
+    // noticed a problem with `unique_function`'s ctors using gcc8, so we're capturing this
+    // syntactic usage in this test.
+    std::shuffle(begin(v), end(v), std::random_device{});
+
+    ASSERT_TRUE(v.empty());
 }
 
 template <int channel>

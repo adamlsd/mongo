@@ -87,7 +87,12 @@ public:
     // `void *` accepting function object.  This will permit reusing the core impl object when
     // converting between related function types, such as
     // `int (std::string)` -> `void (const char *)`
-    template <typename Functor>
+    template <typename Functor
+ //       ,typename= std::enable_if_t<!std::is_same_v<Functor, unique_function>>
+  //      ,typename= std::enable_if_t<!std::is_same_v<std::decay_t<Functor>, unique_function>>
+   //     ,typename= std::enable_if_t<std::is_move_constructible_v<Functor>>
+    //    typename= std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value>
+>
     /* implicit */
     unique_function(
         Functor&& functor,
@@ -106,6 +111,8 @@ public:
         //
         // NOTE: They must be concrete parameters not template parameters to work around bugs in
         // some compilers that we presently use.
+        std::enable_if_t<!std::is_same<Functor, unique_function>::value, TagType> =
+            makeTag(),
         std::enable_if_t<!std::is_same<std::decay_t<Functor>, unique_function>::value, TagType> =
             makeTag(),
         std::enable_if_t<std::is_move_constructible<Functor>::value, TagType> = makeTag(),
@@ -167,6 +174,23 @@ private:
             explicit SpecificImpl(Functor&& func) : f(std::forward<Functor>(func)) {}
 
             RetType call(Args&&... args) override {
+				class RecursionGuard
+				{
+					private:
+						int &depth_;
+
+					public:
+						explicit
+						RecursionGuard( int &i_depth ) : depth_( i_depth ) {}
+						~RecursionGuard() { --this->depth_; }
+						int depth() const { return this->depth_; }
+					
+				};
+				thread_local int depth= 0;
+
+				RecursionGuard recursion( depth );
+				assert( recursion.depth() < 2 );
+
                 return callRegularVoid(std::is_void<RetType>(), f, std::forward<Args>(args)...);
             }
 

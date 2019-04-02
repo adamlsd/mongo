@@ -27,23 +27,24 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/platform/basic.h"
 
-/**
- * Instruct the compiler not to create default copy constructor and assignment operator
- * for class "CLASS".  Must be the _first_ or _last_ line of the class declaration.  Prefer
- * to use it as the first line.
- *
- * If you use this macro and wish to make the class movable, you must define the move assignment
- * operator and move constructor.
- *
- * Usage:
- *    class Foo {
- *        MONGO_DISALLOW_COPYING(Foo);
- *    public:
- *        ...
- *    };
- */
-#define MONGO_DISALLOW_COPYING(CLASS) \
-    CLASS(const CLASS&) = delete;     \
-    CLASS& operator=(const CLASS&) = delete
+#include "mongo/db/s/transaction_coordinator_document_gen.h"
+#include "mongo/unittest/unittest.h"
+
+namespace mongo {
+namespace txn {
+namespace {
+
+TEST(CoordinatorCommitDecisionTest, SerializeNoCommitTimestamp) {
+    CoordinatorCommitDecision decision(CommitDecision::kCommit);
+    auto obj = decision.toBSON();
+
+    ASSERT_BSONOBJ_EQ(BSON("decision"
+                           << "commit"),
+                      obj);
+}
+
+}  // namespace
+}  // namespace txn
+}  // namespace mongo

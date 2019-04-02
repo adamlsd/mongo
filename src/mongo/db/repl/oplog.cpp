@@ -122,7 +122,8 @@ MONGO_FAIL_POINT_DEFINE(hangBeforeLogOpAdvancesLastApplied);
  * This structure contains per-service-context state related to the oplog.
  */
 struct LocalOplogInfo {
-    MONGO_DISALLOW_COPYING(LocalOplogInfo);
+    LocalOplogInfo(const LocalOplogInfo&) = delete;
+    LocalOplogInfo& operator=(const LocalOplogInfo&) = delete;
     LocalOplogInfo() = default;
 
     // Name of the oplog collection.
@@ -2092,7 +2093,7 @@ void initTimestampFromOplog(OperationContext* opCtx, const std::string& oplogNS)
     }
 }
 
-void oplogCheckCloseDatabase(OperationContext* opCtx, Database* db) {
+void oplogCheckCloseDatabase(OperationContext* opCtx, const Database* db) {
     invariant(opCtx->lockState()->isW());
     if (db->name() == "local") {
         localOplogInfo(opCtx->getServiceContext()).oplog = nullptr;

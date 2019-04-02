@@ -323,7 +323,13 @@ private:
     void _allowIndexBuildsOnDatabase(StringData dbName);
     void _allowIndexBuildsOnCollection(const UUID& collectionUUID);
 
-private:
+    /**
+     * Updates CurOp's 'opDescription' field with the current state of this index build.
+     */
+    void _updateCurOpOpDescription(OperationContext* opCtx,
+                                   const NamespaceString& nss,
+                                   const std::vector<BSONObj>& indexSpecs) const;
+
     /**
      * Registers an index build so that the rest of the system can discover it.
      *
@@ -458,7 +464,8 @@ protected:
  * builds should be scheduled.
  */
 class ScopedStopNewDatabaseIndexBuilds {
-    MONGO_DISALLOW_COPYING(ScopedStopNewDatabaseIndexBuilds);
+    ScopedStopNewDatabaseIndexBuilds(const ScopedStopNewDatabaseIndexBuilds&) = delete;
+    ScopedStopNewDatabaseIndexBuilds& operator=(const ScopedStopNewDatabaseIndexBuilds&) = delete;
 
 public:
     /**
@@ -488,7 +495,9 @@ private:
  * builds should be scheduled.
  */
 class ScopedStopNewCollectionIndexBuilds {
-    MONGO_DISALLOW_COPYING(ScopedStopNewCollectionIndexBuilds);
+    ScopedStopNewCollectionIndexBuilds(const ScopedStopNewCollectionIndexBuilds&) = delete;
+    ScopedStopNewCollectionIndexBuilds& operator=(const ScopedStopNewCollectionIndexBuilds&) =
+        delete;
 
 public:
     /**

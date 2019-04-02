@@ -33,7 +33,6 @@
 #include <iostream>
 #include <map>
 
-#include "mongo/base/disallow_copying.h"
 #include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/logical_session_id.h"
@@ -50,6 +49,7 @@
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/transaction_metrics_observer.h"
+#include "mongo/idl/mutable_observer_registry.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/concurrency/with_lock.h"
@@ -91,7 +91,8 @@ enum class TerminationCause {
  * the comments below for more information.
  */
 class TransactionParticipant {
-    MONGO_DISALLOW_COPYING(TransactionParticipant);
+    TransactionParticipant(const TransactionParticipant&) = delete;
+    TransactionParticipant& operator=(const TransactionParticipant&) = delete;
 
     struct PrivateState;
     struct ObservableState;
@@ -112,7 +113,8 @@ class TransactionParticipant {
             kCommittingWithPrepare = 1 << 4,
             kCommitted = 1 << 5,
             kAbortedWithoutPrepare = 1 << 6,
-            kAbortedWithPrepare = 1 << 7
+            kAbortedWithPrepare = 1 << 7,
+            kExecutedRetryableWrite = 1 << 8,
         };
 
         using StateSet = int;
@@ -161,6 +163,14 @@ class TransactionParticipant {
             return _state == kAbortedWithPrepare || _state == kAbortedWithoutPrepare;
         }
 
+        bool hasExecutedRetryableWrite() const {
+            return _state == kExecutedRetryableWrite;
+        }
+
+        bool isInRetryableWriteMode() const {
+            return _state == kNone || _state == kExecutedRetryableWrite;
+        }
+
         std::string toString() const {
             return toString(_state);
         }
@@ -174,6 +184,8 @@ class TransactionParticipant {
     };
 
 public:
+    static inline MutableObeserverRegistry<int32_t> observeTransactionLifetimeLimitSeconds;
+
     /**
      * Holds state for a snapshot read or multi-statement transaction in between network
      * operations.
@@ -621,10 +633,6 @@ public:
             return p().oldestOplogEntryOpTime;
         }
 
-        boost::optional<repl::OpTime> getFinishOpTimeForTest() const {
-            return p().finishOpTime;
-        }
-
         const Locker* getTxnResourceStashLockerForTest() const {
             invariant(o().txnResourceStash);
             return o().txnResourceStash->locker();
@@ -903,9 +911,6 @@ private:
 
         // Tracks the OpTime of the first oplog entry written by this TransactionParticipant.
         boost::optional<repl::OpTime> oldestOplogEntryOpTime;
-
-        // Tracks the OpTime of the abort/commit oplog entry associated with this transaction.
-        boost::optional<repl::OpTime> finishOpTime;
 
         //
         // Retryable writes state

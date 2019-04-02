@@ -50,7 +50,8 @@ namespace repl {
  * into dbtests.
  */
 class ReplicationCoordinatorMock : public ReplicationCoordinator {
-    MONGO_DISALLOW_COPYING(ReplicationCoordinatorMock);
+    ReplicationCoordinatorMock(const ReplicationCoordinatorMock&) = delete;
+    ReplicationCoordinatorMock& operator=(const ReplicationCoordinatorMock&) = delete;
 
 public:
     ReplicationCoordinatorMock(ServiceContext* service, const ReplSettings& settings);
@@ -188,7 +189,7 @@ public:
 
     virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata) override;
 
-    virtual void advanceCommitPoint(const OpTime& committedOptime) override;
+    virtual void advanceCommitPoint(const OpTime& committedOptime, bool fromSyncSource) override;
 
     virtual void cancelAndRescheduleElectionTimeout() override;
 

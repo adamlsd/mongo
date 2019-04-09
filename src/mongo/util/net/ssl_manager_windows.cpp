@@ -235,6 +235,12 @@ StatusWith<stdx::unordered_set<RoleName>> parsePeerRoles(PCCERT_CONTEXT cert) {
                        reinterpret_cast<char*>(extension->Value.pbData) + extension->Value.cbData));
 }
 
+namespace
+{
+    // TODO
+    boost::optional<std::string> getSNIServerName_impl() { return boost::none; }
+}
+
 /**
  * Manage state for a SSL Connection. Used by the Socket class.
  */
@@ -251,8 +257,7 @@ public:
     ~SSLConnectionWindows();
 
     std::string getSNIServerName() const final {
-        // TODO
-        return "";
+        return getSNIServerName_impl().value_or( "" );
     };
 };
 
@@ -1806,7 +1811,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     if (remoteHost.empty()) {
         stdx::unordered_set<RoleName> peerCertificateRoles = uassertStatusOK(parsePeerRoles(cert));
 
-        return SSLPeerInfo(peerSubjectName, std::move(peerCertificateRoles));
+        return SSLPeerInfo(peerSubjectName, getSNIServerName_impl(), std::move(peerCertificateRoles));
     } else {
         return SSLPeerInfo(peerSubjectName);
     }

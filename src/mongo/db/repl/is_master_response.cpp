@@ -64,6 +64,8 @@ const std::string kLastWriteDateFieldName = "lastWriteDate";
 const std::string kLastMajorityWriteOpTimeFieldName = "majorityOpTime";
 const std::string kLastMajorityWriteDateFieldName = "majorityWriteDate";
 const std::string kLastWriteFieldName = "lastWrite";
+const std::string kAltHostsFieldName = "altHosts";
+
 
 // field name constants that don't directly correspond to member variables
 const std::string kInfoFieldName = "info";
@@ -163,10 +165,8 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
         builder->appendIntOrLL(kSlaveDelayFieldName, durationCount<Seconds>(_slaveDelay));
     if (_tagsSet) {
         BSONObjBuilder tags(builder->subobjStart(kTagsFieldName));
-        for (stdx::unordered_map<std::string, std::string>::const_iterator it = _tags.begin();
-             it != _tags.end();
-             ++it) {
-            tags.append(it->first, it->second);
+        for (auto &tag: _tags){
+            tags.append(tag.first, tag.second);
         }
     }
     invariant(_meSet);
@@ -183,6 +183,25 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
             lastWrite.append(kLastMajorityWriteOpTimeFieldName,
                              _lastMajorityWrite->opTime.toBSON());
             lastWrite.appendTimeT(kLastMajorityWriteDateFieldName, _lastMajorityWrite->value);
+        }
+    }
+
+    {
+        BSONObjBuilder alts(builder->subobjStart(kAltHostsFieldName));
+        for( const auto &host: _altHosts ) {
+            BSONObjBuilder horizon(alts.subobjStart(host.first));
+            horizon.append( "primary", host.first );
+
+            auto stringifyVector= []( const auto &v ) {
+                auto stringifyElement= []( const auto &e ) { return e.toString(); };
+                std::vector< std::string > rv;
+                std::transform( begin( v ), end( v ),
+                    back_inserter( rv ), stringifyElement );
+                return rv;
+            };
+            horizon.append( "hosts", stringifyVector( host.second.hosts ) );
+            horizon.append( "passives", stringifyVector( host.second.passives ) );
+            horizon.append( "arbiters", stringifyVector( host.second.passives ) );
         }
     }
 }

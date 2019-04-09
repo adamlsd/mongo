@@ -1734,6 +1734,14 @@ TopologyCoordinator::fillIsMasterForReplSet( IsMasterResponse*const response,
         return;
     }
 
+    response->setReplSetName(_rsConfig.getReplSetName());
+    if (myState.removed()) {
+        response->markAsNoConfig();
+        return;
+    }
+
+    invariant( !_rsConfig.members().empty() );
+
     const auto &self= _rsConfig.members()[ _selfIndex ];
 
     const auto &forwardMapping= self.getHorizonMappings();
@@ -1757,12 +1765,6 @@ TopologyCoordinator::fillIsMasterForReplSet( IsMasterResponse*const response,
         } else {
             response->addPassive(member.getHostAndPort( horizon ), member.getHorizonMappings());
         }
-    }
-
-    response->setReplSetName(_rsConfig.getReplSetName());
-    if (myState.removed()) {
-        response->markAsNoConfig();
-        return;
     }
 
     response->setReplSetVersion(_rsConfig.getConfigVersion());

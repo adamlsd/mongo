@@ -44,6 +44,18 @@
 #include "mongo/util/log.h"
 
 namespace {
+TEST( UniqueFunctionTest, checkSelfAssignThenCall )
+{
+    using mongo::unique_function;
+    unique_function< void () > f2= []{};
+    unique_function< void () > f;
+
+    f= std::move( f2 );
+
+    f();
+}
+
+
 template <typename T, typename = void>
 struct sfinae_check_recursion_disallowed : std::true_type {};
 

@@ -115,10 +115,33 @@ public:
             makeTag(),
         std::enable_if_t<!std::is_same<std::decay_t<Functor>, unique_function>::value, TagType> =
             makeTag(),
+	#if 0
         std::enable_if_t<std::is_move_constructible<Functor>::value, TagType> = makeTag(),
+	#endif
         std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value, TagType> =
-            makeTag())
+            makeTag(),
+		
+		TagType = makeTag()
+)
         : impl(makeImpl(std::forward<Functor>(functor))) {}
+
+#if 0
+	template< typename Functor >
+	unique_function( std::function< Functor > func,
+        std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value, TagType> =
+            makeTag(),
+		TagType= makeTag()
+ )
+		: impl( makeImpl( std::move( func ) ) ) {}
+
+	template< typename Functor >
+	unique_function( unique_function< Functor > func,
+        std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value, TagType> =
+            makeTag(),
+		TagType= makeTag()
+)
+		: impl( makeImpl( std::move( func ) ) ) {}
+#endif
 
     unique_function(std::nullptr_t) noexcept {}
 

@@ -207,31 +207,37 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         std::size_t horizonCount= 0;
         using std::begin;
         using std::end;
+        auto convert= 
+        [&horizonCount]( auto &&horizon )
+        {
+            using ReturnType= decltype( _horizonForward )::value_type;
+            ++horizonCount;
+            const auto horizonName= horizon.fieldName();
+
+            if( horizon.type() != String ) {uasserted( ErrorCodes::TypeMismatch,
+                      str::stream() << "horizons." << horizonName
+                                    << " field has non-object value of type "
+                                    << typeName(horizon.type()));}
+
+            std::cerr << "Adding forward mapping for horizon member " << horizonName
+                    << " to address " << HostAndPort( horizon.valueStringData() ) << std::endl;
+            return ReturnType{ horizonName, HostAndPort( horizon.valueStringData() ) };
+        };
         std::transform( begin( horizonsObject ), end( horizonsObject ),
                 inserter( _horizonForward, end( _horizonForward ) ),
-                [&horizonCount]( auto &&horizon ) -> decltype( _horizonForward )::value_type
-                {
-                    ++horizonCount;
-                    const auto horizonName= horizon.fieldName();
+                convert );
 
-                    if( horizon.type() != String ) {uasserted( ErrorCodes::TypeMismatch,
-                              str::stream() << "horizons." << horizonName
-                                            << " field has non-object value of type "
-                                            << typeName(horizon.type()));}
-
-                    std::cerr << "Adding forward mapping for horizon member " << horizonName
-                            << " to address " << HostAndPort( horizon.valueStringData() ) << std::endl;
-                    return { horizonName, HostAndPort( horizon.valueStringData() ) };
-                } );
-        if( _horizonForward.size() < horizonCount ) uasserted( ErrorCodes::BadValue, "Duplicate horizon name found." );
+        if( _horizonForward.size() < horizonCount )
+        uasserted( ErrorCodes::BadValue, "Duplicate horizon name found." );
 
         std::transform( begin( _horizonForward ), end( _horizonForward ),
                 inserter( _horizonReverse, end(_horizonReverse ) ),
-                []( auto &&forwardHorizon ) -> decltype( _horizonReverse )::value_type
+                []( auto &&forwardHorizon )
                 {
+                    using ReturnType= decltype( _horizonReverse )::value_type;
                     std::cerr << "Adding reverse mapping for horizon member " << forwardHorizon.first
                             << " to address " << forwardHorizon.second << std::endl;
-                    return { forwardHorizon.second, forwardHorizon.first };
+                    return ReturnType{ forwardHorizon.second, forwardHorizon.first };
                 } );
 
         if( _horizonForward.size() != _horizonReverse.size() ) 

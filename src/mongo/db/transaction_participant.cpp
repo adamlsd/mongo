@@ -373,10 +373,10 @@ TransactionParticipant::getOldestActiveTimestamp(Timestamp stableTimestamp) {
             auto doc = record.get().data.toBson();
             auto txnRecord = SessionTxnRecord::parse(
                 IDLParserErrorContext("parse oldest active txn record"), doc);
-            if (txnRecord.getState() != DurableTxnStateEnum::kPrepared) {
+            if (txnRecord.getState() != DurableTxnStateEnum::kPrepared &&
+                txnRecord.getState() != DurableTxnStateEnum::kInProgress) {
                 continue;
             }
-
             // A prepared transaction must have a start timestamp.
             // TODO(SERVER-40013): Handle entries with state "prepared" and no "startTimestamp".
             invariant(txnRecord.getStartOpTime());
@@ -807,6 +807,17 @@ void TransactionParticipant::Participant::stashTransactionResources(OperationCon
     }
 }
 
+void TransactionParticipant::Participant::resetRetryableWriteState(OperationContext* opCtx) {
+    if (opCtx->getClient()->isInDirectClient()) {
+        return;
+    }
+    invariant(opCtx->getTxnNumber());
+    stdx::lock_guard<Client> lk(*opCtx->getClient());
+    if (o().txnState.isNone() && p().autoCommit == boost::none) {
+        _resetRetryableWriteState();
+    }
+}
+
 void TransactionParticipant::Participant::_releaseTransactionResourcesToOpCtx(
     OperationContext* opCtx) {
     // Transaction resources already exist for this transaction.  Transfer them from the
@@ -972,6 +983,28 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
         }
     });
 
+    auto& completedTransactionOperations = retrieveCompletedTransactionOperations(opCtx);
+
+    // Ensure that no transaction operations were done against temporary collections.
+    // Transactions should not operate on temporary collections because they are for internal use
+    // only and are deleted on both repl stepup and server startup.
+
+    // Create a set of collection UUIDs through which to iterate, so that we do not recheck the same
+    // collection multiple times: it is a costly check.
+    stdx::unordered_set<UUID, UUID::Hash> transactionOperationUuids;
+    for (const auto& transactionOp : completedTransactionOperations) {
+        transactionOperationUuids.insert(transactionOp.getUuid().get());
+    }
+    for (const auto& uuid : transactionOperationUuids) {
+        auto collection = UUIDCatalog::get(opCtx).lookupCollectionByUUID(uuid);
+        uassert(ErrorCodes::OperationNotSupportedInTransaction,
+                str::stream() << "prepareTransaction failed because one of the transaction "
+                                 "operations was done against a temporary collection '"
+                              << collection->ns()
+                              << "'.",
+                !collection->isTemporary(opCtx));
+    }
+
     boost::optional<OplogSlotReserver> oplogSlotReserver;
     OplogSlot prepareOplogSlot;
     {
@@ -984,7 +1017,7 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
     std::vector<OplogSlot> reservedSlots;
     if (prepareOptime) {
         // On secondary, we just prepare the transaction and discard the buffered ops.
-        prepareOplogSlot = OplogSlot(*prepareOptime, 0);
+        prepareOplogSlot = OplogSlot(*prepareOptime);
         stdx::lock_guard<Client> lk(*opCtx->getClient());
         o(lk).prepareOpTime = *prepareOptime;
         reservedSlots.push_back(prepareOplogSlot);
@@ -1012,21 +1045,21 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
 
         {
             stdx::lock_guard<Client> lk(*opCtx->getClient());
-            o(lk).prepareOpTime = prepareOplogSlot.opTime;
+            o(lk).prepareOpTime = prepareOplogSlot;
         }
 
         if (MONGO_FAIL_POINT(hangAfterReservingPrepareTimestamp)) {
             // This log output is used in js tests so please leave it.
             log() << "transaction - hangAfterReservingPrepareTimestamp fail point "
                      "enabled. Blocking until fail point is disabled. Prepare OpTime: "
-                  << prepareOplogSlot.opTime;
+                  << prepareOplogSlot;
             MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterReservingPrepareTimestamp);
         }
     }
-    opCtx->recoveryUnit()->setPrepareTimestamp(prepareOplogSlot.opTime.getTimestamp());
+    opCtx->recoveryUnit()->setPrepareTimestamp(prepareOplogSlot.getTimestamp());
     opCtx->getWriteUnitOfWork()->prepare();
     opCtx->getServiceContext()->getOpObserver()->onTransactionPrepare(
-        opCtx, reservedSlots, retrieveCompletedTransactionOperations(opCtx));
+        opCtx, reservedSlots, completedTransactionOperations);
 
     abortGuard.dismiss();
 
@@ -1035,7 +1068,7 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
                             << "been set to: "
                             << p().oldestOplogEntryOpTime->toString());
     // Keep track of the OpTime from the first oplog entry written by this transaction.
-    p().oldestOplogEntryOpTime = prepareOplogSlot.opTime;
+    p().oldestOplogEntryOpTime = prepareOplogSlot;
 
     // Maintain the OpTime of the oldest active oplog entry for this transaction. We currently
     // only write an oplog entry for an in progress transaction when it is in the prepare state
@@ -1059,7 +1092,7 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
     const bool unlocked = opCtx->lockState()->unlockRSTLforPrepare();
     invariant(unlocked);
 
-    return prepareOplogSlot.opTime.getTimestamp();
+    return prepareOplogSlot.getTimestamp();
 }
 
 void TransactionParticipant::Participant::addTransactionOperation(
@@ -1071,7 +1104,7 @@ void TransactionParticipant::Participant::addTransactionOperation(
     invariant(p().autoCommit && !*p().autoCommit && o().activeTxnNumber != kUninitializedTxnNumber);
     invariant(opCtx->lockState()->inAWriteUnitOfWork());
     p().transactionOperations.push_back(operation);
-    p().transactionOperationBytes += repl::OplogEntry::getReplOperationSize(operation);
+    p().transactionOperationBytes += repl::OplogEntry::getDurableReplOperationSize(operation);
     // _transactionOperationBytes is based on the in-memory size of the operation.  With overhead,
     // we expect the BSON size of the operation to be larger, so it's possible to make a transaction
     // just a bit too large and have it fail only in the commit.  It's still useful to fail early
@@ -1212,12 +1245,12 @@ void TransactionParticipant::Participant::commitPreparedTransaction(
             invariant(!commitOplogEntryOpTime);
             oplogSlotReserver.emplace(opCtx);
             commitOplogSlot = oplogSlotReserver->getLastSlot();
-            invariant(commitOplogSlot.opTime.getTimestamp() >= commitTimestamp,
+            invariant(commitOplogSlot.getTimestamp() >= commitTimestamp,
                       str::stream() << "Commit oplog entry must be greater than or equal to commit "
                                        "timestamp due to causal consistency. commit timestamp: "
                                     << commitTimestamp.toBSON()
                                     << ", commit oplog entry optime: "
-                                    << commitOplogSlot.opTime.toBSON());
+                                    << commitOplogSlot.toBSON());
         } else {
             // We always expect a non-null commitOplogEntryOpTime to be passed in on secondaries
             // in order to set the finishOpTime.
@@ -1227,7 +1260,7 @@ void TransactionParticipant::Participant::commitPreparedTransaction(
         // If commitOplogEntryOpTime is a nullopt, then we grab the OpTime from the commitOplogSlot
         // which will only be set if we are primary. Otherwise, the commitOplogEntryOpTime must have
         // been passed in during secondary oplog application.
-        auto commitOplogSlotOpTime = commitOplogEntryOpTime.value_or(commitOplogSlot.opTime);
+        auto commitOplogSlotOpTime = commitOplogEntryOpTime.value_or(commitOplogSlot);
         opCtx->recoveryUnit()->setDurableTimestamp(commitOplogSlotOpTime.getTimestamp());
 
         _commitStorageTransaction(opCtx);
@@ -1772,8 +1805,10 @@ void TransactionParticipant::Participant::_logSlowTransaction(
     // Only log multi-document transactions.
     if (!o().txnState.isInRetryableWriteMode()) {
         const auto tickSource = opCtx->getServiceContext()->getTickSource();
-        // Log the transaction if its duration is longer than the slowMS command threshold.
-        if (o().transactionMetricsObserver.getSingleTransactionStats().getDuration(
+        // Log the transaction if log message verbosity for transaction component is >= 1 or its
+        // duration is longer than the slowMS command threshold.
+        if (shouldLog(logger::LogComponent::kTransaction, logger::LogSeverity::Debug(1)) ||
+            o().transactionMetricsObserver.getSingleTransactionStats().getDuration(
                 tickSource, tickSource->getTicks()) > Milliseconds(serverGlobalParams.slowMS)) {
             log(logger::LogComponent::kTransaction)
                 << "transaction "

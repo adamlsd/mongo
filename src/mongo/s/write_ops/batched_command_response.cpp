@@ -36,14 +36,14 @@
 #include "mongo/db/field_parser.h"
 #include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
 using std::unique_ptr;
 using std::string;
 
-using mongoutils::str::stream;
+using str::stream;
 
 const BSONField<long long> BatchedCommandResponse::n("n", 0);
 const BSONField<long long> BatchedCommandResponse::nModified("nModified", 0);
@@ -53,6 +53,7 @@ const BSONField<OID> BatchedCommandResponse::electionId("electionId");
 const BSONField<std::vector<WriteErrorDetail*>> BatchedCommandResponse::writeErrors("writeErrors");
 const BSONField<WriteConcernErrorDetail*> BatchedCommandResponse::writeConcernError(
     "writeConcernError");
+const BSONField<std::vector<std::string>> BatchedCommandResponse::errorLabels("errorLabels");
 
 BatchedCommandResponse::BatchedCommandResponse() {
     clear();
@@ -227,12 +228,17 @@ bool BatchedCommandResponse::parseBSON(const BSONObj& source, string* errMsg) {
     if (fieldState == FieldParser::FIELD_INVALID)
         return false;
     _writeErrorDetails.reset(tempErrDetails);
-
     WriteConcernErrorDetail* wcError = NULL;
     fieldState = FieldParser::extract(source, writeConcernError, &wcError, errMsg);
     if (fieldState == FieldParser::FIELD_INVALID)
         return false;
     _wcErrDetails.reset(wcError);
+
+    std::vector<std::string> tempErrorLabels;
+    fieldState = FieldParser::extract(source, errorLabels, &tempErrorLabels, errMsg);
+    if (fieldState == FieldParser::FIELD_INVALID)
+        return false;
+    _errorLabels = std::move(tempErrorLabels);
 
     return true;
 }
@@ -493,6 +499,14 @@ Status BatchedCommandResponse::toStatus() const {
     }
 
     return Status::OK();
+}
+
+bool BatchedCommandResponse::isErrorLabelsSet() const {
+    return !_errorLabels.empty();
+}
+
+const std::vector<std::string>& BatchedCommandResponse::getErrorLabels() const {
+    return _errorLabels;
 }
 
 }  // namespace mongo

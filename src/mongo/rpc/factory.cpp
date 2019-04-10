@@ -40,7 +40,7 @@
 #include "mongo/rpc/protocol.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace rpc {
@@ -71,7 +71,7 @@ std::unique_ptr<ReplyInterface> makeReply(const Message* unownedMessage) {
 OpMsgRequest opMsgRequestFromAnyProtocol(const Message& unownedMessage) {
     switch (unownedMessage.operation()) {
         case mongo::dbMsg:
-            return OpMsgRequest::parse(unownedMessage);
+            return OpMsgRequest::parseOwned(unownedMessage);
         case mongo::dbQuery:
             return opMsgRequestFromLegacyRequest(unownedMessage);
         default:

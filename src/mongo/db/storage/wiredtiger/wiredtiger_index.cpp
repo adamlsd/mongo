@@ -55,7 +55,7 @@
 #include "mongo/util/fail_point.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 #define TRACING_ENABLED 0
 
@@ -198,7 +198,7 @@ StatusWith<std::string> WiredTigerIndex::generateCreateString(const std::string&
 
     ss << "block_compressor=" << wiredTigerGlobalOptions.indexBlockCompressor << ",";
     ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())
-              ->getTableCreateConfig(desc.parentNS());
+              ->getTableCreateConfig(desc.parentNS().ns());
     ss << sysIndexConfig << ",";
     ss << collIndexConfig << ",";
 

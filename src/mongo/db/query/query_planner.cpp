@@ -79,7 +79,7 @@ static bool is2DIndex(const BSONObj& pattern) {
     BSONObjIterator it(pattern);
     while (it.more()) {
         BSONElement e = it.next();
-        if (String == e.type() && str::equals("2d", e.valuestr())) {
+        if (String == e.type() && (e.valueStringData() == "2d")) {
             return true;
         }
     }
@@ -87,7 +87,7 @@ static bool is2DIndex(const BSONObj& pattern) {
 }
 
 string optionString(size_t options) {
-    mongoutils::str::stream ss;
+    str::stream ss;
 
     if (QueryPlannerParams::DEFAULT == options) {
         ss << "DEFAULT ";
@@ -175,7 +175,7 @@ static bool indexCompatibleMaxMin(const BSONObj& obj,
         // Field names must match and be in the same order.
         BSONElement kpElt = kpIt.next();
         BSONElement objElt = objIt.next();
-        if (!mongoutils::str::equals(kpElt.fieldName(), objElt.fieldName())) {
+        if (kpElt.fieldNameStringData() != objElt.fieldNameStringData()) {
             return false;
         }
 
@@ -308,7 +308,7 @@ StatusWith<std::unique_ptr<PlanCacheIndexTree>> QueryPlanner::cacheDataFromTagge
         taggedTree->getTag()->getType() == MatchExpression::TagData::Type::IndexTag) {
         IndexTag* itag = static_cast<IndexTag*>(taggedTree->getTag());
         if (itag->index >= relevantIndices.size()) {
-            mongoutils::str::stream ss;
+            str::stream ss;
             ss << "Index number is " << itag->index << " but there are only "
                << relevantIndices.size() << " relevant indices.";
             return Status(ErrorCodes::BadValue, ss);
@@ -384,7 +384,7 @@ Status QueryPlanner::tagAccordingToCache(MatchExpression* filter,
     verify(NULL == filter->getTag());
 
     if (filter->numChildren() != indexTree->children.size()) {
-        mongoutils::str::stream ss;
+        str::stream ss;
         ss << "Cache topology and query did not match: "
            << "query has " << filter->numChildren() << " children "
            << "and cache has " << indexTree->children.size() << " children.";
@@ -419,7 +419,7 @@ Status QueryPlanner::tagAccordingToCache(MatchExpression* filter,
     if (indexTree->entry.get()) {
         const auto got = indexMap.find(indexTree->entry->identifier);
         if (got == indexMap.end()) {
-            mongoutils::str::stream ss;
+            str::stream ss;
             ss << "Did not find index with name: " << indexTree->entry->identifier.catalogName;
             return Status(ErrorCodes::BadValue, ss);
         }

@@ -149,50 +149,7 @@ void ServerTransactionsMetrics::decrementCurrentPrepared() {
     _currentPrepared.fetchAndSubtract(1);
 }
 
-
-boost::optional<repl::OpTime> ServerTransactionsMetrics::getOldestActiveOpTime() const {
-    stdx::lock_guard<stdx::mutex> lm(_mutex);
-    if (_oldestActiveOplogEntryOpTimes.empty()) {
-        return boost::none;
-    }
-    return *(_oldestActiveOplogEntryOpTimes.begin());
-}
-
-void ServerTransactionsMetrics::addActiveOpTime(repl::OpTime oldestOplogEntryOpTime) {
-    stdx::lock_guard<stdx::mutex> lm(_mutex);
-    auto ret = _oldestActiveOplogEntryOpTimes.insert(oldestOplogEntryOpTime);
-    // If ret.second is false, the OpTime we tried to insert already existed.
-    invariant(ret.second,
-              str::stream() << "This oplog entry OpTime already exists."
-                            << "oldestOplogEntryOpTime: "
-                            << oldestOplogEntryOpTime.toString());
-}
-
-void ServerTransactionsMetrics::removeActiveOpTime(repl::OpTime oldestOplogEntryOpTime) {
-    stdx::lock_guard<stdx::mutex> lm(_mutex);
-    auto it = _oldestActiveOplogEntryOpTimes.find(oldestOplogEntryOpTime);
-    invariant(it != _oldestActiveOplogEntryOpTimes.end(),
-              str::stream() << "This oplog entry OpTime does not exist "
-                            << "or has already been removed."
-                            << "oldestOplogEntryOpTime: "
-                            << oldestOplogEntryOpTime.toString());
-    _oldestActiveOplogEntryOpTimes.erase(it);
-}
-
-unsigned int ServerTransactionsMetrics::getTotalActiveOpTimes() const {
-    stdx::lock_guard<stdx::mutex> lm(_mutex);
-    return _oldestActiveOplogEntryOpTimes.size();
-}
-
-Timestamp ServerTransactionsMetrics::_getOldestOpenUnpreparedReadTimestamp(
-    OperationContext* opCtx) {
-    // The history is not pinned in memory once a transaction has been prepared since reads
-    // are no longer possible. Therefore, the timestamp returned by the storage engine refers
-    // to the oldest read timestamp for any open unprepared transaction.
-    return opCtx->getServiceContext()->getStorageEngine()->getOldestOpenReadTimestamp();
-}
-
-void ServerTransactionsMetrics::updateStats(TransactionsStats* stats, OperationContext* opCtx) {
+void ServerTransactionsMetrics::updateStats(TransactionsStats* stats) {
     stats->setCurrentActive(_currentActive.load());
     stats->setCurrentInactive(_currentInactive.load());
     stats->setCurrentOpen(_currentOpen.load());
@@ -203,13 +160,6 @@ void ServerTransactionsMetrics::updateStats(TransactionsStats* stats, OperationC
     stats->setTotalPreparedThenCommitted(_totalPreparedThenCommitted.load());
     stats->setTotalPreparedThenAborted(_totalPreparedThenAborted.load());
     stats->setCurrentPrepared(_currentPrepared.load());
-    stats->setOldestOpenUnpreparedReadTimestamp(
-        ServerTransactionsMetrics::_getOldestOpenUnpreparedReadTimestamp(opCtx));
-}
-
-void ServerTransactionsMetrics::clearOpTimes() {
-    stdx::lock_guard<stdx::mutex> lm(_mutex);
-    _oldestActiveOplogEntryOpTimes.clear();
 }
 
 namespace {
@@ -232,7 +182,7 @@ public:
         // lifecycle within a session. Both are assigned transaction numbers, and so both are often
         // referred to as “transactions”.
         RetryableWritesStats::get(opCtx)->updateStats(&stats);
-        ServerTransactionsMetrics::get(opCtx)->updateStats(&stats, opCtx);
+        ServerTransactionsMetrics::get(opCtx)->updateStats(&stats);
         return stats.toBSON();
     }
 

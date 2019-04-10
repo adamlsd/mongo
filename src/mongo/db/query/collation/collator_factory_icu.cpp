@@ -40,13 +40,13 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/query/collation/collator_interface_icu.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
 namespace {
 
-const char kFallbackLocaleName[] = "root";
+constexpr StringData kFallbackLocaleName = "root"_sd;
 
 // Helper methods for converting between ICU attributes and types used by CollationSpec.
 
@@ -646,13 +646,12 @@ Status validateLocaleID(const BSONObj& spec,
     // resulting icu::Locale name will not match the requested locale. In this case we return an
     // error to the user. In the error message to the user, we report the locale that ICU *would
     // have* used, which the application can supply as an alternative.
-    const char* collatorLocaleName = collatorLocale.getName();
-    if (StringData(originalID) != StringData(collatorLocaleName)) {
+    auto collatorLocaleName = StringData(collatorLocale.getName());
+    if (originalID != collatorLocaleName) {
         str::stream ss;
         ss << "Field '" << CollationSpec::kLocaleField << "' is invalid in: " << spec;
 
-        if (!str::equals(kFallbackLocaleName, collatorLocaleName) &&
-            !str::equals("", collatorLocaleName)) {
+        if ((collatorLocaleName != kFallbackLocaleName) && !collatorLocaleName.empty()) {
             ss << ". Did you mean '" << collatorLocaleName << "'?";
         }
 

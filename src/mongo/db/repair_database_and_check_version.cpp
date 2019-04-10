@@ -37,8 +37,8 @@
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database.h"
-#include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/commands/feature_compatibility_version_parser.h"
@@ -149,14 +149,43 @@ bool checkIdIndexExists(OperationContext* opCtx, const CollectionCatalogEntry* c
     return false;
 }
 
+Status buildMissingIdIndex(OperationContext* opCtx, Collection* collection) {
+    MultiIndexBlock indexer;
+    ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(opCtx, collection); });
+
+    const auto indexCatalog = collection->getIndexCatalog();
+    const auto idIndexSpec = indexCatalog->getDefaultIdIndexSpec();
+
+    auto swSpecs = indexer.init(opCtx, collection, idIndexSpec, MultiIndexBlock::kNoopOnInitFn);
+    if (!swSpecs.isOK()) {
+        return swSpecs.getStatus();
+    }
+
+    auto status = indexer.insertAllDocumentsInCollection(opCtx, collection);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    WriteUnitOfWork wuow(opCtx);
+    status = indexer.commit(
+        opCtx, collection, MultiIndexBlock::kNoopOnCreateEachFn, MultiIndexBlock::kNoopOnCommitFn);
+    wuow.commit();
+    return status;
+}
+
+
 /**
- * Checks that all replicated collections in the given list of 'dbNames' have UUIDs and an index on
- * the _id field. Returns a MustDowngrade error status if any do not satisfy these requirements.
+ * Checks that all collections in the given list of 'dbNames' have valid properties for this version
+ * of MongoDB.
  *
- * Additionally assigns UUIDs to any non-replicated collections that are missing UUIDs.
+ * This validates that all collections have UUIDs and an _id index. If a collection is missing an
+ * _id index, this function will build it.
+ *
+ * Returns a MustDowngrade error if any collections are missing UUIDs.
+ * Returns a MustDowngrade error if any index builds on the required _id field fail.
  */
-Status ensureAllCollectionsHaveUUIDs(OperationContext* opCtx,
-                                     const std::vector<std::string>& dbNames) {
+Status ensureCollectionProperties(OperationContext* opCtx,
+                                  const std::vector<std::string>& dbNames) {
     auto databaseHolder = DatabaseHolder::get(opCtx);
     auto downgradeError = Status{ErrorCodes::MustDowngrade, mustDowngradeErrorMsg};
 
@@ -172,19 +201,27 @@ Status ensureAllCollectionsHaveUUIDs(OperationContext* opCtx,
 
             // We expect all collections to have UUIDs in MongoDB 4.2
             if (!coll->uuid()) {
+                error() << "collection " << coll->ns() << " is missing a UUID";
                 return downgradeError;
             }
 
-            // All collections created since MongoDB 4.0 have _id indexes.
+            // All user-created replicated collections created since MongoDB 4.0 have _id indexes.
             auto requiresIndex = coll->requiresIdIndex() && coll->ns().isReplicated();
             auto catalogEntry = coll->getCatalogEntry();
             auto collOptions = catalogEntry->getCollectionOptions(opCtx);
             auto hasAutoIndexIdField = collOptions.autoIndexId == CollectionOptions::YES;
 
-            // If the autoIndexId field is not YES, the index may have been created later.
-            // Check the list of indexes to confirm index does not exist before returning an error.
+            // Even if the autoIndexId field is not YES, the collection may still have an _id index
+            // that was created manually by the user. Check the list of indexes to confirm index
+            // does not exist before attempting to build it or returning an error.
             if (requiresIndex && !hasAutoIndexIdField && !checkIdIndexExists(opCtx, catalogEntry)) {
-                return downgradeError;
+                log() << "collection " << coll->ns() << " is missing an _id index; building it now";
+                auto status = buildMissingIdIndex(opCtx, coll);
+                if (!status.isOK()) {
+                    error() << "could not build an _id index on collection " << coll->ns() << ": "
+                            << status;
+                    return downgradeError;
+                }
             }
         }
     }
@@ -229,17 +266,14 @@ void rebuildIndexes(OperationContext* opCtx, StorageEngine* storageEngine) {
         NamespaceString collNss(indexNamespace.first);
         const std::string& indexName = indexNamespace.second;
 
-        DatabaseCatalogEntry* dbce = storageEngine->getDatabaseCatalogEntry(opCtx, collNss.db());
-        invariant(dbce,
-                  str::stream() << "couldn't get database catalog entry for database "
-                                << collNss.db());
-        CollectionCatalogEntry* cce = dbce->getCollectionCatalogEntry(collNss.ns());
+        CollectionCatalogEntry* cce =
+            UUIDCatalog::get(opCtx).lookupCollectionCatalogEntryByNamespace(collNss);
         invariant(cce,
                   str::stream() << "couldn't get collection catalog entry for collection "
                                 << collNss.toString());
 
         auto swIndexSpecs = getIndexNameObjs(
-            opCtx, dbce, cce, [&indexName](const std::string& name) { return name == indexName; });
+            opCtx, cce, [&indexName](const std::string& name) { return name == indexName; });
         if (!swIndexSpecs.isOK() || swIndexSpecs.getValue().first.empty()) {
             fassert(40590,
                     {ErrorCodes::InternalError,
@@ -261,15 +295,14 @@ void rebuildIndexes(OperationContext* opCtx, StorageEngine* storageEngine) {
     for (const auto& entry : nsToIndexNameObjMap) {
         NamespaceString collNss(entry.first);
 
-        auto dbCatalogEntry = storageEngine->getDatabaseCatalogEntry(opCtx, collNss.db());
-        auto collCatalogEntry = dbCatalogEntry->getCollectionCatalogEntry(collNss.toString());
+        auto collCatalogEntry =
+            UUIDCatalog::get(opCtx).lookupCollectionCatalogEntryByNamespace(collNss);
         for (const auto& indexName : entry.second.first) {
             log() << "Rebuilding index. Collection: " << collNss << " Index: " << indexName;
         }
 
         std::vector<BSONObj> indexSpecs = entry.second.second;
-        fassert(40592,
-                rebuildIndexesOnCollection(opCtx, dbCatalogEntry, collCatalogEntry, indexSpecs));
+        fassert(40592, rebuildIndexesOnCollection(opCtx, collCatalogEntry, indexSpecs));
     }
 }
 
@@ -312,8 +345,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     auto const storageEngine = opCtx->getServiceContext()->getStorageEngine();
     Lock::GlobalWrite lk(opCtx);
 
-    std::vector<std::string> dbNames;
-    storageEngine->listDatabases(&dbNames);
+    std::vector<std::string> dbNames = storageEngine->listDatabases();
 
     // Rebuilding indexes must be done before a database can be opened, except when using repair,
     // which rebuilds all indexes when it is done.
@@ -325,7 +357,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         rebuildIndexes(opCtx, storageEngine);
     }
 
-    bool repairVerifiedAllCollectionsHaveUUIDs = false;
+    bool ensuredCollectionProperties = false;
 
     // Repair all databases first, so that we do not try to open them if they are in bad shape
     auto databaseHolder = DatabaseHolder::get(opCtx);
@@ -361,8 +393,8 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
 
         // All collections must have UUIDs before restoring the FCV document to a version that
         // requires UUIDs.
-        uassertStatusOK(ensureAllCollectionsHaveUUIDs(opCtx, dbNames));
-        repairVerifiedAllCollectionsHaveUUIDs = true;
+        uassertStatusOK(ensureCollectionProperties(opCtx, dbNames));
+        ensuredCollectionProperties = true;
 
         // Attempt to restore the featureCompatibilityVersion document if it is missing.
         NamespaceString fcvNSS(NamespaceString::kServerConfigurationNamespace);
@@ -379,9 +411,8 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         }
     }
 
-    // All collections must have UUIDs.
-    if (!repairVerifiedAllCollectionsHaveUUIDs) {
-        uassertStatusOK(ensureAllCollectionsHaveUUIDs(opCtx, dbNames));
+    if (!ensuredCollectionProperties) {
+        uassertStatusOK(ensureCollectionProperties(opCtx, dbNames));
     }
 
     if (!storageGlobalParams.readOnly) {
@@ -434,8 +465,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     bool nonLocalDatabases = false;
 
     // Refresh list of database names to include newly-created admin, if it exists.
-    dbNames.clear();
-    storageEngine->listDatabases(&dbNames);
+    dbNames = storageEngine->listDatabases();
     for (const auto& dbName : dbNames) {
         if (dbName != "local") {
             nonLocalDatabases = true;
@@ -447,7 +477,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
 
         // First thing after opening the database is to check for file compatibility,
         // otherwise we might crash if this is a deprecated format.
-        auto status = db->getDatabaseCatalogEntry()->currentFilesCompatible(opCtx);
+        auto status = storageEngine->currentFilesCompatible(opCtx);
         if (!status.isOK()) {
             if (status.code() == ErrorCodes::CanRepairToDowngrade) {
                 // Convert CanRepairToDowngrade statuses to MustUpgrade statuses to avoid logging a

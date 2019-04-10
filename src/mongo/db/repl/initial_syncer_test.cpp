@@ -64,8 +64,8 @@
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/fail_point_service.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 
 #include "mongo/unittest/barrier.h"
 #include "mongo/unittest/unittest.h"
@@ -581,7 +581,8 @@ OplogEntry makeOplogEntry(int t,
                       boost::none,                 // statement id
                       boost::none,   // optime of previous write within same transaction
                       boost::none,   // pre-image optime
-                      boost::none);  // post-image optime
+                      boost::none,   // post-image optime
+                      boost::none);  // prepare
 }
 
 BSONObj makeOplogEntryObj(int t,

@@ -35,7 +35,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/field_parser.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -67,15 +67,9 @@ constexpr int WriteConcernOptions::kNoWaiting;
 constexpr StringData WriteConcernOptions::kWriteConcernField;
 const char WriteConcernOptions::kMajority[] = "majority";
 
-// TODO (PM-1301): Remove once the stable Timestamp is allowed to advance past the oldest prepare
-// Timestamp.
-const char WriteConcernOptions::kInternalMajorityNoSnapshot[] = "internalMajorityNoSnapshot";
-
 const BSONObj WriteConcernOptions::Default = BSONObj();
 const BSONObj WriteConcernOptions::Acknowledged(BSON("w" << W_NORMAL));
 const BSONObj WriteConcernOptions::Unacknowledged(BSON("w" << W_NONE));
-const BSONObj WriteConcernOptions::InternalMajorityNoSnapshot(
-    BSON("w" << WriteConcernOptions::kInternalMajorityNoSnapshot));
 const BSONObj WriteConcernOptions::Majority(BSON("w" << WriteConcernOptions::kMajority));
 constexpr Seconds WriteConcernOptions::kWriteConcernTimeoutSystem;
 constexpr Seconds WriteConcernOptions::kWriteConcernTimeoutMigration;

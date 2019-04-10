@@ -34,7 +34,6 @@
 #include "mongo/db/index_builds_coordinator.h"
 
 #include "mongo/db/catalog/commit_quorum_options.h"
-#include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/index_build_entry_gen.h"
 #include "mongo/db/catalog/uuid_catalog.h"
@@ -53,7 +52,7 @@
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -153,7 +152,6 @@ IndexBuildsCoordinator::~IndexBuildsCoordinator() {
 
 StatusWith<std::pair<long long, long long>> IndexBuildsCoordinator::startIndexRebuildForRecovery(
     OperationContext* opCtx,
-    DatabaseCatalogEntry* dbce,
     CollectionCatalogEntry* cce,
     const std::vector<BSONObj>& specs,
     const UUID& buildUUID) {
@@ -173,7 +171,7 @@ StatusWith<std::pair<long long, long long>> IndexBuildsCoordinator::startIndexRe
     }
 
     const auto& ns = cce->ns().ns();
-    auto rs = dbce->getRecordStore(ns);
+    auto rs = cce->getRecordStore();
 
     ReplIndexBuildState::IndexCatalogStats indexCatalogStats;
 
@@ -201,7 +199,7 @@ StatusWith<std::pair<long long, long long>> IndexBuildsCoordinator::startIndexRe
         // open a bad index and fail.
         const auto uuid = cce->getCollectionOptions(opCtx).uuid;
         auto databaseHolder = DatabaseHolder::get(opCtx);
-        collection = databaseHolder->makeCollection(opCtx, ns, uuid, cce, rs, dbce);
+        collection = databaseHolder->makeCollection(opCtx, ns, uuid, cce, rs);
 
         // Register the index build. During recovery, collections may not have UUIDs present yet to
         // due upgrading. We don't require collection UUIDs during recovery except to create a
@@ -375,26 +373,24 @@ bool IndexBuildsCoordinator::inProgForDb(StringData db) const {
 void IndexBuildsCoordinator::assertNoIndexBuildInProgress() const {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     uassert(ErrorCodes::BackgroundOperationInProgressForDatabase,
-            mongoutils::str::stream() << "cannot perform operation: there are currently "
-                                      << _allIndexBuilds.size()
-                                      << " index builds running.",
+            str::stream() << "cannot perform operation: there are currently "
+                          << _allIndexBuilds.size()
+                          << " index builds running.",
             _allIndexBuilds.size() == 0);
 }
 
 void IndexBuildsCoordinator::assertNoIndexBuildInProgForCollection(
     const UUID& collectionUUID) const {
     uassert(ErrorCodes::BackgroundOperationInProgressForNamespace,
-            mongoutils::str::stream()
-                << "cannot perform operation: an index build is currently running",
+            str::stream() << "cannot perform operation: an index build is currently running",
             !inProgForCollection(collectionUUID));
 }
 
 void IndexBuildsCoordinator::assertNoBgOpInProgForDb(StringData db) const {
     uassert(ErrorCodes::BackgroundOperationInProgressForDatabase,
-            mongoutils::str::stream()
-                << "cannot perform operation: an index build is currently running for "
-                   "database "
-                << db,
+            str::stream() << "cannot perform operation: an index build is currently running for "
+                             "database "
+                          << db,
             !inProgForDb(db));
 }
 

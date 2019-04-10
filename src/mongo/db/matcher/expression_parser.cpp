@@ -67,7 +67,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 #include "mongo/util/string_map.h"
 
 namespace {
@@ -464,7 +464,8 @@ StatusWithMatchExpression parseJSONSchema(StringData name,
         return {Status(ErrorCodes::TypeMismatch, "$jsonSchema must be an object")};
     }
 
-    return JSONSchemaParser::parse(elem.Obj(), internalQueryIgnoreUnknownJSONSchemaKeywords.load());
+    return JSONSchemaParser::parse(
+        expCtx, elem.Obj(), internalQueryIgnoreUnknownJSONSchemaKeywords.load());
 }
 
 template <class T>

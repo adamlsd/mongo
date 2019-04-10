@@ -43,8 +43,8 @@
 #include "mongo/db/service_context.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/stdx/thread.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/producer_consumer_queue.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -130,7 +130,7 @@ public:
                         uassertStatusOK(db.writeAndAdvance<LittleEndian<uint64_t>>(packet.order));
 
                         auto size = db.size() + toWrite.size();
-                        uassertStatusOK(db.getCursor().write<LittleEndian<uint32_t>>(size));
+                        db.getCursor().write<LittleEndian<uint32_t>>(size);
 
                         {
                             stdx::lock_guard<stdx::mutex> lk(_mutex);

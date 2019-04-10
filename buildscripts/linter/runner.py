@@ -1,6 +1,4 @@
 """Class to support running various linters in a common framework."""
-from __future__ import absolute_import
-from __future__ import print_function
 
 import difflib
 import logging
@@ -23,19 +21,22 @@ def _check_version(linter, cmd_path, args):
         logging.info(str(cmd))
         process_handle = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, stderr = process_handle.communicate()
+        output = output.decode('utf-8')
 
         if process_handle.returncode:
-            logging.info("Version check failed for [%s], return code '%d'." +
-                         "Standard Output:\n%s\nStandard Error:\n%s", cmd,
-                         process_handle.returncode, output, stderr)
+            logging.info(
+                "Version check failed for [%s], return code '%d'."
+                "Standard Output:\n%s\nStandard Error:\n%s", cmd, process_handle.returncode, output,
+                stderr)
 
         required_version = re.escape(linter.required_version)
 
         pattern = r"\b%s\b" % (required_version)
         if not re.search(pattern, output):
-            logging.info("Linter %s has wrong version for '%s'. Expected '%s'," +
-                         "Standard Output:\n'%s'\nStandard Error:\n%s", linter.cmd_name, cmd,
-                         required_version, output, stderr)
+            logging.info(
+                "Linter %s has wrong version for '%s'. Expected '%s',"
+                "Standard Output:\n'%s'\nStandard Error:\n%s", linter.cmd_name, cmd,
+                required_version, output, stderr)
             return False
 
     except OSError as os_error:
@@ -71,7 +72,7 @@ def _find_linter(linter, config_dict):
     python_dir = os.path.dirname(sys.executable)
     if sys.platform == "win32":
         # On Windows, these scripts are installed in %PYTHONDIR%\scripts like
-        # 'C:\Python27\scripts', and have .exe extensions.
+        # 'C:\Python37\scripts', and have .exe extensions.
         python_dir = os.path.join(python_dir, "scripts")
 
         cmd_str = os.path.join(python_dir, linter.cmd_name)
@@ -126,16 +127,16 @@ def find_linters(linter_list, config_dict):
     for linter in linter_list:
         linter_instance = _find_linter(linter, config_dict)
         if not linter_instance:
-            logging.error("""\
+            logging.error(
+                """\
 Could not find the correct version of linter '%s', expected '%s'. Check your
 PATH environment variable or re-run with --verbose for more information.
 
-To fix, install the needed python modules for both Python 2.7, and Python 3.x:
-   sudo pip2 install -r etc/pip/lint-requirements.txt
+To fix, install the needed python modules for Python 3.x:
    sudo pip3 install -r etc/pip/lint-requirements.txt
 
 These commands are typically available via packages with names like python-pip,
-python2-pip, and python3-pip. See your OS documentation for help.
+or python3-pip. See your OS documentation for help.
 """, linter.cmd_name, linter.required_version)
             return None
 
@@ -166,16 +167,25 @@ class LintRunner(object):
         # type: (base.LinterInstance, str) -> bool
         """Run the specified linter for the file."""
 
-        cmd = linter.cmd_path + linter.linter.get_lint_cmd_args(file_name)
+        cmd = linter.cmd_path
+        cmd += linter.linter.get_lint_cmd_args(file_name)
+        if cmd == linter.cmd_path:
+            # If args is empty it means we didn't get a valid command
+            # to run and so should skip this file.
+            #
+            # For example the MyPy linter class will return empty args
+            # for non-idl files since they shouldn't be type checked.
+            return True
+
         logging.debug(str(cmd))
 
         try:
             if linter.linter.needs_file_diff():
                 # Need a file diff
                 with open(file_name, 'rb') as original_text:
-                    original_file = original_text.read()
+                    original_file = original_text.read().decode('utf-8')
 
-                formatted_file = subprocess.check_output(cmd)
+                formatted_file = subprocess.check_output(cmd).decode('utf-8')
                 if original_file != formatted_file:
                     original_lines = original_file.splitlines()
                     formatted_lines = formatted_file.splitlines()
@@ -196,7 +206,7 @@ class LintRunner(object):
 
                     return False
             else:
-                output = subprocess.check_output(cmd)
+                output = subprocess.check_output(cmd).decode('utf-8')
 
                 # On Windows, mypy.bat returns 0 even if there are length failures so we need to
                 # check if there was any output
@@ -205,7 +215,7 @@ class LintRunner(object):
                     return False
 
         except subprocess.CalledProcessError as cpe:
-            self._safe_print("CMD [%s] failed:\n%s" % (cmd, cpe.output))
+            self._safe_print("CMD [%s] failed:\n%s" % (cmd, cpe.output.decode('utf-8')))
             return False
 
         return True
@@ -217,7 +227,7 @@ class LintRunner(object):
         logging.debug(str(cmd))
 
         try:
-            subprocess.check_output(cmd)
+            subprocess.check_output(cmd).decode('utf-8')
         except subprocess.CalledProcessError as cpe:
             self._safe_print("CMD [%s] failed:\n%s" % (cmd, cpe.output))
             return False

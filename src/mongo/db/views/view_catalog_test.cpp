@@ -53,7 +53,7 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace {
@@ -526,6 +526,15 @@ TEST_F(ViewCatalogFixture, ResolveViewCorrectPipeline) {
     for (uint32_t i = 0; i < expected.size(); i++) {
         ASSERT(SimpleBSONObjComparator::kInstance.evaluate(expected[i] == result[i]));
     }
+}
+
+TEST_F(ViewCatalogFixture, ResolveViewOnCollectionNamespace) {
+    const NamespaceString collectionNamespace("db.coll");
+
+    auto resolvedView = uassertStatusOK(viewCatalog.resolveView(opCtx.get(), collectionNamespace));
+
+    ASSERT_EQ(resolvedView.getNamespace(), collectionNamespace);
+    ASSERT_EQ(resolvedView.getPipeline().size(), 0U);
 }
 
 TEST_F(ViewCatalogFixture, ResolveViewCorrectlyExtractsDefaultCollation) {

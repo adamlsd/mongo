@@ -41,7 +41,7 @@
 #include "mongo/db/ftdc/util.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/rpc/object_check.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -202,7 +202,7 @@ StatusWith<BSONObj> FTDCFileReader::readDocument() {
     ConstDataRange cdr(_buffer.data(), _buffer.data() + bsonLength);
 
     // TODO: Validated only validates objects based on a flag which is the default at the moment
-    auto swl = cdr.read<Validated<BSONObj>>();
+    auto swl = cdr.readNoThrow<Validated<BSONObj>>();
     if (!swl.isOK()) {
         return swl.getStatus();
     }

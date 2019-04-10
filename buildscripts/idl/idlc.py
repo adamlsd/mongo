@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 #
 # Copyright (C) 2018-present MongoDB, Inc.
 #
@@ -28,8 +28,6 @@
 # it in the license file.
 #
 """IDL Compiler Driver Main Entry point."""
-
-from __future__ import absolute_import, print_function
 
 import argparse
 import logging

@@ -35,7 +35,7 @@
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/query_request.h"
 #include "mongo/db/update/path_support.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -61,7 +61,7 @@ ProjectionExec::ProjectionExec(OperationContext* opCtx,
             invariant(1 == obj.nFields());
 
             BSONElement e2 = obj.firstElement();
-            if (mongoutils::str::equals(e2.fieldName(), "$slice")) {
+            if (e2.fieldNameStringData() == "$slice") {
                 if (e2.isNumber()) {
                     int i = e2.numberInt();
                     if (i < 0) {
@@ -82,7 +82,7 @@ ProjectionExec::ProjectionExec(OperationContext* opCtx,
 
                     add(e.fieldName(), skip, limit);
                 }
-            } else if (mongoutils::str::equals(e2.fieldName(), "$elemMatch")) {
+            } else if (e2.fieldNameStringData() == "$elemMatch") {
                 _arrayOpType = ARRAY_OP_ELEM_MATCH;
 
                 // Create a MatchExpression for the elemMatch.
@@ -95,11 +95,11 @@ ProjectionExec::ProjectionExec(OperationContext* opCtx,
                     MatchExpressionParser::parse(elemMatchObj, std::move(expCtx));
                 invariant(statusWithMatcher.isOK());
                 // And store it in _matchers.
-                _matchers[mongoutils::str::before(e.fieldName(), '.').c_str()] =
+                _matchers[str::before(e.fieldName(), '.').c_str()] =
                     statusWithMatcher.getValue().release();
 
                 add(e.fieldName(), true);
-            } else if (mongoutils::str::equals(e2.fieldName(), "$meta")) {
+            } else if (e2.fieldNameStringData() == "$meta") {
                 invariant(String == e2.type());
                 if (e2.valuestr() == QueryRequest::metaTextScore) {
                     _meta[e.fieldName()] = META_TEXT_SCORE;
@@ -125,7 +125,7 @@ ProjectionExec::ProjectionExec(OperationContext* opCtx,
             } else {
                 MONGO_UNREACHABLE;
             }
-        } else if (mongoutils::str::equals(e.fieldName(), "_id") && !e.trueValue()) {
+        } else if ((e.fieldNameStringData() == "_id") && !e.trueValue()) {
             _includeID = false;
         } else {
             add(e.fieldName(), e.trueValue());
@@ -138,7 +138,7 @@ ProjectionExec::ProjectionExec(OperationContext* opCtx,
             }
         }
 
-        if (mongoutils::str::contains(e.fieldName(), ".$")) {
+        if (str::contains(e.fieldName(), ".$")) {
             _arrayOpType = ARRAY_OP_POSITIONAL;
         }
     }
@@ -258,7 +258,7 @@ StatusWith<BSONObj> ProjectionExec::projectCovered(const std::vector<IndexKeyDat
     mmb::Document projectedDoc;
 
     for (auto&& specElt : _source) {
-        if (mongoutils::str::equals("_id", specElt.fieldName())) {
+        if (specElt.fieldNameStringData() == "_id") {
             continue;
         }
 
@@ -340,7 +340,7 @@ Status ProjectionExec::projectHelper(const BSONObj& in,
         BSONElement elt = it.next();
 
         // Case 1: _id
-        if (mongoutils::str::equals("_id", elt.fieldName())) {
+        if ("_id" == elt.fieldNameStringData()) {
             if (_includeID) {
                 bob->append(elt);
             }
@@ -483,7 +483,7 @@ Status ProjectionExec::append(BSONObjBuilder* bob,
         if (details && arrayOpType == ARRAY_OP_POSITIONAL) {
             // $ positional operator specified
             if (!details->hasElemMatchKey()) {
-                mongoutils::str::stream error;
+                str::stream error;
                 error << "positional operator (" << elt.fieldName()
                       << ".$) requires corresponding field"
                       << " in query specifier";

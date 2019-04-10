@@ -42,7 +42,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/task_executor_proxy.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace {
 
@@ -525,7 +525,7 @@ TEST_F(CollectionClonerTest,
        CollectionClonerReturnsScheduleErrorOnFailingToScheduleListIndexesCommand) {
     TaskExecutorWithFailureInScheduleRemoteCommand _executorProxy(
         &getExecutor(), [](const executor::RemoteCommandRequest& request) {
-            return str::equals("listIndexes", request.cmdObj.firstElementFieldName());
+            return request.cmdObj.firstElementFieldNameStringData() == "listIndexes";
         });
 
     collectionCloner = stdx::make_unique<CollectionCloner>(&_executorProxy,

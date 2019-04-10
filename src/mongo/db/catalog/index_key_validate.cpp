@@ -52,8 +52,8 @@
 #include "mongo/db/service_context.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/represent_as.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace index_key_validate {
@@ -121,8 +121,7 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
     string pluginName = IndexNames::findPluginName(key);
     if (pluginName.size()) {
         if (!IndexNames::isKnownName(pluginName))
-            return Status(
-                code, mongoutils::str::stream() << "Unknown index plugin '" << pluginName << '\'');
+            return Status(code, str::stream() << "Unknown index plugin '" << pluginName << '\'');
     }
 
     BSONObjIterator it(key);
@@ -199,11 +198,11 @@ Status validateKeyPattern(const BSONObj& key, IndexDescriptor::IndexVersion inde
         }
 
         // "$**" is acceptable for a text index or wildcard index.
-        if (mongoutils::str::equals(keyElement.fieldName(), "$**") &&
+        if ((keyElement.fieldNameStringData() == "$**") &&
             ((keyElement.isNumber()) || (keyElement.valuestrsafe() == IndexNames::TEXT)))
             continue;
 
-        if (mongoutils::str::equals(keyElement.fieldName(), "_fts") &&
+        if ((keyElement.fieldNameStringData() == "_fts") &&
             keyElement.valuestrsafe() != IndexNames::TEXT) {
             return Status(code, "Index key contains an illegal field name: '_fts'");
         }
@@ -306,9 +305,7 @@ StatusWith<BSONObj> validateIndexSpec(
                 (IndexNames::findPluginName(indexSpec.getObjectField(
                      IndexDescriptor::kKeyPatternFieldName)) == IndexNames::WILDCARD)) {
                 return {ErrorCodes::CannotCreateIndex,
-                        mongoutils::str::stream() << "Unknown index plugin '"
-                                                  << IndexNames::WILDCARD
-                                                  << "'"};
+                        str::stream() << "Unknown index plugin '" << IndexNames::WILDCARD << "'"};
             }
             hasKeyPatternField = true;
         } else if (IndexDescriptor::kIndexNameFieldName == indexSpecElemFieldName) {

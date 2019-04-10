@@ -44,8 +44,8 @@
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/stacktrace.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -169,12 +169,7 @@ Lock::GlobalLock::GlobalLock(GlobalLock&& otherLock)
 }
 
 void Lock::GlobalLock::_enqueue(LockMode lockMode, Date_t deadline) {
-    if (lockMode == LockMode::MODE_IX) {
-        auto ticketholder = FlowControlTicketholder::get(_opCtx);
-        if (ticketholder) {
-            ticketholder->getTicket(_opCtx);
-        }
-    }
+    _opCtx->lockState()->getFlowControlTicket(_opCtx, lockMode);
 
     try {
         if (_opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {

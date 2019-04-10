@@ -45,7 +45,6 @@
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_info_cache_impl.h"
 #include "mongo/db/catalog/collection_options.h"
-#include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog_impl.h"
 #include "mongo/db/catalog/index_consistency.h"
@@ -197,14 +196,12 @@ CollectionImpl::CollectionImpl(OperationContext* opCtx,
                                StringData fullNS,
                                OptionalCollectionUUID uuid,
                                CollectionCatalogEntry* details,
-                               RecordStore* recordStore,
-                               DatabaseCatalogEntry* dbce)
+                               RecordStore* recordStore)
     : _magic(kMagicNumber),
       _ns(fullNS),
       _uuid(uuid),
       _details(details),
       _recordStore(recordStore),
-      _dbce(dbce),
       _needCappedLock(supportsDocLocking() && _recordStore->isCapped() && _ns.db() != "local"),
       _infoCache(std::make_unique<CollectionInfoCacheImpl>(this, _ns)),
       _indexCatalog(
@@ -242,6 +239,11 @@ CollectionImpl::~CollectionImpl() {
         }
         LOG(2) << "destructed collection " << ns() << " with UUID " << uuid()->toString();
     }
+
+    if (ns().isOplog()) {
+        repl::clearLocalOplogPtr();
+    }
+
     _magic = 0;
 }
 
@@ -519,7 +521,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
 
     for (auto it = begin; it != end; it++) {
         records.emplace_back(Record{RecordId(), RecordData(it->doc.objdata(), it->doc.objsize())});
-        timestamps.emplace_back(it->oplogSlot.opTime.getTimestamp());
+        timestamps.emplace_back(it->oplogSlot.getTimestamp());
     }
     Status status = _recordStore->insertRecords(opCtx, &records, timestamps);
     if (!status.isOK())
@@ -533,7 +535,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
         invariant(RecordId::min() < loc);
         invariant(loc < RecordId::max());
 
-        BsonRecord bsonRecord = {loc, Timestamp(it->oplogSlot.opTime.getTimestamp()), &(it->doc)};
+        BsonRecord bsonRecord = {loc, Timestamp(it->oplogSlot.getTimestamp()), &(it->doc)};
         bsonRecords.push_back(bsonRecord);
     }
 
@@ -729,6 +731,10 @@ StatusWith<RecordData> CollectionImpl::updateDocumentWithDamages(
         getGlobalServiceContext()->getOpObserver()->onUpdate(opCtx, entryArgs);
     }
     return newRecStatus;
+}
+
+bool CollectionImpl::isTemporary(OperationContext* opCtx) const {
+    return _details->getCollectionOptions(opCtx).temp;
 }
 
 bool CollectionImpl::isCapped() const {

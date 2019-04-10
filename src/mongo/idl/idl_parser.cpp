@@ -35,7 +35,7 @@
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/command_generic_argument.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -297,7 +297,7 @@ std::vector<ConstDataRange> transformVector(const std::vector<std::vector<std::u
     output.reserve(input.size());
 
     std::transform(begin(input), end(input), std::back_inserter(output), [](auto&& vec) {
-        return makeCDR(vec);
+        return ConstDataRange(vec);
     });
 
     return output;

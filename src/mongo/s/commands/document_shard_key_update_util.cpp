@@ -38,7 +38,7 @@
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/s/write_ops/cluster_write.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace {
@@ -75,24 +75,6 @@ bool executeOperationsAsPartOfShardKeyUpdate(OperationContext* opCtx,
             insertResponse.getN() == 1);
 
     return true;
-}
-
-TransactionRouter* startTransactionForShardKeyUpdate(OperationContext* opCtx) {
-    auto txnRouter = TransactionRouter::get(opCtx);
-    invariant(txnRouter);
-
-    auto txnNumber = opCtx->getTxnNumber();
-    invariant(txnNumber);
-
-    txnRouter->beginOrContinueTxn(opCtx, *txnNumber, TransactionRouter::TransactionActions::kStart);
-
-    return txnRouter;
-}
-
-void commitShardKeyUpdateTransaction(OperationContext* opCtx,
-                                     TransactionRouter* txnRouter,
-                                     TxnNumber txnNumber) {
-    auto commitResponse = txnRouter->commitTransaction(opCtx, boost::none);
 }
 
 /**
@@ -135,10 +117,25 @@ bool updateShardKeyForDocument(OperationContext* opCtx,
     auto updatePostImage = documentKeyChangeInfo.getPostImage()->getOwned();
 
     auto deleteCmdObj = constructShardKeyDeleteCmdObj(nss, updatePreImage, stmtId);
-
     auto insertCmdObj = constructShardKeyInsertCmdObj(nss, updatePostImage, stmtId);
 
     return executeOperationsAsPartOfShardKeyUpdate(opCtx, deleteCmdObj, insertCmdObj, nss.db());
+}
+
+TransactionRouter* startTransactionForShardKeyUpdate(OperationContext* opCtx) {
+    auto txnRouter = TransactionRouter::get(opCtx);
+    invariant(txnRouter);
+
+    auto txnNumber = opCtx->getTxnNumber();
+    invariant(txnNumber);
+
+    txnRouter->beginOrContinueTxn(opCtx, *txnNumber, TransactionRouter::TransactionActions::kStart);
+
+    return txnRouter;
+}
+
+void commitShardKeyUpdateTransaction(OperationContext* opCtx, TransactionRouter* txnRouter) {
+    auto commitResponse = txnRouter->commitTransaction(opCtx, boost::none);
 }
 
 BSONObj constructShardKeyDeleteCmdObj(const NamespaceString& nss,

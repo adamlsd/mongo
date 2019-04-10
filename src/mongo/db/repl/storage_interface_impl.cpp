@@ -76,7 +76,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace repl {
@@ -378,8 +378,8 @@ Status StorageInterfaceImpl::insertDocuments(OperationContext* opCtx,
 Status StorageInterfaceImpl::dropReplicatedDatabases(OperationContext* opCtx) {
     Lock::GlobalWrite globalWriteLock(opCtx);
 
-    std::vector<std::string> dbNames;
-    opCtx->getServiceContext()->getStorageEngine()->listDatabases(&dbNames);
+    std::vector<std::string> dbNames =
+        opCtx->getServiceContext()->getStorageEngine()->listDatabases();
     invariant(!dbNames.empty());
     log() << "dropReplicatedDatabases - dropping " << dbNames.size() << " databases";
 

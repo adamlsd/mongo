@@ -56,7 +56,6 @@
 #include "mongo/db/s/shard_identity_rollback_notifier.h"
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/server_recovery.h"
-#include "mongo/db/server_transactions_metrics.h"
 #include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/storage/remove_saver.h"
 #include "mongo/s/catalog/type_config_version.h"
@@ -251,9 +250,6 @@ Status RollbackImpl::runRollback(OperationContext* opCtx) {
     // abortPreparedTransactionForRollback() on any txnParticipant with a prepared transaction.
     killSessionsAbortAllPreparedTransactions(opCtx);
 
-    // Clear the in memory state of prepared transactions in ServerTransactionsMetrics.
-    ServerTransactionsMetrics::get(getGlobalServiceContext())->clearOpTimes();
-
     // If there were rolled back operations on any session, invalidate all sessions.
     // We invalidate sessions before we recover so that we avoid invalidating sessions that had
     // just recovered prepared transactions.
@@ -378,7 +374,7 @@ Status RollbackImpl::_awaitBgIndexCompletion(OperationContext* opCtx) {
     std::vector<std::string> dbs;
     {
         Lock::GlobalLock lk(opCtx, MODE_IS);
-        storageEngine->listDatabases(&dbs);
+        dbs = storageEngine->listDatabases();
     }
 
     // Wait for all background operations to complete by waiting on each database.
@@ -1101,8 +1097,7 @@ void RollbackImpl::_resetDropPendingState(OperationContext* opCtx) {
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
     storageEngine->clearDropPendingState();
 
-    std::vector<std::string> dbNames;
-    storageEngine->listDatabases(&dbNames);
+    std::vector<std::string> dbNames = storageEngine->listDatabases();
     auto databaseHolder = DatabaseHolder::get(opCtx);
     for (const auto& dbName : dbNames) {
         Lock::DBLock dbLock(opCtx, dbName, MODE_X);

@@ -53,7 +53,7 @@
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/concurrency/with_lock.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -419,6 +419,11 @@ public:
          * OperationContext to the Session.
          */
         void stashTransactionResources(OperationContext* opCtx);
+
+        /**
+         * Resets the retryable writes state.
+         */
+        void resetRetryableWriteState(OperationContext* opCtx);
 
         /**
          * Transfers management of transaction resources from the Session to the currently
@@ -817,13 +822,13 @@ private:
          */
         OplogSlot getLastSlot() {
             invariant(!_oplogSlots.empty());
-            invariant(!_oplogSlots.back().opTime.isNull());
+            invariant(!_oplogSlots.back().isNull());
             return getSlots().back();
         }
 
         std::vector<OplogSlot>& getSlots() {
             invariant(!_oplogSlots.empty());
-            invariant(!_oplogSlots.back().opTime.isNull());
+            invariant(!_oplogSlots.back().isNull());
             return _oplogSlots;
         }
 

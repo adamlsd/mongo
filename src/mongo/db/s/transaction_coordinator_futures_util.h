@@ -34,6 +34,7 @@
 #include "mongo/client/read_preference.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/executor/task_executor_pool.h"
+#include "mongo/s/client/shard.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/future.h"
@@ -79,18 +80,24 @@ public:
             auto scheduledWorkHandle = uassertStatusOK(_executor->scheduleWorkAt(
                 when,
                 [ this, task = std::forward<Callable>(task), taskCompletionPromise ](
-                    const executor::TaskExecutor::CallbackArgs&) mutable noexcept {
+                    const executor::TaskExecutor::CallbackArgs& args) mutable noexcept {
                     taskCompletionPromise->setWith([&] {
+                        {
+                            stdx::lock_guard lk(_mutex);
+                            uassertStatusOK(_shutdownStatus);
+                            uassertStatusOK(args.status);
+                        }
+
                         ThreadClient tc("TransactionCoordinator", _serviceContext);
-                        stdx::unique_lock<stdx::mutex> ul(_mutex);
-                        uassertStatusOK(_shutdownStatus);
 
-                        auto uniqueOpCtxIter = _activeOpContexts.emplace(
-                            _activeOpContexts.begin(), tc->makeOperationContext());
-                        ul.unlock();
+                        auto uniqueOpCtxIter = [&] {
+                            stdx::lock_guard lk(_mutex);
+                            return _activeOpContexts.emplace(_activeOpContexts.begin(),
+                                                             tc->makeOperationContext());
+                        }();
 
-                        auto scopedGuard = makeGuard([&] {
-                            ul.lock();
+                        ON_BLOCK_EXIT([&] {
+                            stdx::lock_guard lk(_mutex);
                             _activeOpContexts.erase(uniqueOpCtxIter);
                             // There is no need to call _notifyAllTasksComplete here, because we
                             // will still have an outstanding _activeHandles entry, so the scheduler
@@ -157,11 +164,23 @@ public:
 private:
     using ChildIteratorsList = std::list<AsyncWorkScheduler*>;
 
+    // A targeted host and the shard object used to target it. The shard object is passed through
+    // resolved so the caller can avoid a potentially blocking "ShardRegistry::getShard" call.
+    struct HostAndShard {
+        HostAndPort hostTargeted;
+        std::shared_ptr<Shard> shard;
+    };
+
     /**
-     * Finds the host and port for a shard.
+     * Finds the host and port for a shard id, returning it and the shard object used for targeting.
      */
-    Future<HostAndPort> _targetHostAsync(const ShardId& shardId,
-                                         const ReadPreferenceSetting& readPref);
+    Future<HostAndShard> _targetHostAsync(const ShardId& shardId,
+                                          const ReadPreferenceSetting& readPref);
+
+    /**
+     * Returns true when all the registered child schedulers, op contexts and handles have joined.
+     */
+    bool _quiesced(WithLock) const;
 
     /**
      * Invoked every time a registered op context, handle or child scheduler is getting

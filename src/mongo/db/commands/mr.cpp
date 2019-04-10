@@ -75,8 +75,8 @@
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -558,7 +558,7 @@ void State::prepTempCollection() {
                 BSONObjIterator j(currIndex->infoObj());
                 while (j.more()) {
                     BSONElement e = j.next();
-                    if (str::equals(e.fieldName(), "_id") || str::equals(e.fieldName(), "ns"))
+                    if (e.fieldNameStringData() == "_id" || e.fieldNameStringData() == "ns")
                         continue;
                     b.append(e);
                 }

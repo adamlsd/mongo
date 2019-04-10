@@ -14,8 +14,8 @@ USAGE:
     -h, --help      Show this message
     -o CON_FILE     Write constraints.txt to CON_FILE
 
-This command passes all unrecognized arguments to two pip invocations,
-one for a python2 virtual environment and one for a python3 virtual environment.
+This command passes all unrecognized arguments to the pip invocation.
+
 It then forms a unified multi-version constraints file at constraints.txt in its working directory.
 
 This script's working directory currently defaults to '${DEFAULT_WORKING_DIR}'.
@@ -64,10 +64,8 @@ if [[ -d $WORKING_DIR ]]; then
 fi
 ABSOLUTE_WORKING_DIR="$(mkdir -p "${WORKING_DIR}" && cd "${WORKING_DIR}" && pwd)"
 
-PIP2_DIR="${ABSOLUTE_WORKING_DIR}/python2"
 PIP3_DIR="${ABSOLUTE_WORKING_DIR}/python3"
 
-generateConstraints python2 "${PIP2_DIR}"
 generateConstraints python3 "${PIP3_DIR}"
 
 if [[ -z $CON_FILE ]]; then
@@ -83,15 +81,7 @@ fi
     printf '\n'
 
     printf '\n# Common requirements\n'
-    comm -12 "${PIP2_DIR}/requirements.txt" "${PIP3_DIR}/requirements.txt"
-
-    printf '\n# Python2 requirements\n'
-    comm -23 "${PIP2_DIR}/requirements.txt" "${PIP3_DIR}/requirements.txt" |
-        sed -e 's/$/; python_version < "3"/'
-
-    printf '\n# Python3 requirements\n'
-    comm -13 "${PIP2_DIR}/requirements.txt" "${PIP3_DIR}/requirements.txt" |
-        sed -e 's/$/; python_version > "3"/'
+    cat "${PIP3_DIR}/requirements.txt"
 
     printf '\n'
     cat "${SCRIPT_DIR}/../etc/pip/components/platform.req"

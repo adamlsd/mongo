@@ -63,8 +63,8 @@
 #include "mongo/s/request_types/shard_collection_gen.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace {
@@ -248,7 +248,7 @@ void createCollectionOrValidateExisting(OperationContext* opCtx,
         } else {
             bool isExplicitlyUnique = eqQueryResult["unique"].trueValue();
             BSONObj currKey = eqQueryResult["key"].embeddedObject();
-            bool isCurrentID = str::equals(currKey.firstElementFieldName(), "_id");
+            bool isCurrentID = (currKey.firstElementFieldNameStringData() == "_id");
             uassert(ErrorCodes::InvalidOptions,
                     str::stream() << "can't shard collection " << nss.ns() << ", " << proposedKey
                                   << " index not unique, and unique index explicitly specified",
@@ -308,13 +308,14 @@ void validateShardKeyAgainstExistingZones(OperationContext* opCtx,
                                   << " -->> "
                                   << tag.getMaxKey()
                                   << " have non-matching keys",
-                    str::equals(tagMinKeyElement.fieldName(), tagMaxKeyElement.fieldName()));
+                    tagMinKeyElement.fieldNameStringData() ==
+                        tagMaxKeyElement.fieldNameStringData());
 
             BSONElement proposedKeyElement = proposedFields.next();
-            bool match =
-                (str::equals(tagMinKeyElement.fieldName(), proposedKeyElement.fieldName()) &&
-                 ((tagMinFields.more() && proposedFields.more()) ||
-                  (!tagMinFields.more() && !proposedFields.more())));
+            bool match = ((tagMinKeyElement.fieldNameStringData() ==
+                           proposedKeyElement.fieldNameStringData()) &&
+                          ((tagMinFields.more() && proposedFields.more()) ||
+                           (!tagMinFields.more() && !proposedFields.more())));
             uassert(ErrorCodes::InvalidOptions,
                     str::stream() << "the proposed shard key " << proposedKey.toString()
                                   << " does not match with the shard key of the existing zone "

@@ -102,9 +102,9 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -823,9 +823,8 @@ void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationC
     // GlobalLock in mode X.
     Lock::GlobalLock lk(opCtx, MODE_IS);
 
-    std::vector<std::string> dbNames;
     StorageEngine* storageEngine = _service->getStorageEngine();
-    storageEngine->listDatabases(&dbNames);
+    std::vector<std::string> dbNames = storageEngine->listDatabases();
 
     for (std::vector<std::string>::iterator it = dbNames.begin(); it != dbNames.end(); ++it) {
         // The local db is special because it isn't replicated. It is cleared at startup even on

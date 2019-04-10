@@ -39,7 +39,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -131,7 +131,7 @@ const Status ChunkRange::extractKeyPattern(KeyPattern* shardKeyPatternOut) const
     while (min.more() && max.more()) {
         BSONElement x = min.next();
         BSONElement y = max.next();
-        if (!str::equals(x.fieldName(), y.fieldName()) || (min.more() && !max.more()) ||
+        if ((x.fieldNameStringData() != y.fieldNameStringData()) || (min.more() && !max.more()) ||
             (!min.more() && max.more())) {
             return {ErrorCodes::ShardKeyNotFound,
                     str::stream() << "the shard key of min " << _minKey << " doesn't match with "

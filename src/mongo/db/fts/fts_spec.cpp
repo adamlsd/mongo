@@ -37,7 +37,7 @@
 #include "mongo/db/fts/fts_tokenizer.h"
 #include "mongo/db/fts/fts_util.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 #include "mongo/util/stringutils.h"
 
 namespace mongo {
@@ -46,7 +46,6 @@ namespace fts {
 
 using std::map;
 using std::string;
-using namespace mongoutils;
 namespace dps = ::mongo::dotted_path_support;
 
 const double DEFAULT_WEIGHT = 1;
@@ -147,7 +146,7 @@ FTSSpec::FTSSpec(const BSONObj& indexInfo) {
 
         while (i.more()) {
             BSONElement e = i.next();
-            if (str::equals(e.fieldName(), "_fts") || str::equals(e.fieldName(), "_ftsx")) {
+            if ((e.fieldNameStringData() == "_fts") || (e.fieldNameStringData() == "_ftsx")) {
                 passedFTS = true;
                 continue;
             }
@@ -293,13 +292,13 @@ StatusWith<BSONObj> FTSSpec::fixSpec(const BSONObj& spec) {
             BSONObjIterator i(spec["key"].Obj());
             while (i.more()) {
                 BSONElement e = i.next();
-                if (str::equals(e.fieldName(), "_fts")) {
+                if (e.fieldNameStringData() == "_fts") {
                     if (INDEX_NAME != e.valuestrsafe()) {
                         return {ErrorCodes::CannotCreateIndex, "expecting _fts:\"text\""};
                     }
                     addedFtsStuff = true;
                     b.append(e);
-                } else if (str::equals(e.fieldName(), "_ftsx")) {
+                } else if (e.fieldNameStringData() == "_ftsx") {
                     if (e.numberInt() != 1) {
                         return {ErrorCodes::CannotCreateIndex, "expecting _ftsx:1"};
                     }
@@ -346,13 +345,13 @@ StatusWith<BSONObj> FTSSpec::fixSpec(const BSONObj& spec) {
             }
 
             // text fields
-            bool alreadyFixed = str::equals(e.fieldName(), "_fts");
+            bool alreadyFixed = (e.fieldNameStringData() == "_fts");
             if (alreadyFixed) {
                 if (!i.more()) {
                     return {ErrorCodes::CannotCreateIndex, "expected _ftsx after _fts"};
                 }
                 e = i.next();
-                if (!str::equals(e.fieldName(), "_ftsx")) {
+                if (e.fieldNameStringData() != "_ftsx") {
                     return {ErrorCodes::CannotCreateIndex, "expected _ftsx after _fts"};
                 }
                 e = i.next();
@@ -468,20 +467,21 @@ StatusWith<BSONObj> FTSSpec::fixSpec(const BSONObj& spec) {
     BSONObjIterator i(spec);
     while (i.more()) {
         BSONElement e = i.next();
-        if (str::equals(e.fieldName(), "key")) {
+        StringData fieldName = e.fieldNameStringData();
+        if (fieldName == "key") {
             b.append("key", keyPattern);
-        } else if (str::equals(e.fieldName(), "weights")) {
+        } else if (fieldName == "weights") {
             b.append("weights", weights);
             weights = BSONObj();
-        } else if (str::equals(e.fieldName(), "default_language")) {
+        } else if (fieldName == "default_language") {
             b.append("default_language", default_language);
             default_language = "";
-        } else if (str::equals(e.fieldName(), "language_override")) {
+        } else if (fieldName == "language_override") {
             b.append("language_override", language_override);
             language_override = "";
-        } else if (str::equals(e.fieldName(), "v")) {
+        } else if (fieldName == "v") {
             version = e.numberInt();
-        } else if (str::equals(e.fieldName(), "textIndexVersion")) {
+        } else if (fieldName == "textIndexVersion") {
             if (!e.isNumber()) {
                 return {ErrorCodes::CannotCreateIndex,
                         "text index option 'textIndexVersion' must be a number"};

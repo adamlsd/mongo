@@ -96,8 +96,8 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/file.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/startup_test.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -137,9 +137,6 @@ struct LocalOplogInfo {
     // Synchronizes the section where a new Timestamp is generated and when it is registered in the
     // storage engine.
     stdx::mutex newOpMutex;
-
-    // Used to generate "h" fields in pv0. Synchronized by newOpMutex.
-    PseudoRandom hashGenerator{std::unique_ptr<SecureRandom>(SecureRandom::create())->nextInt64()};
 };
 
 const auto localOplogInfo = ServiceContext::declareDecoration<LocalOplogInfo>();
@@ -185,8 +182,7 @@ void _getNextOpTimes(OperationContext* opCtx,
     }
 
     for (std::size_t i = 0; i < count; i++) {
-        slotsOut[i].opTime = {Timestamp(ts.asULL() + i), term};
-        slotsOut[i].hash = oplogInfo.hashGenerator.nextInt64();
+        slotsOut[i] = {Timestamp(ts.asULL() + i), term};
     }
 }
 
@@ -449,7 +445,6 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
                             const BSONObj* o2,
                             bool fromMigrate,
                             OpTime optime,
-                            long long hashNew,
                             Date_t wallTime,
                             const OperationSessionInfo& sessionInfo,
                             StmtId statementId,
@@ -461,7 +456,10 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
     b.append("ts", optime.getTimestamp());
     if (optime.getTerm() != -1)
         b.append("t", optime.getTerm());
-    b.append("h", hashNew);
+
+    // Always write zero hash instead of using FCV to gate this for retryable writes
+    // and change stream, who expect to be able to read oplog across FCV's.
+    b.append("h", 0LL);
     b.append("v", OplogEntry::kOplogVersion);
     b.append("op", opstr);
     b.append("ns", nss.ns());
@@ -608,7 +606,7 @@ OpTime logOp(OperationContext* opCtx,
     auto const oplog = oplogInfo.oplog;
     OplogSlot slot;
     WriteUnitOfWork wuow(opCtx);
-    if (oplogSlot.opTime.isNull()) {
+    if (oplogSlot.isNull()) {
         _getNextOpTimes(opCtx, oplog, 1, &slot);
     } else {
         slot = oplogSlot;
@@ -621,8 +619,7 @@ OpTime logOp(OperationContext* opCtx,
                                obj,
                                o2,
                                fromMigrate,
-                               slot.opTime,
-                               slot.hash,
+                               slot,
                                wallClockTime,
                                sessionInfo,
                                statementId,
@@ -630,10 +627,10 @@ OpTime logOp(OperationContext* opCtx,
                                prepare,
                                inTxn);
     const DocWriter* basePtr = &writer;
-    auto timestamp = slot.opTime.getTimestamp();
-    _logOpsInner(opCtx, nss, &basePtr, &timestamp, 1, oplog, slot.opTime, wallClockTime);
+    auto timestamp = slot.getTimestamp();
+    _logOpsInner(opCtx, nss, &basePtr, &timestamp, 1, oplog, slot, wallClockTime);
     wuow.commit();
-    return slot.opTime;
+    return slot;
 }
 
 std::vector<OpTime> logInsertOps(OperationContext* opCtx,
@@ -686,7 +683,7 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
         // Make a mutable copy.
         auto insertStatementOplogSlot = begin[i].oplogSlot;
         // Fetch optime now, if not already fetched.
-        if (insertStatementOplogSlot.opTime.isNull()) {
+        if (insertStatementOplogSlot.isNull()) {
             _getNextOpTimes(opCtx, oplog, 1, &insertStatementOplogSlot);
         }
         // Only 'applyOps' oplog entries can be prepared.
@@ -698,17 +695,16 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
                                           begin[i].doc,
                                           NULL,
                                           fromMigrate,
-                                          insertStatementOplogSlot.opTime,
-                                          insertStatementOplogSlot.hash,
+                                          insertStatementOplogSlot,
                                           wallClockTime,
                                           sessionInfo,
                                           begin[i].stmtId,
                                           oplogLink,
                                           prepare,
                                           false /* inTxn */));
-        oplogLink.prevOpTime = insertStatementOplogSlot.opTime;
+        oplogLink.prevOpTime = insertStatementOplogSlot;
         timestamps[i] = oplogLink.prevOpTime.getTimestamp();
-        opTimes.push_back(insertStatementOplogSlot.opTime);
+        opTimes.push_back(insertStatementOplogSlot);
     }
 
     MONGO_FAIL_POINT_BLOCK(sleepBetweenInsertOpTimeGenerationAndLogOp, customWait) {
@@ -1470,7 +1466,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
         uassert(ErrorCodes::InvalidNamespace,
                 "'ns' must be of type String",
                 fieldNs.type() == BSONType::String);
-        const StringData ns = fieldNs.valuestrsafe();
+        const StringData ns = fieldNs.valueStringDataSafe();
         requestNss = NamespaceString(ns);
         invariant(requestNss.coll().size());
         dassert(opCtx->lockState()->isCollectionLockedForMode(
@@ -1711,7 +1707,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
                 request.setUpsert();
                 request.setFromOplogApplication(true);
 
-                const StringData ns = fieldNs.valuestrsafe();
+                const StringData ns = fieldNs.valueStringDataSafe();
                 writeConflictRetry(opCtx, "applyOps_upsert", ns, [&] {
                     WriteUnitOfWork wuow(opCtx);
                     // If this is an atomic applyOps (i.e: `haveWrappingWriteUnitOfWork` is true),
@@ -1762,7 +1758,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
             timestamp = fieldTs.timestamp();
         }
 
-        const StringData ns = fieldNs.valuestrsafe();
+        const StringData ns = fieldNs.valueStringDataSafe();
         auto status = writeConflictRetry(opCtx, "applyOps_update", ns, [&] {
             WriteUnitOfWork wuow(opCtx);
             if (timestamp != Timestamp::min()) {
@@ -1841,7 +1837,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
             timestamp = fieldTs.timestamp();
         }
 
-        const StringData ns = fieldNs.valuestrsafe();
+        const StringData ns = fieldNs.valueStringDataSafe();
         writeConflictRetry(opCtx, "applyOps_delete", ns, [&] {
             WriteUnitOfWork wuow(opCtx);
             if (timestamp != Timestamp::min()) {
@@ -1997,8 +1993,8 @@ Status applyCommand_inlock(OperationContext* opCtx,
         auto op = kOpsMap.find(o.firstElementFieldName());
         if (op == kOpsMap.end()) {
             return Status(ErrorCodes::BadValue,
-                          mongoutils::str::stream() << "Invalid key '" << o.firstElementFieldName()
-                                                    << "' found in field 'o'");
+                          str::stream() << "Invalid key '" << o.firstElementFieldName()
+                                        << "' found in field 'o'");
         }
 
         const ApplyOpMetadata& curOpToApply = op->second;
@@ -2098,6 +2094,10 @@ void oplogCheckCloseDatabase(OperationContext* opCtx, const Database* db) {
     if (db->name() == "local") {
         localOplogInfo(opCtx->getServiceContext()).oplog = nullptr;
     }
+}
+
+void clearLocalOplogPtr() {
+    localOplogInfo(getGlobalServiceContext()).oplog = nullptr;
 }
 
 void acquireOplogCollectionForLogging(OperationContext* opCtx) {

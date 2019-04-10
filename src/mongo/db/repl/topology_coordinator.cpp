@@ -1688,35 +1688,30 @@ void TopologyCoordinator::fillMemberData(BSONObjBuilder* result) {
     }
 }
 
-std::string
-TopologyCoordinator::determineHorizon( const int incomingPort,
-        const std::map<std::string,HostAndPort> &forwardMapping,
-        const std::map<HostAndPort,std::string> &reverseMapping,
-        const ClientMetadataIsMasterState::SplitHorizonParameters &horizonParameters )
-{
+std::string TopologyCoordinator::determineHorizon(
+    const int incomingPort,
+    const std::map<std::string, HostAndPort>& forwardMapping,
+    const std::map<HostAndPort, std::string>& reverseMapping,
+    const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParameters) {
 #if 1
-    if( horizonParameters.explicitHorizonName )
-    {
-        // Unlike `appName`, the explicit horizon request isn't checked for validity with a fallback -- failure to select a valid horizon name explicitly will lead to command failure.
+    if (horizonParameters.explicitHorizonName) {
+        // Unlike `appName`, the explicit horizon request isn't checked for validity with a fallback
+        // -- failure to select a valid horizon name explicitly will lead to command failure.
         log() << "Explicit Horizon Name case";
         return *horizonParameters.explicitHorizonName;
-    }
-    else if( horizonParameters.connectionTarget )
-    {
+    } else if (horizonParameters.connectionTarget) {
         log() << "Connection target case";
-        const HostAndPort connectionTarget( *horizonParameters.connectionTarget );
-        auto found= reverseMapping.find( connectionTarget );
-        if( found != end( reverseMapping ) ) return found->second;
-    }
-    else if( horizonParameters.sniName )
-    {
+        const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
+        auto found = reverseMapping.find(connectionTarget);
+        if (found != end(reverseMapping))
+            return found->second;
+    } else if (horizonParameters.sniName) {
         log() << "SNI Name match case";
-        const HostAndPort connectionTarget( *horizonParameters.sniName, incomingPort );
-        auto found= reverseMapping.find( connectionTarget );
-        if( found != end( reverseMapping ) ) return found->second;
-    }
-    else if( forwardMapping.count( horizonParameters.appName ) )
-    {
+        const HostAndPort connectionTarget(*horizonParameters.sniName, incomingPort);
+        auto found = reverseMapping.find(connectionTarget);
+        if (found != end(reverseMapping))
+            return found->second;
+    } else if (forwardMapping.count(horizonParameters.appName)) {
         log() << "AppName case";
         return horizonParameters.appName;
     }
@@ -1725,9 +1720,9 @@ TopologyCoordinator::determineHorizon( const int incomingPort,
     return ReplicationCoordinator::defaultZone;
 }
 
-void
-TopologyCoordinator::fillIsMasterForReplSet( IsMasterResponse*const response,
-        const ClientMetadataIsMasterState::SplitHorizonParameters &horizonParams) {
+void TopologyCoordinator::fillIsMasterForReplSet(
+    IsMasterResponse* const response,
+    const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParams) {
     const MemberState myState = getMemberState();
     if (!_rsConfig.isInitialized()) {
         response->markAsNoConfig();
@@ -1740,30 +1735,30 @@ TopologyCoordinator::fillIsMasterForReplSet( IsMasterResponse*const response,
         return;
     }
 
-    invariant( !_rsConfig.members().empty() );
+    invariant(!_rsConfig.members().empty());
 
-    const auto &self= _rsConfig.members()[ _selfIndex ];
+    const auto& self = _rsConfig.members()[_selfIndex];
 
-    const auto &forwardMapping= self.getHorizonMappings();
-    const auto &reverseMapping= self.getHorizonReverseMappings();
+    const auto& forwardMapping = self.getHorizonMappings();
+    const auto& reverseMapping = self.getHorizonReverseMappings();
 
-    const int incomingPort= stdx::as_const( serverGlobalParams.port );
-    const std::string horizon= determineHorizon( incomingPort, forwardMapping, reverseMapping,
-            horizonParams );
+    const int incomingPort = stdx::as_const(serverGlobalParams.port);
+    const std::string horizon =
+        determineHorizon(incomingPort, forwardMapping, reverseMapping, horizonParams);
 
     log() << "Determined to use \"" << horizon << "\" as the horizon name";
 
-    for (const auto &member: _rsConfig.members()){
+    for (const auto& member : _rsConfig.members()) {
         if (member.isHidden() || member.getSlaveDelay() > Seconds{0}) {
             continue;
         }
 
         if (member.isElectable()) {
-            response->addHost(member.getHostAndPort( horizon ), member.getHorizonMappings());
+            response->addHost(member.getHostAndPort(horizon), member.getHorizonMappings());
         } else if (member.isArbiter()) {
-            response->addArbiter(member.getHostAndPort( horizon ), member.getHorizonMappings());
+            response->addArbiter(member.getHostAndPort(horizon), member.getHorizonMappings());
         } else {
-            response->addPassive(member.getHostAndPort( horizon ), member.getHorizonMappings());
+            response->addPassive(member.getHostAndPort(horizon), member.getHorizonMappings());
         }
     }
 
@@ -1776,7 +1771,7 @@ TopologyCoordinator::fillIsMasterForReplSet( IsMasterResponse*const response,
 
     const MemberConfig* curPrimary = _currentPrimaryMember();
     if (curPrimary) {
-        response->setPrimary(curPrimary->getHostAndPort( horizon ), curPrimary->getHorizonMappings());
+        response->setPrimary(curPrimary->getHostAndPort(horizon), curPrimary->getHorizonMappings());
     }
 
     const MemberConfig& selfConfig = _rsConfig.getMemberAt(_selfIndex);

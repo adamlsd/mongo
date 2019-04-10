@@ -1431,11 +1431,11 @@ StatusWith<TLSVersion> mapTLSVersion(SSLContextRef ssl) {
             return TLSVersion::kUnknown;
     }
 }
-}//namespace
+}  // namespace
 
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCertificate(
-    ::SSLContextRef ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) try{
+    ::SSLContextRef ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) try {
 
     // Record TLS version stats
     auto tlsVersion = mapTLSVersion(ssl);
@@ -1453,8 +1453,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         return {boost::none};
     }
 
-    const auto badCert = [](StringData msg,
-                            bool warn = false) -> boost::optional<SSLPeerInfo> {
+    const auto badCert = [](StringData msg, bool warn = false) -> boost::optional<SSLPeerInfo> {
         constexpr StringData prefix = "SSL peer certificate validation failed: "_sd;
         if (warn) {
             warning() << prefix << msg;
@@ -1482,7 +1481,8 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
                                              << stringFromOSStatus(status),
                                _weakValidation);
             }
-            if( _weakValidation ) return boost::none;
+            if (_weakValidation)
+                return boost::none;
         }
     }
 
@@ -1560,8 +1560,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         // If this is an SSL server context (on a mongod/mongos)
         // parse any client roles out of the client certificate.
         auto peerCertificateRoles = uassertStatusOK(parsePeerRoles(cfdict.get()));
-        return boost::make_optional(
-            SSLPeerInfo(peerSubjectName, std::move(peerCertificateRoles)));
+        return boost::make_optional(SSLPeerInfo(peerSubjectName, std::move(peerCertificateRoles)));
     }
 
     // If this is an SSL client context (on a MongoDB server or client)
@@ -1625,10 +1624,8 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
     }
 
     return SSLPeerInfo(peerSubjectName, stdx::unordered_set<RoleName>());
-}
-catch( const DBException &ex )
-{
-return ex.toStatus();
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 int SSLManagerApple::SSL_read(SSLConnectionInterface* conn, void* buf, int num) {

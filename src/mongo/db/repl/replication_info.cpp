@@ -70,13 +70,11 @@ using std::stringstream;
 
 namespace repl {
 namespace {
-void appendReplicationInfo(OperationContext* opCtx,
-                           BSONObjBuilder& result,
-                           int level){
+void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int level) {
     ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
     if (replCoord->getSettings().usingReplSets()) {
-        const auto horizonParams=
-            ClientMetadataIsMasterState::get( opCtx->getClient() ).getSplitHorizonParameters();
+        const auto horizonParams =
+            ClientMetadataIsMasterState::get(opCtx->getClient()).getSplitHorizonParameters();
         IsMasterResponse isMasterResponse;
         replCoord->fillIsMasterForReplSet(&isMasterResponse, horizonParams);
         result.appendElements(isMasterResponse.toBSON());
@@ -280,11 +278,12 @@ public:
             parsedClientMetadata->logClientMetadata(opCtx->getClient());
 
             using namespace std::literals::string_literals;
-            clientMetadataIsMasterState.setHorizonParameters( opCtx->getClient(),
-                    parsedClientMetadata->getApplicationName().toString(),
-                    opCtx->getClient()->session()->getSniName(), // SNI Name from connection.
-                    boost::none, // No Connection target support yet.
-                    boost::none );// No Explicit horizon name support yet.
+            clientMetadataIsMasterState.setHorizonParameters(
+                opCtx->getClient(),
+                parsedClientMetadata->getApplicationName().toString(),
+                opCtx->getClient()->session()->getSniName(),  // SNI Name from connection.
+                boost::none,                                  // No Connection target support yet.
+                boost::none);  // No Explicit horizon name support yet.
             clientMetadataIsMasterState.setClientMetadata(opCtx->getClient(),
                                                           std::move(parsedClientMetadata));
         }

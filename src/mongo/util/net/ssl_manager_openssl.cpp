@@ -359,16 +359,14 @@ private:
 std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
 SSLThreadInfo::ThreadIDManager SSLThreadInfo::_idManager;
 
-namespace
-{
-boost::optional<std::string>
-getRawSNIServerName( const SSL *const ssl )
-{
+namespace {
+boost::optional<std::string> getRawSNIServerName(const SSL* const ssl) {
     const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
-    if( !name ) return boost::none;
+    if (!name)
+        return boost::none;
     return std::string(name);
 }
-}//namespace
+}  // namespace
 
 class SSLConnectionOpenSSL : public SSLConnectionInterface {
 public:
@@ -1490,7 +1488,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
     if (!_sslConfiguration.hasCA && isSSLServer)
         return boost::none;
 
-    UniqueX509 peerCert ( SSL_get_peer_certificate(conn));
+    UniqueX509 peerCert(SSL_get_peer_certificate(conn));
 
     if (peerCert == nullptr) {  // no certificate presented by peer
         if (_weakValidation) {
@@ -1532,7 +1530,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerOpenSSL::parseAndValidatePeer
     }
 
     stdx::unordered_set<RoleName> peerCertificateRoles =
-uassertStatusOK(_parsePeerRoles(peerCert.get()));
+        uassertStatusOK(_parsePeerRoles(peerCert.get()));
 
     // If this is an SSL client context (on a MongoDB server or client)
     // perform hostname validation of the remote server
@@ -1553,17 +1551,15 @@ uassertStatusOK(_parsePeerRoles(peerCert.get()));
     bool cnMatch = false;
     StringBuilder certificateNames;
 
-    using StackType= STACK_OF(GENERAL_NAME);
-    struct StackDeleter
-    {
-        void operator()( StackType *const names ) const noexcept { 
+    using StackType = STACK_OF(GENERAL_NAME);
+    struct StackDeleter {
+        void operator()(StackType* const names) const noexcept {
             sk_GENERAL_NAME_pop_free(names, GENERAL_NAME_free);
         }
     };
 
-    
-    std::unique_ptr<StackType, StackDeleter>sanNames (
-    static_cast<StackType*>(
+
+    std::unique_ptr<StackType, StackDeleter> sanNames(static_cast<StackType*>(
         X509_get_ext_d2i(peerCert.get(), NID_subject_alt_name, nullptr, nullptr)));
 
     if (sanNames != nullptr) {
@@ -1637,14 +1633,12 @@ uassertStatusOK(_parsePeerRoles(peerCert.get()));
             warning() << msg;
         } else {
             error() << msg;
-            uassertStatusOK( Status(ErrorCodes::SSLHandshakeFailed, msg));
+            uassertStatusOK(Status(ErrorCodes::SSLHandshakeFailed, msg));
         }
     }
 
     return SSLPeerInfo(peerSubject);
-}
-catch( const DBException &ex )
-{
+} catch (const DBException& ex) {
     return ex.toStatus();
 }
 

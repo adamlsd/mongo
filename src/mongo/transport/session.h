@@ -145,7 +145,9 @@ public:
     virtual const HostAndPort& remote() const = 0;
     virtual const HostAndPort& local() const = 0;
 
-	virtual boost::optional<std::string> getSniName() const { return boost::none; }
+    virtual boost::optional<std::string> getSniName() const {
+        return boost::none;
+    }
 
     /**
      * Atomically set all of the session tags specified in the 'tagsToSet' bit field. If the

@@ -235,10 +235,11 @@ StatusWith<stdx::unordered_set<RoleName>> parsePeerRoles(PCCERT_CONTEXT cert) {
                        reinterpret_cast<char*>(extension->Value.pbData) + extension->Value.cbData));
 }
 
-namespace
-{
-    // TODO
-    boost::optional<std::string> getSNIServerName_impl() { return boost::none; }
+namespace {
+// TODO
+boost::optional<std::string> getSNIServerName_impl() {
+    return boost::none;
+}
 }
 
 /**
@@ -257,7 +258,7 @@ public:
     ~SSLConnectionWindows();
 
     std::string getSNIServerName() const final {
-        return getSNIServerName_impl().value_or( "" );
+        return getSNIServerName_impl().value_or("");
     };
 };
 
@@ -1725,9 +1726,9 @@ TLSVersion mapTLSVersion(PCtxtHandle ssl) {
     SECURITY_STATUS ss = QueryContextAttributes(ssl, SECPKG_ATTR_CONNECTION_INFO, &connInfo);
 
     if (ss != SEC_E_OK) {
-        uassertStatusOK( Status(ErrorCodes::SSLHandshakeFailed,
-                      str::stream() << "QueryContextAttributes for connection info failed with"
-                                    << ss));
+        uassertStatusOK(Status(
+            ErrorCodes::SSLHandshakeFailed,
+            str::stream() << "QueryContextAttributes for connection info failed with" << ss));
     }
 
     switch (connInfo.dwProtocol) {
@@ -1744,13 +1745,13 @@ TLSVersion mapTLSVersion(PCtxtHandle ssl) {
             return TLSVersion::kUnknown;
     }
 }
-}//namespace
+}  // namespace
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeerCertificate(
     PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) try {
     PCCERT_CONTEXT cert;
 
-    auto tlsVersion= mapTLSVersion(ssl);
+    auto tlsVersion = mapTLSVersion(ssl);
 
     recordTLSVersion(tlsVersion, hostForLogging);
 
@@ -1821,13 +1822,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     if (remoteHost.empty()) {
         stdx::unordered_set<RoleName> peerCertificateRoles = uassertStatusOK(parsePeerRoles(cert));
 
-        return SSLPeerInfo(peerSubjectName, getSNIServerName_impl(), std::move(peerCertificateRoles));
+        return SSLPeerInfo(
+            peerSubjectName, getSNIServerName_impl(), std::move(peerCertificateRoles));
     } else {
         return SSLPeerInfo(peerSubjectName);
     }
-}
-catch( const DBException &ex )
-{
+} catch (const DBException& ex) {
     return ex.toStatus();
 }
 

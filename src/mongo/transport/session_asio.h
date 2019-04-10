@@ -511,10 +511,9 @@ private:
         return boost::none;
     }
 
-	boost::optional< std::string > getSniName() const override
-	{
-		return SSLPeerInfo::forSession(shared_from_this()).sniName;
-	}
+    boost::optional<std::string> getSniName() const override {
+        return SSLPeerInfo::forSession(shared_from_this()).sniName;
+    }
 #endif
 
     template <typename Stream, typename ConstBufferSequence>
@@ -619,8 +618,9 @@ private:
                 auto& sslPeerInfo = SSLPeerInfo::forSession(shared_from_this());
 
                 if (sslPeerInfo.subjectName.empty()) {
-                    auto optPeerInfo = uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
-                        _sslSocket->native_handle(), "", _remote));
+                    auto optPeerInfo =
+                        uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
+                            _sslSocket->native_handle(), "", _remote));
 
                     // The value of swPeerInfo is a bit complicated:
                     //

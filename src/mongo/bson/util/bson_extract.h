@@ -73,8 +73,8 @@ Status bsonExtractTypedField(const BSONObj& object,
  * matching element is not "type".
  */
 BSONElement bsonExtractTypedField(const BSONObj& object,
-                                         const StringData fieldName,
-                                         const BSONType type) ;
+                                  const StringData fieldName,
+                                  const BSONType type);
 
 /**
  * Finds a bool-like element named "fieldName" in "object".

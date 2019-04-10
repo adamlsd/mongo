@@ -165,8 +165,9 @@ public:
 
     Status processReplSetGetStatus(BSONObjBuilder*, ReplSetGetStatusResponseStyle) override;
 
-    void fillIsMasterForReplSet(repl::IsMasterResponse*,
-			const ClientMetadataIsMasterState::SplitHorizonParameters &horizon) override;
+    void fillIsMasterForReplSet(
+        repl::IsMasterResponse*,
+        const ClientMetadataIsMasterState::SplitHorizonParameters& horizon) override;
 
     void appendSlaveInfoData(BSONObjBuilder*) override;
 

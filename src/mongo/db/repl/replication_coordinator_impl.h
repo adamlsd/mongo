@@ -158,13 +158,13 @@ public:
 
     bool shouldRelaxIndexConstraints(OperationContext* opCtx, const NamespaceString& ns) override;
 
-    void setMyLastAppliedOpTimeAndWallTime(const OpTimeAndWallTime& opTimeAndWallTime)override;
-    void setMyLastDurableOpTimeAndWallTime(const OpTimeAndWallTime& opTimeAndWallTime)override;
+    void setMyLastAppliedOpTimeAndWallTime(const OpTimeAndWallTime& opTimeAndWallTime) override;
+    void setMyLastDurableOpTimeAndWallTime(const OpTimeAndWallTime& opTimeAndWallTime) override;
 
-    void setMyLastAppliedOpTimeAndWallTimeForward(
-        const OpTimeAndWallTime& opTimeAndWallTime, DataConsistency consistency)override;
+    void setMyLastAppliedOpTimeAndWallTimeForward(const OpTimeAndWallTime& opTimeAndWallTime,
+                                                  DataConsistency consistency) override;
     void setMyLastDurableOpTimeAndWallTimeForward(
-        const OpTimeAndWallTime& opTimeAndWallTime)override;
+        const OpTimeAndWallTime& opTimeAndWallTime) override;
 
     void resetMyLastOpTimes() override;
 
@@ -181,7 +181,7 @@ public:
                                        boost::optional<Date_t> deadline) override;
 
     Status waitUntilOpTimeForRead(OperationContext* opCtx,
-                                          const ReadConcernArgs& readConcern) override;
+                                  const ReadConcernArgs& readConcern) override;
     Status awaitTimestampCommitted(OperationContext* opCtx, Timestamp ts) override;
     OID getElectionId() override;
 
@@ -208,7 +208,9 @@ public:
     Status processReplSetGetStatus(BSONObjBuilder* result,
                                    ReplSetGetStatusResponseStyle responseStyle) override;
 
-    void fillIsMasterForReplSet(IsMasterResponse* result, const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParams) override;
+    void fillIsMasterForReplSet(
+        IsMasterResponse* result,
+        const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParams) override;
 
     void appendSlaveInfoData(BSONObjBuilder* result) override;
 

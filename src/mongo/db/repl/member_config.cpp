@@ -79,7 +79,7 @@ const Seconds kMaxSlaveDelay(3600 * 24 * 366);
 }  // namespace
 
 MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
-    uassertStatusOK( bsonCheckOnlyHasFields(
+    uassertStatusOK(bsonCheckOnlyHasFields(
         "replica set member configuration", mcfg, kLegalMemberConfigFieldNames));
 
     //
@@ -87,12 +87,13 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     //
     BSONElement idElement = mcfg[kIdFieldName];
     if (idElement.eoo()) {
-        uassertStatusOK(Status(ErrorCodes::NoSuchKey, str::stream() << kIdFieldName << " field is missing"));
+        uassertStatusOK(
+            Status(ErrorCodes::NoSuchKey, str::stream() << kIdFieldName << " field is missing"));
     }
     if (!idElement.isNumber()) {
-        uassertStatusOK( Status(ErrorCodes::TypeMismatch,
-                      str::stream() << kIdFieldName << " field has non-numeric type "
-                                    << typeName(idElement.type())));
+        uassertStatusOK(Status(ErrorCodes::TypeMismatch,
+                               str::stream() << kIdFieldName << " field has non-numeric type "
+                                             << typeName(idElement.type())));
     }
     _id = idElement.numberInt();
 
@@ -100,17 +101,17 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     // Parse h field.
     //
     std::string hostAndPortString;
-    uassertStatusOK( bsonExtractStringField(mcfg, kHostFieldName, &hostAndPortString));
+    uassertStatusOK(bsonExtractStringField(mcfg, kHostFieldName, &hostAndPortString));
     boost::trim(hostAndPortString);
     HostAndPort host;
-    uassertStatusOK( host.initialize(hostAndPortString));
+    uassertStatusOK(host.initialize(hostAndPortString));
     if (!host.hasPort()) {
         // make port explicit even if default.
         host = HostAndPort(host.host(), host.port());
     }
 
-    this->_horizonForward.insert( { "__default", std::move( host ) } );
-    this->_horizonReverse.insert( { std::move( host ), "__default" } );
+    this->_horizonForward.insert({"__default", std::move(host)});
+    this->_horizonReverse.insert({std::move(host), "__default"});
 
     //
     // Parse votes field.
@@ -121,15 +122,16 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     } else if (votesElement.isNumber()) {
         _votes = votesElement.numberInt();
     } else {
-        uassertStatusOK( Status(ErrorCodes::TypeMismatch,
-                      str::stream() << kVotesFieldName << " field value has non-numeric type "
-                                    << typeName(votesElement.type())));
+        uassertStatusOK(Status(ErrorCodes::TypeMismatch,
+                               str::stream() << kVotesFieldName
+                                             << " field value has non-numeric type "
+                                             << typeName(votesElement.type())));
     }
 
     //
     // Parse arbiterOnly field.
     //
-    uassertStatusOK( bsonExtractBooleanFieldWithDefault(
+    uassertStatusOK(bsonExtractBooleanFieldWithDefault(
         mcfg, kArbiterOnlyFieldName, kArbiterOnlyFieldDefault, &_arbiterOnly));
 
     //
@@ -142,9 +144,9 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     } else if (priorityElement.isNumber()) {
         _priority = priorityElement.numberDouble();
     } else {
-        uassertStatusOK( Status(ErrorCodes::TypeMismatch,
-                      str::stream() << kPriorityFieldName << " field has non-numeric type "
-                                    << typeName(priorityElement.type())));
+        uassertStatusOK(Status(ErrorCodes::TypeMismatch,
+                               str::stream() << kPriorityFieldName << " field has non-numeric type "
+                                             << typeName(priorityElement.type())));
     }
 
     //
@@ -156,9 +158,10 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     } else if (slaveDelayElement.isNumber()) {
         _slaveDelay = Seconds(slaveDelayElement.numberInt());
     } else {
-        uassertStatusOK( Status(ErrorCodes::TypeMismatch,
-                      str::stream() << kSlaveDelayFieldName << " field value has non-numeric type "
-                                    << typeName(slaveDelayElement.type())));
+        uassertStatusOK(Status(ErrorCodes::TypeMismatch,
+                               str::stream() << kSlaveDelayFieldName
+                                             << " field value has non-numeric type "
+                                             << typeName(slaveDelayElement.type())));
     }
 
     //
@@ -170,7 +173,7 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     //
     // Parse buildIndexes field.
     //
-    uassertStatusOK( bsonExtractBooleanFieldWithDefault(
+    uassertStatusOK(bsonExtractBooleanFieldWithDefault(
         mcfg, kBuildIndexesFieldName, kBuildIndexesFieldDefault, &_buildIndexes));
 
     //
@@ -181,67 +184,68 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     if (status.isOK()) {
         for (auto&& tag : tagsElement.Obj()) {
             if (tag.type() != String) {
-                uassertStatusOK( Status(ErrorCodes::TypeMismatch,
-                              str::stream() << "tags." << tag.fieldName()
-                                            << " field has non-string value of type "
-                                            << typeName(tag.type())));
+                uassertStatusOK(Status(ErrorCodes::TypeMismatch,
+                                       str::stream() << "tags." << tag.fieldName()
+                                                     << " field has non-string value of type "
+                                                     << typeName(tag.type())));
             }
             _tags.push_back(tagConfig->makeTag(tag.fieldNameStringData(), tag.valueStringData()));
         }
     } else if (ErrorCodes::NoSuchKey != status) {
-        uassertStatusOK( status);
+        uassertStatusOK(status);
     }
 
-    auto horizonsElement=
-    [&]()-> boost::optional< BSONElement >{
-    try
-    {
-        return bsonExtractTypedField( mcfg, kHorizonsFieldName, Object );
-    }catch( const ExceptionFor<ErrorCodes::NoSuchKey> & ){ return boost::none; }
+    auto horizonsElement = [&]() -> boost::optional<BSONElement> {
+        try {
+            return bsonExtractTypedField(mcfg, kHorizonsFieldName, Object);
+        } catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
+            return boost::none;
+        }
     }();
-    
-    if( horizonsElement )
-    {
+
+    if (horizonsElement) {
         std::cerr << "Found a horizons element." << std::endl;
-        const auto &horizonsObject= horizonsElement->Obj();
-        std::size_t horizonCount= 0;
+        const auto& horizonsObject = horizonsElement->Obj();
+        std::size_t horizonCount = 0;
         using std::begin;
         using std::end;
-        auto convert= 
-        [&horizonCount]( auto &&horizon )
-        {
-            using ReturnType= decltype( _horizonForward )::value_type;
+        auto convert = [&horizonCount](auto&& horizon) {
+            using ReturnType = decltype(_horizonForward)::value_type;
             ++horizonCount;
-            const auto horizonName= horizon.fieldName();
+            const auto horizonName = horizon.fieldName();
 
-            if( horizon.type() != String ) {uasserted( ErrorCodes::TypeMismatch,
-                      str::stream() << "horizons." << horizonName
-                                    << " field has non-object value of type "
-                                    << typeName(horizon.type()));}
+            if (horizon.type() != String) {
+                uasserted(ErrorCodes::TypeMismatch,
+                          str::stream() << "horizons." << horizonName
+                                        << " field has non-object value of type "
+                                        << typeName(horizon.type()));
+            }
 
             std::cerr << "Adding forward mapping for horizon member " << horizonName
-                    << " to address " << HostAndPort( horizon.valueStringData() ) << std::endl;
-            return ReturnType{ horizonName, HostAndPort( horizon.valueStringData() ) };
+                      << " to address " << HostAndPort(horizon.valueStringData()) << std::endl;
+            return ReturnType{horizonName, HostAndPort(horizon.valueStringData())};
         };
-        std::transform( begin( horizonsObject ), end( horizonsObject ),
-                inserter( _horizonForward, end( _horizonForward ) ),
-                convert );
+        std::transform(begin(horizonsObject),
+                       end(horizonsObject),
+                       inserter(_horizonForward, end(_horizonForward)),
+                       convert);
 
-        if( _horizonForward.size() < horizonCount )
-        uasserted( ErrorCodes::BadValue, "Duplicate horizon name found." );
+        if (_horizonForward.size() < horizonCount)
+            uasserted(ErrorCodes::BadValue, "Duplicate horizon name found.");
 
-        std::transform( begin( _horizonForward ), end( _horizonForward ),
-                inserter( _horizonReverse, end(_horizonReverse ) ),
-                []( auto &&forwardHorizon )
-                {
-                    using ReturnType= decltype( _horizonReverse )::value_type;
-                    std::cerr << "Adding reverse mapping for horizon member " << forwardHorizon.first
-                            << " to address " << forwardHorizon.second << std::endl;
-                    return ReturnType{ forwardHorizon.second, forwardHorizon.first };
-                } );
+        std::transform(begin(_horizonForward),
+                       end(_horizonForward),
+                       inserter(_horizonReverse, end(_horizonReverse)),
+                       [](auto&& forwardHorizon) {
+                           using ReturnType = decltype(_horizonReverse)::value_type;
+                           std::cerr << "Adding reverse mapping for horizon member "
+                                     << forwardHorizon.first << " to address "
+                                     << forwardHorizon.second << std::endl;
+                           return ReturnType{forwardHorizon.second, forwardHorizon.first};
+                       });
 
-        if( _horizonForward.size() != _horizonReverse.size() ) 
-        uasserted( ErrorCodes::BadValue, "Duplicate horizon member found." );
+        if (_horizonForward.size() != _horizonReverse.size())
+            uasserted(ErrorCodes::BadValue, "Duplicate horizon member found.");
     }
 
     //
@@ -315,7 +319,7 @@ Status MemberConfig::validate() const {
 }
 
 bool MemberConfig::hasTags(const ReplSetTagConfig& tagConfig) const {
-    for (auto  &tag : _tags){
+    for (auto& tag : _tags) {
         std::string tagKey = tagConfig.getTagKey(tag);
         if (tagKey[0] == '$') {
             // Filter out internal tags
@@ -336,7 +340,7 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     configBuilder.append("priority", _priority);
 
     BSONObjBuilder tags(configBuilder.subobjStart("tags"));
-    for (auto tag: _tags){
+    for (auto tag : _tags) {
         std::string tagKey = tagConfig.getTagKey(tag);
         if (tagKey[0] == '$') {
             // Filter out internal tags
@@ -346,12 +350,10 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     }
     tags.done();
 
-    if( _horizonForward.size() > 1 )
-    {
-        BSONObjBuilder horizons( configBuilder.subobjStart( "horizons" ) );
-        for( const auto &horizon: _horizonForward )
-        {
-            configBuilder.append( horizon.first, horizon.second.toString() );
+    if (_horizonForward.size() > 1) {
+        BSONObjBuilder horizons(configBuilder.subobjStart("horizons"));
+        for (const auto& horizon : _horizonForward) {
+            configBuilder.append(horizon.first, horizon.second.toString());
         }
         horizons.done();
     }

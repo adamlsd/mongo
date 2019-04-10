@@ -72,7 +72,7 @@ public:
      * have the effect of altering "tagConfig" when "mcfg" describes a
      * tag not previously added to "tagConfig".
      */
-	MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig);
+    MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig);
 
     /**
      * Performs basic consistency checks on the member configuration.
@@ -90,28 +90,23 @@ public:
      * Gets the canonical name of this member, by which other members and clients
      * will contact it.
      */
-    const HostAndPort& getHostAndPort( const std::string &zone= "__default" ) const {
-		assert( !this->_horizonForward.empty() );
-		assert( !zone.empty() );
-		auto found= this->_horizonForward.find( zone );
-		if( found == end( this->_horizonForward ) )
-		{
-			uasserted( ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << zone );
-		}
-		return found->second;
+    const HostAndPort& getHostAndPort(const std::string& zone = "__default") const {
+        assert(!this->_horizonForward.empty());
+        assert(!zone.empty());
+        auto found = this->_horizonForward.find(zone);
+        if (found == end(this->_horizonForward)) {
+            uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << zone);
+        }
+        return found->second;
     }
 
-	const auto &
-	getHorizonMappings() const
-	{
-		return this->_horizonForward;
-	}
+    const auto& getHorizonMappings() const {
+        return this->_horizonForward;
+    }
 
-	const auto &
-	getHorizonReverseMappings() const
-	{
-		return this->_horizonReverse;
-	}
+    const auto& getHorizonReverseMappings() const {
+        return this->_horizonReverse;
+    }
 
     /**
      * Gets this member's priority.  Higher means more likely to be elected
@@ -177,10 +172,9 @@ public:
      */
     bool hasTags(const ReplSetTagConfig& tagConfig) const;
 
-	bool hasHorizons() const
-	{
-		return !this->_horizonForward.empty();
-	}
+    bool hasHorizons() const {
+        return !this->_horizonForward.empty();
+    }
 
     /**
      * Gets a begin iterator over the tags for this member.
@@ -209,7 +203,9 @@ public:
     BSONObj toBSON(const ReplSetTagConfig& tagConfig) const;
 
 private:
-	const HostAndPort &_host() const { return this->_horizonForward.find( "__default" )->second; }
+    const HostAndPort& _host() const {
+        return this->_horizonForward.find("__default")->second;
+    }
 
     int _id;
     double _priority;  // 0 means can never be primary
@@ -220,8 +216,8 @@ private:
     bool _buildIndexes;             // if false, do not create any non-_id indexes
     std::vector<ReplSetTag> _tags;  // tagging for data center, rack, etc.
 
-	std::map<std::string, HostAndPort> _horizonForward;
-	std::map<HostAndPort, std::string> _horizonReverse;
+    std::map<std::string, HostAndPort> _horizonForward;
+    std::map<HostAndPort, std::string> _horizonReverse;
 };
 
 }  // namespace repl

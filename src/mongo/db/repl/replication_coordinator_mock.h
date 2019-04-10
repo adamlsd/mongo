@@ -145,11 +145,11 @@ public:
     virtual OpTime getMyLastDurableOpTime() const;
 
     Status waitUntilOpTimeForRead(OperationContext* opCtx,
-                                          const ReadConcernArgs& settings) override;
+                                  const ReadConcernArgs& settings) override;
 
     Status waitUntilOpTimeForReadUntil(OperationContext* opCtx,
-                                               const ReadConcernArgs& settings,
-                                               boost::optional<Date_t> deadline) override;
+                                       const ReadConcernArgs& settings,
+                                       boost::optional<Date_t> deadline) override;
     virtual Status awaitTimestampCommitted(OperationContext* opCtx, Timestamp ts);
     virtual OID getElectionId();
 
@@ -177,7 +177,9 @@ public:
 
     virtual Status processReplSetGetStatus(BSONObjBuilder*, ReplSetGetStatusResponseStyle);
 
-    void fillIsMasterForReplSet(IsMasterResponse* result, const ClientMetadataIsMasterState::SplitHorizonParameters &horizon ) override;
+    void fillIsMasterForReplSet(
+        IsMasterResponse* result,
+        const ClientMetadataIsMasterState::SplitHorizonParameters& horizon) override;
 
     virtual void appendSlaveInfoData(BSONObjBuilder* result);
 

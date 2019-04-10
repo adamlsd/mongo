@@ -201,13 +201,16 @@ public:
 
     void setReplSetVersion(long long version);
 
-    void addHost(const HostAndPort& host, const std::map<std::string,HostAndPort> &alts= {} );
+    void addHost(const HostAndPort& host, const std::map<std::string, HostAndPort>& alts = {});
 
-    void addPassive(const HostAndPort& passive, const std::map< std::string, HostAndPort > &alts= {} );
+    void addPassive(const HostAndPort& passive,
+                    const std::map<std::string, HostAndPort>& alts = {});
 
-    void addArbiter(const HostAndPort& arbiter, const std::map< std::string, HostAndPort > &alts= {} );
+    void addArbiter(const HostAndPort& arbiter,
+                    const std::map<std::string, HostAndPort>& alts = {});
 
-    void setPrimary(const HostAndPort& primary, const std::map< std::string, HostAndPort > &alts= {} );
+    void setPrimary(const HostAndPort& primary,
+                    const std::map<std::string, HostAndPort>& alts = {});
 
     void setIsArbiterOnly(bool arbiterOnly);
 
@@ -286,13 +289,12 @@ private:
     // that we are mid shutdown
     bool _shutdownInProgress;
 
-	struct AltConfig
-	{
-		HostAndPort primary;
-		std::vector<HostAndPort> hosts;
-		std::vector<HostAndPort> passives;
-		std::vector<HostAndPort> arbiters;
-	};
+    struct AltConfig {
+        HostAndPort primary;
+        std::vector<HostAndPort> hosts;
+        std::vector<HostAndPort> passives;
+        std::vector<HostAndPort> arbiters;
+    };
 
     std::map<std::string, AltConfig> _altHosts;
 };

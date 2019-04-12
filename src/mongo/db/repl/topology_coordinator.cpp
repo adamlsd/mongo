@@ -1688,38 +1688,6 @@ void TopologyCoordinator::fillMemberData(BSONObjBuilder* result) {
     }
 }
 
-std::string TopologyCoordinator::determineHorizon(
-    const int incomingPort,
-    const std::map<std::string, HostAndPort>& forwardMapping,
-    const std::map<HostAndPort, std::string>& reverseMapping,
-    const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParameters) {
-#if 1
-    if (horizonParameters.explicitHorizonName) {
-        // Unlike `appName`, the explicit horizon request isn't checked for validity with a fallback
-        // -- failure to select a valid horizon name explicitly will lead to command failure.
-        log() << "Explicit Horizon Name case";
-        return *horizonParameters.explicitHorizonName;
-    } else if (horizonParameters.connectionTarget) {
-        log() << "Connection target case";
-        const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
-        auto found = reverseMapping.find(connectionTarget);
-        if (found != end(reverseMapping))
-            return found->second;
-    } else if (horizonParameters.sniName) {
-        log() << "SNI Name match case";
-        const HostAndPort connectionTarget(*horizonParameters.sniName, incomingPort);
-        auto found = reverseMapping.find(connectionTarget);
-        if (found != end(reverseMapping))
-            return found->second;
-    } else if (forwardMapping.count(horizonParameters.appName)) {
-        log() << "AppName case";
-        return horizonParameters.appName;
-    }
-#endif
-    log() << "Fallthrough case";
-    return ReplicationCoordinator::defaultZone;
-}
-
 void TopologyCoordinator::fillIsMasterForReplSet(
     IsMasterResponse* const response,
     const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParams) {
@@ -1744,7 +1712,7 @@ void TopologyCoordinator::fillIsMasterForReplSet(
 
     const int incomingPort = stdx::as_const(serverGlobalParams.port);
     const std::string horizon =
-        determineHorizon(incomingPort, forwardMapping, reverseMapping, horizonParams);
+        SplitHorizon::determineHorizon(incomingPort, forwardMapping, reverseMapping, horizonParams);
 
     log() << "Determined to use \"" << horizon << "\" as the horizon name";
 

@@ -37,6 +37,7 @@
 #include "mongo/bson/oid.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/repl/split_horizon.h"
 #include "mongo/util/str.h"
 
 namespace mongo {
@@ -200,7 +201,7 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
             };
             horizon.append("hosts", stringifyVector(host.second.hosts));
             horizon.append("passives", stringifyVector(host.second.passives));
-            horizon.append("arbiters", stringifyVector(host.second.passives));
+            horizon.append("arbiters", stringifyVector(host.second.arbiters));
         }
     }
 }
@@ -532,7 +533,7 @@ void IsMasterResponse::addHost(const HostAndPort& host,
     for (auto& alt : alts) {
         _altHosts[alt.first].hosts.push_back(alt.second);
     }
-    _altHosts["__default"].hosts.push_back(host);
+    _altHosts[SplitHorizon::defaultHorizon].hosts.push_back(host);
 }
 
 void IsMasterResponse::addPassive(const HostAndPort& passive,
@@ -542,7 +543,7 @@ void IsMasterResponse::addPassive(const HostAndPort& passive,
     for (auto& alt : alts) {
         _altHosts[alt.first].passives.push_back(alt.second);
     }
-    _altHosts["__default"].passives.push_back(passive);
+    _altHosts[SplitHorizon::defaultHorizon].passives.push_back(passive);
 }
 
 void IsMasterResponse::addArbiter(const HostAndPort& arbiter,
@@ -552,7 +553,7 @@ void IsMasterResponse::addArbiter(const HostAndPort& arbiter,
     for (auto& alt : alts) {
         _altHosts[alt.first].arbiters.push_back(alt.second);
     }
-    _altHosts["__default"].arbiters.push_back(arbiter);
+    _altHosts[SplitHorizon::defaultHorizon].arbiters.push_back(arbiter);
 }
 
 void IsMasterResponse::setPrimary(const HostAndPort& primary,
@@ -562,7 +563,7 @@ void IsMasterResponse::setPrimary(const HostAndPort& primary,
     for (auto& alt : alts) {
         _altHosts[alt.first].primary = alt.second;
     }
-    _altHosts["__default"].primary = primary;
+    _altHosts[SplitHorizon::defaultHorizon].primary = primary;
 }
 
 void IsMasterResponse::setIsArbiterOnly(bool arbiterOnly) {

@@ -34,6 +34,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/repl/repl_set_tag.h"
+#include "mongo/db/repl/split_horizon.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
 
@@ -90,12 +91,12 @@ public:
      * Gets the canonical name of this member, by which other members and clients
      * will contact it.
      */
-    const HostAndPort& getHostAndPort(const std::string& zone = "__default") const {
-        assert(!this->_horizonForward.empty());
-        assert(!zone.empty());
-        auto found = this->_horizonForward.find(zone);
+    const HostAndPort& getHostAndPort(const std::string& horizon= SplitHorizon::defaultHorizon) const {
+        invariant(!this->_horizonForward.empty());
+        invariant(!horizon.empty());
+        auto found = this->_horizonForward.find(horizon);
         if (found == end(this->_horizonForward)) {
-            uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << zone);
+            uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
         }
         return found->second;
     }
@@ -172,10 +173,6 @@ public:
      */
     bool hasTags(const ReplSetTagConfig& tagConfig) const;
 
-    bool hasHorizons() const {
-        return !this->_horizonForward.empty();
-    }
-
     /**
      * Gets a begin iterator over the tags for this member.
      */
@@ -204,7 +201,7 @@ public:
 
 private:
     const HostAndPort& _host() const {
-        return this->_horizonForward.find("__default")->second;
+        return this->_horizonForward.find(SplitHorizon::defaultHorizon)->second;
     }
 
     int _id;

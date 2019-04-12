@@ -57,7 +57,6 @@ constexpr auto kOperatingSystem = "os"_sd;
 
 constexpr auto kArchitecture = "architecture"_sd;
 constexpr auto kName = "name"_sd;
-constexpr auto kZone = "zone"_sd;
 constexpr auto kType = "type"_sd;
 constexpr auto kVersion = "version"_sd;
 
@@ -73,7 +72,6 @@ constexpr uint32_t kMaxApplicationNameByteLength = 128U;
 
 struct ApplicationDocument {
     StringData name;
-    StringData zone = "__default";
 };
 
 ApplicationDocument parseApplicationDocument(const BSONObj& doc) {
@@ -106,40 +104,6 @@ ApplicationDocument parseApplicationDocument(const BSONObj& doc) {
             }
 
             rv.name = value;
-
-        } else if (name == kZone) {
-            if (e.type() != String) {
-                uasserted(
-                    ErrorCodes::TypeMismatch,
-                    str::stream() << "The '" << kApplication << "." << kZone
-                                  << "' field must be a string in the client metadata document");
-            }
-
-            StringData value = e.checkAndGetStringData();
-
-            if (value.size() > kMaxApplicationNameByteLength) {
-                uasserted(ErrorCodes::ClientMetadataAppNameTooLarge,
-                          str::stream() << "The '" << kApplication << "." << kZone
-                                        << "' field must be less then or equal to "
-                                        << kMaxApplicationNameByteLength
-                                        << " bytes in the client metadata document");
-            }
-
-            rv.zone = value;
-        }
-    }
-
-    auto divider = rv.name.find(3);
-
-    if (divider != std::string::npos && divider < rv.name.size()) {
-        StringData tail = rv.name.substr(divider + 1);
-
-
-        auto terminator = tail.find(1);
-
-        if (terminator != std::string::npos && terminator < tail.size()) {
-            rv.name = rv.name.substr(0, divider);
-            rv.zone = tail.substr(divider + 1, terminator);
         }
     }
 

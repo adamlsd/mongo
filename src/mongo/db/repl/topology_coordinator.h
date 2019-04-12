@@ -320,7 +320,7 @@ public:
     // replset.  Drivers interpret the isMaster fields according to the Server Discovery and
     // Monitoring Spec, see the "Parsing an isMaster response" section.
     void fillIsMasterForReplSet(IsMasterResponse* response,
-                                const ClientMetadataIsMasterState::SplitHorizonParameters& horizon);
+                                const SplitHorizon::Parameters& horizonParams);
 
     // Produce member data for the serverStatus command and diagnostic logging.
     void fillMemberData(BSONObjBuilder* result);
@@ -718,12 +718,6 @@ public:
 
     // Returns the name for a role.  Only used in unittests.
     static std::string roleToString(TopologyCoordinator::Role role);
-
-    static std::string determineHorizon(
-        int incomingPort,
-        const std::map<std::string, HostAndPort>& forwardMapping,
-        const std::map<HostAndPort, std::string>& reverseMapping,
-        const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParameters);
 
 private:
     typedef int UnelectableReasonMask;

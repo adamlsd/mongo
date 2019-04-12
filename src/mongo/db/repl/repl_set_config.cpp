@@ -148,9 +148,9 @@ Status ReplSetConfig::_initialize(const BSONObj& cfg,
         try {
             _members.emplace_back(memberBSON, &_tagConfig);
         } catch (const DBException& ex) {
-            uassertStatusOK(
-                Status(ErrorCodes::InvalidReplicaSetConfig,
-                       str::stream() << ex.toStatus().toString() << " for member:" << memberBSON));
+            uasserted(
+                ErrorCodes::InvalidReplicaSetConfig,
+                       str::stream() << ex.toStatus().toString() << " for member:" << memberBSON);
         }
     }
 

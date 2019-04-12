@@ -259,7 +259,6 @@ public:
         auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(opCtx->getClient());
         bool seenIsMaster = clientMetadataIsMasterState.hasSeenIsMaster();
 
-        // TODO(ADAM): Add horizon information to `clientMetadataIsMasterState`.  Rrrrghhh!
         if (!seenIsMaster) {
             clientMetadataIsMasterState.setSeenIsMaster();
         }

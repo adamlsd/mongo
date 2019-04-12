@@ -110,7 +110,7 @@
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers.h"
 #include "mongo/util/stacktrace.h"
-#include "mongo/util/stringutils.h"
+#include "mongo/util/str.h"
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
 
@@ -144,8 +144,7 @@ Status waitForSigningKeys(OperationContext* opCtx) {
         auto rsm = ReplicaSetMonitor::get(configCS.getSetName());
         // mongod will set minWireVersion == maxWireVersion for isMaster requests from
         // internalClient.
-        if (rsm && (rsm->getMaxWireVersion() < WireVersion::SUPPORTS_OP_MSG ||
-                    rsm->getMaxWireVersion() != rsm->getMinWireVersion())) {
+        if (rsm && (rsm->getMaxWireVersion() < WireVersion::SUPPORTS_OP_MSG)) {
             log() << "Not waiting for signing keys, not supported by the config shard "
                   << configCS.getSetName();
             return Status::OK();

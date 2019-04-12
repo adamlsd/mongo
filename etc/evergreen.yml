@@ -424,6 +424,16 @@ variables:
   - ubuntu1804-debug-aubsan-lite
   - ubuntu1804-debug-aubsan-async
 
+
+# List of all variants that make mh artifacts.
+# If a variant is listed here and has a push task, the mh artifacts are pushed
+- mh_variants: &mh_variants
+  - enterprise-debian92-64
+  - enterprise-macos
+  - enterprise-rhel-62-64-bit
+  - enterprise-rhel-70-64-bit
+  - enterprise-windows-64-2k8
+
 #######################################
 #            Functions                #
 #######################################
@@ -2802,6 +2812,8 @@ functions:
         value: ${project}/${build_variant}/${revision}/binaries/mongo-${build_id}.${ext|tgz}
       - key: mongo_cryptd
         value: ${project}/${build_variant}/${revision}/binaries/mongo-cryptd-${build_id}.${ext|tgz}
+      - key: mh_archive
+        value: ${project}/${build_variant}/${revision}/binaries/mh-${build_id}.${ext|tgz}
       - key: mongo_debugsymbols
         value: ${project}/${build_variant}/${revision}/debugsymbols/debugsymbols-${build_id}.${ext|tgz}
       - key: mongo_shell
@@ -3366,7 +3378,7 @@ tasks:
     - func: "build new tools"
     - func: "scons compile"
       vars:
-        targets: core tools dist dist-debugsymbols distsrc-${ext|tgz} ${msi_target|}
+        targets: core tools dist dist-debugsymbols distsrc-${ext|tgz} ${msi_target|} ${mh_target|}
         task_compile_flags: >-
           --use-new-tools
           --build-mongoreplay="${build_mongoreplay}"
@@ -3386,6 +3398,7 @@ tasks:
           mv mongodb-src-*.${ext|tgz} distsrc.${ext|tgz}
           mv mongodb-*-debugsymbols.${ext|tgz} mongo-debugsymbols.tgz || true
           mv mongodb-*.${ext|tgz} mongodb-binaries.tgz
+          mv mh-*.${ext|tgz} mh-binaries.${ext|tgz} || true
 
     # Tar unstripped dbtest, to be archived in case of failure
     - command: archive.targz_pack
@@ -3520,6 +3533,17 @@ tasks:
         permissions: public-read
         content_type: ${content_type|application/gzip}
         display_name: CryptD Binaries
+    - command: s3.put
+      params:
+        optional: true
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        local_file: src/mh-binaries.${ext|tgz}
+        remote_file: ${mh_archive}
+        bucket: mciuploads
+        permissions: public-read
+        content_type: ${content_type|application/gzip}
+        display_name: MH
     - command: s3.put
       params:
         optional: true
@@ -6820,6 +6844,8 @@ tasks:
         if command -V cygpath; then
             echo "Installing core requirements into Python at '${python}'"
             "$(cygpath "${python}")" -mpip install -r etc/pip/core-requirements.txt
+        else
+            $python -m pip install -r etc/pip/core-requirements.txt
         fi
   - func: "run tests"
     vars:
@@ -7102,6 +7128,15 @@ tasks:
         bucket: mciuploads
         local_file: src/mongo-cryptd.tgz
         build_variants: *mongocryptd_variants
+    # Fetch mh
+    - command: s3.get
+      params:
+        aws_key: ${aws_key}
+        aws_secret: ${aws_secret}
+        remote_file: ${mh_archive}
+        bucket: mciuploads
+        local_file: src/mh.tgz
+        build_variants: *mh_variants
     # Fetch the sources (on relevant variants only)
     - command: s3.get
       params:
@@ -7130,6 +7165,7 @@ tasks:
           mv mongo-binaries.tgz mongodb-${push_name}-${push_arch}-${suffix}.${ext|tgz}
           mv mongo-shell.tgz mongodb-shell-${push_name}-${push_arch}-${suffix}.${ext|tgz}
           mv mongo-cryptd.tgz mongodb-cryptd-${push_name}-${push_arch}-${suffix}.${ext|tgz} || true
+          mv mh.tgz mh-${push_name}-${push_arch}-${suffix}.${ext|tgz} || true
           mv mongo-debugsymbols.tgz mongodb-${push_name}-${push_arch}-debugsymbols-${suffix}.${ext|tgz} || true
           mv distsrc.${ext|tgz} mongodb-src-${src_suffix}.${ext|tar.gz} || true
           /usr/bin/find build/ -type f | grep msi$ | xargs -I original_filename cp original_filename mongodb-win32-${push_arch}-${suffix}.msi || true
@@ -7167,6 +7203,17 @@ tasks:
         content_type: ${content_type|application/gzip}
         remote_file: ${push_path}-STAGE/${push_name}/mongodb-cryptd-${push_name}-${push_arch}-${suffix}-${task_id}.${ext|tgz}
         build_variants: *mongocryptd_variants
+    # Put the mh tarball/zipfile
+    - command: s3.put
+      params:
+        aws_secret: ${aws_secret}
+        local_file: src/mh-${push_name}-${push_arch}-${suffix}.${ext|tgz}
+        aws_key: ${aws_key}
+        bucket: build-push-testing
+        permissions: public-read
+        content_type: ${content_type|application/gzip}
+        remote_file: ${push_path}-STAGE/${push_name}/mh-${push_name}-${push_arch}-${suffix}-${task_id}.${ext|tgz}
+        build_variants: *mh_variants
     # Put the source tarball
     - command: s3.put
       params:
@@ -7488,6 +7535,11 @@ tasks:
             - {'source': {'path': '${push_path}-STAGE/${push_name}/mongodb-cryptd-${push_name}-${push_arch}-${suffix}-${task_id}.${ext|tgz}', 'bucket': 'build-push-testing'},
                'destination': {'path': '${push_path}/mongodb-cryptd-${push_name}-${push_arch}-${suffix}.${ext|tgz}', 'bucket': '${push_bucket}'},
                'build_variants': *mongocryptd_variants}
+
+            # MH
+            - {'source': {'path': '${push_path}-STAGE/${push_name}/mh-${push_name}-${push_arch}-${suffix}-${task_id}.${ext|tgz}', 'bucket': 'build-push-testing'},
+               'destination': {'path': '${push_path}/mh-${push_name}-${push_arch}-${suffix}.${ext|tgz}', 'bucket': '${push_bucket}'},
+               'build_variants': *mh_variants}
 
             #Source tarball
             - {'source': {'path': '${push_path}-STAGE/${push_name}/mongodb-src-${src_suffix}-${task_id}.${ext|tar.gz}', 'bucket': 'build-push-testing'},
@@ -8984,7 +9036,7 @@ buildvariants:
   modules:
   - enterprise
   run_on:
-  - linux-64-amzn-test
+  - amazon1-2018-test
   batchtime: 1440 # 1 day
   expansions:
     push_path: linux
@@ -9007,7 +9059,7 @@ buildvariants:
   tasks:
   - name: compile_all_run_unittests_TG
     distros:
-    - linux-64-amzn-build
+    - amazon1-2018-build
   - name: aggregation_auth
   - name: aggregation
   - name: audit
@@ -9071,7 +9123,7 @@ buildvariants:
 - name: amazon
   display_name: SSL Amazon Linux
   run_on:
-  - linux-64-amzn-test
+  - amazon1-2018-test
   batchtime: 1440 # 1 day
   expansions:
     push_path: linux
@@ -9096,7 +9148,7 @@ buildvariants:
   tasks:
   - name: compile_all_run_unittests_TG
     distros:
-    - linux-64-amzn-build
+    - amazon1-2018-build
   - name: aggregation
   - name: aggregation_auth
   - name: auth_gen
@@ -9135,7 +9187,7 @@ buildvariants:
   - name: concurrency_replication
   - name: concurrency_replication_causal_consistency
     distros:
-    - linux-64-amzn-build
+    - amazon1-2018-build
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
@@ -9568,6 +9620,7 @@ buildvariants:
     push_name: win32
     push_arch: x86_64-enterprise-windows-64
     msi_target: msi
+    mh_target: dist-mh
     content_type: application/zip
     compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/sasl/include c:/snmp/include" LIBPATH="c:/sasl/lib c:/snmp/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
@@ -9960,7 +10013,7 @@ buildvariants:
     push_arch: x86_64
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ --variables-files=etc/scons/xcode_macosx.vars
-    resmoke_jobs_max: 1
+    resmoke_jobs_max: 4
     tooltags: "ssl"
     build_mongoreplay: true
   display_tasks:
@@ -10075,7 +10128,7 @@ buildvariants:
   run_on:
   - macos-1014
   expansions:
-    resmoke_jobs_max: 1
+    resmoke_jobs_max: 4
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: --ssl --dbg=on --opt=on -j$(sysctl -n hw.logicalcpu) --libc++ --variables-files=etc/scons/xcode_macosx.vars
     tooltags: ""
@@ -10117,9 +10170,10 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: macos
     push_arch: x86_64-enterprise
+    mh_target: dist-mh
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ --variables-files=etc/scons/xcode_macosx.vars
-    resmoke_jobs_max: 1
+    resmoke_jobs_max: 4
     tooltags: "ssl sasl"
     build_mongoreplay: true
   display_tasks:
@@ -10169,7 +10223,7 @@ buildvariants:
     tooltags: "ssl sasl"
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: --ssl --ssl-provider=openssl -j$(sysctl -n hw.logicalcpu) --release --libc++ LIBPATH="$PWD/openssl_install_dir/lib" CPPPATH="$PWD/openssl_install_dir/include" --variables-files=etc/scons/xcode_macosx.vars
-    resmoke_jobs_max: 1
+    resmoke_jobs_max: 4
     build_mongoreplay: true
     build_openssl: true
     openssl_config_flags: "-mmacosx-version-min=10.12"
@@ -10641,6 +10695,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: linux
     push_arch: x86_64-enterprise-rhel62
+    mh_target: dist-mh
     compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     multiversion_platform: rhel62
     multiversion_edition: enterprise
@@ -11058,6 +11113,9 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
     distros:
     - rhel62-large
+  - name: replica_sets_multi_oplog_txns_gen
+    distros:
+    - rhel62-large
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
@@ -11295,6 +11353,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: linux
     push_arch: x86_64-enterprise-rhel70
+    mh_target: dist-mh
     compile_flags: --ssl MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     has_packages: true
     packager_script: packager_enterprise.py
@@ -12741,6 +12800,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: linux
     push_arch: x86_64-enterprise-debian92
+    mh_target: dist-mh
     compile_flags: --ssl MONGO_DISTMOD=debian92 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
@@ -13148,7 +13208,7 @@ buildvariants:
     test_flags: >-
       --storageEngine=mobile
       --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact,requires_document_locking,requires_snapshot_read,requires_db_locking
-      --excludeWithAnyTags=SERVER-32869
+      --excludeWithAnyTags=SERVER-32869,SERVER-40561
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
       --mobile-se=on
@@ -13228,7 +13288,7 @@ buildvariants:
     test_flags: >-
       --storageEngine=mobile
       --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact,requires_document_locking,requires_snapshot_read,requires_db_locking
-      --excludeWithAnyTags=SERVER-32869
+      --excludeWithAnyTags=SERVER-32869,SERVER-40561
     compile_flags: >-
         -j$(grep -c ^processor /proc/cpuinfo)
         --mobile-se=on
@@ -13305,7 +13365,7 @@ buildvariants:
     test_flags: >-
       --storageEngine=mobile
       --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling,requires_compact,requires_document_locking,requires_snapshot_read,requires_db_locking
-      --excludeWithAnyTags=SERVER-32869
+      --excludeWithAnyTags=SERVER-32869,SERVER-40561
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
@@ -13315,7 +13375,7 @@ buildvariants:
       --release
       CPPPATH=/opt/mongodbtoolchain/v3/include
       --variables-files=etc/scons/xcode_macosx.vars
-    resmoke_jobs_max: 1
+    resmoke_jobs_max: 4
     build_mongoreplay: true
     additional_targets: mongoebench mongoed
   display_tasks:

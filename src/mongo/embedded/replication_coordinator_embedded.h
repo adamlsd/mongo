@@ -167,7 +167,7 @@ public:
 
     void fillIsMasterForReplSet(
         repl::IsMasterResponse*,
-        const ClientMetadataIsMasterState::SplitHorizonParameters& horizon) override;
+        const repl::SplitHorizon::Parameters& horizon) override;
 
     void appendSlaveInfoData(BSONObjBuilder*) override;
 

@@ -35,6 +35,7 @@
 #include "mongo/bson/oid.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/optime_with.h"
+#include "mongo/db/repl/split_horizon.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
@@ -201,16 +202,16 @@ public:
 
     void setReplSetVersion(long long version);
 
-    void addHost(const HostAndPort& host, const std::map<std::string, HostAndPort>& alts = {});
+    void addHost(const HostAndPort& host, const SplitHorizon::ForwardMapping& alts = {});
 
     void addPassive(const HostAndPort& passive,
-                    const std::map<std::string, HostAndPort>& alts = {});
+                    const SplitHorizon::ForwardMapping& horizonViews = {});
 
     void addArbiter(const HostAndPort& arbiter,
-                    const std::map<std::string, HostAndPort>& alts = {});
+                    const SplitHorizon::ForwardMapping& horizonViews = {});
 
     void setPrimary(const HostAndPort& primary,
-                    const std::map<std::string, HostAndPort>& alts = {});
+                    const SplitHorizon::ForwardMapping& horizonViews = {});
 
     void setIsArbiterOnly(bool arbiterOnly);
 
@@ -289,14 +290,19 @@ private:
     // that we are mid shutdown
     bool _shutdownInProgress;
 
-    struct AltConfig {
+    // Because the replica set can have multiple addresses for each server, under different
+    // horizons, this structure permits mapping a complete replica set's group of hosts (primary,
+    // hosts, passives, and arbiters) to the horizon name under which they are known by those
+    // addresses.  The complete view of the replica set for each horizon is then able to be put into
+    // the isMaster response, to facilitate debugging, analysis, etc.
+    struct CompleteHorizonView {
         HostAndPort primary;
         std::vector<HostAndPort> hosts;
         std::vector<HostAndPort> passives;
         std::vector<HostAndPort> arbiters;
     };
 
-    std::map<std::string, AltConfig> _altHosts;
+    std::map<std::string, CompleteHorizonView> _completeHorizonViews;
 };
 
 }  // namespace repl

@@ -188,10 +188,10 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
     }
 
     {
-        BSONObjBuilder alts(builder->subobjStart(kAltHostsFieldName));
-        for (const auto& host : _altHosts) {
-            BSONObjBuilder horizon(alts.subobjStart(host.first));
-            horizon.append("primary", host.first);
+        BSONObjBuilder completeView(builder->subobjStart(kAltHostsFieldName));
+        for (const auto& host : _completeHorizonViews) {
+            BSONObjBuilder horizon(completeView.subobjStart(host.first));
+            horizon.append("primary", host.second.primary.toString());
 
             auto stringifyVector = [](const auto& v) {
                 auto stringifyElement = [](const auto& e) { return e.toString(); };
@@ -527,43 +527,39 @@ void IsMasterResponse::setReplSetVersion(long long version) {
 }
 
 void IsMasterResponse::addHost(const HostAndPort& host,
-                               const std::map<std::string, HostAndPort>& alts) {
+                               const SplitHorizon::ForwardMapping& horizonViews) {
     _hostsSet = true;
     _hosts.push_back(host);
-    for (auto& alt : alts) {
-        _altHosts[alt.first].hosts.push_back(alt.second);
+    for (auto& view : horizonViews) {
+        _completeHorizonViews[view.first].hosts.push_back(view.second);
     }
-    _altHosts[SplitHorizon::defaultHorizon].hosts.push_back(host);
 }
 
 void IsMasterResponse::addPassive(const HostAndPort& passive,
-                                  const std::map<std::string, HostAndPort>& alts) {
+                                  const SplitHorizon::ForwardMapping& horizonViews) {
     _passivesSet = true;
     _passives.push_back(passive);
-    for (auto& alt : alts) {
-        _altHosts[alt.first].passives.push_back(alt.second);
+    for (auto& view : horizonViews) {
+        _completeHorizonViews[view.first].passives.push_back(view.second);
     }
-    _altHosts[SplitHorizon::defaultHorizon].passives.push_back(passive);
 }
 
 void IsMasterResponse::addArbiter(const HostAndPort& arbiter,
-                                  const std::map<std::string, HostAndPort>& alts) {
+                                  const SplitHorizon::ForwardMapping& horizonViews) {
     _arbitersSet = true;
     _arbiters.push_back(arbiter);
-    for (auto& alt : alts) {
-        _altHosts[alt.first].arbiters.push_back(alt.second);
+    for (auto& view : horizonViews) {
+        _completeHorizonViews[view.first].arbiters.push_back(view.second);
     }
-    _altHosts[SplitHorizon::defaultHorizon].arbiters.push_back(arbiter);
 }
 
 void IsMasterResponse::setPrimary(const HostAndPort& primary,
-                                  const std::map<std::string, HostAndPort>& alts) {
+                                  const SplitHorizon::ForwardMapping& horizonViews) {
     _primarySet = true;
     _primary = primary;
-    for (auto& alt : alts) {
-        _altHosts[alt.first].primary = alt.second;
+    for (auto& view : horizonViews) {
+        _completeHorizonViews[view.first].primary = view.second;
     }
-    _altHosts[SplitHorizon::defaultHorizon].primary = primary;
 }
 
 void IsMasterResponse::setIsArbiterOnly(bool arbiterOnly) {

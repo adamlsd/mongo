@@ -145,7 +145,7 @@ TEST_F(ReplCoordTest, IsMasterIsFalseDuringStepdown) {
 
     // Test that "ismaster" is immediately false, although "secondary" is not yet true.
     IsMasterResponse response;
-    replCoord->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    replCoord->fillIsMasterForReplSet(&response, {});
     ASSERT_TRUE(response.isConfigSet());
     BSONObj responseObj = response.toBSON();
     ASSERT_FALSE(responseObj["ismaster"].Bool());
@@ -2465,7 +2465,7 @@ TEST_F(StepDownTest, InterruptingStepDownCommandRestoresWriteAvailability) {
 
     // We should not indicate that we are master, nor that we are secondary.
     IsMasterResponse response;
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
     ASSERT_FALSE(response.isMaster());
     ASSERT_FALSE(response.isSecondary());
 
@@ -2480,7 +2480,7 @@ TEST_F(StepDownTest, InterruptingStepDownCommandRestoresWriteAvailability) {
     ASSERT_TRUE(getReplCoord()->getMemberState().primary());
 
     // We should now report that we are master.
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
     ASSERT_TRUE(response.isMaster());
     ASSERT_FALSE(response.isSecondary());
 
@@ -2517,7 +2517,7 @@ TEST_F(StepDownTest, InterruptingAfterUnconditionalStepdownDoesNotRestoreWriteAv
 
     // We should not indicate that we are master, nor that we are secondary.
     IsMasterResponse response;
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
     ASSERT_FALSE(response.isMaster());
     ASSERT_FALSE(response.isSecondary());
 
@@ -2542,7 +2542,7 @@ TEST_F(StepDownTest, InterruptingAfterUnconditionalStepdownDoesNotRestoreWriteAv
     ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
 
     // We should still be indicating that we are not master.
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
     ASSERT_FALSE(response.isMaster());
 
     // This is the important check, that we didn't accidentally step back up when aborting the
@@ -3025,7 +3025,7 @@ TEST_F(ReplCoordTest, IsMasterResponseMentionsLackOfReplicaSetConfig) {
     start();
     IsMasterResponse response;
 
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
     ASSERT_FALSE(response.isConfigSet());
     BSONObj responseObj = response.toBSON();
     ASSERT_FALSE(responseObj["ismaster"].Bool());
@@ -3066,7 +3066,7 @@ TEST_F(ReplCoordTest, IsMaster) {
     replCoordSetMyLastAppliedOpTime(opTime);
 
     IsMasterResponse response;
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
 
     ASSERT_EQUALS("mySet", response.getReplSetName());
     ASSERT_EQUALS(2, response.getReplSetVersion());
@@ -3130,7 +3130,7 @@ TEST_F(ReplCoordTest, IsMasterWithCommittedSnapshot) {
     ASSERT_EQUALS(majorityOpTime, getReplCoord()->getCurrentCommittedSnapshotOpTime());
 
     IsMasterResponse response;
-    getReplCoord()->fillIsMasterForReplSet(&response, ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&response, {});
 
     ASSERT_EQUALS(opTime, response.getLastWriteOpTime());
     ASSERT_EQUALS(lastWriteDate, response.getLastWriteDate());
@@ -3153,8 +3153,7 @@ TEST_F(ReplCoordTest, IsMasterInShutdown) {
     runSingleNodeElection(opCtx.get());
 
     IsMasterResponse responseBeforeShutdown;
-    getReplCoord()->fillIsMasterForReplSet(&responseBeforeShutdown,
-                                           ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&responseBeforeShutdown, {});
     ASSERT_TRUE(responseBeforeShutdown.isMaster());
     ASSERT_FALSE(responseBeforeShutdown.isSecondary());
 
@@ -3162,8 +3161,7 @@ TEST_F(ReplCoordTest, IsMasterInShutdown) {
 
     // Must not report ourselves as master while we're in shutdown.
     IsMasterResponse responseAfterShutdown;
-    getReplCoord()->fillIsMasterForReplSet(&responseAfterShutdown,
-                                           ReplicationCoordinator::defaultZone);
+    getReplCoord()->fillIsMasterForReplSet(&responseAfterShutdown, {});
     ASSERT_FALSE(responseAfterShutdown.isMaster());
     ASSERT_FALSE(responseBeforeShutdown.isSecondary());
 }

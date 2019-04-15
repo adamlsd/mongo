@@ -37,9 +37,9 @@
 
 std::string mongo::repl::SplitHorizon::determineHorizon(
     const int incomingPort,
-    const std::map<std::string, HostAndPort>& forwardMapping,
-    const std::map<HostAndPort, std::string>& reverseMapping,
-    const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParameters) {
+    const ForwardMapping& forwardMapping,
+    const ReverseMapping& reverseMapping,
+    const SplitHorizon::Parameters& horizonParameters) {
     if (horizonParameters.explicitHorizonName) {
         // Unlike `appName`, the explicit horizon request isn't checked for validity with a fallback
         // -- failure to select a valid horizon name explicitly will lead to command failure.
@@ -57,11 +57,13 @@ std::string mongo::repl::SplitHorizon::determineHorizon(
         auto found = reverseMapping.find(connectionTarget);
         if (found != end(reverseMapping))
             return found->second;
-    } else if (forwardMapping.count(horizonParameters.appName)) {
+    }
+#ifdef MONGO_ENABLE_SPLIT_HORIZON_APPNAME
+    else if (forwardMapping.count(horizonParameters.appName)) {
         log() << "AppName case";
         return horizonParameters.appName;
     }
+#endif
     log() << "Fallthrough case";
     return defaultHorizon;
 }
-

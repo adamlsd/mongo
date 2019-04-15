@@ -36,6 +36,7 @@
 #include "mongo/db/repl/repl_set_tag.h"
 #include "mongo/db/repl/split_horizon.h"
 #include "mongo/util/net/hostandport.h"
+#include "mongo/util/string_map.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -91,7 +92,8 @@ public:
      * Gets the canonical name of this member, by which other members and clients
      * will contact it.
      */
-    const HostAndPort& getHostAndPort(const std::string& horizon= SplitHorizon::defaultHorizon) const {
+    const HostAndPort& getHostAndPort(
+        const std::string& horizon = SplitHorizon::defaultHorizon) const {
         invariant(!this->_horizonForward.empty());
         invariant(!horizon.empty());
         auto found = this->_horizonForward.find(horizon);
@@ -213,8 +215,8 @@ private:
     bool _buildIndexes;             // if false, do not create any non-_id indexes
     std::vector<ReplSetTag> _tags;  // tagging for data center, rack, etc.
 
-    std::map<std::string, HostAndPort> _horizonForward;
-    std::map<HostAndPort, std::string> _horizonReverse;
+    SplitHorizon::ForwardMapping _horizonForward;
+    SplitHorizon::ReverseMapping _horizonReverse;
 };
 
 }  // namespace repl

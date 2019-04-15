@@ -360,7 +360,7 @@ void ReplCoordTest::simulateSuccessfulV1ElectionWithoutExitingDrainMode(Date_t e
     ASSERT(replCoord->getMemberState().primary()) << replCoord->getMemberState().toString();
 
     IsMasterResponse imResponse;
-    replCoord->fillIsMasterForReplSet(&imResponse, ReplicationCoordinator::defaultZone);
+    replCoord->fillIsMasterForReplSet(&imResponse, {});
     ASSERT_FALSE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_TRUE(imResponse.isSecondary()) << imResponse.toBSON().toString();
 }
@@ -375,7 +375,7 @@ void ReplCoordTest::simulateSuccessfulV1ElectionAt(Date_t electionTime) {
     }
     ASSERT(replCoord->getApplierState() == ReplicationCoordinator::ApplierState::Stopped);
     IsMasterResponse imResponse;
-    replCoord->fillIsMasterForReplSet(&imResponse, ReplicationCoordinator::defaultZone);
+    replCoord->fillIsMasterForReplSet(&imResponse, {});
     ASSERT_TRUE(imResponse.isMaster()) << imResponse.toBSON().toString();
     ASSERT_FALSE(imResponse.isSecondary()) << imResponse.toBSON().toString();
 

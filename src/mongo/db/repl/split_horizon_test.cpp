@@ -33,14 +33,13 @@
 #include <boost/optional.hpp>
 #include <iterator>
 
-#include "mongo/unittest/unittest.h"
 #include "mongo/stdx/utility.h"
+#include "mongo/unittest/unittest.h"
 
 using namespace std::literals::string_literals;
 
 namespace mongo {
-namespace repl
-{
+namespace repl {
 namespace {
 static const std::string defaultHost = "default.dns.name.example.com";
 TEST(SplitHorizonTesting, determineHorizon) {
@@ -48,8 +47,8 @@ TEST(SplitHorizonTesting, determineHorizon) {
     struct {
         struct Input {
             int port;
-            std::map<std::string, HostAndPort> forwardMapping;  // Will get "__default" added to it.
-            std::map<HostAndPort, std::string> reverseMapping;
+            SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
+            SplitHorizon::ReverseMapping reverseMapping;
             SplitHorizon::Parameters horizonParameters;
 
             Input(const int p,
@@ -76,6 +75,7 @@ TEST(SplitHorizonTesting, determineHorizon) {
 
         std::string expected;
     } tests[] = {
+        // No parameters and no horizon views configured.
         {{4242, {}, {}}, "__default"},
         {{4242, {}, {"SomeApplication", boost::none, boost::none, boost::none}}, "__default"},
         {{4242, {}, {"SomeApplication", defaultHost, boost::none, boost::none}}, "__default"},
@@ -92,15 +92,19 @@ TEST(SplitHorizonTesting, determineHorizon) {
           {"SomeApplication", defaultHost, boost::none, boost::none}},
          "__default"},
 
+        // Application Name passed, but doesn't match.  SNI Name
         {{4242,
           {{"matchingHorizon", "matchingTarget:4242"}},
           {"SomeApplication", "matchingTarget"s, boost::none, boost::none}},
          "matchingHorizon"},
 
+#ifdef MONGO_ENABLE_SPLIT_HORIZON_APPNAME
+        // Application Name matches, but nothing else passed.
         {{4242,
           {{"matchingHorizon", "matchingTarget:4242"}},
           {"matchingHorizon", boost::none, boost::none, boost::none}},
          "matchingHorizon"},
+#endif
     };
 
     for (const auto& test : tests) {

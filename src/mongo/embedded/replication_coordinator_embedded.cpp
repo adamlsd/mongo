@@ -297,8 +297,8 @@ Status ReplicationCoordinatorEmbedded::processReplSetGetStatus(BSONObjBuilder*,
 }
 
 void ReplicationCoordinatorEmbedded::fillIsMasterForReplSet(
-    IsMasterResponse*,
-    const ClientMetadataIsMasterState::SplitHorizonParameters&) UASSERT_NOT_IMPLEMENTED;
+    IsMasterResponse*, const SplitHorizon::Parameters&) {
+    UASSERT_NOT_IMPLEMENTED;
 }
 
 void ReplicationCoordinatorEmbedded::appendSlaveInfoData(BSONObjBuilder*) {

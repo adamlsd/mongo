@@ -35,24 +35,19 @@
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/util/net/hostandport.h"
 
-namespace mongo
-{
-	namespace repl
-	{
-		struct SplitHorizon
-		{
-			using Parameters= ClientMetadataIsMasterState::SplitHorizonParameters;
-			static constexpr auto defaultHorizon = "__default";
+namespace mongo {
+namespace repl {
+struct SplitHorizon {
+    using Parameters = ClientMetadataIsMasterState::SplitHorizonParameters;
+    static constexpr auto defaultHorizon = "__default";
 
-			using ForwardMapping= std::map<std::string, HostAndPort>;
-			using ReverseMapping= std::map<HostAndPort, std::string>;
+    using ForwardMapping = StringMap<HostAndPort>;
+    using ReverseMapping = std::map<HostAndPort, std::string>;
 
-			static std::string determineHorizon(
-				int incomingPort,
-				const ForwardMapping& forwardMapping,
-				const ReverseMapping& reverseMapping,
-				const Parameters& horizonParameters);
-
-		};
-	}//namespace repl
-}//namespace mongo
+    static std::string determineHorizon(int incomingPort,
+                                        const ForwardMapping& forwardMapping,
+                                        const ReverseMapping& reverseMapping,
+                                        const Parameters& horizonParameters);
+};
+}  // namespace repl
+}  // namespace mongo

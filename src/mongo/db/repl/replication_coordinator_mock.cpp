@@ -336,7 +336,7 @@ Status ReplicationCoordinatorMock::processReplSetGetStatus(BSONObjBuilder*,
 }
 
 void ReplicationCoordinatorMock::fillIsMasterForReplSet(IsMasterResponse* result,
-                                                        const std::string&) {
+                                                        const SplitHorizon::Parameters&) {
     result->setReplSetVersion(_getConfigReturnValue.getConfigVersion());
     result->setIsMaster(true);
     result->setIsSecondary(false);

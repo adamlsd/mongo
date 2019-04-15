@@ -87,13 +87,12 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     //
     BSONElement idElement = mcfg[kIdFieldName];
     if (idElement.eoo()) {
-        uasserted(
-            ErrorCodes::NoSuchKey, str::stream() << kIdFieldName << " field is missing");
+        uasserted(ErrorCodes::NoSuchKey, str::stream() << kIdFieldName << " field is missing");
     }
     if (!idElement.isNumber()) {
         uasserted(ErrorCodes::TypeMismatch,
-                               str::stream() << kIdFieldName << " field has non-numeric type "
-                                             << typeName(idElement.type()));
+                  str::stream() << kIdFieldName << " field has non-numeric type "
+                                << typeName(idElement.type()));
     }
     _id = idElement.numberInt();
 
@@ -110,8 +109,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         host = HostAndPort(host.host(), host.port());
     }
 
-    this->_horizonForward.insert({SplitHorizon::defaultHorizon, std::move(host)});
-    this->_horizonReverse.insert({std::move(host), SplitHorizon::defaultHorizon});
+    this->_horizonForward.insert({SplitHorizon::defaultHorizon, host});
+    this->_horizonReverse.insert({host, SplitHorizon::defaultHorizon});
 
     //
     // Parse votes field.
@@ -123,9 +122,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         _votes = votesElement.numberInt();
     } else {
         uasserted(ErrorCodes::TypeMismatch,
-                               str::stream() << kVotesFieldName
-                                             << " field value has non-numeric type "
-                                             << typeName(votesElement.type()));
+                  str::stream() << kVotesFieldName << " field value has non-numeric type "
+                                << typeName(votesElement.type()));
     }
 
     //
@@ -145,8 +143,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         _priority = priorityElement.numberDouble();
     } else {
         uasserted(ErrorCodes::TypeMismatch,
-                               str::stream() << kPriorityFieldName << " field has non-numeric type "
-                                             << typeName(priorityElement.type()));
+                  str::stream() << kPriorityFieldName << " field has non-numeric type "
+                                << typeName(priorityElement.type()));
     }
 
     //
@@ -159,9 +157,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         _slaveDelay = Seconds(slaveDelayElement.numberInt());
     } else {
         uasserted(ErrorCodes::TypeMismatch,
-                               str::stream() << kSlaveDelayFieldName
-                                             << " field value has non-numeric type "
-                                             << typeName(slaveDelayElement.type()));
+                  str::stream() << kSlaveDelayFieldName << " field value has non-numeric type "
+                                << typeName(slaveDelayElement.type()));
     }
 
     //
@@ -185,9 +182,9 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         for (auto&& tag : tagsElement.Obj()) {
             if (tag.type() != String) {
                 uasserted(ErrorCodes::TypeMismatch,
-                                       str::stream() << "tags." << tag.fieldName()
-                                                     << " field has non-string value of type "
-                                                     << typeName(tag.type()));
+                          str::stream() << "tags." << tag.fieldName()
+                                        << " field has non-string value of type "
+                                        << typeName(tag.type()));
             }
             _tags.push_back(tagConfig->makeTag(tag.fieldNameStringData(), tag.valueStringData()));
         }
@@ -350,7 +347,8 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     }
     tags.done();
 
-    // `_horizonForward` should always contain the "__default" horizon, so we need to emit the horizon repl specification when there are OTHER horizons.
+    // `_horizonForward` should always contain the "__default" horizon, so we need to emit the
+    // horizon repl specification when there are OTHER horizons.
     if (_horizonForward.size() > 1) {
         BSONObjBuilder horizons(configBuilder.subobjStart("horizons"));
         for (const auto& horizon : _horizonForward) {

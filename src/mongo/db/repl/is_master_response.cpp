@@ -166,8 +166,10 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
         builder->appendIntOrLL(kSlaveDelayFieldName, durationCount<Seconds>(_slaveDelay));
     if (_tagsSet) {
         BSONObjBuilder tags(builder->subobjStart(kTagsFieldName));
-        for (auto& tag : _tags) {
-            tags.append(tag.first, tag.second);
+        for (stdx::unordered_map<std::string, std::string>::const_iterator it = _tags.begin();
+             it != _tags.end();
+             ++it) {
+            tags.append(it->first, it->second);
         }
     }
     invariant(_meSet);

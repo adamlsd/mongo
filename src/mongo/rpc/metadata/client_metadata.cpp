@@ -70,51 +70,11 @@ constexpr uint32_t kMaxMongoSMetadataDocumentByteLength = 512U;
 constexpr uint32_t kMaxMongoDMetadataDocumentByteLength = 1024U;
 constexpr uint32_t kMaxApplicationNameByteLength = 128U;
 
-struct ApplicationDocument {
-    StringData name;
-};
-
-ApplicationDocument parseApplicationDocument(const BSONObj& doc) {
-    BSONObjIterator i(doc);
-
-    ApplicationDocument rv;
-
-    while (i.more()) {
-        BSONElement e = i.next();
-        StringData name = e.fieldNameStringData();
-
-        // Name is the only required field, and any other fields are simply ignored.
-        if (name == kName) {
-
-            if (e.type() != String) {
-                uasserted(
-                    ErrorCodes::TypeMismatch,
-                    str::stream() << "The '" << kApplication << "." << kName
-                                  << "' field must be a string in the client metadata document");
-            }
-
-            StringData value = e.checkAndGetStringData();
-
-            if (value.size() > kMaxApplicationNameByteLength) {
-                uasserted(ErrorCodes::ClientMetadataAppNameTooLarge,
-                          str::stream() << "The '" << kApplication << "." << kName
-                                        << "' field must be less then or equal to "
-                                        << kMaxApplicationNameByteLength
-                                        << " bytes in the client metadata document");
-            }
-
-            rv.name = value;
-        }
-    }
-
-    return rv;
-}
 }  // namespace
-
 
 StatusWith<boost::optional<ClientMetadata>> ClientMetadata::parse(const BSONElement& element) {
     if (element.eoo()) {
-        return boost::none;
+        return {boost::none};
     }
 
     if (!element.isABSONObj()) {
@@ -127,10 +87,10 @@ StatusWith<boost::optional<ClientMetadata>> ClientMetadata::parse(const BSONElem
         return s;
     }
 
-    return std::move(clientMetadata);
+    return {std::move(clientMetadata)};
 }
 
-Status ClientMetadata::parseClientMetadataDocument(const BSONObj& doc) try {
+Status ClientMetadata::parseClientMetadataDocument(const BSONObj& doc) {
     uint32_t maxLength = kMaxMongoDMetadataDocumentByteLength;
     if (isMongos()) {
         maxLength = kMaxMongoSMetadataDocumentByteLength;
@@ -165,9 +125,13 @@ Status ClientMetadata::parseClientMetadataDocument(const BSONObj& doc) try {
                                                "client metadata document");
             }
 
-            auto appDoc = parseApplicationDocument(e.Obj());
+            auto swAppName = parseApplicationDocument(e.Obj());
+            if (!swAppName.getStatus().isOK()) {
+                return swAppName.getStatus();
+            }
 
-            appName = appDoc.name;
+            appName = swAppName.getValue();
+
         } else if (name == kDriver) {
             if (!e.isABSONObj()) {
                 return Status(ErrorCodes::TypeMismatch,
@@ -219,8 +183,40 @@ Status ClientMetadata::parseClientMetadataDocument(const BSONObj& doc) try {
     _appName = std::move(appName);
 
     return Status::OK();
-} catch (const DBException& ex) {
-    return ex.toStatus();
+}
+
+StatusWith<StringData> ClientMetadata::parseApplicationDocument(const BSONObj& doc) {
+    BSONObjIterator i(doc);
+
+    while (i.more()) {
+        BSONElement e = i.next();
+        StringData name = e.fieldNameStringData();
+
+        // Name is the only required field, and any other fields are simply ignored.
+        if (name == kName) {
+
+            if (e.type() != String) {
+                return {
+                    ErrorCodes::TypeMismatch,
+                    str::stream() << "The '" << kApplication << "." << kName
+                                  << "' field must be a string in the client metadata document"};
+            }
+
+            StringData value = e.checkAndGetStringData();
+
+            if (value.size() > kMaxApplicationNameByteLength) {
+                return {ErrorCodes::ClientMetadataAppNameTooLarge,
+                        str::stream() << "The '" << kApplication << "." << kName
+                                      << "' field must be less then or equal to "
+                                      << kMaxApplicationNameByteLength
+                                      << " bytes in the client metadata document"};
+            }
+
+            return {std::move(value)};
+        }
+    }
+
+    return {StringData()};
 }
 
 Status ClientMetadata::validateDriverDocument(const BSONObj& doc) {

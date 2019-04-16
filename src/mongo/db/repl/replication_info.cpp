@@ -67,7 +67,6 @@ using std::list;
 using std::string;
 using std::stringstream;
 
-
 namespace repl {
 namespace {
 void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int level) {
@@ -208,8 +207,6 @@ public:
     }
 } oplogInfoServerStatus;
 
-namespace {
-
 class CmdIsMaster final : public BasicCommand {
 public:
     CmdIsMaster() : BasicCommand("isMaster", "ismaster") {}
@@ -276,12 +273,12 @@ public:
 
             parsedClientMetadata->logClientMetadata(opCtx->getClient());
 
-            using namespace std::literals::string_literals;
             clientMetadataIsMasterState.setHorizonParameters(
                 opCtx->getClient(),
                 parsedClientMetadata->getApplicationName().toString(),
                 opCtx->getClient()->session()->getSniName(),  // SNI Name from connection.
-                boost::none,                                  // No Connection target support yet.
+                // TODO(SERVER-40157): Add support for driver-specified horizon configuration.
+                boost::none,   // No Connection target support yet.
                 boost::none);  // No Explicit horizon name support yet.
             clientMetadataIsMasterState.setClientMetadata(opCtx->getClient(),
                                                           std::move(parsedClientMetadata));
@@ -402,7 +399,6 @@ public:
         return true;
     }
 } cmdismaster;
-}  // namespace
 
 OpCounterServerStatusSection replOpCounterServerStatusSection("opcountersRepl", &replOpCounters);
 

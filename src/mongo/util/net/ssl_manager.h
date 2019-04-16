@@ -100,7 +100,9 @@ template <typename Deleter, Deleter* impl>
 struct OpenSSLDeleter {
     template <typename Obj>
     void operator()(Obj* ptr) const {
-        impl(ptr);
+        if (ptr != nullptr) {
+            impl(ptr);
+        }
     }
 };
 #endif

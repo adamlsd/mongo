@@ -144,12 +144,12 @@ public:
     virtual OpTimeAndWallTime getMyLastDurableOpTimeAndWallTime() const;
     virtual OpTime getMyLastDurableOpTime() const;
 
-    Status waitUntilOpTimeForRead(OperationContext* opCtx,
-                                  const ReadConcernArgs& settings) override;
+    virtual Status waitUntilOpTimeForRead(OperationContext* opCtx,
+                                          const ReadConcernArgs& settings) override;
 
-    Status waitUntilOpTimeForReadUntil(OperationContext* opCtx,
-                                       const ReadConcernArgs& settings,
-                                       boost::optional<Date_t> deadline) override;
+    virtual Status waitUntilOpTimeForReadUntil(OperationContext* opCtx,
+                                               const ReadConcernArgs& settings,
+                                               boost::optional<Date_t> deadline) override;
     virtual Status awaitTimestampCommitted(OperationContext* opCtx, Timestamp ts);
     virtual OID getElectionId();
 
@@ -167,13 +167,13 @@ public:
 
     virtual void signalDrainComplete(OperationContext*, long long);
 
-    Status waitForDrainFinish(Milliseconds timeout) override;
+    virtual Status waitForDrainFinish(Milliseconds timeout) override;
 
     virtual void signalUpstreamUpdater();
 
-    Status resyncData(OperationContext* opCtx, bool waitUntilCompleted) override;
+    virtual Status resyncData(OperationContext* opCtx, bool waitUntilCompleted) override;
 
-    StatusWith<BSONObj> prepareReplSetUpdatePositionCommand() const override;
+    virtual StatusWith<BSONObj> prepareReplSetUpdatePositionCommand() const override;
 
     virtual Status processReplSetGetStatus(BSONObjBuilder*, ReplSetGetStatusResponseStyle);
 

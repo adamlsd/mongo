@@ -1414,7 +1414,6 @@ SSLPeerInfo SSLManagerApple::parseAndValidatePeerCertificateDeprecated(
     return swPeerSubjectName.getValue().get_value_or(SSLPeerInfo());
 }
 
-namespace {
 StatusWith<TLSVersion> mapTLSVersion(SSLContextRef ssl) {
     ::SSLProtocol protocol;
 
@@ -1431,16 +1430,18 @@ StatusWith<TLSVersion> mapTLSVersion(SSLContextRef ssl) {
             return TLSVersion::kUnknown;
     }
 }
-}  // namespace
 
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCertificate(
-    ::SSLContextRef ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) try {
+    ::SSLContextRef ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
 
     // Record TLS version stats
-    auto tlsVersion = mapTLSVersion(ssl);
+    auto tlsVersionStatus = mapTLSVersion(ssl);
+    if (!tlsVersionStatus.isOK()) {
+        return tlsVersionStatus.getStatus();
+    }
 
-    recordTLSVersion(tlsVersion, hostForLogging);
+    recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     /* While we always have a system CA via the Keychain,
      * we'll pretend not to in terms of validation if the server
@@ -1453,15 +1454,16 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         return {boost::none};
     }
 
-    const auto badCert = [](StringData msg, bool warn = false) -> boost::optional<SSLPeerInfo> {
+    const auto badCert = [](StringData msg,
+                            bool warn = false) -> StatusWith<boost::optional<SSLPeerInfo>> {
         constexpr StringData prefix = "SSL peer certificate validation failed: "_sd;
         if (warn) {
             warning() << prefix << msg;
-            return boost::none;
+            return {boost::none};
         } else {
             std::string m = str::stream() << prefix << msg << "; connection rejected";
             error() << m;
-            uassertStatusOK(Status(ErrorCodes::SSLHandshakeFailed, m));
+            return Status(ErrorCodes::SSLHandshakeFailed, m);
         }
     };
 
@@ -1470,7 +1472,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
     CFUniquePtr<::SecTrustRef> cftrust(trust);
     if ((status != ::errSecSuccess) || (!cftrust)) {
         if (_weakValidation && _suppressNoCertificateWarning) {
-            return boost::none;
+            return {boost::none};
         } else {
             if (status == ::errSecSuccess) {
                 return badCert(str::stream() << "no SSL certificate provided by peer: "
@@ -1481,8 +1483,6 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
                                              << stringFromOSStatus(status),
                                _weakValidation);
             }
-            if (_weakValidation)
-                return boost::none;
         }
     }
 
@@ -1559,8 +1559,12 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
     if (remoteHost.empty()) {
         // If this is an SSL server context (on a mongod/mongos)
         // parse any client roles out of the client certificate.
-        auto peerCertificateRoles = uassertStatusOK(parsePeerRoles(cfdict.get()));
-        return boost::make_optional(SSLPeerInfo(peerSubjectName, std::move(peerCertificateRoles)));
+        auto swPeerCertificateRoles = parsePeerRoles(cfdict.get());
+        if (!swPeerCertificateRoles.isOK()) {
+            return swPeerCertificateRoles.getStatus();
+        }
+        return boost::make_optional(
+            SSLPeerInfo(peerSubjectName, std::move(swPeerCertificateRoles.getValue())));
     }
 
     // If this is an SSL client context (on a MongoDB server or client)
@@ -1623,9 +1627,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         }
     }
 
-    return SSLPeerInfo(peerSubjectName, stdx::unordered_set<RoleName>());
-} catch (const DBException& ex) {
-    return ex.toStatus();
+    return boost::make_optional(SSLPeerInfo(peerSubjectName, stdx::unordered_set<RoleName>()));
 }
 
 int SSLManagerApple::SSL_read(SSLConnectionInterface* conn, void* buf, int num) {

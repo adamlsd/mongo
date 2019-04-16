@@ -193,11 +193,12 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     }
 
     auto horizonsElement = [&]() -> boost::optional<BSONElement> {
-        try {
-            return bsonExtractTypedField(mcfg, kHorizonsFieldName, Object);
-        } catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
+        BSONElement result;
+        Status status = bsonExtractTypedField(mcfg, kHorizonsFieldName, Object, &result);
+        if (!status.isOK()) {
             return boost::none;
         }
+        return result;
     }();
 
     if (horizonsElement) {
@@ -316,8 +317,8 @@ Status MemberConfig::validate() const {
 }
 
 bool MemberConfig::hasTags(const ReplSetTagConfig& tagConfig) const {
-    for (auto& tag : _tags) {
-        std::string tagKey = tagConfig.getTagKey(tag);
+    for (std::vector<ReplSetTag>::const_iterator tag = _tags.begin(); tag != _tags.end(); tag++) {
+        std::string tagKey = tagConfig.getTagKey(*tag);
         if (tagKey[0] == '$') {
             // Filter out internal tags
             continue;
@@ -337,13 +338,13 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     configBuilder.append("priority", _priority);
 
     BSONObjBuilder tags(configBuilder.subobjStart("tags"));
-    for (auto tag : _tags) {
-        std::string tagKey = tagConfig.getTagKey(tag);
+    for (std::vector<ReplSetTag>::const_iterator tag = _tags.begin(); tag != _tags.end(); tag++) {
+        std::string tagKey = tagConfig.getTagKey(*tag);
         if (tagKey[0] == '$') {
             // Filter out internal tags
             continue;
         }
-        tags.append(tagKey, tagConfig.getTagValue(tag));
+        tags.append(tagKey, tagConfig.getTagValue(*tag));
     }
     tags.done();
 

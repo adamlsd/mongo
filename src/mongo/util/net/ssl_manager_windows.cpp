@@ -236,11 +236,11 @@ StatusWith<stdx::unordered_set<RoleName>> parsePeerRoles(PCCERT_CONTEXT cert) {
 }
 
 namespace {
-// TODO
+// TODO: If SNI functionality is needed on Windows, this is where one would implement it.
 boost::optional<std::string> getSNIServerName_impl() {
     return boost::none;
 }
-}
+}  // namespace
 
 /**
  * Manage state for a SSL Connection. Used by the Socket class.
@@ -1719,16 +1719,15 @@ Status validatePeerCertificate(const std::string& remoteHost,
     return Status::OK();
 }
 
-namespace {
-TLSVersion mapTLSVersion(PCtxtHandle ssl) {
+StatusWith<TLSVersion> mapTLSVersion(PCtxtHandle ssl) {
     SecPkgContext_ConnectionInfo connInfo;
 
     SECURITY_STATUS ss = QueryContextAttributes(ssl, SECPKG_ATTR_CONNECTION_INFO, &connInfo);
 
     if (ss != SEC_E_OK) {
-        uassertStatusOK(Status(
-            ErrorCodes::SSLHandshakeFailed,
-            str::stream() << "QueryContextAttributes for connection info failed with" << ss));
+        return Status(ErrorCodes::SSLHandshakeFailed,
+                      str::stream() << "QueryContextAttributes for connection info failed with"
+                                    << ss);
     }
 
     switch (connInfo.dwProtocol) {
@@ -1745,18 +1744,20 @@ TLSVersion mapTLSVersion(PCtxtHandle ssl) {
             return TLSVersion::kUnknown;
     }
 }
-}  // namespace
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeerCertificate(
-    PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) try {
+    PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
     PCCERT_CONTEXT cert;
 
-    auto tlsVersion = mapTLSVersion(ssl);
+    auto tlsVersionStatus = mapTLSVersion(ssl);
+    if (!tlsVersionStatus.isOK()) {
+        return tlsVersionStatus.getStatus();
+    }
 
-    recordTLSVersion(tlsVersion, hostForLogging);
+    recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     if (!_sslConfiguration.hasCA && isSSLServer)
-        return boost::none;
+        return {boost::none};
 
     SECURITY_STATUS ss = QueryContextAttributes(ssl, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert);
 
@@ -1766,7 +1767,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
             if (!_suppressNoCertificateWarning) {
                 warning() << "no SSL certificate provided by peer";
             }
-            return boost::none;
+            return {boost::none};
         } else {
             auto msg = "no SSL certificate provided by peer; connection rejected";
             error() << msg;
@@ -1808,7 +1809,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     }
 
     if (peerSubjectName.empty()) {
-        return boost::none;
+        return {boost::none};
     }
 
     LOG(2) << "Accepted TLS connection from peer: " << peerSubjectName;
@@ -1820,15 +1821,17 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
 
     // On the server side, parse the certificate for roles
     if (remoteHost.empty()) {
-        stdx::unordered_set<RoleName> peerCertificateRoles = uassertStatusOK(parsePeerRoles(cert));
+        StatusWith<stdx::unordered_set<RoleName>> swPeerCertificateRoles = parsePeerRoles(cert);
+        if (!swPeerCertificateRoles.isOK()) {
+            return swPeerCertificateRoles.getStatus();
+        }
 
-        return SSLPeerInfo(
-            peerSubjectName, getSNIServerName_impl(), std::move(peerCertificateRoles));
+        return boost::make_optional(SSLPeerInfo(peerSubjectName,
+                                                getSNIServerName_impl(),
+                                                std::move(swPeerCertificateRoles.getValue())));
     } else {
-        return SSLPeerInfo(peerSubjectName);
+        return boost::make_optional(SSLPeerInfo(peerSubjectName));
     }
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
 }  // namespace

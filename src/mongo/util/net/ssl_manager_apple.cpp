@@ -1062,6 +1062,22 @@ std::string explainTrustFailure(::SecTrustRef trust, ::SecTrustResultType result
     return ret("No trust failure reason available");
 }
 
+boost::optional<std::string> getRawSNIServerName(const ::SSLContextRef* const _ssl) {
+    size_t len = 0;
+    auto status = ::SSLCopyRequestedPeerNameLength(_ssl.get(), &len);
+    if (status != ::errSecSuccess) {
+        return boost::none
+    }
+    std::string ret;
+    ret.resize(len + 1);
+    status = ::SSLCopyRequestedPeerName(_ssl.get(), &ret[0], &len);
+    if (status != ::errSecSuccess) {
+        return boost::none
+    }
+    ret.resize(len);
+    return ret;
+}
+
 }  // namespace
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1112,19 +1128,7 @@ public:
     }
 
     std::string getSNIServerName() const final {
-        size_t len = 0;
-        auto status = ::SSLCopyRequestedPeerNameLength(_ssl.get(), &len);
-        if (status != ::errSecSuccess) {
-            return "";
-        }
-        std::string ret;
-        ret.resize(len + 1);
-        status = ::SSLCopyRequestedPeerName(_ssl.get(), &ret[0], &len);
-        if (status != ::errSecSuccess) {
-            return "";
-        }
-        ret.resize(len);
-        return ret;
+        return getRawSNIServerName(_ssl.get()).value_or("");
     }
 
     ::SSLContextRef get() const {
@@ -1563,8 +1567,9 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         if (!swPeerCertificateRoles.isOK()) {
             return swPeerCertificateRoles.getStatus();
         }
-        return boost::make_optional(
-            SSLPeerInfo(peerSubjectName, std::move(swPeerCertificateRoles.getValue())));
+        return boost::make_optional(SSLPeerInfo(peerSubjectName,
+                                                getRawSNIServerName(conn),
+                                                std::move(swPeerCertificateRoles.getValue())));
     }
 
     // If this is an SSL client context (on a MongoDB server or client)
@@ -1627,7 +1632,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         }
     }
 
-    return boost::make_optional(SSLPeerInfo(peerSubjectName, stdx::unordered_set<RoleName>()));
+    return boost::make_optional(SSLPeerInfo(peerSubjectName));
 }
 
 int SSLManagerApple::SSL_read(SSLConnectionInterface* conn, void* buf, int num) {

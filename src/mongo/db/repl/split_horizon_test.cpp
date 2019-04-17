@@ -27,6 +27,8 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/repl/split_horizon.h"
 
 #include <algorithm>
@@ -57,19 +59,23 @@ TEST(SplitHorizonTesting, determineHorizon) {
                 : port(p), horizonParameters(std::move(params)) {
                 forwardMapping.emplace(SplitHorizon::defaultHorizon, defaultHost + ":4242");
 
+                auto createForwardMapping =
+                    [](const auto& element) -> decltype(forwardMapping)::value_type {
+                    return {element.first, HostAndPort(element.second)};
+                };
                 std::transform(begin(mapping),
                                end(mapping),
                                inserter(forwardMapping, end(forwardMapping)),
-                               [](const auto& element) -> decltype(forwardMapping)::value_type {
-                                   return {element.first, HostAndPort(element.second)};
-                               });
+                               createForwardMapping);
 
+                auto createReverseMapping =
+                    [](const auto& element) -> decltype(reverseMapping)::value_type {
+                    return {element.second, element.first};
+                };
                 std::transform(begin(stdx::as_const(forwardMapping)),
                                end(stdx::as_const(forwardMapping)),
                                inserter(reverseMapping, end(reverseMapping)),
-                               [](const auto& element) -> decltype(reverseMapping)::value_type {
-                                   return {element.second, element.first};
-                               });
+                               createReverseMapping);
             }
         } input;
 

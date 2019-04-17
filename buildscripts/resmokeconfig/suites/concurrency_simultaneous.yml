@@ -12,6 +12,10 @@ selector:
   # These workloads uses >100MB of data, which can overwhelm test hosts.
   - jstests/concurrency/fsm_workloads/agg_group_external.js
   - jstests/concurrency/fsm_workloads/agg_sort_external.js
+
+  # SERVER-30644 These tests create/drop/modify views which can deadlock on the ViewCatalog mutex if
+  # there's a concurrent operation which acquires a MODE_X lock.
+  - jstests/concurrency/fsm_workloads/view_catalog*.js
   exclude_with_any_tags:
   - uses_transactions
   - requires_replication
@@ -39,3 +43,8 @@ executor:
     mongod_options:
       set_parameters:
         enableTestCommands: 1
+        # We have historically had deadlocks occur due to lock acquisition issues involving the
+        # system running out of WiredTiger write tickets. We intentionally lower the number of
+        # WiredTiger write tickets available to below the maximum number of database clients to
+        # trigger this situation at least some of the time.
+        wiredTigerConcurrentWriteTransactions: 64

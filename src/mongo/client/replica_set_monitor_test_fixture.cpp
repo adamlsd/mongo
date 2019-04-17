@@ -27,49 +27,15 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/platform/basic.h"
 
-#include "mongo/db/operation_context.h"
+#include "mongo/client/replica_set_monitor_test_fixture.h"
 
 namespace mongo {
-
-/**
- * GlobalLockAcquisitionTracker keeps track of the global lock modes acquired during the
- * operation's lifetime. This class is used to track if we ever did a transaction with the
- * intent to do a write, so that we can enforce write concern on noop writes. Also, used
- * during step down to kill all user operations except those that acquired global lock in
- * IS mode.
- */
-class GlobalLockAcquisitionTracker {
-public:
-    static const OperationContext::Decoration<GlobalLockAcquisitionTracker> get;
-
-    // Decoration requires a default constructor.
-    GlobalLockAcquisitionTracker() = default;
-
-    /**
-     * Returns whether we have ever taken a global lock in X or IX mode in this operation.
-     */
-    bool getGlobalWriteLocked() const;
-
-    /**
-     * Returns whether we have ever taken a global lock in S mode in this operation.
-     */
-    bool getGlobalSharedLockTaken() const;
-
-    /**
-     * Returns whether we have ever taken a global lock in this operation.
-     */
-    bool getGlobalLockTaken() const;
-
-    /**
-     * Sets the mode bit in _globalLockMode. Once a mode bit is set, we won't clear it.
-     */
-    void setGlobalLockModeBit(LockMode mode);
-
-private:
-    // keeps track of the global lock modes acquired for this operation.
-    unsigned char _globalLockMode = (1 << MODE_NONE);
-};
-
+const std::vector<HostAndPort> ReplicaSetMonitorTest::basicSeeds = {
+    HostAndPort("a"), HostAndPort("b"), HostAndPort("c")};
+const std::set<HostAndPort> ReplicaSetMonitorTest::basicSeedsSet = {std::begin(basicSeeds),
+                                                                    std::end(basicSeeds)};
+const MongoURI ReplicaSetMonitorTest::basicUri(ConnectionString::forReplicaSet(kSetName,
+                                                                               basicSeeds));
 }  // namespace mongo

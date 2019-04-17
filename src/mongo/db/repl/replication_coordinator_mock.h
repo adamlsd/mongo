@@ -190,7 +190,8 @@ public:
 
     virtual void processReplSetMetadata(const rpc::ReplSetMetadata& replMetadata) override;
 
-    virtual void advanceCommitPoint(const OpTime& committedOptime, bool fromSyncSource) override;
+    virtual void advanceCommitPoint(const OpTimeAndWallTime& committedOptimeAndWallTime,
+                                    bool fromSyncSource) override;
 
     virtual void cancelAndRescheduleElectionTimeout() override;
 
@@ -238,6 +239,8 @@ public:
                                         boost::optional<rpc::OplogQueryMetadata> oqMetadata);
 
     virtual OpTime getLastCommittedOpTime() const;
+
+    virtual OpTimeAndWallTime getLastCommittedOpTimeAndWallTime() const;
 
     virtual std::vector<MemberData> getMemberData() const override;
 

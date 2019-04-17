@@ -211,8 +211,7 @@ public:
          * Enqueues lock but does not block on lock acquisition.
          * Call waitForLockUntil() to complete locking process.
          *
-         * Does not set that the global lock was taken on the GlobalLockAcquisitionTracker. Call
-         * waitForLockUntil to do so.
+         * Does not set Locker::setGlobalLockTakenInMode(). Call waitForLockUntil to do so.
          */
         GlobalLock(OperationContext* opCtx,
                    LockMode lockMode,
@@ -236,8 +235,7 @@ public:
         }
 
         /**
-         * Waits for lock to be granted. Sets that the global lock was taken on the
-         * GlobalLockAcquisitionTracker.
+         * Waits for lock to be granted. Sets Locker::setGlobalLockTakenInMode().
          */
         void waitForLockUntil(Date_t deadline);
 
@@ -358,41 +356,16 @@ public:
         CollectionLock& operator=(const CollectionLock&) = delete;
 
     public:
-        CollectionLock(Locker* lockState,
-                       StringData ns,
+        CollectionLock(OperationContext* opCtx,
+                       const NamespaceString& nss,
                        LockMode mode,
                        Date_t deadline = Date_t::max());
         CollectionLock(CollectionLock&&);
         ~CollectionLock();
 
-        bool isLocked() const {
-            return _result == LOCK_OK;
-        }
-
     private:
         const ResourceId _id;
-        LockResult _result;
-        Locker* _lockState;
-    };
-
-    /**
-     * Like the CollectionLock, but optimized for the local oplog. Always locks in MODE_IX,
-     * must call serializeIfNeeded() before doing any concurrent operations in order to
-     * support storage engines without document level locking. It is an error, checked with a
-     * dassert(), to not have a suitable database lock when taking this lock.
-     */
-    class OplogIntentWriteLock {
-        OplogIntentWriteLock(const OplogIntentWriteLock&) = delete;
-        OplogIntentWriteLock& operator=(const OplogIntentWriteLock&) = delete;
-
-    public:
-        explicit OplogIntentWriteLock(Locker* lockState);
-        ~OplogIntentWriteLock();
-        void serializeIfNeeded();
-
-    private:
-        Locker* const _lockState;
-        bool _serialized;
+        OperationContext* _opCtx;
     };
 
     /**

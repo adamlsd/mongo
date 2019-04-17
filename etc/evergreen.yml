@@ -1385,7 +1385,7 @@ functions:
 
           ${activate_virtualenv}
           $python -m pip install -r etc/pip/evgtest-requirements.txt
-          $python buildscripts/evergreen_generate_resmoke_tasks.py --expansion-file expansions.yml
+          $python buildscripts/evergreen_generate_resmoke_tasks.py --expansion-file expansions.yml --verbose
 
     - command: archive.targz_pack
       params:
@@ -8644,7 +8644,7 @@ buildvariants:
     push_path: linux
     push_bucket: downloads.10gen.com
     push_name: linux
-    push_arch: ppc64le-enterprise-ubuntu1604
+    push_arch: ppc64le-enterprise-ubuntu1804
     compile_flags: --ssl MONGO_DISTMOD=ubuntu1804 -j$(echo "$(grep -c processor /proc/cpuinfo)/2" | bc) --release CCFLAGS="-mcpu=power8 -mtune=power8 -mcmodel=medium" --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     resmoke_jobs_max: 2
     has_packages: true
@@ -8657,6 +8657,7 @@ buildvariants:
     multiversion_platform: ubuntu1804
     multiversion_architecture: ppc64le
     multiversion_edition: enterprise
+    use_default_timeouts: true
   display_tasks:
   - *dbtest
   - *unittests
@@ -11113,9 +11114,6 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
     distros:
     - rhel62-large
-  - name: replica_sets_multi_oplog_txns_gen
-    distros:
-    - rhel62-large
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
@@ -11444,6 +11442,7 @@ buildvariants:
     <<: *enterprise-rhel-70-64-bit-expansions-template
     compile_flags: --ssl --use-cpu-profiler MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars --enterprise-features=hot_backups
     has_packages: false
+    mh_target: ""
   tasks:
   - name: compile_all_run_unittests_TG
   - name: jsCore

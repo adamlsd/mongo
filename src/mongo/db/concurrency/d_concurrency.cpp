@@ -37,7 +37,6 @@
 #include <vector>
 
 #include "mongo/db/concurrency/flow_control_ticketholder.h"
-#include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/service_context.h"
 #include "mongo/stdx/memory.h"
@@ -218,7 +217,7 @@ void Lock::GlobalLock::waitForLockUntil(Date_t deadline) {
 
     const ResourceId globalResId(RESOURCE_GLOBAL, ResourceId::SINGLETON_GLOBAL);
     auto lockMode = _opCtx->lockState()->getLockMode(globalResId);
-    GlobalLockAcquisitionTracker::get(_opCtx).setGlobalLockModeBit(lockMode);
+    _opCtx->lockState()->setGlobalLockTakenInMode(lockMode);
 }
 
 void Lock::GlobalLock::_unlock() {
@@ -265,8 +264,9 @@ void Lock::DBLock::relockWithMode(LockMode newMode) {
     // 2PL would delay the unlocking
     invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
 
-    // Not allowed to change global intent
-    invariant(!isSharedLockMode(_mode) || isSharedLockMode(newMode));
+    // Not allowed to change global intent, so check when going from shared to exclusive.
+    if (isSharedLockMode(_mode) && !isSharedLockMode(newMode))
+        invariant(_opCtx->lockState()->isWriteLocked());
 
     _opCtx->lockState()->unlock(_id);
     _mode = newMode;
@@ -276,57 +276,29 @@ void Lock::DBLock::relockWithMode(LockMode newMode) {
 }
 
 
-Lock::CollectionLock::CollectionLock(Locker* lockState,
-                                     StringData ns,
+Lock::CollectionLock::CollectionLock(OperationContext* opCtx,
+                                     const NamespaceString& nss,
                                      LockMode mode,
                                      Date_t deadline)
-    : _id(RESOURCE_COLLECTION, ns), _result(LOCK_INVALID), _lockState(lockState) {
-    massert(28538, "need a non-empty collection name", nsIsFull(ns));
-
-    dassert(_lockState->isDbLockedForMode(nsToDatabaseSubstring(ns),
-                                          isSharedLockMode(mode) ? MODE_IS : MODE_IX));
+    : _id(RESOURCE_COLLECTION, nss.ns()), _opCtx(opCtx) {
+    invariant(nss.coll().size(), str::stream() << "expected non-empty collection name:" << nss);
+    dassert(opCtx->lockState()->isDbLockedForMode(nss.db(),
+                                                  isSharedLockMode(mode) ? MODE_IS : MODE_IX));
     LockMode actualLockMode = mode;
     if (!supportsDocLocking()) {
         actualLockMode = isSharedLockMode(mode) ? MODE_S : MODE_X;
     }
-
-    _lockState->lock(_id, actualLockMode, deadline);
-    _result = LOCK_OK;
+    _opCtx->lockState()->lock(_opCtx, _id, actualLockMode, deadline);
 }
 
 Lock::CollectionLock::CollectionLock(CollectionLock&& otherLock)
-    : _id(otherLock._id), _result(otherLock._result), _lockState(otherLock._lockState) {
-    otherLock._lockState = nullptr;
-    otherLock._result = LOCK_INVALID;
+    : _id(otherLock._id), _opCtx(otherLock._opCtx) {
+    otherLock._opCtx = nullptr;
 }
 
 Lock::CollectionLock::~CollectionLock() {
-    if (isLocked()) {
-        _lockState->unlock(_id);
-    }
-}
-
-namespace {
-stdx::mutex oplogSerialization;  // for OplogIntentWriteLock
-}  // namespace
-
-Lock::OplogIntentWriteLock::OplogIntentWriteLock(Locker* lockState)
-    : _lockState(lockState), _serialized(false) {
-    _lockState->lock(resourceIdOplog, MODE_IX);
-}
-
-Lock::OplogIntentWriteLock::~OplogIntentWriteLock() {
-    if (_serialized) {
-        oplogSerialization.unlock();
-    }
-    _lockState->unlock(resourceIdOplog);
-}
-
-void Lock::OplogIntentWriteLock::serializeIfNeeded() {
-    if (!supportsDocLocking() && !_serialized) {
-        oplogSerialization.lock();
-        _serialized = true;
-    }
+    if (_opCtx)
+        _opCtx->lockState()->unlock(_id);
 }
 
 Lock::ParallelBatchWriterMode::ParallelBatchWriterMode(Locker* lockState)

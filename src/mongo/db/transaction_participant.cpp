@@ -318,7 +318,7 @@ void TransactionParticipant::performNoopWrite(OperationContext* opCtx, StringDat
 
     {
         Lock::DBLock dbLock(opCtx, "local", MODE_IX);
-        Lock::CollectionLock collectionLock(opCtx->lockState(), "local.oplog.rs", MODE_IX);
+        Lock::CollectionLock collectionLock(opCtx, NamespaceString("local.oplog.rs"), MODE_IX);
 
         uassert(ErrorCodes::NotMaster,
                 "Not primary when performing noop write for NoSuchTransaction error",
@@ -347,7 +347,7 @@ TransactionParticipant::getOldestActiveTimestamp(Timestamp stableTimestamp) {
         auto nss = NamespaceString::kSessionTransactionsTableNamespace;
         auto deadline = Date_t::now() + Milliseconds(100);
         Lock::DBLock dbLock(opCtx.get(), nss.db(), MODE_IS, deadline);
-        Lock::CollectionLock collLock(opCtx.get()->lockState(), nss.toString(), MODE_IS, deadline);
+        Lock::CollectionLock collLock(opCtx.get(), nss, MODE_IS, deadline);
 
         auto databaseHolder = DatabaseHolder::get(opCtx.get());
         auto db = databaseHolder->getDb(opCtx.get(), nss.db());
@@ -1029,7 +1029,9 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
         // being prepared. When the OplogSlotReserver goes out of scope and is destroyed, the
         // storage-transaction it uses to keep the hole open will abort and the slot (and
         // corresponding oplog hole) will vanish.
-        if (!gUseMultipleOplogEntryFormatForTransactions) {
+        if (!gUseMultipleOplogEntryFormatForTransactions ||
+            serverGlobalParams.featureCompatibility.getVersion() <
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
             oplogSlotReserver.emplace(opCtx);
         } else {
             const auto numSlotsToReserve = retrieveCompletedTransactionOperations(opCtx).size();
@@ -1063,21 +1065,10 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
 
     abortGuard.dismiss();
 
-    invariant(!p().oldestOplogEntryOpTime,
-              str::stream() << "This transaction's oldest oplog entry OpTime has already "
-                            << "been set to: "
-                            << p().oldestOplogEntryOpTime->toString());
-    // Keep track of the OpTime from the first oplog entry written by this transaction.
-    p().oldestOplogEntryOpTime = prepareOplogSlot;
-
-    // Maintain the OpTime of the oldest active oplog entry for this transaction. We currently
-    // only write an oplog entry for an in progress transaction when it is in the prepare state
-    // but this will change when we allow multiple oplog entries per transaction.
     {
         const auto ticks = opCtx->getServiceContext()->getTickSource()->getTicks();
         stdx::lock_guard<Client> lk(*opCtx->getClient());
-        o(lk).transactionMetricsObserver.onPrepare(
-            ServerTransactionsMetrics::get(opCtx), *p().oldestOplogEntryOpTime, ticks);
+        o(lk).transactionMetricsObserver.onPrepare(ServerTransactionsMetrics::get(opCtx), ticks);
     }
 
     if (MONGO_FAIL_POINT(hangAfterSettingPrepareStartTime)) {
@@ -1105,6 +1096,10 @@ void TransactionParticipant::Participant::addTransactionOperation(
     invariant(opCtx->lockState()->inAWriteUnitOfWork());
     p().transactionOperations.push_back(operation);
     p().transactionOperationBytes += repl::OplogEntry::getDurableReplOperationSize(operation);
+
+    // Creating transactions larger than 16MB requires a new oplog format only available in FCV 4.2.
+    const auto isFCV42 = serverGlobalParams.featureCompatibility.getVersion() ==
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42;
     // _transactionOperationBytes is based on the in-memory size of the operation.  With overhead,
     // we expect the BSON size of the operation to be larger, so it's possible to make a transaction
     // just a bit too large and have it fail only in the commit.  It's still useful to fail early
@@ -1112,9 +1107,9 @@ void TransactionParticipant::Participant::addTransactionOperation(
     uassert(ErrorCodes::TransactionTooLarge,
             str::stream() << "Total size of all transaction operations must be less than "
                           << BSONObjMaxInternalSize
-                          << ". Actual size is "
+                          << " when using featureCompatibilityVersion < 4.2. Actual size is "
                           << p().transactionOperationBytes,
-            gUseMultipleOplogEntryFormatForTransactions ||
+            (gUseMultipleOplogEntryFormatForTransactions && isFCV42) ||
                 p().transactionOperationBytes <= BSONObjMaxInternalSize);
 }
 
@@ -1153,12 +1148,6 @@ void TransactionParticipant::Participant::commitUnpreparedTransaction(OperationC
     uassert(ErrorCodes::InvalidOptions,
             "commitTransaction must provide commitTimestamp to prepared transaction.",
             !o().txnState.isPrepared());
-
-    // TODO SERVER-37129: Remove this invariant once we allow transactions larger than 16MB.
-    invariant(!p().oldestOplogEntryOpTime,
-              str::stream() << "The oldest oplog entry OpTime should not have been set because "
-                            << "this transaction is not prepared. But, it is currently "
-                            << p().oldestOplogEntryOpTime->toString());
 
     auto txnOps = retrieveCompletedTransactionOperations(opCtx);
     auto opObserver = opCtx->getServiceContext()->getOpObserver();
@@ -1274,10 +1263,6 @@ void TransactionParticipant::Participant::commitPreparedTransaction(
 
         clearOperationsInMemory(opCtx);
 
-        // If we are committing a prepared transaction, then we must have already recorded this
-        // transaction's oldest oplog entry OpTime.
-        invariant(p().oldestOplogEntryOpTime);
-
         _finishCommitTransaction(opCtx);
     } catch (...) {
         // It is illegal for committing a prepared transaction to fail for any reason, other than an
@@ -1327,7 +1312,6 @@ void TransactionParticipant::Participant::_finishCommitTransaction(OperationCont
 
         o(lk).transactionMetricsObserver.onCommit(ServerTransactionsMetrics::get(opCtx),
                                                   tickSource,
-                                                  p().oldestOplogEntryOpTime,
                                                   &Top::get(getGlobalServiceContext()));
         o(lk).transactionMetricsObserver.onTransactionOperation(
             opCtx, CurOp::get(opCtx)->debug().additiveMetrics, o().txnState.isPrepared());
@@ -1387,12 +1371,6 @@ void TransactionParticipant::Participant::abortActiveUnpreparedOrStashPreparedTr
         _stashActiveTransaction(opCtx);
         return;
     }
-
-    // TODO SERVER-37129: Remove this invariant once we allow transactions larger than 16MB.
-    invariant(!p().oldestOplogEntryOpTime,
-              str::stream() << "The oldest oplog entry OpTime should not have been set because "
-                            << "this transaction is not prepared. But, it is currently "
-                            << p().oldestOplogEntryOpTime->toString());
 
     _abortActiveTransaction(opCtx, TransactionState::kInProgress);
 } catch (...) {
@@ -1473,7 +1451,6 @@ void TransactionParticipant::Participant::_abortTransactionOnSession(OperationCo
         o(lk).transactionMetricsObserver.onAbort(
             ServerTransactionsMetrics::get(opCtx->getServiceContext()),
             tickSource,
-            p().oldestOplogEntryOpTime,
             &Top::get(opCtx->getServiceContext()));
     }
 
@@ -1786,10 +1763,6 @@ std::string TransactionParticipant::Participant::_transactionInfoForLog(
         s << " prepareOpTime:" << o().prepareOpTime.toString();
     }
 
-    if (p().oldestOplogEntryOpTime) {
-        s << " oldestOplogEntryOpTime:" << p().oldestOplogEntryOpTime->toString();
-    }
-
     // Total duration of the transaction.
     s << ", "
       << duration_cast<Milliseconds>(singleTransactionStats.getDuration(tickSource, curTick));
@@ -1964,7 +1937,6 @@ void TransactionParticipant::Participant::_resetTransactionState(
     p().transactionOperationBytes = 0;
     p().transactionOperations.clear();
     o(wl).prepareOpTime = repl::OpTime();
-    p().oldestOplogEntryOpTime = boost::none;
     p().speculativeTransactionReadOpTime = repl::OpTime();
     p().multikeyPathInfo.clear();
     p().autoCommit = boost::none;
@@ -2004,8 +1976,6 @@ void TransactionParticipant::Participant::abortPreparedTransactionForRollback(
     // we only modify these variables when adding an operation to a transaction. Since this
     // transaction is already prepared, we cannot add more operations to it. We will have this
     // in the prepare oplog entry.
-    // The oldestOplogEntryOpTime will be reset to boost::none. With a prepared transaction, this
-    // is the same as the prepareOpTime.
     _resetTransactionState(lg, TransactionState::kNone);
 }
 
@@ -2065,7 +2035,10 @@ UpdateRequest TransactionParticipant::Participant::_makeUpdateRequest(
         newTxnRecord.setLastWriteOpTime(newLastWriteOpTime);
         newTxnRecord.setLastWriteDate(newLastWriteDate);
         newTxnRecord.setState(newState);
-        if (gUseMultipleOplogEntryFormatForTransactions && startOpTime) {
+        if (gUseMultipleOplogEntryFormatForTransactions &&
+            serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42 &&
+            startOpTime) {
             // The startOpTime should only be set when transitioning the txn to in-progress or
             // prepared.
             invariant(newState == DurableTxnStateEnum::kInProgress ||

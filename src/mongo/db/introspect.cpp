@@ -153,7 +153,7 @@ void profile(OperationContext* opCtx, NetworkOp op) {
                 break;
             }
 
-            Lock::CollectionLock collLock(opCtx->lockState(), db->getProfilingNS(), MODE_IX);
+            Lock::CollectionLock collLock(opCtx, db->getProfilingNS(), MODE_IX);
 
             Collection* const coll = db->getCollection(opCtx, db->getProfilingNS());
             if (coll) {
@@ -193,8 +193,7 @@ void profile(OperationContext* opCtx, NetworkOp op) {
 Status createProfileCollection(OperationContext* opCtx, Database* db) {
     invariant(opCtx->lockState()->isDbLockedForMode(db->name(), MODE_X));
 
-    const std::string dbProfilingNS(db->getProfilingNS());
-
+    auto& dbProfilingNS = db->getProfilingNS();
     Collection* const collection = db->getCollection(opCtx, dbProfilingNS);
     if (collection) {
         if (!collection->isCapped()) {
@@ -214,7 +213,7 @@ Status createProfileCollection(OperationContext* opCtx, Database* db) {
 
     WriteUnitOfWork wunit(opCtx);
     repl::UnreplicatedWritesBlock uwb(opCtx);
-    invariant(db->createCollection(opCtx, dbProfilingNS, collectionOptions));
+    invariant(db->createCollection(opCtx, dbProfilingNS.ns(), collectionOptions));
     wunit.commit();
 
     return Status::OK();

@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -29,26 +29,23 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
+#include "mongo/base/transaction_error.h"
+#include "mongo/unittest/unittest.h"
 
 namespace mongo {
+namespace {
 
-const OperationContext::Decoration<GlobalLockAcquisitionTracker> GlobalLockAcquisitionTracker::get =
-    OperationContext::declareDecoration<GlobalLockAcquisitionTracker>();
-
-bool GlobalLockAcquisitionTracker::getGlobalWriteLocked() const {
-    return _globalLockMode & ((1 << MODE_IX) | (1 << MODE_X));
+TEST(IsTransientTransactionErrorTest, NetworkErrorsAreTransientBeforeCommit) {
+    ASSERT(isTransientTransactionError(ErrorCodes::HostUnreachable,
+                                       false /* hasWriteConcernError */,
+                                       false /* isCommitTransaction */));
 }
 
-bool GlobalLockAcquisitionTracker::getGlobalSharedLockTaken() const {
-    return _globalLockMode & (1 << MODE_S);
+TEST(IsTransientTransactionErrorTest, NetworkErrorsAreNotTransientOnCommit) {
+    ASSERT(!isTransientTransactionError(ErrorCodes::HostUnreachable,
+                                        false /* hasWriteConcernError */,
+                                        true /* isCommitTransaction */));
 }
 
-bool GlobalLockAcquisitionTracker::getGlobalLockTaken() const {
-    return _globalLockMode & ((1 << MODE_IX) | (1 << MODE_X) | (1 << MODE_IS) | (1 << MODE_S));
-}
-
-void GlobalLockAcquisitionTracker::setGlobalLockModeBit(LockMode mode) {
-    _globalLockMode |= (1 << mode);
-}
+}  // namespace
 }  // namespace mongo

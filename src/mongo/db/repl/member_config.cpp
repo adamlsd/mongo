@@ -176,9 +176,9 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     //
     // Parse "tags" field.
     //
-    BSONElement tagsElement;
-    Status status = bsonExtractTypedField(mcfg, kTagsFieldName, Object, &tagsElement);
-    if (status.isOK()) {
+    try {
+        BSONElement tagsElement;
+        uassertStatusOK(bsonExtractTypedField(mcfg, kTagsFieldName, Object, &tagsElement));
         for (auto&& tag : tagsElement.Obj()) {
             if (tag.type() != String) {
                 uasserted(ErrorCodes::TypeMismatch,
@@ -188,11 +188,12 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
             }
             _tags.push_back(tagConfig->makeTag(tag.fieldNameStringData(), tag.valueStringData()));
         }
-    } else if (ErrorCodes::NoSuchKey != status) {
-        uassertStatusOK(status);
+    }
+    catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
+        // No such key is, in this case, everything else is a problem.
     }
 
-    auto horizonsElement = [&]() -> boost::optional<BSONElement> {
+    const auto horizonsElement = [&]() -> boost::optional<BSONElement> {
         BSONElement result;
         Status status = bsonExtractTypedField(mcfg, kHorizonsFieldName, Object, &result);
         if (!status.isOK()) {
@@ -202,7 +203,6 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     }();
 
     if (horizonsElement) {
-        std::cerr << "Found a horizons element." << std::endl;
         const auto& horizonsObject = horizonsElement->Obj();
         std::size_t horizonCount = 0;
         using std::begin;
@@ -219,8 +219,6 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                                         << typeName(horizon.type()));
             }
 
-            std::cerr << "Adding forward mapping for horizon member " << horizonName
-                      << " to address " << HostAndPort(horizon.valueStringData()) << std::endl;
             return ReturnType{horizonName, HostAndPort(horizon.valueStringData())};
         };
         std::transform(begin(horizonsObject),
@@ -236,9 +234,6 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                        inserter(_horizonReverse, end(_horizonReverse)),
                        [](auto&& forwardHorizon) {
                            using ReturnType = decltype(_horizonReverse)::value_type;
-                           std::cerr << "Adding reverse mapping for horizon member "
-                                     << forwardHorizon.first << " to address "
-                                     << forwardHorizon.second << std::endl;
                            return ReturnType{forwardHorizon.second, forwardHorizon.first};
                        });
 

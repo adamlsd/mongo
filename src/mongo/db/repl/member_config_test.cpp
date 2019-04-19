@@ -304,6 +304,49 @@ TEST(MemberConfig, ParseTags) {
     ASSERT_EQUALS(1, std::count(mc.tagsBegin(), mc.tagsEnd(), tagConfig.findTag("$all", "0")));
 }
 
+TEST(MemberConfig, ParseHorizonFields) {
+    ReplSetTagConfig tagConfig;
+    MemberConfig mc(BSON("_id" << 0 << "host"
+                               << "h"
+                               << "horizons"
+                               << BSON("alpha"
+                                       << "a.host:42"
+                                       << "beta"
+                                       << "b.host:256")),
+                    &tagConfig);
+
+    std::cerr << "Horizons as seen: " << std::endl;
+    for (auto&& horizon : mc.getHorizonMappings()) {
+        std::cerr << "Horizon entry: " << horizon.first << " --- " << horizon.second << std::endl;
+    }
+
+    ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("alpha"));
+    ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("beta"));
+    ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
+
+    ASSERT_EQUALS(HostAndPort("a.host", 42), mc.getHorizonMappings().find("alpha")->second);
+    ASSERT_EQUALS(HostAndPort("b.host", 256), mc.getHorizonMappings().find("beta")->second);
+    ASSERT_EQUALS(HostAndPort("h"), mc.getHorizonMappings().find("__default")->second);
+
+    ASSERT_EQUALS(mc.getHorizonMappings().size(), std::size_t{3});
+}
+
+TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {
+    ReplSetTagConfig tagConfig;
+    MemberConfig mc(BSON("_id" << 0 << "host" << "h"), &tagConfig);
+
+    std::cerr << "Horizons as seen: " << std::endl;
+    for (auto&& horizon : mc.getHorizonMappings()) {
+        std::cerr << "Horizon entry: " << horizon.first << " --- " << horizon.second << std::endl;
+    }
+
+    ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
+
+    ASSERT_EQUALS(HostAndPort("h"), mc.getHorizonMappings().find("__default")->second);
+
+    ASSERT_EQUALS(mc.getHorizonMappings().size(), std::size_t{1});
+}
+
 TEST(MemberConfig, ValidateFailsWithIdOutOfRange) {
     ReplSetTagConfig tagConfig;
     {

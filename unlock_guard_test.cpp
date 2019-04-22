@@ -39,10 +39,13 @@ namespace InfiniteMonkeys
 	};
 
 	class OwningUnlockable;
+	class Promiscuous;
+
 
     class Unlockable : Poisonable
     {
         private:
+			friend Promiscuous;
             ULock *lk;
 			struct Poisoner;
 			Poisoner *poisoner= nullptr;
@@ -90,50 +93,7 @@ namespace InfiniteMonkeys
 				if( poisoner ) poisoner->p= nullptr;
 			}
 
-			[[nodiscard]] auto
-			promiscuous() &
-			{
-				// This one doesn't work, I think.
-				validate();
-
-				struct Promiscuous : Poisonable
-				{
-					private:
-						ULock *lk;
-
-						void
-						validate()
-						{
-							assert( this->alive() && "This Promiscuous object, which is suitable only for use when not chaste, was poisoned" );
-							assert( !this->lk->owns_lock() && "This Promiscuous object was locked by someone, it cannot be used at this time." );
-						}
-
-					public:
-						explicit Promiscuous( Unlockable *const i_ul )
-							: Poisonable( i_ul ), lk( i_ul->lk )
-						{
-							lk->unlock();
-						}
-
-						~Promiscuous()
-						{
-							this->validate();
-							this->lk->lock();
-						}
-
-#if 0
-						[[nodiscard]] auto
-						chaste()
-						{
-							this->validate();
-							this->lk->lock();
-							// TODO: Need to create ownership here.
-						}
-#endif
-				};
-
-				return Promiscuous( this );
-			}
+			[[nodiscard]] Promiscuous promiscuous() &;
 
 			operator ULock &() & { validate(); return *lk; }
     };
@@ -147,6 +107,7 @@ namespace InfiniteMonkeys
 	class OwningUnlockable : Poisonable
 	{
 		private:
+			friend Promiscuous;
 			ULock lk;
 
 			friend Unlockable;
@@ -156,47 +117,64 @@ namespace InfiniteMonkeys
 		public:
 			OwningUnlockable( Mtx &mtx ) : Poisonable( nullptr ), lk( mtx ) { assert( this->lk.owns_lock() ); }
 
-			[[nodiscard]] auto
-			promiscuous() &
+			[[nodiscard]] Promiscuous promiscuous() &;
+	};
+
+	struct Promiscuous : Poisonable
+	{
+		private:
+			friend Unlockable;
+			friend OwningUnlockable;
+
+			ULock *lk;
+
+			void
+			validate()
+			{
+				assert( !lk->owns_lock() && "This Promiscuous object was locked by someone, it cannot be used at this time." );
+				assert( this->alive() && "This Promiscuous object, which is suitable only for use when not chaste, was poisoned" );
+			}
+
+			Promiscuous( OwningUnlockable *const i_ul )
+				: Poisonable( i_ul ), lk( &i_ul->lk ) 
+			{
+				this->lk->unlock();
+			}
+
+			Promiscuous( Unlockable *const i_ul )
+				: Poisonable( i_ul ), lk( i_ul->lk ) 
+			{
+				this->lk->unlock();
+			}
+
+		public:
+			~Promiscuous()
 			{
 				this->validate();
+				this->lk->lock();
+			}
 
-				struct Promiscuous : Poisonable
-				{
-					private:
-						ULock *lk;
-
-						void
-						validate()
-						{
-							assert( !lk->owns_lock() && "This Promiscuous object was locked by someone, it cannot be used at this time." );
-							assert( this->alive() && "This Promiscuous object, which is suitable only for use when not chaste, was poisoned" );
-						}
-
-					public:
-						Promiscuous( OwningUnlockable *const i_ul )
-							: Poisonable( i_ul ), lk( &i_ul->lk ) 
-						{
-							this->lk->unlock();
-						}
-
-						~Promiscuous()
-						{
-							this->validate();
-							this->lk->lock();
-						}
-
-						[[nodiscard]] auto
-						chaste()
-						{
-							this->validate();
-							return OwningUnlockable( this, *this->lk->mutex() );
-						}
-				};
-
-				return Promiscuous( this );
+			[[nodiscard]] auto
+			chaste()
+			{
+				this->validate();
+				return OwningUnlockable( this, *this->lk->mutex() );
 			}
 	};
+
+	[[nodiscard]] Promiscuous
+	Unlockable::promiscuous() &
+	{
+		this->validate();
+		return Promiscuous( this );
+	}
+
+	[[nodiscard]] Promiscuous
+	OwningUnlockable::promiscuous() &
+	{
+		this->validate();
+		return Promiscuous( this );
+	}
 
 	Unlockable::Unlockable( OwningUnlockable &o )
 		: Poisonable( nullptr ), lk( &o.lk )
@@ -225,6 +203,9 @@ namespace std
 	template<> InfiniteMonkeys::Unlockable &&move( InfiniteMonkeys::Unlockable & ) noexcept= delete;
 }
 
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void disallowed();
 
 using namespace InfiniteMonkeys;
@@ -234,7 +215,10 @@ f1( Unlockable u )
 	std::cerr << "F1 called" << std::endl;
 	auto prom= u.promiscuous();
 	auto chaste= prom.chaste();
-	//auto p2= chaste.promiscuous();
+	auto p2= chaste.promiscuous();
+	auto c2= p2.chaste();
+	auto p3= c2.promiscuous();
+	auto c3= p3.chaste();
 
 	std::cerr << "Got all" << std::endl;
 

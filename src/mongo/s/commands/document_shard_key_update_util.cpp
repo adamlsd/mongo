@@ -122,8 +122,7 @@ bool updateShardKeyForDocument(OperationContext* opCtx,
                                const WouldChangeOwningShardInfo& documentKeyChangeInfo,
                                int stmtId) {
     auto updatePreImage = documentKeyChangeInfo.getPreImage().getOwned();
-    invariant(documentKeyChangeInfo.getPostImage());
-    auto updatePostImage = documentKeyChangeInfo.getPostImage()->getOwned();
+    auto updatePostImage = documentKeyChangeInfo.getPostImage().getOwned();
 
     auto deleteCmdObj = constructShardKeyDeleteCmdObj(nss, updatePreImage, stmtId);
     auto insertCmdObj = constructShardKeyInsertCmdObj(nss, updatePostImage, stmtId);
@@ -143,8 +142,8 @@ TransactionRouter* startTransactionForShardKeyUpdate(OperationContext* opCtx) {
     return txnRouter;
 }
 
-void commitShardKeyUpdateTransaction(OperationContext* opCtx, TransactionRouter* txnRouter) {
-    auto commitResponse = txnRouter->commitTransaction(opCtx, boost::none);
+BSONObj commitShardKeyUpdateTransaction(OperationContext* opCtx, TransactionRouter* txnRouter) {
+    return txnRouter->commitTransaction(opCtx, boost::none);
 }
 
 BSONObj constructShardKeyDeleteCmdObj(const NamespaceString& nss,

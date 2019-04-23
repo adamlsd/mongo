@@ -463,6 +463,13 @@ var ReplSetTest = function(opts) {
         return this.ports[n];
     };
 
+    this.getDbPath = function(node) {
+        // Get a replica set node (check for use of bridge).
+        const n = this.getNodeId(node);
+        const replNode = _useBridge ? _unbridgedNodes[n] : this.nodes[n];
+        return replNode.dbpath;
+    };
+
     this._addPath = function(p) {
         if (!_alldbpaths)
             _alldbpaths = [p];
@@ -2551,6 +2558,10 @@ var ReplSetTest = function(opts) {
 
     /**
      * Wait for a state indicator to go to a particular state or states.
+     *
+     * Note that this waits for the state as indicated by the primary node.  If you want to wait for
+     * a node to actually reach SECONDARY state, as reported by itself, use awaitSecondaryNodes
+     * instead.
      *
      * @param node is a single node or list of nodes, by id or conn
      * @param state is a single state or list of states

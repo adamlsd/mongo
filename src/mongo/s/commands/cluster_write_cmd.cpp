@@ -61,6 +61,8 @@
 namespace mongo {
 namespace {
 
+MONGO_FAIL_POINT_DEFINE(hangAfterThrowWouldChangeOwningShardRetryableWrite);
+
 void batchErrorToLastError(const BatchedCommandRequest& request,
                            const BatchedCommandResponse& response,
                            LastError* error) {
@@ -193,15 +195,8 @@ bool updateShardKeyValue(OperationContext* opCtx,
         wouldChangeOwningShardErrorInfo,
         request.getWriteCommandBase().getStmtId() ? request.getWriteCommandBase().getStmtId().get()
                                                   : 0);
-
-    // If we get here, the batch size is 1 and we have successfully deleted the old doc
-    // and inserted the new one, so it is safe to unset the error details.
-    response->unsetErrDetails();
     if (!matchedDoc)
         return false;
-
-    response->setN(response->getN() + 1);
-    response->setNModified(response->getNModified() + 1);
 
     return true;
 }
@@ -225,7 +220,13 @@ bool handleWouldChangeOwningShardError(OperationContext* opCtx,
     if (!wouldChangeOwningShardErrorInfo)
         return false;
 
+    bool updatedShardKey = false;
     if (isRetryableWrite) {
+        if (MONGO_FAIL_POINT(hangAfterThrowWouldChangeOwningShardRetryableWrite)) {
+            log() << "Hit hangAfterThrowWouldChangeOwningShardRetryableWrite failpoint";
+            MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
+                opCtx, hangAfterThrowWouldChangeOwningShardRetryableWrite);
+        }
         RouterOperationContextSession routerSession(opCtx);
         try {
             // Start transaction and re-run the original update command
@@ -234,23 +235,29 @@ bool handleWouldChangeOwningShardError(OperationContext* opCtx,
 
             auto txnRouterForShardKeyChange =
                 documentShardKeyUpdateUtil::startTransactionForShardKeyUpdate(opCtx);
-
+            // Clear the error details from the response object before sending the write again
+            response->unsetErrDetails();
             ClusterWriter::write(opCtx, request, &stats, response);
             wouldChangeOwningShardErrorInfo =
                 getWouldChangeOwningShardErrorInfo(opCtx, request, response, !isRetryableWrite);
 
             // If we do not get WouldChangeOwningShard when re-running the update, the document has
-            // been modified or deleted and we do not need to delete it and insert a new one.
-            auto updatedShardKey =
-                wouldChangeOwningShardErrorInfo &&
+            // been modified or deleted concurrently and we do not need to delete it and insert a
+            // new one.
+            updatedShardKey = wouldChangeOwningShardErrorInfo &&
                 updateShardKeyValue(
-                    opCtx, request, response, wouldChangeOwningShardErrorInfo.get());
+                                  opCtx, request, response, wouldChangeOwningShardErrorInfo.get());
 
             // Commit the transaction
-            documentShardKeyUpdateUtil::commitShardKeyUpdateTransaction(opCtx,
-                                                                        txnRouterForShardKeyChange);
+            auto commitResponse = documentShardKeyUpdateUtil::commitShardKeyUpdateTransaction(
+                opCtx, txnRouterForShardKeyChange);
 
-            return updatedShardKey;
+            // TODO SERVER-40666: Check the commit response returned success for all shards
+            if (commitResponse.hasField("ok") && !commitResponse["ok"].trueValue()) {
+                // TODO SERVER-40646: Change the error we report to something more useful to a user
+                uassertStatusOK(Status{ErrorCodes::Error(commitResponse.getIntField("code")),
+                                       commitResponse.getStringField("errmsg")});
+            }
         } catch (const DBException& e) {
             // Set the error status to the status of the failed command and abort the transaction.
             auto status = e.toStatus();
@@ -275,7 +282,7 @@ bool handleWouldChangeOwningShardError(OperationContext* opCtx,
     } else {
         try {
             // Delete the original document and insert the new one
-            return updateShardKeyValue(
+            updatedShardKey = updateShardKeyValue(
                 opCtx, request, response, wouldChangeOwningShardErrorInfo.get());
         } catch (const ExceptionFor<ErrorCodes::DuplicateKey>& ex) {
             Status status = ex->getKeyPattern().hasField("_id")
@@ -287,7 +294,15 @@ bool handleWouldChangeOwningShardError(OperationContext* opCtx,
         }
     }
 
-    MONGO_UNREACHABLE
+    if (updatedShardKey) {
+        // If we get here, the batch size is 1 and we have successfully deleted the old doc
+        // and inserted the new one, so it is safe to unset the error details.
+        response->unsetErrDetails();
+        response->setN(response->getN() + 1);
+        response->setNModified(response->getNModified() + 1);
+    }
+
+    return updatedShardKey;
 }
 
 /**

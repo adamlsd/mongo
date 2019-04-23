@@ -346,7 +346,7 @@ functions:
           if [ -s "$filename" ]; then
             echo "Rejecting task due to the following outliers:"
             cat "$filename"
-            exit 1
+            exit 0
           fi
     - command: shell.exec
       type: test
@@ -520,6 +520,16 @@ tasks:
     - func: "prepare environment"
       vars:
         test: "jasper_smoke"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
+- name: genny_self_tests
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "genny_self_tests"
     - func: "deploy cluster"
     - func: "run test"
     - func: "analyze"
@@ -863,6 +873,7 @@ buildvariants:
     - name: industry_benchmarks
     - name: crud_workloads
     - name: jasper_smoke
+    - name: genny_self_tests
     - name: cursor_manager
     - name: insert_remove
     - name: mixed_workloads
@@ -1114,7 +1125,7 @@ buildvariants:
 #######################################
 - name: wtdevelop-1-node-replSet
   display_name: WT Develop 1-Node ReplSet
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: single-replica
@@ -1133,7 +1144,7 @@ buildvariants:
 
 - name: wtdevelop-standalone
   display_name: WT Develop Standalone
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: standalone
@@ -1152,7 +1163,7 @@ buildvariants:
 
 - name: wtdevelop-3-node-replSet
   display_name: WT Develop 3-Node ReplSet
-  batchtime: 1440  # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: replica
@@ -1172,7 +1183,7 @@ buildvariants:
 # Disabled: SERVER-35586
 #- name: wtdevelop-shard-lite
 #  display_name: WT Develop Shard Lite Cluster
-#  batchtime: 1440  # 24 hours
+#  batchtime: 10080 # 7 days
 #  modules: *modules
 #  expansions:
 #    setup: shard-lite

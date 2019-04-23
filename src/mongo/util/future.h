@@ -252,12 +252,15 @@ public:
 
 private:
     friend class Promise<T>;
+    friend class SharedPromise<T>;
     template <typename>
     friend class Future;
     template <typename>
     friend class ExecutorFuture;
     template <typename>
     friend class future_details::FutureImpl;
+    template <typename>
+    friend class SharedSemiFuture;
 
     Future<T> unsafeToInlineFuture() && noexcept;
 
@@ -499,6 +502,7 @@ private:
     template <typename>
     friend class future_details::FutureImpl;
     friend class Promise<T>;
+    friend class SharedPromise<T>;
 
     using SemiFuture<T>::unsafeToInlineFuture;
 
@@ -609,28 +613,31 @@ public:
 
     template <typename Func>
         auto then(Func&& func) && noexcept {
-        return mongo::ExecutorFuture(std::move(_exec),
-                                     std::move(this->_impl).then(wrapCB(std::forward<Func>(func))));
+        return mongo::ExecutorFuture(
+            std::move(_exec), std::move(this->_impl).then(wrapCB<T>(std::forward<Func>(func))));
     }
 
     template <typename Func>
         auto onCompletion(Func&& func) && noexcept {
         return mongo::ExecutorFuture(
             std::move(_exec),
-            std::move(this->_impl).onCompletion(wrapCB(std::forward<Func>(func))));
+            std::move(this->_impl)
+                .onCompletion(wrapCB<StatusOrStatusWith<T>>(std::forward<Func>(func))));
     }
 
     template <typename Func>
         ExecutorFuture<T> onError(Func&& func) && noexcept {
         return mongo::ExecutorFuture(
-            std::move(_exec), std::move(this->_impl).onError(wrapCB(std::forward<Func>(func))));
+            std::move(_exec),
+            std::move(this->_impl).onError(wrapCB<Status>(std::forward<Func>(func))));
     }
 
     template <ErrorCodes::Error code, typename Func>
         ExecutorFuture<T> onError(Func&& func) && noexcept {
         return mongo::ExecutorFuture(
             std::move(_exec),
-            std::move(this->_impl).template onError<code>(wrapCB(std::forward<Func>(func))));
+            std::move(this->_impl)
+                .template onError<code>(wrapCB<Status>(std::forward<Func>(func))));
     }
 
     template <ErrorCategory category, typename Func>
@@ -638,7 +645,7 @@ public:
         return mongo::ExecutorFuture(
             std::move(_exec),
             std::move(this->_impl)
-                .template onErrorCategory<category>(wrapCB(std::forward<Func>(func))));
+                .template onErrorCategory<category>(wrapCB<Status>(std::forward<Func>(func))));
     }
 
 private:
@@ -652,8 +659,23 @@ private:
      * Future<U>, then schedules a task on _exec to complete the associated promise with the result
      * of calling func with that argument.
      */
-    template <typename Func>
-    auto wrapCB(Func&& func);
+    template <typename RawArg, typename Func>
+    auto wrapCB(Func&& func) {
+        // Have to take care to never put void in argument position, since that is a hard error.
+        using Result = typename std::conditional_t<std::is_void_v<RawArg>,
+                                                   std::invoke_result<Func>,
+                                                   std::invoke_result<Func, RawArg>>::type;
+        using DummyArg = std::conditional_t<std::is_void_v<RawArg>,  //
+                                            future_details::FakeVoid,
+                                            RawArg>;
+        using Sig = std::conditional_t<std::is_void_v<RawArg>,  //
+                                       Result(),
+                                       Result(DummyArg)>;
+        return wrapCBHelper(unique_function<Sig>(std::forward<Func>(func)));
+    }
+
+    template <typename Sig>
+    NOINLINE_DECL auto wrapCBHelper(unique_function<Sig>&& func);
 
     using SemiFuture<T>::unsafeToInlineFuture;
 
@@ -661,6 +683,8 @@ private:
     friend class ExecutorFuture;
     template <typename>
     friend class SemiFuture;
+    template <typename>
+    friend class SharedSemiFuture;
     template <typename>
     friend class future_details::FutureImpl;
 
@@ -853,6 +877,11 @@ public:
     static_assert(!std::is_const<T>::value, "SharedSemiFuture<const T> is banned.");
     static_assert(!std::is_array<T>::value, "SharedSemiFuture<T[]> is banned.");
 
+    static_assert(std::is_void_v<T> || std::is_copy_constructible_v<T>,
+                  "SharedSemiFuture currently requires copyable types. Let us know if this is a "
+                  "problem. Supporting this for blocking use cases is easy, but it will require "
+                  "more work for async usage.");
+
     using value_type = T;
 
     SharedSemiFuture() = default;
@@ -894,12 +923,36 @@ public:
         return _shared.getNoThrow(interruptible);
     }
 
+    ExecutorFuture<T> thenRunOn(ExecutorPtr exec) const noexcept {
+        return ExecutorFuture<T>(std::move(exec), toFutureImpl());
+    }
+
 private:
     template <typename>
     friend class SharedPromise;
     template <typename>
     friend class future_details::FutureImpl;
     friend class SharedSemiFuture<void>;
+    template <typename>
+    friend class ExecutorFuture;
+
+    future_details::FutureImpl<T> toFutureImpl() const noexcept {
+        static_assert(std::is_void_v<T> || std::is_copy_constructible_v<T>);
+        return future_details::FutureImpl<T>(_shared.addChild());
+    }
+
+    // These are needed to support chaining where a SharedSemiFuture is returned from a
+    // continuation.
+    explicit operator future_details::FutureImpl<T>() const noexcept {
+        return toFutureImpl();
+    }
+    template <typename U>
+    void propagateResultTo(U&& arg) const noexcept {
+        toFutureImpl().propagateResultTo(std::forward<U>(arg));
+    }
+    Future<T> unsafeToInlineFuture() const noexcept {
+        return Future<T>(toFutureImpl());
+    }
 
     explicit SharedSemiFuture(boost::intrusive_ptr<future_details::SharedState<T>> ptr)
         : _shared(std::move(ptr)) {}
@@ -943,7 +996,7 @@ public:
     SharedPromise() = default;
 
     ~SharedPromise() {
-        if (MONGO_unlikely(!haveCompleted())) {
+        if (MONGO_unlikely(!_haveCompleted)) {
             _sharedState->setError({ErrorCodes::BrokenPromise, "broken promise"});
         }
     }
@@ -963,44 +1016,39 @@ public:
 
     template <typename Func>
     void setWith(Func&& func) noexcept {
-        invariant(!haveCompleted());
+        invariant(!std::exchange(_haveCompleted, true));
         setFrom(Future<void>::makeReady().then(std::forward<Func>(func)));
     }
 
     void setFrom(Future<T>&& future) noexcept {
-        invariant(!haveCompleted());
+        invariant(!std::exchange(_haveCompleted, true));
         std::move(future).propagateResultTo(_sharedState.get());
     }
 
     template <typename... Args>
     void emplaceValue(Args&&... args) noexcept {
-        invariant(!haveCompleted());
+        invariant(!std::exchange(_haveCompleted, true));
         _sharedState->emplaceValue(std::forward<Args>(args)...);
     }
 
     void setError(Status status) noexcept {
         invariant(!status.isOK());
-        invariant(!haveCompleted());
+        invariant(!std::exchange(_haveCompleted, true));
         _sharedState->setError(std::move(status));
     }
 
     // TODO rename to not XXXWith and handle void
     void setFromStatusWith(StatusWith<T> sw) noexcept {
-        invariant(!haveCompleted());
+        invariant(!std::exchange(_haveCompleted, true));
         _sharedState->setFromStatusWith(std::move(sw));
     }
 
 private:
     friend class Future<void>;
 
-    bool haveCompleted() const noexcept {
-        // This can be relaxed because it is only called from the Promise thread which is also the
-        // only thread that will transition this from returning false to true. Additionally it isn't
-        // used to establish synchronization with any other thread.
-        return _sharedState->state.load(std::memory_order_relaxed) ==
-            future_details::SSBState::kFinished;
-    }
-
+    // This is slightly different from whether the SharedState is in kFinished, because this
+    // SharedPromise may have been completed with a Future that isn't ready yet.
+    bool _haveCompleted = false;
     const boost::intrusive_ptr<future_details::SharedState<T>> _sharedState =
         make_intrusive<future_details::SharedState<T>>();
 };
@@ -1055,11 +1103,11 @@ using FutureContinuationResult =
 //
 
 template <typename T>
-template <typename Func>
-auto ExecutorFuture<T>::wrapCB(Func&& func) {
+template <typename Sig>
+NOINLINE_DECL auto ExecutorFuture<T>::wrapCBHelper(unique_function<Sig>&& func) {
     using namespace future_details;
     return [
-        func = std::forward<Func>(func),
+        func = std::move(func),
         exec = _exec  // can't move this!
     ](auto&&... args) mutable noexcept
         ->Future<UnwrappedType<decltype(func(std::forward<decltype(args)>(args)...))>> {

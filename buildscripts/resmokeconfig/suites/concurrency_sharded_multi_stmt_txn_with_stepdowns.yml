@@ -1,9 +1,18 @@
+# This suite is intended to exercise transaction behavior with failovers by running existing
+# concurrency workloads with state functions wrapped in transactions while shard and config server
+# primary nodes are being stepped down. State functions that use operations not supported in a
+# transaction are not wrapped in one.
+
 test_kind: fsm_workload_test
 
 selector:
   roots:
   - jstests/concurrency/fsm_workloads/**/*.js
   exclude_files:
+  ##
+  # Blacklists from concurrency_sharded_replication
+  ##
+
   # SERVER-13116 distinct isn't sharding aware
   - jstests/concurrency/fsm_workloads/distinct.js
   - jstests/concurrency/fsm_workloads/distinct_noindex.js
@@ -12,9 +21,6 @@ selector:
   # SERVER-17397 Drops of sharded namespaces may not fully succeed
   - jstests/concurrency/fsm_workloads/create_database.js
   - jstests/concurrency/fsm_workloads/drop_database.js
-
-  # SERVER-14669 Multi-removes that use $where miscount removed documents
-  - jstests/concurrency/fsm_workloads/remove_where.js
 
   # Disabled due to SERVER-33753, '.count() without a predicate can be wrong on sharded
   # collections'. This bug is problematic for these workloads because they assert on count()
@@ -73,9 +79,12 @@ selector:
   # can cause OOM kills on test hosts
   - jstests/concurrency/fsm_workloads/findAndModify_update_grow.js
 
-
   # cannot ensureIndex after dropDatabase without sharding first
   - jstests/concurrency/fsm_workloads/plan_cache_drop_database.js
+
+  # reIndex is not supported in mongos.
+  - jstests/concurrency/fsm_workloads/reindex.js
+  - jstests/concurrency/fsm_workloads/reindex_background.js
 
   # our .remove(query, {justOne: true}) calls lack shard keys
   - jstests/concurrency/fsm_workloads/remove_single_document.js
@@ -98,6 +107,53 @@ selector:
   - jstests/concurrency/fsm_workloads/yield_and_hashed.js
   - jstests/concurrency/fsm_workloads/yield_and_sorted.js
 
+  # TODO Unblacklist (SERVER-35538).
+  - jstests/concurrency/fsm_workloads/database_versioning.js
+
+  # TODO Unblacklist (SERVER-38852).
+  - jstests/concurrency/fsm_workloads/agg_out_interrupt_cleanup.js
+
+  # serverStatus does not include transaction metrics on mongos.
+  - jstests/concurrency/fsm_workloads/multi_statement_transaction_atomicity_isolation_metrics_test.js
+
+  # Uses the same transaction id across different routers, which is not allowed because when either
+  # router tries to commit, it may not know the full participant list.
+  - jstests/concurrency/fsm_workloads/multi_statement_transaction_all_commands_same_session.js
+
+  # TODO SERVER-38297: Killing session on a secondary applying a prepare oplog entry can crash.
+  - jstests/concurrency/fsm_workloads/multi_statement_transaction_kill_sessions_atomicity_isolation.js
+
+  ##
+  # Blacklists from concurrency_replication_multi_stmt_txn
+  ##
+
+  # Relies on having one thread observe writes from the other threads, which won't become visible
+  # once a transaction in the thread is started because it'll keep reading from the same snapshot.
+  - jstests/concurrency/fsm_workloads/create_index_background.js
+  - jstests/concurrency/fsm_workloads/create_index_background_partial_filter.js
+  - jstests/concurrency/fsm_workloads/create_index_background_wildcard.js
+
+  # Expects reads to die with a particular error, but other errors are possible if the read is part
+  # of a transaction (e.g. ErrorCodes.LockTimeout).
+  - jstests/concurrency/fsm_workloads/drop_index_during_replan.js
+
+  # Performs direct writes to system.views
+  - jstests/concurrency/fsm_workloads/view_catalog_direct_system_writes.js
+
+  ##
+  # Blacklists from concurrency_sharded_multi_stmt_txn
+  ##
+
+  # Use updates that do not contain the shard key, so they are rejected before any commands are
+  # sent to participant shards, but these workloads do not fail, so the auto retry transaction logic
+  # attempts to commit, which fails because no participants have been contacted.
+  - jstests/concurrency/fsm_workloads/update_rename.js
+  - jstests/concurrency/fsm_workloads/update_rename_noindex.js
+
+  ##
+  # Blacklists from concurrency_sharded_with_stepdowns
+  ##
+
   # ChunkHelper directly talks to the config servers and doesn't support retries for network errors
   - jstests/concurrency/fsm_workloads/sharded_base_partitioned.js
   - jstests/concurrency/fsm_workloads/sharded_mergeChunks_partitioned.js
@@ -110,81 +166,71 @@ selector:
   - jstests/concurrency/fsm_workloads/kill_aggregation.js
   - jstests/concurrency/fsm_workloads/kill_rooted_or.js
 
-  # Uses getmores.
-  - jstests/concurrency/fsm_workloads/agg_base.js
-  - jstests/concurrency/fsm_workloads/create_index_background.js
-  - jstests/concurrency/fsm_workloads/create_index_background_partial_filter.js
-  - jstests/concurrency/fsm_workloads/create_index_background_wildcard.js
-  - jstests/concurrency/fsm_workloads/globally_managed_cursors.js
-  - jstests/concurrency/fsm_workloads/indexed_insert_ordered_bulk.js
-  - jstests/concurrency/fsm_workloads/indexed_insert_text.js
-  - jstests/concurrency/fsm_workloads/indexed_insert_unordered_bulk.js
-  - jstests/concurrency/fsm_workloads/indexed_insert_upsert.js
-  - jstests/concurrency/fsm_workloads/indexed_insert_where.js
-  - jstests/concurrency/fsm_workloads/list_indexes.js
-  - jstests/concurrency/fsm_workloads/reindex.js
-  - jstests/concurrency/fsm_workloads/reindex_background.js
-  - jstests/concurrency/fsm_workloads/remove_multiple_documents.js
-  - jstests/concurrency/fsm_workloads/touch_base.js
-  - jstests/concurrency/fsm_workloads/touch_data.js
-  - jstests/concurrency/fsm_workloads/touch_index.js
-  - jstests/concurrency/fsm_workloads/touch_no_data_no_index.js
-  - jstests/concurrency/fsm_workloads/update_where.js
-  - jstests/concurrency/fsm_workloads/yield.js
-  - jstests/concurrency/fsm_workloads/yield_fetch.js
-  - jstests/concurrency/fsm_workloads/yield_rooted_or.js
-  - jstests/concurrency/fsm_workloads/yield_sort.js
-  - jstests/concurrency/fsm_workloads/yield_sort_merge.js
-  - jstests/concurrency/fsm_workloads/yield_text.js
-
-  # Uses non retryable writes.
-  - jstests/concurrency/fsm_workloads/remove_and_bulk_insert.js
-  - jstests/concurrency/fsm_workloads/update_and_bulk_insert.js
-  - jstests/concurrency/fsm_workloads/update_check_index.js
-  - jstests/concurrency/fsm_workloads/update_multifield_multiupdate.js
-  - jstests/concurrency/fsm_workloads/update_multifield_multiupdate_noindex.js
-  - jstests/concurrency/fsm_workloads/update_ordered_bulk_inc.js
-  - jstests/concurrency/fsm_workloads/yield_id_hack.js
-
   # Uses non retryable commands.
   - jstests/concurrency/fsm_workloads/agg_out.js
+  - jstests/concurrency/fsm_workloads/agg_out_interrupt_cleanup.js
   - jstests/concurrency/fsm_workloads/agg_sort.js
   - jstests/concurrency/fsm_workloads/collmod.js
   - jstests/concurrency/fsm_workloads/collmod_separate_collections.js
-  - jstests/concurrency/fsm_workloads/agg_out_interrupt_cleanup.js
   - jstests/concurrency/fsm_workloads/invalidated_cursors.js
   - jstests/concurrency/fsm_workloads/kill_multicollection_aggregation.js
   - jstests/concurrency/fsm_workloads/view_catalog.js
   - jstests/concurrency/fsm_workloads/view_catalog_cycle_with_drop.js
   - jstests/concurrency/fsm_workloads/view_catalog_direct_system_writes.js
 
-  # The auto_retry_on_network_error.js override needs to overwrite the response from drop on
-  # NamespaceNotFound, and since this workload only creates and drops collections there isn't
-  # much value in running it.
-  - jstests/concurrency/fsm_workloads/drop_collection.js
+  ##
+  # Blacklists specific to this suite
+  ##
 
-  # TODO (SERVER-35534) Unblacklist this workload from the concurrency stepdown suites. It fails
-  # with PooledConnectionsDropped when setFCV is run concurrently with movePrimary, which seems like
-  # it's due to a race condition in the NetworkInterfaceTL.
-  - jstests/concurrency/fsm_workloads/database_versioning.js
+  # Uses getMore in the same state function as a command not supported in a transaction.
+  - jstests/concurrency/fsm_workloads/list_indexes.js
 
-  # serverStatus does not include transaction metrics on mongos.
-  - jstests/concurrency/fsm_workloads/multi_statement_transaction_atomicity_isolation_metrics_test.js
+  # Uses non-retryable commands in the same state function as a command not supported in a
+  # transaction.
+  - jstests/concurrency/fsm_workloads/agg_out_mode_insert_documents.js
+  - jstests/concurrency/fsm_workloads/agg_out_mode_replace_documents.js
 
-  # Uses the same transaction id across different routers, which is not allowed because when either
-  # router tries to commit, it may not know the full participant list.
-  - jstests/concurrency/fsm_workloads/multi_statement_transaction_all_commands_same_session.js
+  # TODO SERVER-40713 moveChunk is not considered retryable by the network retry override.
+  - jstests/concurrency/fsm_workloads/agg_with_chunk_migrations.js
+  - jstests/concurrency/fsm_workloads/random_moveChunk_broadcast_delete_transaction.js
+  - jstests/concurrency/fsm_workloads/random_moveChunk_broadcast_update_transaction.js
 
-  # TODO SERVER-38297: Killing session on a secondary applying a prepare oplog entry can crash.
-  - jstests/concurrency/fsm_workloads/multi_statement_transaction_kill_sessions_atomicity_isolation.js
+  # TODO SERVER-40493: JS engine interruptions on mongos return ErrorCodes::Interrupted, which isn't
+  # considered a retryable or transient transaction error.
+  - jstests/concurrency/fsm_workloads/indexed_insert_where.js
+  - jstests/concurrency/fsm_workloads/remove_where.js
+  - jstests/concurrency/fsm_workloads/update_where.js
 
-  # Use non-retryable commands not allowed by the network retry helper.
-  - jstests/concurrency/fsm_workloads/snapshot_read_kill_op_only.js
-  - jstests/concurrency/fsm_workloads/snapshot_read_kill_operations.js
+  # TODO SERVER-40705: Stepdown with prepared transaction that performed text search triggers
+  # invariant
+  - jstests/concurrency/fsm_workloads/indexed_insert_text.js
+  - jstests/concurrency/fsm_workloads/indexed_insert_text_multikey.js
+
+  # TODO SERVER-40700: Reads outside transactions aren't killed on stepdown, which can create a
+  # 3-way deadlock if the read enters a prepare conflict retry loop between the read, a prepared
+  # transaction, and a force stepdown. The read can't complete until the transaction commits or
+  # aborts, but the transaction's decision can't be written without the RSTL, which it can't take
+  # before a stepdown that can't take the lock in X mode until the read completes.
+  - jstests/concurrency/fsm_workloads/count.js
+  - jstests/concurrency/fsm_workloads/count_indexed.js
+  - jstests/concurrency/fsm_workloads/count_limit_skip.js
+  - jstests/concurrency/fsm_workloads/explain_count.js
 
   exclude_with_any_tags:
   - requires_replication
-  - requires_non_retryable_writes
+  # The touch command does not exist on mongos, which is enforced before session information is
+  # parsed, causing state functions in these workloads to fail before starting a transaction despite
+  # sending a command with startTransaction=true, leading to an infinite loop in the auto
+  # transaction retry override.
+  - requires_touch
+  # Sharing cursors between state functions will fail in this suite because it will attempt to use
+  # the same cursor in multiple transactions.
+  - state_functions_share_cursor
+  # These start a transaction in one state function and use it in other state functions. This suite
+  # would instead execute each state function as its own transaction.
+  - state_functions_share_transaction
+  # Note that "requires_non_retryable_writes" does not need to be blacklisted because some writes
+  # that are not individually retryable can be retried if they are part of a transaction.
 
 executor:
   archive:
@@ -197,8 +243,13 @@ executor:
       readMode: commands
       global_vars:
         TestData:
+          runInsideTransaction: true
+          runningWithAutoSplit: false
+          runningWithBalancer: false
           runningWithConfigStepdowns: true
+          runningWithSessions: true
           runningWithShardStepdowns: true
+          traceExceptions: false
           useStepdownPermittedFile: true
           useSteppingDownFile: true
           usingReplicaSetShards: true
@@ -210,9 +261,12 @@ executor:
     use_stepping_down_file: true
     wait_for_mongos_retarget: true
   - class: CheckReplDBHash
+  - class: ValidateCollections
   - class: CleanupConcurrencyWorkloads
   fixture:
     class: ShardedClusterFixture
+    enable_balancer: false
+    enable_autosplit: false
     mongos_options:
       set_parameters:
         enableTestCommands: 1

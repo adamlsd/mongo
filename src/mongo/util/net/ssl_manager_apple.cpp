@@ -1062,17 +1062,17 @@ std::string explainTrustFailure(::SecTrustRef trust, ::SecTrustResultType result
     return ret("No trust failure reason available");
 }
 
-boost::optional<std::string> getRawSNIServerName(const ::SSLContextRef* const _ssl) {
+boost::optional<std::string> getRawSNIServerName(::SSLContextRef _ssl) {
     size_t len = 0;
-    auto status = ::SSLCopyRequestedPeerNameLength(_ssl.get(), &len);
+    auto status = ::SSLCopyRequestedPeerNameLength(_ssl, &len);
     if (status != ::errSecSuccess) {
-        return boost::none
+        return boost::none;
     }
     std::string ret;
     ret.resize(len + 1);
-    status = ::SSLCopyRequestedPeerName(_ssl.get(), &ret[0], &len);
+    status = ::SSLCopyRequestedPeerName(_ssl, &ret[0], &len);
     if (status != ::errSecSuccess) {
-        return boost::none
+        return boost::none;
     }
     ret.resize(len);
     return ret;
@@ -1128,7 +1128,7 @@ public:
     }
 
     std::string getSNIServerName() const final {
-        return getRawSNIServerName(_ssl.get()).value_or("");
+        return getRawSNIServerName(this->get()).value_or("");
     }
 
     ::SSLContextRef get() const {
@@ -1568,7 +1568,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
             return swPeerCertificateRoles.getStatus();
         }
         return boost::make_optional(SSLPeerInfo(peerSubjectName,
-                                                getRawSNIServerName(conn),
+                                                getRawSNIServerName(ssl),
                                                 std::move(swPeerCertificateRoles.getValue())));
     }
 

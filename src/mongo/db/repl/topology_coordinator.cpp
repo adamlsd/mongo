@@ -1730,7 +1730,7 @@ void TopologyCoordinator::fillIsMasterForReplSet(
     const auto& reverseMapping = self.getHorizonReverseMappings();
 
     const int incomingPort = stdx::as_const(serverGlobalParams.port);
-    const std::string horizon =
+    const auto horizon =
         SplitHorizon::determineHorizon(incomingPort, forwardMapping, reverseMapping, horizonParams);
 
     log() << "Determined to use \"" << horizon << "\" as the horizon name";

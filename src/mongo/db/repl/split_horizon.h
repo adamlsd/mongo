@@ -45,10 +45,10 @@ struct SplitHorizon {
     using ForwardMapping = StringMap<HostAndPort>;
     using ReverseMapping = std::map<HostAndPort, std::string>;
 
-    static std::string determineHorizon(int incomingPort,
-                                        const ForwardMapping& forwardMapping,
-                                        const ReverseMapping& reverseMapping,
-                                        const Parameters& horizonParameters);
+    static StringData determineHorizon(int incomingPort,
+                                       const ForwardMapping& forwardMapping,
+                                       const ReverseMapping& reverseMapping,
+                                       const Parameters& horizonParameters);
 };
 }  // namespace repl
 }  // namespace mongo

@@ -37,7 +37,7 @@
 
 #include "mongo/util/log.h"
 
-std::string mongo::repl::SplitHorizon::determineHorizon(
+mongo::StringData mongo::repl::SplitHorizon::determineHorizon(
     const int incomingPort,
     const ForwardMapping& forwardMapping,
     const ReverseMapping& reverseMapping,

@@ -273,15 +273,21 @@ public:
 
             parsedClientMetadata->logClientMetadata(opCtx->getClient());
 
-            clientMetadataIsMasterState.setHorizonParameters(
+            clientMetadataIsMasterState.setClientMetadata(opCtx->getClient(),
+                                                          std::move(parsedClientMetadata));
+        }
+
+        if (!seenIsMaster) {
+            const StringData applicationName = clientMetadataIsMasterState.getClientMetadata()
+                ? clientMetadataIsMasterState.getClientMetadata()->getApplicationName()
+                : "";
+            ClientMetadataIsMasterState::setHorizonParameters(
                 opCtx->getClient(),
-                parsedClientMetadata->getApplicationName().toString(),
+                applicationName.toString(),                   // Application Name
                 opCtx->getClient()->session()->getSniName(),  // SNI Name from connection.
                 // TODO(SERVER-40157): Add support for driver-specified horizon configuration.
                 boost::none,   // No Connection target support yet.
                 boost::none);  // No Explicit horizon name support yet.
-            clientMetadataIsMasterState.setClientMetadata(opCtx->getClient(),
-                                                          std::move(parsedClientMetadata));
         }
 
         // Parse the optional 'internalClient' field. This is provided by incoming connections from

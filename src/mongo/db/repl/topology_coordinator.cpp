@@ -1709,7 +1709,7 @@ void TopologyCoordinator::fillMemberData(BSONObjBuilder* result) {
 
 void TopologyCoordinator::fillIsMasterForReplSet(
     IsMasterResponse* const response,
-    const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParams) {
+    const SplitHorizon::Parameters& horizonParams) {
     const MemberState myState = getMemberState();
     if (!_rsConfig.isInitialized()) {
         response->markAsNoConfig();

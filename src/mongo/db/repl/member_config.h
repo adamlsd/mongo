@@ -93,20 +93,25 @@ public:
      * will contact it.
      */
     const HostAndPort& getHostAndPort(
-        const std::string& horizon = SplitHorizon::defaultHorizon) const {
+        const StringData& horizon = SplitHorizon::defaultHorizon) const {
         invariant(!this->_horizonForward.empty());
         invariant(!horizon.empty());
         auto found = this->_horizonForward.find(horizon);
-        if (found == end(this->_horizonForward)) {
+        if (found == end(this->_horizonForward))
             uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
-        }
         return found->second;
     }
 
+    /**
+     * Gets the mapping of horizon names to `HostAndPort` for this replica set member.
+     */
     const auto& getHorizonMappings() const {
         return this->_horizonForward;
     }
 
+    /**
+     * Gets the mapping of `HostAndPort` to horizon names for this replica set member.
+     */
     const auto& getHorizonReverseMappings() const {
         return this->_horizonReverse;
     }
@@ -215,8 +220,11 @@ private:
     bool _buildIndexes;             // if false, do not create any non-_id indexes
     std::vector<ReplSetTag> _tags;  // tagging for data center, rack, etc.
 
-    SplitHorizon::ForwardMapping _horizonForward;
-    SplitHorizon::ReverseMapping _horizonReverse;
+    SplitHorizon::ForwardMapping _horizonForward;  // Maps each horizon name to a network address
+                                                   // for this replica set member
+    SplitHorizon::ReverseMapping _horizonReverse;  // Maps each network address which this replica
+                                                   // set member has to a horizon name under which
+                                                   // that address applies
 };
 
 }  // namespace repl

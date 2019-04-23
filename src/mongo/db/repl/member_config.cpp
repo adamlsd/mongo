@@ -86,14 +86,13 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     // Parse _id field.
     //
     BSONElement idElement = mcfg[kIdFieldName];
-    if (idElement.eoo()) {
+    if (idElement.eoo())
         uasserted(ErrorCodes::NoSuchKey, str::stream() << kIdFieldName << " field is missing");
-    }
-    if (!idElement.isNumber()) {
+
+    if (!idElement.isNumber())
         uasserted(ErrorCodes::TypeMismatch,
                   str::stream() << kIdFieldName << " field has non-numeric type "
                                 << typeName(idElement.type()));
-    }
     _id = idElement.numberInt();
 
     //
@@ -109,8 +108,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         host = HostAndPort(host.host(), host.port());
     }
 
-    this->_horizonForward.insert({SplitHorizon::defaultHorizon, host});
-    this->_horizonReverse.insert({host, SplitHorizon::defaultHorizon});
+    this->_horizonForward.emplace(SplitHorizon::defaultHorizon, host);
+    this->_horizonReverse.emplace(host, SplitHorizon::defaultHorizon);
 
     //
     // Parse votes field.
@@ -188,9 +187,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
             }
             _tags.push_back(tagConfig->makeTag(tag.fieldNameStringData(), tag.valueStringData()));
         }
-    }
-    catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
-        // No such key is, in this case, everything else is a problem.
+    } catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
+        // No such key is okay in this case, everything else is a problem.
     }
 
     const auto horizonsElement = [&]() -> boost::optional<BSONElement> {
@@ -348,6 +346,8 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     if (_horizonForward.size() > 1) {
         BSONObjBuilder horizons(configBuilder.subobjStart("horizons"));
         for (const auto& horizon : _horizonForward) {
+            if (horizon.first == SplitHorizon::defaultHorizon)
+                continue;
             configBuilder.append(horizon.first, horizon.second.toString());
         }
     }

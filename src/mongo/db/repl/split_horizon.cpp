@@ -43,8 +43,9 @@ std::string mongo::repl::SplitHorizon::determineHorizon(
     const ReverseMapping& reverseMapping,
     const SplitHorizon::Parameters& horizonParameters) {
     if (horizonParameters.explicitHorizonName) {
-        // Unlike `appName`, the explicit horizon request isn't checked for validity with a fallback
-        // -- failure to select a valid horizon name explicitly will lead to command failure.
+        // Unlike `appName`, the explicit horizon request isn't checked for validity against a
+        // fallback; therefore failure to select a valid horizon name explicitly will lead to
+        // command failure.
         log() << "Explicit Horizon Name case";
         return *horizonParameters.explicitHorizonName;
     } else if (horizonParameters.connectionTarget) {

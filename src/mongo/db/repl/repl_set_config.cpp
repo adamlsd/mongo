@@ -148,9 +148,9 @@ Status ReplSetConfig::_initialize(const BSONObj& cfg,
         try {
             _members.emplace_back(memberBSON, &_tagConfig);
         } catch (const DBException& ex) {
-            uasserted(
+            return Status(
                 ErrorCodes::InvalidReplicaSetConfig,
-                       str::stream() << ex.toStatus().toString() << " for member:" << memberBSON);
+                str::stream() << ex.toStatus().toString() << " for member:" << memberBSON);
         }
     }
 
@@ -445,20 +445,45 @@ Status ReplSetConfig::validate() const {
     size_t voterCount = 0;
     size_t arbiterCount = 0;
     size_t electableCount = 0;
+    const auto expectedHorizonNameMapping = [&]() {
+        std::vector<std::string> rv;
+        std::transform(begin(_members[0].getHorizonMappings()),
+                       end(_members[0].getHorizonMappings()),
+                       back_inserter(rv),
+                       [](auto&& mapping) { return mapping.first; });
+        std::sort( begin( rv ), end( rv ) );
+        return rv;
+    }();
+
     for (size_t i = 0; i < _members.size(); ++i) {
         const MemberConfig& memberI = _members[i];
         Status status = memberI.validate();
         if (!status.isOK())
             return status;
-        if (!std::equal(begin(memberI.getHorizonMappings()),
-                        end(memberI.getHorizonMappings()),
-                        begin(_members[0].getHorizonMappings()),
-                        end(_members[0].getHorizonMappings()),
-                        [](auto&& left, auto&& right) { return left.first == right.first; })) {
-            return Status(ErrorCodes::BadValue, str::stream() << "Saw a replica set member with a "
-                                                                 "different horizon mapping than "
-                                                                 "the others.");
+
+        // Check the replica set configuration for errors in horizon specification:
+        //   * Check that all members have the same set of horizon names
+        //   * Check that no hostname:port appears more than once for any member
+        //   * Check that all hostname:port endpoints are unique for all members
+        const auto seenHorizonNameMapping = [&]() {
+            std::vector<std::string> rv;
+            std::transform(begin(memberI.getHorizonMappings()),
+                           end(memberI.getHorizonMappings()),
+                           back_inserter(rv),
+                           [](auto&& mapping) { return mapping.first; });
+            std::sort( begin( rv ), end( rv ) );
+            return rv;
+        }();
+
+        std::vector<std::string> horizonNameMapping;
+        if (expectedHorizonNameMapping != seenHorizonNameMapping) {
+            //TODO: std::set_difference based find missing or extra fields
+            return Status(ErrorCodes::BadValue,
+                          str::stream() << "Saw a replica set member with a "
+                                           "different horizon mapping than "
+                                           "the others.");
         }
+
         if (memberI.getHostAndPort().isLocalHost()) {
             ++localhostCount;
         }

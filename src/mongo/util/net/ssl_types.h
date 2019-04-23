@@ -119,13 +119,13 @@ struct SSLPeerInfo {
                          boost::optional<std::string> sniName = {},
                          stdx::unordered_set<RoleName> roles = {})
         : subjectName(std::move(subjectName)),
-          roles(std::move(roles)),
-          sniName(std::move(sniName)) {}
+          sniName(std::move(sniName)),
+          roles(std::move(roles)) {}
     SSLPeerInfo() = default;
 
     SSLX509Name subjectName;
-    stdx::unordered_set<RoleName> roles;
     boost::optional<std::string> sniName;
+    stdx::unordered_set<RoleName> roles;
 
     static SSLPeerInfo& forSession(const transport::SessionHandle& session);
     static const SSLPeerInfo& forSession(const transport::ConstSessionHandle& session);

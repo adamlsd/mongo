@@ -32,6 +32,7 @@
 #include <map>
 #include <string>
 
+#include "mongo/base/string_data.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/util/net/hostandport.h"
 
@@ -39,7 +40,7 @@ namespace mongo {
 namespace repl {
 struct SplitHorizon {
     using Parameters = ClientMetadataIsMasterState::SplitHorizonParameters;
-    static constexpr auto defaultHorizon = "__default";
+    static constexpr auto defaultHorizon = "__default"_sd;
 
     using ForwardMapping = StringMap<HostAndPort>;
     using ReverseMapping = std::map<HostAndPort, std::string>;

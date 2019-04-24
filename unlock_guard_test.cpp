@@ -12,13 +12,11 @@ namespace InfiniteMonkeys
     //{
 		using Mtx= std::mutex;
         using ULock= std::unique_lock< std::mutex >;
-
-		struct Evil {};
     //}
 
 	class Poisonable : boost::noncopyable
 	{
-		private:
+		protected:
 			struct C { enum State { Healthy, Poisoned }; };
 			using State= C::State;
 
@@ -26,7 +24,7 @@ namespace InfiniteMonkeys
 			Poisonable *const parent= nullptr;
 
 		protected:
-			[[nodiscard]] bool alive() const { return this->state != C::Poisoned; }
+			[[nodiscard]] bool alive() const { return this->state == C::Healthy; }
 			void validate() const { assert( alive() ); }
 
 			void revive() & { this->state= C::Healthy; }
@@ -47,16 +45,11 @@ namespace InfiniteMonkeys
         private:
 			friend Promiscuous;
             ULock *lk;
-			struct Poisoner;
-			Poisoner *poisoner= nullptr;
 
-			struct Poisoner
-			{
-				Unlockable *p= nullptr;
-				Poisoner()= default;
+			struct BlockerBase { protected: BlockerBase()= default; };
+			struct Blocker : BlockerBase { private: Blocker()= default; friend Unlockable; };
 
-				~Poisoner() { if( p ) { p->poison(); } }
-			};
+			struct Poisoner : Poisonable { Poisoner() : Poisonable( nullptr ){} };
 
 			void
 			validate() const
@@ -76,21 +69,21 @@ namespace InfiniteMonkeys
             Unlockable( ULock &i_lk ) : Poisonable( nullptr ), lk( &i_lk ) { assert( lk->owns_lock() ); }
 			// TODO: I think the Poisoner can use the Poisonable base class as its basis, but for now it's fine.
 			// In fact, I think we can detect on the line, rather than wait for the dtor, if the `Poisoner` is a child `Poisonable`.
-            Unlockable( ULock &&i_lk, Poisoner &&p= makePoison() ) : Poisonable( nullptr ), lk( &i_lk ) { assert( this->lk->owns_lock() ); p.p= this; }
+            Unlockable( ULock &&i_lk, Blocker= {}, Poisoner &&p= makePoison() ) : Poisonable( &p ), lk( &i_lk ) { assert( this->lk->owns_lock() ); }
 
-			Unlockable( OwningUnlockable &&, Poisoner &&p= makePoison() );
+			Unlockable( OwningUnlockable &&, Blocker= {}, Poisoner &&p= makePoison() );
 			Unlockable( OwningUnlockable & );
 
             Unlockable( const Unlockable &copy )
 				: Poisonable( nullptr /* maybe it should be: `&copy` */ ), lk( copy.lk )
+				// Ben and I agree that this probably should be a poisoning case.
             {
-				copy.validate();
+				this->validate();
             }
 
 			~Unlockable()
 			{
 				validate();
-				if( poisoner ) poisoner->p= nullptr;
 			}
 
 			[[nodiscard]] Promiscuous promiscuous() &;
@@ -182,12 +175,11 @@ namespace InfiniteMonkeys
 		assert( this->lk->owns_lock() );
 	}
 
-	Unlockable::Unlockable( OwningUnlockable &&o, Unlockable::Poisoner &&p )
-		: Poisonable( nullptr ), lk( &o.lk ), poisoner( &p )
+	Unlockable::Unlockable( OwningUnlockable &&o, Unlockable::Blocker, Unlockable::Poisoner &&p )
+		: Poisonable( &p ), lk( &o.lk )
 	{
 		std::cerr << "It's dangerous to go alone, so take this poisoner.  This allows promote, via rvalue case catching." << std::endl;
 		assert( this->lk->owns_lock() );
-		this->poisoner->p= this;
 	}
 
 	auto
@@ -199,7 +191,10 @@ namespace InfiniteMonkeys
 
 namespace std
 {
-	template<> InfiniteMonkeys::OwningUnlockable &&move( InfiniteMonkeys::OwningUnlockable & ) noexcept= delete;
+	template<>
+	InfiniteMonkeys::OwningUnlockable &&
+	move( InfiniteMonkeys::OwningUnlockable & ) noexcept= delete;
+
 	template<> InfiniteMonkeys::Unlockable &&move( InfiniteMonkeys::Unlockable & ) noexcept= delete;
 }
 
@@ -222,12 +217,16 @@ f1( Unlockable u )
 
 	std::cerr << "Got all" << std::endl;
 
-	//auto c2= prom.chaste();
+	if( 0 )
+	{
+		auto c2= prom.chaste();
+	}
 }
 
 void
 f2( Unlockable u )
 {
+	f1( u );
 	f1( u );
 }
 
@@ -241,31 +240,44 @@ main()
 
 	{
 		auto l1= makeUnlockGuard( mtx );
-		f1( l1 );
+		f2( l1 );
 	}
 	{
 		ULock lk( mtx );
-		f1( makeUnlockGuard( lk ) );
+		f2( makeUnlockGuard( lk ) );
 		auto l2= makeUnlockGuard( lk );
-		f1( lk );
-		f1( l2 );
+		f2( lk );
+		f2( l2 );
 	}
 
 
 
-	f1( ULock( mtx ) );
+	f2( ULock( mtx ) );
 }
+
+template< typename T, typename = void >
+struct checker : std::true_type {};
+
+
+// Should die at compiletime
+template< typename T >
+struct checker< T, std::void_t< decltype( std::move( std::declval< T & >() ) ) > >
+	: std::false_type {};
+
 
 #define DISALLOWED_SYNTAX
 void
 disallowed()
 {
+	f2( makeUnlockGuard( mtx ) ); // Should work fine at runtime
+
+	auto l2= makeUnlockGuard( mtx ); // Should work fine at runtime
+
 #ifdef DISALLOWED_SYNTAX
-	//Unlockable l= makeUnlockGuard( mtx ); // Should die
+	Unlockable l= makeUnlockGuard( mtx ); // Should die at runtime
 
-	f2( makeUnlockGuard( mtx ) ); // Might want to allow?
 
-	auto l2= makeUnlockGuard( mtx );
-	//f1( std::move( l2 ) ); // Should die
+	static_assert( checker< Unlockable >::value );
+	static_assert( checker< OwningUnlockable >::value );
 #endif
 }

@@ -333,7 +333,9 @@ TEST(MemberConfig, ParseHorizonFields) {
 
 TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {
     ReplSetTagConfig tagConfig;
-    MemberConfig mc(BSON("_id" << 0 << "host" << "h"), &tagConfig);
+    MemberConfig mc(BSON("_id" << 0 << "host"
+                               << "h"),
+                    &tagConfig);
 
     std::cerr << "Horizons as seen: " << std::endl;
     for (auto&& horizon : mc.getHorizonMappings()) {

@@ -236,12 +236,10 @@ protected:
         return doHandshake().then([this, target] {
             _ranHandshake = true;
 
-            auto optPeerInfo = uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
-                _sslSocket->native_handle(), target.host(), target));
+            SSLPeerInfo::forSession(shared_from_this()) =
+                uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
+                    _sslSocket->native_handle(), target.host(), target));
 
-            if (optPeerInfo) {
-                SSLPeerInfo::forSession(shared_from_this()) = std::move(*optPeerInfo);
-            }
         });
     }
 
@@ -631,13 +629,8 @@ private:
                     // a certificate that is valid, and we should store that info on the
                     // session's SSLPeerInfo decoration.
 
-                    auto optPeerInfo =
-                        uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
-                            _sslSocket->native_handle(), "", _remote));
-
-                    if (optPeerInfo) {
-                        sslPeerInfo = *optPeerInfo;
-                    }
+                    sslPeerInfo = uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
+                        _sslSocket->native_handle(), "", _remote));
                 }
                 return true;
             });

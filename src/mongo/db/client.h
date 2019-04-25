@@ -119,9 +119,13 @@ public:
     /**
      * Returns the Session to which this client is bound, if any.
      */
-    const transport::SessionHandle& session() const& {
+    const transport::SessionHandle& session() const &{
         return _session;
     }
+
+	boost::optional<std::string> getSniNameForSession() const {
+		return _session ? _session->getSniName() : boost::none;
+	}
 
     transport::SessionHandle session() && {
         return std::move(_session);

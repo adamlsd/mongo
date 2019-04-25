@@ -242,7 +242,7 @@ public:
      * an engaged optional containing the certificate's subject name, and any roles acquired by
      * X509 authorization will be returned.
      */
-    virtual StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
+    virtual StatusWith<SSLPeerInfo> parseAndValidatePeerCertificate(
         SSLConnectionType ssl,
         const std::string& remoteHost,
         const HostAndPort& hostForLogging) = 0;

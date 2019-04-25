@@ -42,6 +42,7 @@ mongo::StringData mongo::repl::SplitHorizon::determineHorizon(
     const ForwardMapping& forwardMapping,
     const ReverseMapping& reverseMapping,
     const SplitHorizon::Parameters& horizonParameters) {
+    log() << "Mapping horizon with SNI name: " << horizonParameters.sniName.value_or( "<NONE>" );
     if (horizonParameters.explicitHorizonName) {
         // Unlike `appName`, the explicit horizon request isn't checked for validity against a
         // fallback; therefore failure to select a valid horizon name explicitly will lead to

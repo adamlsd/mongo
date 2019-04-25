@@ -284,7 +284,7 @@ public:
             ClientMetadataIsMasterState::setHorizonParameters(
                 opCtx->getClient(),
                 applicationName.toString(),                   // Application Name
-                opCtx->getClient()->session()->getSniName(),  // SNI Name from connection.
+                opCtx->getClient()->getSniNameForSession(),  // SNI Name from connection.
                 // TODO(SERVER-40157): Add support for driver-specified horizon configuration.
                 boost::none,   // No Connection target support yet.
                 boost::none);  // No Explicit horizon name support yet.

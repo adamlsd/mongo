@@ -123,6 +123,8 @@ struct SSLPeerInfo {
           roles(std::move(roles)) {}
     SSLPeerInfo() = default;
 
+    explicit SSLPeerInfo(boost::optional<std::string> sniName) : sniName(std::move(sniName)) {}
+
     SSLX509Name subjectName;
     boost::optional<std::string> sniName;
     stdx::unordered_set<RoleName> roles;

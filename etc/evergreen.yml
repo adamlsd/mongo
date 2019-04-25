@@ -296,7 +296,7 @@ variables:
     use_scons_cache: true
     multiversion_platform: windows
     multiversion_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: false
     jstestfuzz_num_generated_files: 35
     large_distro_name: windows-64-vs2017-compile
@@ -852,7 +852,7 @@ functions:
         set -o verbose
         if [ "${setup_android_toolchain|}" = "true" ]; then
             ${activate_virtualenv}
-            PYTHON=$python ${compile_env|} src/buildscripts/setup-android-toolchain.sh ${android_toolchain_target_arch} ${android_toolchain_api_version}
+            PYTHON=$python ${compile_env|} src/buildscripts/setup-android-toolchain.sh $(pwd)/android_sdk
         fi
 
   "build java embedded sdk":
@@ -1359,12 +1359,6 @@ functions:
         fi
         if [ ${task_path_suffix} ]; then
           path_value="$path_value:${task_path_suffix}"
-        fi
-
-        if [ "${is_patch}" = "true" ]; then
-          extra_args="$extra_args --tagFile=etc/test_lifecycle.yml --patchBuild"
-        else
-          extra_args="$extra_args --tagFile=etc/test_retrial.yml"
         fi
 
         resmoke_cmd_args="${resmoke_args}"
@@ -2152,29 +2146,6 @@ functions:
 
         kitchen destroy "${packager_distro}"\$ || true
         test "$verified" = "true"
-
-  "fetch test_lifecycle.yml":
-  - command: shell.exec
-    type: test
-    params:
-      working_dir: src
-      script: |
-        set -o verbose
-
-        ${activate_virtualenv}
-        $python buildscripts/fetch_test_lifecycle.py                      \
-            --metadataRepo git@github.com:mongodb/mongo-test-metadata.git \
-            --lifecycleFile etc/test_lifecycle.yml                        \
-            --referencesFile references.yml                               \
-            --destinationFile etc/test_lifecycle.yml                      \
-            --revision ${revision}                                        \
-            ${project}
-        exit_code=$?
-        if [ ${fail_task_on_error|false} = true ]; then
-          exit $exit_code
-        else
-          exit 0
-        fi
 
   "copy ec2 monitor files": &copy_ec2_monitor_files
     command: shell.exec
@@ -3348,26 +3319,6 @@ timeout:
 #               Tasks                 #
 #######################################
 
-## The test_lifecycle_excluded_tasks are a list of tasks names which include:
-##   - Non jstests, i.e., compile, unittests
-##   - Non standard jstests, i.e., jstestfuzz
-## Note that the task name supports glob patterns.
-test_lifecycle_excluded_tasks:
-- burn_in_tests*
-- compile*
-- benchmarks*
-- dbtest*
-- "*fuzzer*"
-- idl_tests
-- integration*
-- jepsen*
-- jstestfuzz*
-- lint
-- mongos*
-- package
-- push
-- unittests*
-
 tasks:
 
 ## compile - build all scons targets except unittests ##
@@ -3465,12 +3416,6 @@ tasks:
           fi
           cd ..
 
-  # Test lifecycle is temporarily disabled to reduce load on Evergreen API.
-  # - func: "fetch test_lifecycle.yml"
-  #   vars:
-  #     # Do not fail the task if we fail to fetch the test_lifecycle.yml file
-  #     fail_task_on_error: false
-
     - command: archive.targz_pack
       params:
         target: "artifacts.tgz"
@@ -3497,8 +3442,6 @@ tasks:
           - "./etc/scons/**"
           - "./etc/*san.suppressions"
           - "./etc/repo_config.yaml"
-          - "./etc/test_lifecycle.yml"
-          - "./etc/test_retrial.yml"
           - "./build/**.gcno"
           - "repo/**"
           - "src/mongo/util/options_parser/test_config_files/**"
@@ -3509,7 +3452,6 @@ tasks:
           - "artifacts.json"
         exclude_files:
           - "*_test.pdb"
-    - func: "upload debugsymbols"
     - command: s3.put
       params:
         optional: true
@@ -3597,6 +3539,10 @@ tasks:
         files:
           - src/artifacts.json
 
+- name: upload_debug_symbols
+  commands:
+    - func: "upload debugsymbols"
+
 ## compile_all - build all scons targets ##
 - name: compile_all
   commands:
@@ -3679,6 +3625,11 @@ tasks:
           VERSION=${version}
           WORKDIR=${workdir}
 
+          # build in a different directory then we run tests so that we can verify that the linking
+          # of tests are not relying any built in absolute paths
+          FINAL_PREFIX=$WORKDIR/src/build/mongo-embedded-sdk-$VERSION
+          BUILD_PREFIX=$FINAL_PREFIX-tmp
+
           rm -rf mongo-c-driver
 
           # NOTE: If you change the C Driver version here, also change the substitution in the CocoaPod podspec below in the apple builder.
@@ -3690,45 +3641,46 @@ tasks:
 
           trap "cat CMakeFiles/CMakeOutput.log" EXIT
           export ${compile_env|}
-          ${cmake_path|/opt/cmake/bin/cmake} -DCMAKE_INSTALL_PREFIX=$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp -DENABLE_SHM_COUNTERS=OFF -DENABLE_SNAPPY=OFF -DENABLE_AUTOMATIC_INIT_AND_CLEANUP=OFF -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF -DENABLE_STATIC=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=${cdriver_cmake_osx_deployment_target|} ${cdriver_cmake_flags}
+          ${cmake_path|/opt/cmake/bin/cmake} -DCMAKE_INSTALL_PREFIX=$BUILD_PREFIX -DENABLE_SHM_COUNTERS=OFF -DENABLE_SNAPPY=OFF -DENABLE_AUTOMATIC_INIT_AND_CLEANUP=OFF -DENABLE_TESTS=OFF -DENABLE_EXAMPLES=OFF -DENABLE_STATIC=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=${cdriver_cmake_osx_deployment_target|} ${cdriver_cmake_flags}
+          trap - EXIT # cancel the previous trap '...' EXIT
           make install VERBOSE=1
 
           # TODO: Remove this when we upgrade to a version of the C driver that has CDRIVER-2854 fixed.
-          mkdir -p $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/share/doc/mongo-c-driver
-          cp COPYING $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/share/doc/mongo-c-driver
-          cp THIRD_PARTY_NOTICES $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/share/doc/mongo-c-driver
-          if [ -d $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks ]; then
+          mkdir -p $BUILD_PREFIX/share/doc/mongo-c-driver
+          cp COPYING $BUILD_PREFIX/share/doc/mongo-c-driver
+          cp THIRD_PARTY_NOTICES $BUILD_PREFIX/share/doc/mongo-c-driver
+          if [ -d $BUILD_PREFIX/Frameworks ]; then
 
               # We need to account for the fact that on the Darwin
               # mobile platforms, things shouldn't go to the Resources
               # directory but on macOS they should. If the Resources
               # directory is there (it should be for the plist file),
               # then use it, otherwise just use the framework root.
-              if [ -e $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework/Resources ]; then
-                  cp COPYING $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework/Resources
-                  cp THIRD_PARTY_NOTICES $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework/Resources
-                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework/Resources/Info.plist
+              if [ -e $BUILD_PREFIX/Frameworks/mongoc.framework/Resources ]; then
+                  cp COPYING $BUILD_PREFIX/Frameworks/mongoc.framework/Resources
+                  cp THIRD_PARTY_NOTICES $BUILD_PREFIX/Frameworks/mongoc.framework/Resources
+                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $BUILD_PREFIX/Frameworks/mongoc.framework/Resources/Info.plist
               else
-                  cp COPYING $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework
-                  cp THIRD_PARTY_NOTICES $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework
-                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/mongoc.framework/Info.plist
+                  cp COPYING $BUILD_PREFIX/Frameworks/mongoc.framework
+                  cp THIRD_PARTY_NOTICES $BUILD_PREFIX/Frameworks/mongoc.framework
+                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $BUILD_PREFIX/Frameworks/mongoc.framework/Info.plist
               fi
 
-              if [ -e $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework/Resources ]; then
-                  cp COPYING $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework/Resources
-                  cp THIRD_PARTY_NOTICES $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework/Resources
-                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework/Resources/Info.plist
+              if [ -e $BUILD_PREFIX/Frameworks/bson.framework/Resources ]; then
+                  cp COPYING $BUILD_PREFIX/Frameworks/bson.framework/Resources
+                  cp THIRD_PARTY_NOTICES $BUILD_PREFIX/Frameworks/bson.framework/Resources
+                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $BUILD_PREFIX/Frameworks/bson.framework/Resources/Info.plist
               else
-                  cp COPYING $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework
-                  cp THIRD_PARTY_NOTICES $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework
-                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks/bson.framework/Info.plist
+                  cp COPYING $BUILD_PREFIX/Frameworks/bson.framework
+                  cp THIRD_PARTY_NOTICES $BUILD_PREFIX/Frameworks/bson.framework
+                  plutil -insert MinimumOSVersion -string ${cdriver_cmake_osx_deployment_target} $BUILD_PREFIX/Frameworks/bson.framework/Info.plist
               fi
 
           fi
 
           # CMake doesn't seem to do the dSYM for us for the framework
-          if [ -e $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks ]; then
-              pushd $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp/Frameworks
+          if [ -e $BUILD_PREFIX/Frameworks ]; then
+              pushd $BUILD_PREFIX/Frameworks
               xcrun dsymutil -o bson.framework.dSYM bson.framework/bson
               xcrun strip -Sx bson.framework/bson
               xcrun dsymutil -o mongoc.framework.dSYM mongoc.framework/mongoc
@@ -3736,7 +3688,7 @@ tasks:
               popd
           fi
 
-          mv $WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp $WORKDIR/src/build/mongo-embedded-sdk-$VERSION
+          mv $BUILD_PREFIX $FINAL_PREFIX
 
 - name: embedded_sdk_install_dev
   commands:
@@ -3744,18 +3696,18 @@ tasks:
       vars:
         targets: install-embedded-dev
         task_compile_flags: &embedded_sdk_compile_flags >-
+          --allocator=system
+          --dbg=off
+          --enable-free-mon=off
+          --enable-http-client=off
           --install-mode=hygienic
           --js-engine=none
-          --prefix='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION'
-          --dbg=off
           --opt=size
-          --enable-free-mon=off
+          --prefix='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION'
+          --separate-debug
           --ssl=off
-          --enable-http-client=off
           --use-system-mongo-c=on
           --wiredtiger=off
-          --allocator=system
-          --separate-debug
           CPPPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/include/libbson-1.0 $BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/include/libmongoc-1.0'
         task_compile_flags_extra: >-
           --link-model=dynamic-sdk
@@ -7025,6 +6977,7 @@ tasks:
 - name: package
   depends_on:
   - name: compile
+  - name: upload_debug_symbols
   commands:
     - func: "fetch artifacts"
     - func: "set up remote credentials"
@@ -7043,6 +6996,7 @@ tasks:
   # Same dependencies as "push" below
   depends_on:
   - name: compile
+  - name: upload_debug_symbols
   - name: jsCore
   - name: dbtest
   - name: replica_sets_jscore_passthrough
@@ -7071,6 +7025,7 @@ tasks:
 - name: push
   patchable: false
   depends_on:
+  - name: upload_debug_symbols
   - name: jsCore
   - name: dbtest
   - name: replica_sets_jscore_passthrough
@@ -7632,67 +7587,6 @@ tasks:
             - {'source': {'path': '${push_path}-STAGE/${push_name}/mongodb-${push_name}-${push_arch}-debugsymbols-${suffix}-${task_id}.${ext|tgz}.md5', 'bucket': 'build-push-testing'},
                'destination': {'path': '${push_path}/mongodb-${push_name}-${push_arch}-debugsymbols-${suffix}.${ext|tgz}.md5', 'bucket': '${push_bucket}'}}
 
-- name: fetch_test_lifecycle
-  depends_on: []
-  commands:
-  - command: manifest.load
-  - func: "git get project"
-  - func: "fetch test_lifecycle.yml"
-    vars:
-      # This task is meant to fail if there is an error while fetching test_lifecycle.yml since
-      # the compile task won't fail.
-      fail_task_on_error: true
-
-- name: update_test_lifecycle
-  exec_timeout_secs: 21600 # 6 hour timeout for the task overall
-  depends_on: []
-  commands:
-  - command: manifest.load
-  - func: "git get project"
-  - func: "configure evergreen api credentials"
-  - command: shell.exec
-    timeout_secs: 14400 # Timeout if there is no output for 4 hours
-    type: test
-    params:
-      working_dir: src
-      silent: true
-      script: |
-        set -o errexit
-
-        # Set up the git ssh private key
-        mkdir -p ~/.ssh
-        echo -n "${testlifecycle_ssh_key}" > ~/.ssh/test_lifecycle.pem
-        chmod 0600 ~/.ssh/test_lifecycle.pem
-        export GIT_SSH_COMMAND="ssh -i ~/.ssh/test_lifecycle.pem"
-
-        # Create the jira credentials configuration file
-        cat > .jira.yml <<END_OF_CREDS
-        server: "https://jira.mongodb.org"
-        access_token: "${testlifecycle_jira_access_token}"
-        access_token_secret: "${testlifecycle_jira_access_token_secret}"
-        consumer_key: "${testlifecycle_jira_consumer_key}"
-        key_cert: |
-        $(echo "${testlifecycle_jira_key_certificate}" | sed  's/^/  /')
-        END_OF_CREDS
-
-        set -o verbose
-
-        ${activate_virtualenv}
-
-        # We use a small batch size to avoid hitting the load balancer timeout if the Evergreen
-        # API query is not fast enough.
-        # Evergreen executable is in $HOME.
-        PATH=$PATH:$HOME $python buildscripts/update_test_lifecycle.py  \
-            --project ${project}                                        \
-            --requestBatchSize 20                                       \
-            --commit                                                    \
-            --resmokeTagFile "etc/test_lifecycle.yml"                   \
-            --metadataRepo "git@github.com:mongodb/mongo-test-metadata" \
-            --referencesFile "references.yml"                           \
-            --gitUserName "Test Lifecycle"                              \
-            --gitUserEmail "build+testlifecycle@mongodb.com"            \
-            --jiraConfig .jira.yml
-
 - name: shared_scons_cache_pruning
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
   depends_on: []
@@ -7709,20 +7603,25 @@ task_groups:
   name: compile_TG
   tasks:
   - compile
+  - upload_debug_symbols
+
 - <<: *compile_task_group_template
   name: dbtest_TG
   tasks:
   - compile_dbtest
   - dbtest
+
 - <<: *compile_task_group_template
   name: compile_all_run_unittests_TG
   tasks:
   - compile
+  - upload_debug_symbols
   - compile_unittests
   - unittests
   - compile_dbtest
   - dbtest
   - compile_all
+
 - name: embedded_sdk_build_and_test
   setup_group_can_fail_task: true
   setup_group:
@@ -7731,8 +7630,8 @@ task_groups:
     - func: "get buildnumber"
     - func: "set up credentials"
     - func: "setup android toolchain" # noop if ${setup_android_toolchain} is not "true"
-    - func: "set up virtualenv"
     - func: "set task expansion macros"
+    - func: "set up virtualenv"
     - func: "generate compile expansions"
   teardown_group:
     - func: "scons cache pruning"
@@ -7750,10 +7649,12 @@ task_groups:
   - "embedded_sdk_run_tests"
   - "embedded_sdk_s3_put_latest"
   - "embedded_sdk_tests_s3_put_latest"
+
 - <<: *stitch_support_task_group_template
   name: stitch_support_lib_build_and_archive
   tasks:
     - "stitch_support_create_lib"
+
 - <<: *stitch_support_task_group_template
   name: stitch_support_lib_build_and_test
   tasks:
@@ -8219,7 +8120,7 @@ buildvariants:
     packager_distro: ubuntu1804
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -8395,7 +8296,7 @@ buildvariants:
     packager_arch: arm64
     packager_distro: ubuntu1604
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: ubuntu1604
     multiversion_architecture: arm64
@@ -8490,7 +8391,7 @@ buildvariants:
     packager_arch: arm64
     packager_distro: ubuntu1804
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: ubuntu1804
     multiversion_architecture: arm64
@@ -8621,7 +8522,7 @@ buildvariants:
     packager_arch: ppc64le
     packager_distro: ubuntu1804
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: ubuntu1804
     multiversion_architecture: ppc64le
@@ -8725,7 +8626,7 @@ buildvariants:
     packager_arch: s390x
     packager_distro: ubuntu1604
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: ubuntu1604
     multiversion_architecture: s390x
@@ -8893,7 +8794,7 @@ buildvariants:
     packager_arch: s390x
     packager_distro: ubuntu1804
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: ubuntu1804
     multiversion_architecture: s390x
@@ -9020,7 +8921,7 @@ buildvariants:
     packager_distro: amazon
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     virtualenv: /opt/mongodbtoolchain/v3/bin/virtualenv
   display_tasks:
@@ -9217,7 +9118,7 @@ buildvariants:
     packager_distro: amazon2
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -9418,7 +9319,7 @@ buildvariants:
     use_scons_cache: true
     multiversion_platform: windows
     multiversion_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: false
     jstestfuzz_num_generated_files: 35
     target_resmoke_time: 20
@@ -9754,7 +9655,7 @@ buildvariants:
         --serviceExecutor=adaptive \
         --mongodSetParameters="adaptiveServiceExecutorReservedThreads: 8" \
         --mongosSetParameters="adaptiveServiceExecutorReservedThreads: 8"
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: false
   tasks:
   - name: compile_TG
@@ -9786,7 +9687,7 @@ buildvariants:
     use_scons_cache: true
     multiversion_platform: windows
     multiversion_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: false
     large_distro_name: windows-64-vs2017-compile
   display_tasks:
@@ -9980,7 +9881,7 @@ buildvariants:
     python: '/cygdrive/c/python/python37/python.exe'
     ext: zip
     use_scons_cache: true
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: false
   tasks:
   # This variant tests that unoptimized, DEBUG mongos and mongod binaries can run on Windows.
@@ -10171,7 +10072,7 @@ buildvariants:
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ --variables-files=etc/scons/xcode_macosx.vars
     resmoke_jobs_max: 4
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -10217,7 +10118,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: osx
     push_arch: x86_64-enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: --ssl --ssl-provider=openssl -j$(sysctl -n hw.logicalcpu) --release --libc++ LIBPATH="$PWD/openssl_install_dir/lib" CPPPATH="$PWD/openssl_install_dir/include" --variables-files=etc/scons/xcode_macosx.vars
     resmoke_jobs_max: 4
@@ -10264,10 +10165,10 @@ buildvariants:
     cmake_path: /Applications/cmake-3.11.0-Darwin-x86_64/CMake.app/Contents/bin/cmake
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_macosx.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_macosx.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "10.12"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10294,10 +10195,10 @@ buildvariants:
     cmake_path: /Applications/cmake-3.11.0-Darwin-x86_64/CMake.app/Contents/bin/cmake
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_ios.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_ios.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "11.0"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10326,10 +10227,10 @@ buildvariants:
     cmake_path: /Applications/cmake-3.11.0-Darwin-x86_64/CMake.app/Contents/bin/cmake
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_ios_sim.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_ios_sim.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "11.0"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10361,10 +10262,10 @@ buildvariants:
     test_flags: --excludeWithAnyTags=uses_transactions
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_tvos.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_tvos.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "11.0"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10393,10 +10294,10 @@ buildvariants:
     test_flags: --excludeWithAnyTags=uses_transactions
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_tvos_sim.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_tvos_sim.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "11.0"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10428,10 +10329,10 @@ buildvariants:
     test_flags: --excludeWithAnyTags=requires_mmapv1,uses_transactions,requires_http_client
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_watchos.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_watchos.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "4.2"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10460,10 +10361,10 @@ buildvariants:
     test_flags: --excludeWithAnyTags=requires_mmapv1,uses_transactions,requires_http_client
     compile_env: DEVELOPER_DIR=/Applications/Xcode10.1.app
     compile_flags: >-
-      -j$(sysctl -n hw.logicalcpu)
-      --variables-files=etc/scons/xcode_watchos_sim.vars
-      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
       --lto
+      --variables-files=etc/scons/xcode_watchos_sim.vars
+      -j$(sysctl -n hw.logicalcpu)
+      FRAMEWORKPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/Frameworks'
     cdriver_cmake_osx_deployment_target: "4.2"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10505,10 +10406,10 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     test_flags: --excludeWithAnyTags=uses_transactions
-    # We need --allocator=system here to work around SERVER-XXXXX
+    # We need --allocator=system here to work around SERVER-27675
     compile_flags: >-
-      -j$(grep -c ^processor /proc/cpuinfo)
       --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
+      -j$(grep -c ^processor /proc/cpuinfo)
       LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     cdriver_cmake_flags: >-
         -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -10531,33 +10432,32 @@ buildvariants:
     test_flags: --excludeWithAnyTags=uses_transactions
     compile_env: JAVA_HOME=/opt/java/jdk8/
     compile_flags: >-
-      -j$(grep -c ^processor /proc/cpuinfo)
-      --toolchain-root=$(dirname $(pwd))/android_toolchain-arm-21
-      --variables-files=etc/scons/android_toolchain.vars
-      LIBS=clang_rt.builtins-arm-android
-      LIBPATH="$(dirname $($(dirname $(pwd))/android_toolchain-arm-21/bin/clang -print-file-name=libclang_rt.builtins-arm-android.a)) \$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
       --lto
-      AR=$(dirname $(pwd))/android_toolchain-arm-21/bin/llvm-ar
+      --toolchain-root=$(dirname $(pwd))/android_sdk
+      --variables-files=etc/scons/armv7a-linux-androideabi_toolchain.vars
+      -j$(grep -c ^processor /proc/cpuinfo)
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     cdriver_cmake_flags: >-
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo
-        -DANDROID_NATIVE_API_LEVEL=21
         -DANDROID_ABI=armeabi-v7a
-        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
-        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/android_toolchain-arm-21;$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
+        -DANDROID_PLATFORM=android-21
+        -DANDROID_TOOLCHAIN=clang
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        -DCMAKE_C_FLAGS="-flto"
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DENABLE_ZLIB=OFF
-        -DENABLE_SRV=OFF
-        -DCMAKE_C_FLAGS="-flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
+        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/src/build/mongo-embedded-sdk-$VERSION"
         -DCMAKE_INSTALL_RPATH=\$ORIGIN/../lib
+        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
+        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
+        -DENABLE_SRV=OFF
+        -DENABLE_ZLIB=OFF
     disable_unit_tests: true
     enable_embedded_tests: android_emulator
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "armeabi-v7a"
-    android_system_image_version: "21"
+    android_system_image_version: 24
     android_toolchain_target_arch: "arm"
     android_toolchain_api_version: "21"
     dump_scons_config_on_failure: true
@@ -10573,32 +10473,32 @@ buildvariants:
     test_flags: --excludeWithAnyTags=uses_transactions
     compile_env: JAVA_HOME=/opt/java/jdk8/
     compile_flags: >-
-      -j$(grep -c ^processor /proc/cpuinfo)
-      --toolchain-root=$(dirname $(pwd))/android_toolchain-arm64-21
-      --variables-files=etc/scons/android_toolchain.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
       --lto
-      AR=$(dirname $(pwd))/android_toolchain-arm64-21/bin/llvm-ar
+      --toolchain-root=$(dirname $(pwd))/android_sdk
+      --variables-files=etc/scons/aarch64-linux-android_toolchain.vars
+      -j$(grep -c ^processor /proc/cpuinfo)
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     cdriver_cmake_flags: >-
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo
-        -DANDROID_NATIVE_API_LEVEL=21
         -DANDROID_ABI=arm64-v8a
-        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
-        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/android_toolchain-arm64-21;$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
+        -DANDROID_PLATFORM=android-21
+        -DANDROID_TOOLCHAIN=clang
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        -DCMAKE_C_FLAGS="-flto"
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DENABLE_ZLIB=OFF
-        -DENABLE_SRV=OFF
-        -DCMAKE_C_FLAGS="-flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
+        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/src/build/mongo-embedded-sdk-$VERSION"
         -DCMAKE_INSTALL_RPATH=\$ORIGIN/../lib
+        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
+        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
+        -DENABLE_SRV=OFF
+        -DENABLE_ZLIB=OFF
     disable_unit_tests: true
     enable_embedded_tests: android_emulator
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "arm64-v8a"
-    android_system_image_version: "24"
+    android_system_image_version: 24
     android_toolchain_target_arch: "arm64"
     android_toolchain_api_version: "21"
     dump_scons_config_on_failure: true
@@ -10614,33 +10514,33 @@ buildvariants:
     test_flags: --excludeWithAnyTags=uses_transactions
     compile_env: JAVA_HOME=/opt/java/jdk8/
     compile_flags: >-
-      -j$(grep -c ^processor /proc/cpuinfo)
-      --toolchain-root=$(dirname $(pwd))/android_toolchain-x86_64-21
-      --variables-files=etc/scons/android_toolchain.vars
-      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
       --lto
-      AR=$(dirname $(pwd))/android_toolchain-x86_64-21/bin/llvm-ar
+      --toolchain-root=$(dirname $(pwd))/android_sdk
+      --variables-files=etc/scons/x86_64-linux-android_toolchain.vars
+      -j$(grep -c ^processor /proc/cpuinfo)
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     cdriver_cmake_flags: >-
-        -DCMAKE_BUILD_TYPE=RelWithDebInfo
-        -DANDROID_NATIVE_API_LEVEL=21
         -DANDROID_ABI=x86_64
-        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
-        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/android_toolchain-x86_64-21;$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
+        -DANDROID_PLATFORM=android-21
+        -DANDROID_TOOLCHAIN=clang
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        -DCMAKE_C_FLAGS="-flto"
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DENABLE_ZLIB=OFF
-        -DENABLE_SRV=OFF
-        -DCMAKE_C_FLAGS="-flto"
-        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
+        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/src/build/mongo-embedded-sdk-$VERSION"
         -DCMAKE_INSTALL_RPATH=\$ORIGIN/../lib
+        -DCMAKE_SHARED_LINKER_FLAGS="-flto"
+        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
+        -DENABLE_SRV=OFF
+        -DENABLE_ZLIB=OFF
     disable_unit_tests: true
     # The Android x86_64 emulator requires KVM.
     enable_embedded_tests: android_emulator
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "x86_64"
-    android_system_image_version: "21"
+    android_system_image_version: 24
     android_toolchain_target_arch: "x86_64"
     android_toolchain_api_version: "21"
     dump_scons_config_on_failure: true
@@ -10656,7 +10556,7 @@ buildvariants:
     compile_env: JAVA_HOME=/opt/java/jdk8/
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "x86_64"
-    android_system_image_version: 21
+    android_system_image_version: 24
     android_toolchain_target_arch: "x86_64"
     android_toolchain_api_version: "21"
   tasks:
@@ -10671,7 +10571,7 @@ buildvariants:
     compile_env: JAVA_HOME=/opt/java/jdk8/
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "x86_64"
-    android_system_image_version: 21
+    android_system_image_version: 24
     android_toolchain_target_arch: "x86_64"
     android_toolchain_api_version: "21"
   tasks:
@@ -10702,7 +10602,7 @@ buildvariants:
     packager_distro: rhel62
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     jstestfuzz_num_generated_files: 40
     jstestfuzz_concurrent_num_files: 10
@@ -10974,7 +10874,7 @@ buildvariants:
     multiversion_edition: enterprise
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     large_distro_name: rhel62-large
   display_tasks:
@@ -11198,7 +11098,7 @@ buildvariants:
     # Mixing --cache and --gcov doesn't work correctly yet. See SERVER-11084
     timeout_secs: 10800 # 3 hour timeout
     use_scons_cache: false
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -11357,7 +11257,7 @@ buildvariants:
     packager_distro: rhel70
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -11729,7 +11629,7 @@ buildvariants:
     push_name: linux
     push_arch: ppc64le-enterprise-rhel71
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: rhel71
     multiversion_architecture: ppc64le
@@ -11862,7 +11762,7 @@ buildvariants:
     push_name: linux
     push_arch: s390x-enterprise-rhel72
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: rhel72
     multiversion_architecture: s390x
@@ -11992,7 +11892,7 @@ buildvariants:
     push_name: linux
     push_arch: s390x-enterprise-rhel67
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -12187,7 +12087,7 @@ buildvariants:
     packager_distro: ubuntu1604
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -12258,7 +12158,7 @@ buildvariants:
     # We need --allocator=system here solely due to SERVER-27675
     compile_flags: --link-model=dynamic --allocator=system -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_v3_clang.vars
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -12312,7 +12212,7 @@ buildvariants:
     packager_distro: suse12
     repo_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -12374,7 +12274,7 @@ buildvariants:
     packager_arch: s390x
     packager_distro: suse12
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: suse12
     multiversion_architecture: s390x
@@ -12502,7 +12402,7 @@ buildvariants:
     packager_arch: s390x
     packager_distro: suse12
     repo_edition: org
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     multiversion_platform: suse12
     multiversion_architecture: s390x
@@ -12646,7 +12546,7 @@ buildvariants:
     packager_distro: debian81
     repo_edition: enterprise
     scons_cache: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -12807,7 +12707,7 @@ buildvariants:
     packager_arch: x86_64
     packager_distro: debian92
     repo_edition: enterprise
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     scons_cache_scope: shared
     build_mongoreplay: true
   display_tasks:
@@ -12992,7 +12892,7 @@ buildvariants:
     multiversion_platform: rhel62
     multiversion_edition: enterprise
     scons_cache_scope: shared
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     large_distro_name: rhel62-large
   display_tasks:
@@ -13537,7 +13437,7 @@ buildvariants:
     compile_flags: --dbg=on --opt=on --ssl MONGO_DISTMOD=rhel71 -j$(echo "$(grep -c processor /proc/cpuinfo)/2" | bc) CCFLAGS="-mcpu=power8 -mtune=power8 -mcmodel=medium" --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     resmoke_jobs_factor: 0.25
     test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -13631,7 +13531,7 @@ buildvariants:
     compile_flags: --dbg=on --opt=on --ssl MONGO_DISTMOD=rhel72 -j3 CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     resmoke_jobs_max: 2
     test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -13968,7 +13868,7 @@ buildvariants:
     multiversion_platform: ubuntu1804
     multiversion_edition: enterprise
     resmoke_jobs_factor: 0.3  # Avoid starting too many mongod's under UBSAN build.
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
     scons_cache_scope: shared
   display_tasks:
@@ -14280,7 +14180,7 @@ buildvariants:
     compile_flags: MONGO_DISTMOD=ubuntu1604 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars --link-model=dynamic --allocator=system
     scons_cache_scope: shared
     scons_cache_mode: all
-    tooltags: "ssl sasl"
+    tooltags: "ssl sasl gssapi"
     build_mongoreplay: true
   display_tasks:
   - *dbtest
@@ -14289,19 +14189,6 @@ buildvariants:
   - name: compile_all_run_unittests_TG
     distros:
     - ubuntu1604-build
-
-- name: tig-daily-cron
-  display_name: "~ TIG Daily Cron"
-  run_on:
-  - rhel62-large
-  batchtime: 1440 # 1 day
-  stepback: false
-  tasks:
-  # Test lifecycle is temporarily disabled to reduce load on Evergreen API.
-  # - name: update_test_lifecycle
-  - name: fetch_test_lifecycle
-    distros:
-    - rhel62-small
 
 - name: shared-scons-cache-pruning
   display_name: "Shared SCons Cache Pruning"

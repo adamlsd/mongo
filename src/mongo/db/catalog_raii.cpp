@@ -75,7 +75,17 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
               modeDB,
               deadline),
       _resolvedNss(resolveNamespaceStringOrUUID(opCtx, nsOrUUID)) {
-    _collLock.emplace(opCtx, _resolvedNss, modeColl, deadline);
+
+    NamespaceString resolvedNssWithLock;
+    do {
+        _collLock.emplace(opCtx, _resolvedNss, modeColl, deadline);
+
+        // We looked up nsOrUUID without a collection lock so it's possible that the
+        // collection is dropped now. Look it up again.
+        resolvedNssWithLock = resolveNamespaceStringOrUUID(opCtx, nsOrUUID);
+    } while (_resolvedNss != resolvedNssWithLock);
+    _resolvedNss = resolvedNssWithLock;
+
     // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
     MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
         const BSONObj& data = customWait.getData();
@@ -140,8 +150,12 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
 
 NamespaceString AutoGetCollection::resolveNamespaceStringOrUUID(OperationContext* opCtx,
                                                                 NamespaceStringOrUUID nsOrUUID) {
-    if (nsOrUUID.nss())
-        return *nsOrUUID.nss();
+    if (auto& nss = nsOrUUID.nss()) {
+        uassert(ErrorCodes::InvalidNamespace,
+                str::stream() << "Namespace " << *nss << " is not a valid collection name",
+                nss->isValid());
+        return *nss;
+    }
 
     UUIDCatalog& uuidCatalog = UUIDCatalog::get(opCtx);
     auto resolvedNss = uuidCatalog.lookupNSSByUUID(*nsOrUUID.uuid());

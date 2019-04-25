@@ -36,6 +36,7 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/op_observer_registry.h"
+#include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/replication_consistency_markers_mock.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
@@ -249,6 +250,28 @@ Status SyncTailTest::runOpsInitialSync(std::vector<OplogEntry> ops) {
     return Status::OK();
 }
 
+Status SyncTailTest::runOpPtrsInitialSync(MultiApplier::OperationPtrs ops) {
+    auto options = makeInitialSyncOptions();
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      SyncTail::MultiSyncApplyFunc(),
+                      nullptr,
+                      options);
+    // Apply each operation in a batch of one because 'ops' may contain a mix of commands and CRUD
+    // operations provided by idempotency tests.
+    for (auto& op : ops) {
+        MultiApplier::OperationPtrs opsPtrs;
+        opsPtrs.push_back(op);
+        WorkerMultikeyPathInfo pathInfo;
+        auto status = multiSyncApply(_opCtx.get(), &opsPtrs, &syncTail, &pathInfo);
+        if (!status.isOK()) {
+            return status;
+        }
+    }
+    return Status::OK();
+}
+
 void checkTxnTable(OperationContext* opCtx,
                    const LogicalSessionId& lsid,
                    const TxnNumber& txnNum,
@@ -276,6 +299,34 @@ void checkTxnTable(OperationContext* opCtx,
     if (expectedState) {
         ASSERT(*expectedState == txnRecord.getState());
     }
+}
+
+CollectionReader::CollectionReader(OperationContext* opCtx, const NamespaceString& nss)
+    : _collToScan(opCtx, nss),
+      _exec(InternalPlanner::collectionScan(opCtx,
+                                            nss.ns(),
+                                            _collToScan.getCollection(),
+                                            PlanExecutor::NO_YIELD,
+                                            InternalPlanner::FORWARD)) {}
+
+StatusWith<BSONObj> CollectionReader::next() {
+    BSONObj obj;
+
+    auto state = _exec->getNext(&obj, nullptr);
+    if (state == PlanExecutor::IS_EOF) {
+        return {ErrorCodes::CollectionIsEmpty,
+                str::stream() << "no more documents in " << _collToScan.getNss()};
+    }
+
+    // PlanExecutors that do not yield should only return ADVANCED or EOF.
+    invariant(state == PlanExecutor::ADVANCED);
+    return obj;
+}
+
+bool docExists(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc) {
+    DBDirectClient client(opCtx);
+    auto result = client.findOne(nss.ns(), {doc});
+    return !result.isEmpty();
 }
 
 }  // namespace repl

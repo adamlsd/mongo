@@ -277,16 +277,25 @@ public:
         }
 
         if (!seenIsMaster) {
-            const StringData applicationName = clientMetadataIsMasterState.getClientMetadata()
-                ? clientMetadataIsMasterState.getClientMetadata()->getApplicationName()
-                : "";
-            SplitHorizon::setParameters(
-                opCtx->getClient(),
-                applicationName.toString(),                   // Application Name
-                opCtx->getClient()->getSniNameForSession(),  // SNI Name from connection.
-                // TODO(SERVER-40157): Add support for driver-specified horizon configuration.
-                boost::none,   // No Connection target support yet.
-                boost::none);  // No Explicit horizon name support yet.
+            const auto target = [&]() -> boost::optional<std::string> {
+                auto connectionTargetBson = cmdObj["connectionTarget"];
+                if (!connectionTargetBson.eoo()) {
+                    if (connectionTargetBson.type() != BSONType::String)
+                        uasserted(
+                            ErrorCodes::TypeMismatch,
+                            str::stream()
+                                << "'connectionTarget' must be of type String, but was of type "
+                                << typeName(connectionTargetBson.type()));
+                    return HostAndPort{connectionTargetBson.valueStringData()}.toString();
+                }
+
+                const int defaultIncomingPort = stdx::as_const(serverGlobalParams.port);
+                auto sniName = opCtx->getClient()->getSniNameForSession();
+                if (!sniName)
+                    return boost::none;
+                return HostAndPort{*sniName, defaultIncomingPort}.toString();
+            }();
+            SplitHorizon::setParameters(opCtx->getClient(), target);
         }
 
         // Parse the optional 'internalClient' field. This is provided by incoming connections from

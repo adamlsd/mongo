@@ -83,34 +83,17 @@ TEST(SplitHorizonTesting, determineHorizon) {
     } tests[] = {
         // No parameters and no horizon views configured.
         {{4242, {}, {}}, "__default"},
-        {{4242, {}, {"SomeApplication", boost::none, boost::none, boost::none}}, "__default"},
-        {{4242, {}, {"SomeApplication", defaultHost, boost::none, boost::none}}, "__default"},
+        {{4242, {}, {boost::none}}, "__default"},
+        {{4242, {}, {defaultHost}}, "__default"},
 
         // No SNI, no match
-        {{4242,
-          {{"unusedHorizon", "badmatch:00001"}},
-          {"SomeApplication", boost::none, boost::none, boost::none}},
-         "__default"},
+        {{4242, {{"unusedHorizon", "badmatch:00001"}}, {boost::none}}, "__default"},
 
         // Has SNI, no match
-        {{4242,
-          {{"unusedHorizon", "badmatch:00001"}},
-          {"SomeApplication", defaultHost, boost::none, boost::none}},
-         "__default"},
+        {{4242, {{"unusedHorizon", "badmatch:00001"}}, {defaultHost}}, "__default"},
 
-        // Application Name passed, but doesn't match.  SNI Name
-        {{4242,
-          {{"matchingHorizon", "matchingTarget:4242"}},
-          {"SomeApplication", "matchingTarget"s, boost::none, boost::none}},
-         "matchingHorizon"},
-
-#ifdef MONGO_ENABLE_SPLIT_HORIZON_APPNAME
-        // Application Name matches, but nothing else passed.
-        {{4242,
-          {{"matchingHorizon", "matchingTarget:4242"}},
-          {"matchingHorizon", boost::none, boost::none, boost::none}},
-         "matchingHorizon"},
-#endif
+        // Has SNI, with match
+        {{4242, {{"targetHorizon", "badmatch:00001"}}, {"badmatch:00001"s}}, "targetHorizon"},
     };
 
     for (const auto& test : tests) {

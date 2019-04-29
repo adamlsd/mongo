@@ -122,6 +122,8 @@ TEST_F(KVStorageEngineTest, LoadCatalogDropsOrphansAfterUncleanShutdown) {
 TEST_F(KVStorageEngineTest, ReconcileDropsTemporary) {
     auto opCtx = cc().makeOperationContext();
 
+    Lock::GlobalLock lk(&*opCtx, MODE_IS);
+
     auto rs = makeTemporary(opCtx.get());
     ASSERT(rs.get());
     const std::string ident = rs->rs()->getIdent();
@@ -138,6 +140,8 @@ TEST_F(KVStorageEngineTest, ReconcileDropsTemporary) {
 
 TEST_F(KVStorageEngineTest, TemporaryDropsItself) {
     auto opCtx = cc().makeOperationContext();
+
+    Lock::GlobalLock lk(&*opCtx, MODE_IS);
 
     std::string ident;
     {
@@ -157,6 +161,8 @@ TEST_F(KVStorageEngineTest, TemporaryDropsItself) {
 TEST_F(KVStorageEngineTest, ReconcileDoesNotDropIndexBuildTempTables) {
     auto opCtx = cc().makeOperationContext();
 
+    Lock::GlobalLock lk(&*opCtx, MODE_IS);
+
     const NamespaceString ns("db.coll1");
     const std::string indexName("a_1");
 
@@ -169,8 +175,7 @@ TEST_F(KVStorageEngineTest, ReconcileDoesNotDropIndexBuildTempTables) {
     auto sideWrites = makeTemporary(opCtx.get());
     auto constraintViolations = makeTemporary(opCtx.get());
 
-    const auto indexIdent =
-        _storageEngine->getCatalog()->getIndexIdent(opCtx.get(), ns.ns(), indexName);
+    const auto indexIdent = _storageEngine->getCatalog()->getIndexIdent(opCtx.get(), ns, indexName);
 
     indexBuildScan(opCtx.get(),
                    ns,
@@ -197,6 +202,8 @@ TEST_F(KVStorageEngineTest, ReconcileDoesNotDropIndexBuildTempTables) {
 TEST_F(KVStorageEngineTest, ReconcileDoesNotDropIndexBuildTempTablesBackgroundSecondary) {
     auto opCtx = cc().makeOperationContext();
 
+    Lock::GlobalLock lk(&*opCtx, MODE_IS);
+
     const NamespaceString ns("db.coll1");
     const std::string indexName("a_1");
 
@@ -209,8 +216,7 @@ TEST_F(KVStorageEngineTest, ReconcileDoesNotDropIndexBuildTempTablesBackgroundSe
     auto sideWrites = makeTemporary(opCtx.get());
     auto constraintViolations = makeTemporary(opCtx.get());
 
-    const auto indexIdent =
-        _storageEngine->getCatalog()->getIndexIdent(opCtx.get(), ns.ns(), indexName);
+    const auto indexIdent = _storageEngine->getCatalog()->getIndexIdent(opCtx.get(), ns, indexName);
 
     indexBuildScan(opCtx.get(),
                    ns,

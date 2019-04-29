@@ -320,7 +320,7 @@ bool runCreateIndexes(OperationContext* opCtx,
 
         writeConflictRetry(opCtx, kCommandName, ns.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
-            collection = db->createCollection(opCtx, ns.ns(), CollectionOptions());
+            collection = db->createCollection(opCtx, ns, CollectionOptions());
             invariant(collection);
             wunit.commit();
         });
@@ -360,10 +360,7 @@ bool runCreateIndexes(OperationContext* opCtx,
 
     // The 'indexer' can throw, so ensure the build cleanup occurs.
     ON_BLOCK_EXIT([&] {
-        if (!exclusiveCollectionLock) {
-            opCtx->recoveryUnit()->abandonSnapshot();
-            exclusiveCollectionLock.emplace(opCtx, ns, MODE_X);
-        }
+        opCtx->recoveryUnit()->abandonSnapshot();
         if (MONGO_FAIL_POINT(leaveIndexBuildUnfinishedForShutdown)) {
             // Set a flag to leave the persisted index build state intact when cleanUpAfterBuild()
             // is called below. The index build will be found on server startup.
@@ -564,7 +561,7 @@ bool runCreateIndexesWithCoordinator(OperationContext* opCtx,
             options.uuid = collectionUUID;
             writeConflictRetry(opCtx, kCommandName, ns.ns(), [&] {
                 WriteUnitOfWork wunit(opCtx);
-                collection = db->createCollection(opCtx, ns.ns(), options);
+                collection = db->createCollection(opCtx, ns, options);
                 invariant(collection,
                           str::stream() << "Failed to create collection " << ns.ns()
                                         << " during index creation: "

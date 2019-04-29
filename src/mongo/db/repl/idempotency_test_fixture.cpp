@@ -546,7 +546,12 @@ std::vector<CollectionState> IdempotencyTest::validateAllCollections() {
     for (auto& db : dbs) {
         // Skip local database.
         if (db != "local") {
-            for (const auto& nss : uuidCatalog.getAllCollectionNamesFromDb(_opCtx.get(), db)) {
+            std::vector<NamespaceString> collectionNames;
+            {
+                Lock::DBLock lk(_opCtx.get(), db, MODE_S);
+                collectionNames = uuidCatalog.getAllCollectionNamesFromDb(_opCtx.get(), db);
+            }
+            for (const auto& nss : collectionNames) {
                 collStates.push_back(validate(nss));
             }
         }

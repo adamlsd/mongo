@@ -569,11 +569,15 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
                                     << "' because the collection no longer exists");
     }
 
+    // TODO (SERVER-40807): disabling the following code for the v4.2 release so it does not have
+    // downstream impact.
+    /*
     auto replCoord = repl::ReplicationCoordinator::get(opCtx);
     if (replCoord->canAcceptWritesFor(opCtx, nss)) {
         // TODO: Put in a well-defined initialization function within the coordinator.
         ensureIndexBuildEntriesNamespaceExists(opCtx);
     }
+    */
 
     // Lock from when we ascertain what indexes to build through to when the build is registered
     // on the Coordinator and persistedly set up in the catalog. This serializes setting up an
@@ -611,6 +615,9 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
     // writes a no-op just to generate an optime.
     if (IndexBuildProtocol::kTwoPhase == replIndexBuildState->protocol) {
         onInitFn = [&](std::vector<BSONObj>& specs) {
+            // TODO (SERVER-40807): disabling the following code for the v4.2 release so it does not
+            // have downstream impact.
+            /*
             // Only the primary node writes an index build entry to the collection as the
             // secondaries will replicate it.
             if (replCoord->canAcceptWritesFor(opCtx, nss)) {
@@ -629,6 +636,7 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
                     return status;
                 }
             }
+            */
 
             opCtx->getServiceContext()->getOpObserver()->onStartIndexBuild(
                 opCtx,
@@ -742,7 +750,8 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
     _updateCurOpOpDescription(opCtx, nss, replState->indexSpecs);
 
     // Do not use AutoGetOrCreateDb because we may relock the database in mode IX.
-    Lock::DBLock dbLock(opCtx, nss.db(), MODE_X);
+    boost::optional<Lock::DBLock> dbLock;
+    dbLock.emplace(opCtx, nss.db(), MODE_X);
 
     // Allow the strong lock acquisition above to be interrupted, but from this point forward do
     // not allow locks or re-locks to be interrupted.
@@ -767,9 +776,9 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
             // accordingly (checkForInterrupt() will throw an exception while
             // checkForInterruptNoAssert() returns an error Status).
             opCtx->runWithoutInterruptionExceptAtGlobalShutdown(
-                [&, this] { _buildIndex(opCtx, collection, nss, replState, &dbLock); });
+                [&, this] { _buildIndex(opCtx, collection, nss, replState, &*dbLock); });
         } else {
-            _buildIndex(opCtx, collection, nss, replState, &dbLock);
+            _buildIndex(opCtx, collection, nss, replState, &*dbLock);
         }
         replState->stats.numIndexesAfter = _getNumIndexesTotal(opCtx, collection);
         status = Status::OK();
@@ -777,7 +786,12 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
         status = ex.toStatus();
     }
 
-    invariant(opCtx->lockState()->isDbLockedForMode(replState->dbName, MODE_X));
+    // We could return from _buildIndex without the DBLock, if the build was interrupted while
+    // yielding.
+    if (!opCtx->lockState()->isDbLockedForMode(replState->dbName, MODE_X)) {
+        dbLock.reset();  // Might still have the Global lock, so be sure to clear it out first here.
+        dbLock.emplace(opCtx, nss.db(), MODE_X);
+    }
 
     if (replSetAndNotPrimary && status == ErrorCodes::InterruptedAtShutdown) {
         // Leave it as-if kill -9 happened. This will be handled on restart.
@@ -785,6 +799,9 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
         replState->stats.numIndexesAfter = replState->stats.numIndexesBefore;
         status = Status::OK();
     } else if (IndexBuildProtocol::kTwoPhase == replState->protocol) {
+        // TODO (SERVER-40807): disabling the following code for the v4.2 release so it does not
+        // have downstream impact.
+        /*
         // Only the primary node removes the index build entry, as the secondaries will
         // replicate.
         if (!replSetAndNotPrimary) {
@@ -795,6 +812,7 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
                 MONGO_UNREACHABLE;
             }
         }
+        */
     }
 
     _indexBuildsManager.tearDownIndexBuild(opCtx, collection, replState->buildUUID);
@@ -833,15 +851,6 @@ void IndexBuildsCoordinator::_buildIndex(OperationContext* opCtx,
         opCtx->recoveryUnit()->abandonSnapshot();
         dbLock->relockWithMode(MODE_IX);
     }
-
-    auto relockOnErrorGuard = makeGuard([&] {
-        // Must have exclusive DB lock before we clean up the index build via the
-        // destructor of 'indexer'.
-        if (_indexBuildsManager.isBackgroundBuilding(replState->buildUUID)) {
-            opCtx->recoveryUnit()->abandonSnapshot();
-            dbLock->relockWithMode(MODE_X);
-        }
-    });
 
     // Collection scan and insert into index, followed by a drain of writes received in the
     // background.
@@ -885,8 +894,6 @@ void IndexBuildsCoordinator::_buildIndex(OperationContext* opCtx,
         log() << "Hanging after index build second drain";
         MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterIndexBuildSecondDrain);
     }
-
-    relockOnErrorGuard.dismiss();
 
     // Need to return db lock back to exclusive, to complete the index build.
     if (_indexBuildsManager.isBackgroundBuilding(replState->buildUUID)) {

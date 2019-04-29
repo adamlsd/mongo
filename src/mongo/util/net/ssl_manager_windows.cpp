@@ -283,7 +283,7 @@ public:
                                                           const std::string& remoteHost,
                                                           const HostAndPort& hostForLogging) final;
 
-    StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
+    StatusWith<SSLPeerInfo> parseAndValidatePeerCertificate(
         PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) final;
 
 
@@ -1522,7 +1522,7 @@ SSLPeerInfo SSLManagerWindows::parseAndValidatePeerCertificateDeprecated(
         throwSocketError(SocketErrorKind::CONNECT_ERROR, swPeerSubjectName.getStatus().reason());
     }
 
-    return swPeerSubjectName.getValue().get_value_or(SSLPeerInfo());
+    return swPeerSubjectName.getValue();
 }
 
 // Get a list of subject alternative names to assist the user in diagnosing certificate verification
@@ -1753,7 +1753,7 @@ StatusWith<TLSVersion> mapTLSVersion(PCtxtHandle ssl) {
     }
 }
 
-StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeerCertificate(
+StatusWith<SSLPeerInfo> SSLManagerWindows::parseAndValidatePeerCertificate(
     PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
     auto sniName = getSNIServerName_impl();
     PCCERT_CONTEXT cert;

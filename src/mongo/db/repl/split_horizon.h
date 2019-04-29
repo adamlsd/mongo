@@ -62,8 +62,8 @@ struct SplitHorizon {
      */
 	static Parameters getParameters( const Client * );
 
-    using ForwardMapping = StringMap<HostAndPort>;
-    using ReverseMapping = std::map<HostAndPort, std::string>;
+    using ForwardMapping = StringMap<HostAndPort>; // Contains reply port
+    using ReverseMapping = std::map<HostAndPort, std::string>; // Contains match port
 
     static StringData determineHorizon(int incomingPort,
                                        const ForwardMapping& forwardMapping,

@@ -309,10 +309,11 @@ TEST(MemberConfig, ParseHorizonFields) {
     MemberConfig mc(BSON("_id" << 0 << "host"
                                << "h"
                                << "horizons"
-                               << BSON("alpha"
-                                       << "a.host:42"
-                                       << "beta"
-                                       << "b.host:256")),
+                               << BSON("alpha" << BSON("match"
+                                                       << "a.host:42" << "replyPort"<<43)
+                                               << "beta"
+                                               << BSON("match"
+                                                       << "b.host:256"))),
                     &tagConfig);
 
     std::cerr << "Horizons as seen: " << std::endl;
@@ -324,7 +325,27 @@ TEST(MemberConfig, ParseHorizonFields) {
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("beta"));
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
 
-    ASSERT_EQUALS(HostAndPort("a.host", 42), mc.getHorizonMappings().find("alpha")->second);
+    
+    std::cerr << "{" << std::endl;
+    for( auto &&mapping: mc.getHorizonReverseMappings() )
+    {
+        std::cerr << "\t" << mapping.first.toString() << " -> " << mapping.second << std::endl;
+    }
+    std::cerr << "}" << std::endl;
+
+    std::cerr << "{" << std::endl;
+    for( auto &&mapping: mc.getHorizonMappings() )
+    {
+        std::cerr << "\t" << mapping.first << " -> " << mapping.second.toString() << std::endl;
+    }
+    std::cerr << "}" << std::endl;
+    
+    ASSERT_EQUALS("alpha", mc.getHorizonReverseMappings().find(HostAndPort("a.host", 42))->second);
+    ASSERT_EQUALS( mc.getHorizonReverseMappings().count(HostAndPort("a.host", 43)), std::size_t{0});
+    ASSERT_EQUALS("beta", mc.getHorizonReverseMappings().find(HostAndPort("b.host", 256))->second);
+    ASSERT_EQUALS("__default", mc.getHorizonReverseMappings().find(HostAndPort("h"))->second);
+
+    ASSERT_EQUALS(HostAndPort("a.host", 43), mc.getHorizonMappings().find("alpha")->second);
     ASSERT_EQUALS(HostAndPort("b.host", 256), mc.getHorizonMappings().find("beta")->second);
     ASSERT_EQUALS(HostAndPort("h"), mc.getHorizonMappings().find("__default")->second);
 

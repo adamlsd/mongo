@@ -201,38 +201,70 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     }();
 
     if (horizonsElement) {
-        const auto& horizonsObject = horizonsElement->Obj();
         std::size_t horizonCount = 0;
         using std::begin;
         using std::end;
-        auto convert = [&horizonCount](auto&& horizon) {
-            using ReturnType = decltype(_horizonForward)::value_type;
+        using HorizonEntry = std::tuple< std::string, HostAndPort, int >;
+        auto convert = [&horizonCount](auto&& horizon) -> HorizonEntry{
             ++horizonCount;
             const auto horizonName = horizon.fieldName();
 
-            if (horizon.type() != String) {
+            if (horizon.type() != Object) {
                 uasserted(ErrorCodes::TypeMismatch,
                           str::stream() << "horizons." << horizonName
                                         << " field has non-object value of type "
                                         << typeName(horizon.type()));
             }
 
-            return ReturnType{horizonName, HostAndPort(horizon.valueStringData())};
+            const auto &mappingField= horizon.Obj();
+            const auto endpoint=[&]{
+            HostAndPort host( [&]{
+                std::string rv;
+                uassertStatusOK(bsonExtractStringField(mappingField, "match", &rv));
+                return rv;
+            }()
+);
+            return HostAndPort( host.host(), host.port() );}();
+            
+            const int port= [&]()->int{
+            try
+            {
+                long long rv;
+                uassertStatusOK(bsonExtractIntegerField(mappingField, "replyPort", &rv));
+                return static_cast< int >( rv );
+            }
+            catch( const ExceptionFor< ErrorCodes::NoSuchKey > & ) { // missing replyPort is fine.
+                return endpoint.port();
+            }
+            }();
+
+            return {horizonName, endpoint, port};
         };
-        std::transform(begin(horizonsObject),
-                       end(horizonsObject),
+        std::vector< HorizonEntry > horizonEntries;
+
+        const auto& horizonsObject = horizonsElement->Obj();
+        std::transform( begin( horizonsObject ), end( horizonsObject ), back_inserter( horizonEntries ), convert );
+
+        std::transform(begin(horizonEntries),
+                       end(horizonEntries),
                        inserter(_horizonForward, end(_horizonForward)),
-                       convert);
+                       []( const auto &entry )
+                        {
+                            using ReturnType= decltype(_horizonForward)::value_type;
+                            // Bind the replyPort to the horizon name, to permit port mapping.
+                            HostAndPort host( std::get< 1 >( entry ).host(), std::get< 2 >( entry ) );
+                            return ReturnType{ std::get< 0 >( entry ), host };
+                        });
 
         if (_horizonForward.size() < horizonCount)
             uasserted(ErrorCodes::BadValue, "Duplicate horizon name found.");
 
-        std::transform(begin(_horizonForward),
-                       end(_horizonForward),
+        std::transform(begin(horizonEntries),
+                       end(horizonEntries),
                        inserter(_horizonReverse, end(_horizonReverse)),
-                       [](auto&& forwardHorizon) {
+                       [](auto&& entry) {
                            using ReturnType = decltype(_horizonReverse)::value_type;
-                           return ReturnType{forwardHorizon.second, forwardHorizon.first};
+                           return ReturnType { std::get< 1 >( entry ), std::get< 0 >( entry ) };
                        });
 
         if (_horizonForward.size() != _horizonReverse.size())
@@ -344,11 +376,29 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     // `_horizonForward` should always contain the "__default" horizon, so we need to emit the
     // horizon repl specification when there are OTHER horizons.
     if (_horizonForward.size() > 1) {
-        BSONObjBuilder horizons(configBuilder.subobjStart("horizons"));
-        for (const auto& horizon : _horizonForward) {
-            if (horizon.first == SplitHorizon::defaultHorizon)
-                continue;
-            configBuilder.append(horizon.first, horizon.second.toString());
+        StringMap< std::tuple< HostAndPort, int > > horizons;
+        std::transform( begin( _horizonForward ), end( _horizonForward ),
+                inserter( horizons, end( horizons ) ),
+                []( const auto &entry )
+                {
+                    return std::pair< std::string, std::tuple< HostAndPort, int > >{ entry.first, { entry.second, entry.second.port() } };
+                } );
+        for( auto &horizon: _horizonReverse )
+        {
+            // The Horizon for each reverse should always exist.
+            invariant( horizons.count( horizon.second ) );
+            std::get< 0 >( horizons[ horizon.second ] ) = horizon.first;
+        }
+        horizons.erase( SplitHorizon::defaultHorizon );
+
+        BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
+        for (const auto& horizon : horizons) {
+            BSONObjBuilder horizonBson(horizonsBson.subobjStart( horizon.first ));
+            horizonBson.append( "match", std::get< 0 >( horizon.second ).toString() );
+            if( std::get< 0 >( horizon.second ).port() != std::get< 1 >( horizon.second ) )
+            {
+                horizonBson.append( "replyPort", std::get< 1 >( horizon.second ) );
+            }
         }
     }
 

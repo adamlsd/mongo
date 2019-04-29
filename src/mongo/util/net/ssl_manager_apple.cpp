@@ -1214,7 +1214,7 @@ public:
                                                           const std::string& remoteHost,
                                                           const HostAndPort& hostForLogging) final;
 
-    StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
+    StatusWith<SSLPeerInfo> parseAndValidatePeerCertificate(
         ::SSLContextRef conn,
         const std::string& remoteHost,
         const HostAndPort& hostForLogging) final;
@@ -1415,7 +1415,7 @@ SSLPeerInfo SSLManagerApple::parseAndValidatePeerCertificateDeprecated(
     if (!swPeerSubjectName.isOK()) {
         throwSocketError(SocketErrorKind::CONNECT_ERROR, swPeerSubjectName.getStatus().reason());
     }
-    return swPeerSubjectName.getValue().get_value_or(SSLPeerInfo());
+    return swPeerSubjectName.getValue();
 }
 
 StatusWith<TLSVersion> mapTLSVersion(SSLContextRef ssl) {
@@ -1436,8 +1436,9 @@ StatusWith<TLSVersion> mapTLSVersion(SSLContextRef ssl) {
 }
 
 
-StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCertificate(
+StatusWith<SSLPeerInfo> SSLManagerApple::parseAndValidatePeerCertificate(
     ::SSLContextRef ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
+    auto sniName = getRawSNIServerName(ssl);
 
     // Record TLS version stats
     auto tlsVersionStatus = mapTLSVersion(ssl);
@@ -1455,7 +1456,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
      * so that the validation path runs anyway.
      */
     if (!_sslConfiguration.hasCA && isSSLServer) {
-        return {boost::none};
+        return SSLPeerInfo(sniName);
     }
 
     const auto badCert = [](StringData msg,
@@ -1463,7 +1464,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
         constexpr StringData prefix = "SSL peer certificate validation failed: "_sd;
         if (warn) {
             warning() << prefix << msg;
-            return {boost::none};
+            return SSLPeerInfo(sniName);
         } else {
             std::string m = str::stream() << prefix << msg << "; connection rejected";
             error() << m;
@@ -1476,7 +1477,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerApple::parseAndValidatePeerCe
     CFUniquePtr<::SecTrustRef> cftrust(trust);
     if ((status != ::errSecSuccess) || (!cftrust)) {
         if (_weakValidation && _suppressNoCertificateWarning) {
-            return {boost::none};
+            return SSLPeerInfo(sniName);
         } else {
             if (status == ::errSecSuccess) {
                 return badCert(str::stream() << "no SSL certificate provided by peer: "

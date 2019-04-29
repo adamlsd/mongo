@@ -36,38 +36,69 @@
 #include <utility>
 
 #include "mongo/util/log.h"
+#include "mongo/db/client.h"
 
-mongo::StringData mongo::repl::SplitHorizon::determineHorizon(
-    const int incomingPort,
-    const ForwardMapping& forwardMapping,
-    const ReverseMapping& reverseMapping,
-    const SplitHorizon::Parameters& horizonParameters) {
-    log() << "Mapping horizon with SNI name: " << horizonParameters.sniName.value_or( "<NONE>" );
-    if (horizonParameters.explicitHorizonName) {
-        // Unlike `appName`, the explicit horizon request isn't checked for validity against a
-        // fallback; therefore failure to select a valid horizon name explicitly will lead to
-        // command failure.
-        log() << "Explicit Horizon Name case";
-        return *horizonParameters.explicitHorizonName;
-    } else if (horizonParameters.connectionTarget) {
-        log() << "Connection target case";
-        const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
-        auto found = reverseMapping.find(connectionTarget);
-        if (found != end(reverseMapping))
-            return found->second;
-    } else if (horizonParameters.sniName) {
-        log() << "SNI Name match case";
-        const HostAndPort connectionTarget(*horizonParameters.sniName, incomingPort);
-        auto found = reverseMapping.find(connectionTarget);
-        if (found != end(reverseMapping))
-            return found->second;
-    }
-#ifdef MONGO_ENABLE_SPLIT_HORIZON_APPNAME
-    else if (forwardMapping.count(horizonParameters.appName)) {
-        log() << "AppName case";
-        return horizonParameters.appName;
-    }
-#endif
-    log() << "Fallthrough case";
-    return defaultHorizon;
-}
+namespace mongo
+{
+    namespace repl
+    {
+        namespace
+        {
+            const auto getSplitHorizonParameters= Client::declareDecoration<
+                    SplitHorizon::Parameters >();
+        }// namespace
+
+        void
+        SplitHorizon::setParameters( Client *const client, std::string appName,
+                boost::optional<std::string> sniName,
+                boost::optional<std::string> connectionTarget,
+                boost::optional<std::string> explicitHorizonName )
+        {
+            stdx::lock_guard<Client> lk(*client);
+            getSplitHorizonParameters( *client )= { std::move( appName ), std::move( sniName ),
+                    std::move( connectionTarget ), std::move( explicitHorizonName ) };
+        }
+
+        auto
+        SplitHorizon::getParameters( const Client *const client )
+            -> Parameters
+        {
+            return getSplitHorizonParameters( *client );
+        }
+
+        StringData SplitHorizon::determineHorizon(
+            const int incomingPort,
+            const ForwardMapping& forwardMapping,
+            const ReverseMapping& reverseMapping,
+            const SplitHorizon::Parameters& horizonParameters) {
+            log() << "Mapping horizon with SNI name: " << horizonParameters.sniName.value_or( "<NONE>" );
+            if (horizonParameters.explicitHorizonName) {
+                // Unlike `appName`, the explicit horizon request isn't checked for validity against a
+                // fallback; therefore failure to select a valid horizon name explicitly will lead to
+                // command failure.
+                log() << "Explicit Horizon Name case";
+                return *horizonParameters.explicitHorizonName;
+            } else if (horizonParameters.connectionTarget) {
+                log() << "Connection target case";
+                const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
+                auto found = reverseMapping.find(connectionTarget);
+                if (found != end(reverseMapping))
+                    return found->second;
+            } else if (horizonParameters.sniName) {
+                log() << "SNI Name match case";
+                const HostAndPort connectionTarget(*horizonParameters.sniName, incomingPort);
+                auto found = reverseMapping.find(connectionTarget);
+                if (found != end(reverseMapping))
+                    return found->second;
+            }
+        #ifdef MONGO_ENABLE_SPLIT_HORIZON_APPNAME
+            else if (forwardMapping.count(horizonParameters.appName)) {
+                log() << "AppName case";
+                return horizonParameters.appName;
+            }
+        #endif
+            log() << "Fallthrough case";
+            return defaultHorizon;
+        }
+    }//namespace repl
+}//namespace mongo

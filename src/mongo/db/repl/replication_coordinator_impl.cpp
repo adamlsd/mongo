@@ -2314,7 +2314,7 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
 
 void ReplicationCoordinatorImpl::fillIsMasterForReplSet(
     IsMasterResponse* response,
-    const ClientMetadataIsMasterState::SplitHorizonParameters& horizonParams) {
+    const SplitHorizon::Parameters& horizonParams) {
     invariant(getSettings().usingReplSets());
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);

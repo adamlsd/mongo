@@ -39,8 +39,28 @@
 namespace mongo {
 namespace repl {
 struct SplitHorizon {
-    using Parameters = ClientMetadataIsMasterState::SplitHorizonParameters;
     static constexpr auto defaultHorizon = "__default"_sd;
+
+    struct Parameters {
+        std::string appName;
+        boost::optional<std::string> sniName;
+        boost::optional<std::string> connectionTarget;
+        boost::optional<std::string> explicitHorizonName;
+	};
+
+    /**
+     * Set the split horizon connection parameters, for use by future is-master commands.
+     */
+    static void setParameters(Client*client,
+                                     std::string appName,
+                                     boost::optional<std::string> sniName,
+                                     boost::optional<std::string> connectionTarget,
+                                     boost::optional<std::string> explicitHorizonName);
+
+    /**
+     * Get the client's SplitHorizonParameters object.
+     */
+	static Parameters getParameters( const Client * );
 
     using ForwardMapping = StringMap<HostAndPort>;
     using ReverseMapping = std::map<HostAndPort, std::string>;

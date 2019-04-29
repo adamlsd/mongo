@@ -72,8 +72,7 @@ namespace {
 void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int level) {
     ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
     if (replCoord->getSettings().usingReplSets()) {
-        const auto horizonParams =
-            ClientMetadataIsMasterState::get(opCtx->getClient()).getSplitHorizonParameters();
+        const auto horizonParams = SplitHorizon::getParameters(opCtx->getClient());
         IsMasterResponse isMasterResponse;
         replCoord->fillIsMasterForReplSet(&isMasterResponse, horizonParams);
         result.appendElements(isMasterResponse.toBSON());
@@ -281,7 +280,7 @@ public:
             const StringData applicationName = clientMetadataIsMasterState.getClientMetadata()
                 ? clientMetadataIsMasterState.getClientMetadata()->getApplicationName()
                 : "";
-            ClientMetadataIsMasterState::setHorizonParameters(
+            SplitHorizon::setParameters(
                 opCtx->getClient(),
                 applicationName.toString(),                   // Application Name
                 opCtx->getClient()->getSniNameForSession(),  // SNI Name from connection.

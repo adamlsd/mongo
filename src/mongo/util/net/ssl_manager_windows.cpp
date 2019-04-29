@@ -1755,6 +1755,7 @@ StatusWith<TLSVersion> mapTLSVersion(PCtxtHandle ssl) {
 
 StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeerCertificate(
     PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
+    auto sniName = getSNIServerName_impl();
     PCCERT_CONTEXT cert;
 
     auto tlsVersionStatus = mapTLSVersion(ssl);
@@ -1765,7 +1766,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     if (!_sslConfiguration.hasCA && isSSLServer)
-        return {boost::none};
+        return SSLPeerInfo(sniName);
 
     SECURITY_STATUS ss = QueryContextAttributes(ssl, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert);
 
@@ -1775,7 +1776,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
             if (!_suppressNoCertificateWarning) {
                 warning() << "no SSL certificate provided by peer";
             }
-            return {boost::none};
+            return SSLPeerInfo(sniName);
         } else {
             auto msg = "no SSL certificate provided by peer; connection rejected";
             error() << msg;
@@ -1817,7 +1818,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     }
 
     if (peerSubjectName.empty()) {
-        return {boost::none};
+        return SSLPeerInfo(sniName);
     }
 
     LOG(2) << "Accepted TLS connection from peer: " << peerSubjectName;
@@ -1834,11 +1835,10 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
             return swPeerCertificateRoles.getStatus();
         }
 
-        return boost::make_optional(SSLPeerInfo(peerSubjectName,
-                                                getSNIServerName_impl(),
-                                                std::move(swPeerCertificateRoles.getValue())));
+        return SSLPeerInfo(
+            peerSubjectName, getSNIServerName_impl(), std::move(swPeerCertificateRoles.getValue()));
     } else {
-        return boost::make_optional(SSLPeerInfo(peerSubjectName));
+        return SSLPeerInfo(peerSubjectName);
     }
 }
 

@@ -509,22 +509,22 @@ void IsMasterResponse::setReplSetVersion(long long version) {
     _setVersion = version;
 }
 
-void IsMasterResponse::addHost(const HostAndPort& host){
+void IsMasterResponse::addHost(const HostAndPort& host) {
     _hostsSet = true;
     _hosts.push_back(host);
 }
 
-void IsMasterResponse::addPassive(const HostAndPort& passive){
+void IsMasterResponse::addPassive(const HostAndPort& passive) {
     _passivesSet = true;
     _passives.push_back(passive);
 }
 
-void IsMasterResponse::addArbiter(const HostAndPort& arbiter){
+void IsMasterResponse::addArbiter(const HostAndPort& arbiter) {
     _arbitersSet = true;
     _arbiters.push_back(arbiter);
 }
 
-void IsMasterResponse::setPrimary(const HostAndPort& primary){
+void IsMasterResponse::setPrimary(const HostAndPort& primary) {
     _primarySet = true;
     _primary = primary;
 }

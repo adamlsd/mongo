@@ -35,48 +35,38 @@
 
 #include <utility>
 
-#include "mongo/util/log.h"
 #include "mongo/db/client.h"
+#include "mongo/util/log.h"
 
-namespace mongo
-{
-    namespace repl
-    {
-        namespace
-        {
-            const auto getSplitHorizonParameters= Client::declareDecoration<
-                    SplitHorizon::Parameters >();
-        }// namespace
+namespace mongo {
+namespace repl {
+namespace {
+const auto getSplitHorizonParameters = Client::declareDecoration<SplitHorizon::Parameters>();
+}  // namespace
 
-        void
-        SplitHorizon::setParameters( Client *const client, 
-                boost::optional<std::string> connectionTarget)
-        {
-            stdx::lock_guard<Client> lk(*client);
-            getSplitHorizonParameters( *client )= { std::move( connectionTarget ) };
-        }
+void SplitHorizon::setParameters(Client* const client,
+                                 boost::optional<std::string> connectionTarget) {
+    stdx::lock_guard<Client> lk(*client);
+    getSplitHorizonParameters(*client) = {std::move(connectionTarget)};
+}
 
-        auto
-        SplitHorizon::getParameters( const Client *const client )
-            -> Parameters
-        {
-            return getSplitHorizonParameters( *client );
-        }
+auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
+    return getSplitHorizonParameters(*client);
+}
 
-        StringData SplitHorizon::determineHorizon(
-            const int incomingPort,
-            const ForwardMapping& forwardMapping,
-            const ReverseMapping& reverseMapping,
-            const SplitHorizon::Parameters& horizonParameters) {
-            if (horizonParameters.connectionTarget) {
-                log() << "Connection target or SNI case";
-                const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
-                auto found = reverseMapping.find(connectionTarget);
-                if (found != end(reverseMapping))
-                    return found->second;
-            }
-            log() << "Fallthrough case";
-            return defaultHorizon;
-        }
-    }//namespace repl
-}//namespace mongo
+StringData SplitHorizon::determineHorizon(const int incomingPort,
+                                          const ForwardMapping& forwardMapping,
+                                          const ReverseMapping& reverseMapping,
+                                          const SplitHorizon::Parameters& horizonParameters) {
+    if (horizonParameters.connectionTarget) {
+        log() << "Connection target or SNI case";
+        const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
+        auto found = reverseMapping.find(connectionTarget);
+        if (found != end(reverseMapping))
+            return found->second;
+    }
+    log() << "Fallthrough case";
+    return defaultHorizon;
+}
+}  // namespace repl
+}  // namespace mongo

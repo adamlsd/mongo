@@ -1721,9 +1721,8 @@ void TopologyCoordinator::fillMemberData(BSONObjBuilder* result) {
     }
 }
 
-void TopologyCoordinator::fillIsMasterForReplSet(
-    IsMasterResponse* const response,
-    const SplitHorizon::Parameters& horizonParams) {
+void TopologyCoordinator::fillIsMasterForReplSet(IsMasterResponse* const response,
+                                                 const SplitHorizon::Parameters& horizonParams) {
     const MemberState myState = getMemberState();
     if (!_rsConfig.isInitialized()) {
         response->markAsNoConfig();
@@ -1753,7 +1752,7 @@ void TopologyCoordinator::fillIsMasterForReplSet(
         if (member.isHidden() || member.getSlaveDelay() > Seconds{0}) {
             continue;
         }
-        auto hostView= member.getHostAndPort(horizon);
+        auto hostView = member.getHostAndPort(horizon);
 
         if (member.isElectable()) {
             response->addHost(std::move(hostView));

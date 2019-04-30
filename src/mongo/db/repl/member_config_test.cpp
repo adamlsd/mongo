@@ -310,7 +310,9 @@ TEST(MemberConfig, ParseHorizonFields) {
                                << "h"
                                << "horizons"
                                << BSON("alpha" << BSON("match"
-                                                       << "a.host:42" << "replyPort"<<43)
+                                                       << "a.host:42"
+                                                       << "replyPort"
+                                                       << 43)
                                                << "beta"
                                                << BSON("match"
                                                        << "b.host:256"))),
@@ -325,23 +327,21 @@ TEST(MemberConfig, ParseHorizonFields) {
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("beta"));
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
 
-    
+
     std::cerr << "{" << std::endl;
-    for( auto &&mapping: mc.getHorizonReverseMappings() )
-    {
+    for (auto&& mapping : mc.getHorizonReverseMappings()) {
         std::cerr << "\t" << mapping.first.toString() << " -> " << mapping.second << std::endl;
     }
     std::cerr << "}" << std::endl;
 
     std::cerr << "{" << std::endl;
-    for( auto &&mapping: mc.getHorizonMappings() )
-    {
+    for (auto&& mapping : mc.getHorizonMappings()) {
         std::cerr << "\t" << mapping.first << " -> " << mapping.second.toString() << std::endl;
     }
     std::cerr << "}" << std::endl;
-    
+
     ASSERT_EQUALS("alpha", mc.getHorizonReverseMappings().find(HostAndPort("a.host", 42))->second);
-    ASSERT_EQUALS( mc.getHorizonReverseMappings().count(HostAndPort("a.host", 43)), std::size_t{0});
+    ASSERT_EQUALS(mc.getHorizonReverseMappings().count(HostAndPort("a.host", 43)), std::size_t{0});
     ASSERT_EQUALS("beta", mc.getHorizonReverseMappings().find(HostAndPort("b.host", 256))->second);
     ASSERT_EQUALS("__default", mc.getHorizonReverseMappings().find(HostAndPort("h"))->second);
 

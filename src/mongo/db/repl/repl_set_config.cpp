@@ -451,7 +451,7 @@ Status ReplSetConfig::validate() const {
                        end(_members[0].getHorizonMappings()),
                        back_inserter(rv),
                        [](auto&& mapping) { return mapping.first; });
-        std::sort( begin( rv ), end( rv ) );
+        std::sort(begin(rv), end(rv));
         return rv;
     }();
 
@@ -471,13 +471,13 @@ Status ReplSetConfig::validate() const {
                            end(memberI.getHorizonMappings()),
                            back_inserter(rv),
                            [](auto&& mapping) { return mapping.first; });
-            std::sort( begin( rv ), end( rv ) );
+            std::sort(begin(rv), end(rv));
             return rv;
         }();
 
         std::vector<std::string> horizonNameMapping;
         if (expectedHorizonNameMapping != seenHorizonNameMapping) {
-            //TODO: std::set_difference based find missing or extra fields
+            // TODO: std::set_difference based find missing or extra fields
             return Status(ErrorCodes::BadValue,
                           str::stream() << "Saw a replica set member with a "
                                            "different horizon mapping than "

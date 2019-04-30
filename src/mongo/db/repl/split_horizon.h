@@ -43,21 +43,20 @@ struct SplitHorizon {
 
     struct Parameters {
         boost::optional<std::string> connectionTarget;
-	};
+    };
 
     /**
      * Set the split horizon connection parameters, for use by future is-master commands.
      */
-    static void setParameters(Client*client,
-                                     boost::optional<std::string> connectionTarget);
+    static void setParameters(Client* client, boost::optional<std::string> connectionTarget);
 
     /**
      * Get the client's SplitHorizonParameters object.
      */
-	static Parameters getParameters( const Client * );
+    static Parameters getParameters(const Client*);
 
-    using ForwardMapping = StringMap<HostAndPort>; // Contains reply port
-    using ReverseMapping = std::map<HostAndPort, std::string>; // Contains match port
+    using ForwardMapping = StringMap<HostAndPort>;              // Contains reply port
+    using ReverseMapping = std::map<HostAndPort, std::string>;  // Contains match port
 
     static StringData determineHorizon(int incomingPort,
                                        const ForwardMapping& forwardMapping,

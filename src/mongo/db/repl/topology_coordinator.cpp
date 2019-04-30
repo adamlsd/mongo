@@ -1751,13 +1751,14 @@ void TopologyCoordinator::fillIsMasterForReplSet(
         if (member.isHidden() || member.getSlaveDelay() > Seconds{0}) {
             continue;
         }
+        auto hostView= member.getHostAndPort(horizon);
 
         if (member.isElectable()) {
-            response->addHost(member.getHostAndPort(horizon), member.getHorizonMappings());
+            response->addHost(std::move(hostView));
         } else if (member.isArbiter()) {
-            response->addArbiter(member.getHostAndPort(horizon), member.getHorizonMappings());
+            response->addArbiter(std::move(hostView));
         } else {
-            response->addPassive(member.getHostAndPort(horizon), member.getHorizonMappings());
+            response->addPassive(std::move(hostView));
         }
     }
 
@@ -1770,7 +1771,7 @@ void TopologyCoordinator::fillIsMasterForReplSet(
 
     const MemberConfig* curPrimary = _currentPrimaryMember();
     if (curPrimary) {
-        response->setPrimary(curPrimary->getHostAndPort(horizon), curPrimary->getHorizonMappings());
+        response->setPrimary(curPrimary->getHostAndPort(horizon));
     }
 
     const MemberConfig& selfConfig = _rsConfig.getMemberAt(_selfIndex);

@@ -202,16 +202,13 @@ public:
 
     void setReplSetVersion(long long version);
 
-    void addHost(const HostAndPort& host, const SplitHorizon::ForwardMapping& alts = {});
+    void addHost(const HostAndPort& host);
 
-    void addPassive(const HostAndPort& passive,
-                    const SplitHorizon::ForwardMapping& horizonViews = {});
+    void addPassive(const HostAndPort& passive);
 
-    void addArbiter(const HostAndPort& arbiter,
-                    const SplitHorizon::ForwardMapping& horizonViews = {});
+    void addArbiter(const HostAndPort& arbiter);
 
-    void setPrimary(const HostAndPort& primary,
-                    const SplitHorizon::ForwardMapping& horizonViews = {});
+    void setPrimary(const HostAndPort& primary);
 
     void setIsArbiterOnly(bool arbiterOnly);
 
@@ -289,20 +286,6 @@ private:
     // If _shutdownInProgress is true toBSON will return a set of hardcoded values to indicate
     // that we are mid shutdown
     bool _shutdownInProgress;
-
-    // Because the replica set can have multiple addresses for each server, under different
-    // horizons, this structure permits mapping a complete replica set's group of hosts (primary,
-    // hosts, passives, and arbiters) to the horizon name under which they are known by those
-    // addresses.  The complete view of the replica set for each horizon is then able to be put into
-    // the isMaster response, to facilitate debugging, analysis, etc.
-    struct CompleteHorizonView {
-        HostAndPort primary;
-        std::vector<HostAndPort> hosts;
-        std::vector<HostAndPort> passives;
-        std::vector<HostAndPort> arbiters;
-    };
-
-    std::map<std::string, CompleteHorizonView> _completeHorizonViews;
 };
 
 }  // namespace repl

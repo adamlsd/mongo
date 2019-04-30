@@ -65,7 +65,6 @@ const std::string kLastWriteDateFieldName = "lastWriteDate";
 const std::string kLastMajorityWriteOpTimeFieldName = "majorityOpTime";
 const std::string kLastMajorityWriteDateFieldName = "majorityWriteDate";
 const std::string kLastWriteFieldName = "lastWrite";
-const std::string kAltHostsFieldName = "altHosts";
 
 
 // field name constants that don't directly correspond to member variables
@@ -186,24 +185,6 @@ void IsMasterResponse::addToBSON(BSONObjBuilder* builder) const {
             lastWrite.append(kLastMajorityWriteOpTimeFieldName,
                              _lastMajorityWrite->opTime.toBSON());
             lastWrite.appendTimeT(kLastMajorityWriteDateFieldName, _lastMajorityWrite->value);
-        }
-    }
-
-    {
-        BSONObjBuilder completeView(builder->subobjStart(kAltHostsFieldName));
-        for (const auto& host : _completeHorizonViews) {
-            BSONObjBuilder horizon(completeView.subobjStart(host.first));
-            horizon.append("primary", host.second.primary.toString());
-
-            auto stringifyVector = [](const auto& v) {
-                auto stringifyElement = [](const auto& e) { return e.toString(); };
-                std::vector<std::string> rv;
-                std::transform(begin(v), end(v), back_inserter(rv), stringifyElement);
-                return rv;
-            };
-            horizon.append("hosts", stringifyVector(host.second.hosts));
-            horizon.append("passives", stringifyVector(host.second.passives));
-            horizon.append("arbiters", stringifyVector(host.second.arbiters));
         }
     }
 }
@@ -528,40 +509,24 @@ void IsMasterResponse::setReplSetVersion(long long version) {
     _setVersion = version;
 }
 
-void IsMasterResponse::addHost(const HostAndPort& host,
-                               const SplitHorizon::ForwardMapping& horizonViews) {
+void IsMasterResponse::addHost(const HostAndPort& host){
     _hostsSet = true;
     _hosts.push_back(host);
-    for (auto& view : horizonViews) {
-        _completeHorizonViews[view.first].hosts.push_back(view.second);
-    }
 }
 
-void IsMasterResponse::addPassive(const HostAndPort& passive,
-                                  const SplitHorizon::ForwardMapping& horizonViews) {
+void IsMasterResponse::addPassive(const HostAndPort& passive){
     _passivesSet = true;
     _passives.push_back(passive);
-    for (auto& view : horizonViews) {
-        _completeHorizonViews[view.first].passives.push_back(view.second);
-    }
 }
 
-void IsMasterResponse::addArbiter(const HostAndPort& arbiter,
-                                  const SplitHorizon::ForwardMapping& horizonViews) {
+void IsMasterResponse::addArbiter(const HostAndPort& arbiter){
     _arbitersSet = true;
     _arbiters.push_back(arbiter);
-    for (auto& view : horizonViews) {
-        _completeHorizonViews[view.first].arbiters.push_back(view.second);
-    }
 }
 
-void IsMasterResponse::setPrimary(const HostAndPort& primary,
-                                  const SplitHorizon::ForwardMapping& horizonViews) {
+void IsMasterResponse::setPrimary(const HostAndPort& primary){
     _primarySet = true;
     _primary = primary;
-    for (auto& view : horizonViews) {
-        _completeHorizonViews[view.first].primary = view.second;
-    }
 }
 
 void IsMasterResponse::setIsArbiterOnly(bool arbiterOnly) {

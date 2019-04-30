@@ -101,7 +101,7 @@ Status ReplSetConfig::initializeForInitiate(const BSONObj& cfg) {
 
 Status ReplSetConfig::_initialize(const BSONObj& cfg,
                                   bool forInitiate,
-                                  OID defaultReplicaSetId) try {
+                                  OID defaultReplicaSetId) {
     _isInitialized = false;
     _members.clear();
 
@@ -223,8 +223,6 @@ Status ReplSetConfig::_initialize(const BSONObj& cfg,
     _initializeConnectionString();
     _isInitialized = true;
     return Status::OK();
-} catch (const DBException& ex) {
-    return ex.toStatus();
 }
 
 Status ReplSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {

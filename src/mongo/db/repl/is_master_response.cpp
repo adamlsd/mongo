@@ -37,7 +37,6 @@
 #include "mongo/bson/oid.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/repl/split_horizon.h"
 #include "mongo/util/str.h"
 
 namespace mongo {
@@ -65,7 +64,6 @@ const std::string kLastWriteDateFieldName = "lastWriteDate";
 const std::string kLastMajorityWriteOpTimeFieldName = "majorityOpTime";
 const std::string kLastMajorityWriteDateFieldName = "majorityWriteDate";
 const std::string kLastWriteFieldName = "lastWrite";
-
 
 // field name constants that don't directly correspond to member variables
 const std::string kInfoFieldName = "info";

@@ -52,16 +52,17 @@ TEST(SplitHorizonTesting, determineHorizon) {
             SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
             SplitHorizon::ReverseMapping reverseMapping;
             SplitHorizon::Parameters horizonParameters;
+            using MappingType = std::map<std::string, std::string>;
 
-            Input(const int p,
-                  const std::map<std::string, std::string>& mapping,
-                  SplitHorizon::Parameters params)
+
+            Input(const int p, const MappingType& mapping, SplitHorizon::Parameters params)
                 : port(p), horizonParameters(std::move(params)) {
                 forwardMapping.emplace(SplitHorizon::defaultHorizon, defaultHost + ":4242");
 
-                auto createForwardMapping =
-                    [](const auto& element) -> decltype(forwardMapping)::value_type {
-                    return {element.first, HostAndPort(element.second)};
+                using ForwardMappingValueType = decltype(forwardMapping)::value_type;
+                using ElementType = MappingType::value_type;
+                auto createForwardMapping = [](const ElementType& element) {
+                    return ForwardMappingValueType{element.first, HostAndPort(element.second)};
                 };
                 std::transform(begin(mapping),
                                end(mapping),

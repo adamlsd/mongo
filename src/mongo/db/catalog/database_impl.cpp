@@ -48,7 +48,6 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_indexes.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/namespace_uuid_cache.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/catalog/uuid_catalog_helper.h"
 #include "mongo/db/clientcursor.h"
@@ -469,7 +468,10 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
     log() << "dropCollection: " << nss << " (" << uuidString
           << ") - renaming to drop-pending collection: " << dpns << " with drop optime "
           << dropOpTime;
-    fassert(40464, renameCollection(opCtx, nss, dpns, stayTemp));
+    {
+        Lock::CollectionLock(opCtx, dpns, MODE_X);
+        fassert(40464, renameCollection(opCtx, nss, dpns, stayTemp));
+    }
 
     // Register this drop-pending namespace with DropPendingCollectionReaper to remove when the
     // committed optime reaches the drop optime.
@@ -504,18 +506,7 @@ Status DatabaseImpl::_finishDropCollection(OperationContext* opCtx,
 }
 
 Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const NamespaceString& nss) const {
-    dassert(!cc().getOperationContext() || opCtx == cc().getOperationContext());
-    auto coll = UUIDCatalog::get(opCtx).lookupCollectionByNamespace(nss);
-    if (!coll) {
-        return nullptr;
-    }
-
-    NamespaceUUIDCache& cache = NamespaceUUIDCache::get(opCtx);
-    auto uuid = UUIDCatalog::get(opCtx).lookupUUIDByNSS(nss);
-    if (uuid) {
-        cache.ensureNamespaceInCache(nss, uuid.get());
-    }
-    return coll;
+    return UUIDCatalog::get(opCtx).lookupCollectionByNamespace(nss);
 }
 
 Status DatabaseImpl::renameCollection(OperationContext* opCtx,
@@ -523,10 +514,9 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
                                       NamespaceString toNss,
                                       bool stayTemp) const {
     audit::logRenameCollection(&cc(), fromNss.ns(), toNss.ns());
-    // TODO SERVER-39518 : Temporarily comment this out because dropCollection uses
-    // this function and now it only takes a database IX lock. We can change
-    // this invariant to IX once renameCollection only MODE_IX as well.
-    // invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
+
+    invariant(opCtx->lockState()->isCollectionLockedForMode(fromNss, MODE_X));
+    invariant(opCtx->lockState()->isCollectionLockedForMode(toNss, MODE_X));
 
     invariant(fromNss.db() == _name);
     invariant(toNss.db() == _name);
@@ -685,7 +675,7 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     audit::logCreateCollection(&cc(), nss.ns());
 
     log() << "createCollection: " << nss << " with " << (generatedUUID ? "generated" : "provided")
-          << " UUID: " << optionsWithUUID.uuid.get();
+          << " UUID: " << optionsWithUUID.uuid.get() << " and options: " << options.toBSON();
 
     // Create CollectionCatalogEntry
     auto storageEngine =

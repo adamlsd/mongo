@@ -61,7 +61,7 @@ public:
      */
     ApplyResult applyUpdate(ApplyParams applyParams) const final;
 
-    Value serialize() const {
+    Value serialize() const final {
         std::vector<Value> valueArray;
         for (const auto& stage : _pipeline->getSources()) {
             // TODO SERVER-40539: Consider subclassing DocumentSourceQueue with a class that is
@@ -76,12 +76,6 @@ public:
 
         return Value(valueArray);
     }
-
-    void acceptVisitor(UpdateNodeVisitor* visitor) final {
-        visitor->visit(this);
-    }
-
-    void setCollator(const CollatorInterface* collator) final {}
 
 private:
     boost::intrusive_ptr<ExpressionContext> _expCtx;

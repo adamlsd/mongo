@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,39 +27,43 @@
  *    it in the license file.
  */
 
-#include "mongo/db/catalog/namespace_uuid_cache.h"
+#pragma once
 
-#include "mongo/unittest/unittest.h"
+#include "mongo/db/update/update_executor.h"
 
-using namespace mongo;
+#include "mongo/db/update/update_node.h"
+#include "mongo/db/update/update_object_node.h"
 
-namespace {
+namespace mongo {
 
-TEST(NamespaceUUIDCache, ensureNamespaceInCache) {
-    NamespaceUUIDCache cache;
-    CollectionUUID uuid = CollectionUUID::gen();
-    CollectionUUID uuidConflict = CollectionUUID::gen();
-    NamespaceString nss("test", "test_collection_ns");
-    // Add nss, uuid to cache.
-    cache.ensureNamespaceInCache(nss, uuid);
-    // Do nothing if we query for existing nss, uuid pairing.
-    cache.ensureNamespaceInCache(nss, uuid);
+class UpdateTreeExecutor : public UpdateExecutor {
+public:
+    explicit UpdateTreeExecutor(std::unique_ptr<UpdateObjectNode> node)
+        : _updateTree(std::move(node)) {}
 
-    if (debugCollectionUUIDs) {
-        // Uassert if we query for existing nss and uuid that does not match.
-        ASSERT_THROWS(cache.ensureNamespaceInCache(nss, uuidConflict), AssertionException);
+    ApplyResult applyUpdate(ApplyParams applyParams) const final {
+        UpdateNode::UpdateNodeApplyParams updateNodeApplyParams;
+        return _updateTree->apply(applyParams, updateNodeApplyParams);
     }
-}
 
-TEST(NamespaceUUIDCache, onDropCollection) {
-    NamespaceUUIDCache cache;
-    CollectionUUID uuid = CollectionUUID::gen();
-    CollectionUUID newUuid = CollectionUUID::gen();
-    NamespaceString nss("test", "test_collection_ns");
-    cache.ensureNamespaceInCache(nss, uuid);
-    cache.evictNamespace(nss);
-    // Add nss to the cache with a different uuid. This should not throw since
-    // we evicted the previous entry from the cache.
-    cache.ensureNamespaceInCache(nss, newUuid);
-}
-}  // namespace
+    UpdateNode* getUpdateTree() {
+        return static_cast<UpdateNode*>(_updateTree.get());
+    }
+
+    /**
+     * Gather all update operators in the subtree rooted from '_updateTree' into a BSONObj in the
+     * format of the update command's update parameter.
+     */
+    Value serialize() const final {
+        return Value(_updateTree->serialize());
+    }
+
+    void setCollator(const CollatorInterface* collator) final {
+        _updateTree->setCollator(collator);
+    }
+
+private:
+    std::unique_ptr<UpdateObjectNode> _updateTree;
+};
+
+}  // namespace mongo

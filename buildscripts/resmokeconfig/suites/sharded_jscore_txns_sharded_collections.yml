@@ -8,7 +8,7 @@ selector:
   - jstests/core/txns/transactions_profiling_with_drops.js
 
   # No featureCompatibilityVersion parameter on mongos.
-  - jstests/core/txns/abort_transactions_on_FCV_downgrade.js
+  - jstests/core/txns/abort_unprepared_transactions_on_FCV_downgrade.js
 
   # Mongos doesn't upconvert from local or majority level readConcern to snapshot.
   - jstests/core/txns/upconvert_read_concern.js
@@ -35,6 +35,10 @@ selector:
 
   # View tests aren't expected to work when collections are implicitly sharded.
   - jstests/core/txns/view_reads_in_transaction.js
+
+  # Empty commit/abort is currently allowed in mongos.
+  # TODO: SERVER-40885: unblacklist this.
+  - jstests/core/txns/empty_commit_abort.js
 
   exclude_with_any_tags:
   - assumes_against_mongod_not_mongos

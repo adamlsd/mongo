@@ -236,6 +236,8 @@ public:
 
     repl::OpTime getCurrentCommittedSnapshotOpTime() const override;
 
+    repl::OpTimeAndWallTime getCurrentCommittedSnapshotOpTimeAndWallTime() const override;
+
     void waitUntilSnapshotCommitted(OperationContext*, const Timestamp&) override;
 
     void appendDiagnosticBSON(BSONObjBuilder*) override;

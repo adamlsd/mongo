@@ -204,7 +204,11 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         std::size_t horizonCount = 0;
         using std::begin;
         using std::end;
-        using HorizonEntry = std::tuple<std::string, HostAndPort, int>;
+        struct HorizonEntry {
+            std::string horizonName;
+            HostAndPort matchAddress;
+            int responsePort;
+        };
         auto convert = [&horizonCount](auto&& horizon) -> HorizonEntry {
             ++horizonCount;
             const auto horizonName = horizon.fieldName();
@@ -230,14 +234,21 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                 try {
                     long long rv;
                     uassertStatusOK(bsonExtractIntegerField(mappingField, "replyPort", &rv));
+
+                    if (rv < 1 || rv > 65535) {
+                        uasserted(ErrorCodes::BadValue,
+                                  str::stream() << "Reply port out of range for horizon "
+                                                << horizonName);
+                    }
                     return static_cast<int>(rv);
-                } catch (
-                    const ExceptionFor<ErrorCodes::NoSuchKey>&) {  // missing replyPort is fine.
+                }
+                // missing replyPort is fine.
+                catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
                     return endpoint.port();
                 }
             }();
 
-            return {horizonName, endpoint, port};
+            return HorizonEntry{horizonName, endpoint, port};
         };
         std::vector<HorizonEntry> horizonEntries;
 
@@ -250,9 +261,10 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                        inserter(_horizonForward, end(_horizonForward)),
                        [](const auto& entry) {
                            using ReturnType = decltype(_horizonForward)::value_type;
+
                            // Bind the replyPort to the horizon name, to permit port mapping.
-                           HostAndPort host(std::get<1>(entry).host(), std::get<2>(entry));
-                           return ReturnType{std::get<0>(entry), host};
+                           HostAndPort host(entry.matchAddress.host(), entry.responsePort);
+                           return ReturnType{entry.horizonName, host};
                        });
 
         if (_horizonForward.size() < horizonCount)
@@ -263,7 +275,7 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                        inserter(_horizonReverse, end(_horizonReverse)),
                        [](auto&& entry) {
                            using ReturnType = decltype(_horizonReverse)::value_type;
-                           return ReturnType{std::get<1>(entry), std::get<0>(entry)};
+                           return ReturnType{entry.matchAddress, entry.horizonName};
                        });
 
         if (_horizonForward.size() != _horizonReverse.size())

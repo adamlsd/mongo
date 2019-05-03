@@ -451,6 +451,8 @@ Status ReplSetConfig::validate() const {
         return rv;
     }();
 
+    std::unordered_set<std::string> nonUniversalHorizons;
+    std::map<HostAndPort, int> horizonHostNameCounts;
     for (size_t i = 0; i < _members.size(); ++i) {
         const MemberConfig& memberI = _members[i];
         Status status = memberI.validate();
@@ -473,10 +475,17 @@ Status ReplSetConfig::validate() const {
 
         if (expectedHorizonNameMapping != seenHorizonNameMapping) {
             // TODO: std::set_difference based find missing or extra fields
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "Saw a replica set member with a "
-                                           "different horizon mapping than "
-                                           "the others.");
+            std::set_symmetric_difference(
+                begin(expectedHorizonNameMapping),
+                end(expectedHorizonNameMapping),
+                begin(seenHorizonNameMapping),
+                end(seenHorizonNameMapping),
+                inserter(nonUniversalHorizons, end(nonUniversalHorizons)));
+        } else {
+            // Because "__default" always lives in the mappings, we don't have to get it separately
+            for (const auto& mapping : memberI.getHorizonMappings()) {
+                ++horizonHostNameCounts[mapping.second];
+            }
         }
 
         if (memberI.getHostAndPort().isLocalHost()) {
@@ -535,6 +544,48 @@ Status ReplSetConfig::validate() const {
             }
         }
     }
+
+    // If we found horizons that weren't universally present, list all non-universally present
+    // horizons for this replica set.
+    if (!nonUniversalHorizons.empty()) {
+        const auto missingHorizonList = [&] {
+            std::string rv;
+            for (const auto& horizonName : nonUniversalHorizons) {
+                rv += " " + horizonName + ",";
+            }
+            rv.pop_back();
+            return rv;
+        }();
+        return Status(ErrorCodes::BadValue,
+                      "Saw a replica set member with a different horizon mapping than the "
+                      "others.  The following horizons were not universally present:" +
+                          missingHorizonList);
+    }
+
+    const auto nonUniqueHostNameList = [&] {
+        std::vector<HostAndPort> rv;
+        for (const auto& host : horizonHostNameCounts) {
+            if (host.second > 1)
+                rv.push_back(host.first);
+        }
+        return rv;
+    }();
+
+    if (!nonUniqueHostNameList.empty()) {
+        const auto nonUniqueHostNames = [&] {
+            std::string rv;
+            for (const auto& hostName : nonUniqueHostNameList) {
+                rv += " " + hostName.toString() + ",";
+            }
+            rv.pop_back();
+            return rv;
+        }();
+        return Status(ErrorCodes::BadValue,
+                      "The following hostnames are not unique across all horizons and host "
+                      "specifications in the replica set:" +
+                          nonUniqueHostNames);
+    }
+
 
     if (localhostCount != 0 && localhostCount != _members.size()) {
         return Status(

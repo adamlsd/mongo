@@ -334,6 +334,106 @@ TEST(MemberConfig, ParseHorizonFields) {
     ASSERT_EQUALS(mc.getHorizonMappings().size(), std::size_t{3});
 }
 
+TEST(MemberConfig, DuplicateHorizonNames) {
+    ReplSetTagConfig tagConfig;
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "h"
+                                << "horizons"
+                                << BSON("goofyRepeatedHorizonName" << BSON("match"
+                                                                           << "a.host:42"
+                                                                           << "replyPort"
+                                                                           << 43)
+                                                                   << "goofyRepeatedHorizonName"
+                                                                   << BSON("match"
+                                                                           << "b.host:256"))),
+                     &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_NOT_EQUALS(s.reason().find("goofyRepeatedHorizonName"), std::string::npos);
+    }
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "h"
+                                << "horizons"
+                                << BSON("someUniqueHorizonName" << BSON("match"
+                                                                        << "a.host:42"
+                                                                        << "replyPort"
+                                                                        << 43)
+                                                                << SplitHorizon::kDefaultHorizon
+                                                                << BSON("match"
+                                                                        << "b.host:256"))),
+                     &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_NOT_EQUALS(s.reason().find(std::string(SplitHorizon::kDefaultHorizon)),
+                          std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("reserved for internal"), std::string::npos);
+    }
+}
+
+TEST(MemberConfig, DuplicateHorizonHostAndPort) {
+    ReplSetTagConfig tagConfig;
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "uniqueHostname.example.com:42"
+                                << "horizons"
+                                << BSON("alpha" << BSON("match"
+                                                        << "duplicatedHostname.example.com:42"
+                                                        << "replyPort"
+                                                        << 43)
+                                                << "beta"
+                                                << BSON("match"
+                                                        << "duplicatedHostname.example.com:42"))),
+                     &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com:42"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com:42"), std::string::npos);
+    }
+
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "duplicatedHostname.example.com:42"
+                                << "horizons"
+                                << BSON("alpha" << BSON("match"
+                                                        << "uniqueHostname.example.com:42"
+                                                        << "replyPort"
+                                                        << 43)
+                                                << "beta"
+                                                << BSON("match"
+                                                        << "duplicatedHostname.example.com:42"))),
+                     &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com:42"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com:42"), std::string::npos);
+    }
+
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "duplicatedHostname.example.com:42"
+                                << "horizons"
+                                << BSON("alpha" << BSON("match"
+                                                        << "uniqueHostname.example.com:42"
+                                                        << "replyPort"
+                                                        << 43)
+                                                << "beta"
+                                                << BSON("match"
+                                                        << "duplicatedHostname.example.com:42"))),
+                     &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com:42"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com:42"), std::string::npos);
+    }
+}
+
 TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {
     ReplSetTagConfig tagConfig;
     MemberConfig mc(BSON("_id" << 0 << "host"

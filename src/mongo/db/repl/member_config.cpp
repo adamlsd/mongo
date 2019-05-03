@@ -201,6 +201,7 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     }();
 
     if (horizonsElement) {
+        using namespace std::literals::string_literals;
         std::size_t horizonCount = 0;
         using std::begin;
         using std::end;
@@ -267,8 +268,27 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                            return ReturnType{entry.horizonName, host};
                        });
 
-        if (_horizonForward.size() < horizonCount)
-            uasserted(ErrorCodes::BadValue, "Duplicate horizon name found.");
+        if (_horizonForward.size() != horizonCount + 1) {
+            auto horizonNames = [&] {
+                std::vector<std::string> rv = {"__default"};
+                std::transform(begin(horizonEntries),
+                               end(horizonEntries),
+                               back_inserter(rv),
+                               [](const auto& entry) { return entry.horizonName; });
+                return rv;
+            }();
+
+
+            std::sort(begin(horizonNames), end(horizonNames));
+            auto duplicate = std::adjacent_find(begin(horizonNames), end(horizonNames));
+            if (*duplicate == SplitHorizon::kDefaultHorizon) {
+                uasserted(ErrorCodes::BadValue,
+                          "Horizon name \"" + SplitHorizon::kDefaultHorizon +
+                              "\" is reserved for internal mongodb usage");
+            }
+            uasserted(ErrorCodes::BadValue,
+                      "Duplicate horizon name found \""s + *duplicate + "\".");
+        }
 
         std::transform(begin(horizonEntries),
                        end(horizonEntries),
@@ -278,8 +298,22 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
                            return ReturnType{entry.matchAddress, entry.horizonName};
                        });
 
-        if (_horizonForward.size() != _horizonReverse.size())
-            uasserted(ErrorCodes::BadValue, "Duplicate horizon member found.");
+        if (_horizonForward.size() != _horizonReverse.size()) {
+            auto horizonMember = [&] {
+                std::vector<HostAndPort> rv = {host};
+                std::transform(begin(horizonEntries),
+                               end(horizonEntries),
+                               back_inserter(rv),
+                               [](const auto& entry) { return entry.matchAddress; });
+                return rv;
+            }();
+
+            std::sort(begin(horizonMember), end(horizonMember));
+            auto duplicate = std::adjacent_find(begin(horizonMember), end(horizonMember));
+
+            uasserted(ErrorCodes::BadValue,
+                      "Duplicate horizon member found \""s + duplicate->toString() + "\".");
+        }
     }
 
     //

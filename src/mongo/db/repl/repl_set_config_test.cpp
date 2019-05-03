@@ -1853,6 +1853,144 @@ TEST(ReplSetConfig, ConfirmDefaultValuesOfAndAbilityToSetWriteConcernMajorityJou
     ASSERT_TRUE(config.toBSON().hasField("writeConcernMajorityJournalDefault"));
 }
 
+TEST(ReplSetConfig, HorizonConsistency) {
+    ReplSetConfig config;
+    ASSERT_OK(
+        config.initialize(BSON("_id"
+                               << "rs0"
+                               << "protocolVersion"
+                               << 1
+                               << "version"
+                               << 1
+                               << "members"
+                               << BSON_ARRAY(
+                                      BSON("_id" << 0 << "host"
+                                                 << "localhost:12345"
+                                                 << "horizons"
+                                                 << BSON("alpha" << BSON("match"
+                                                                         << "a.host:42")
+                                                                 << "beta"
+                                                                 << BSON("match"
+                                                                         << "a.host2:43")
+                                                                 << "gamma"
+                                                                 << BSON("match"
+                                                                         << "a.host3:44")))
+                                      << BSON("_id" << 1 << "host"
+                                                    << "localhost:23456"
+                                                    << "horizons"
+                                                    << BSON("alpha" << BSON("match"
+                                                                            << "b.host:42")
+                                                                    << "gamma"
+                                                                    << BSON("match"
+                                                                            << "b.host3:44")))
+                                      << BSON("_id" << 2 << "host"
+                                                    << "localhost:34567"
+                                                    << "horizons"
+                                                    << BSON("alpha" << BSON("match"
+                                                                            << "c.host:42")
+                                                                    << "beta"
+                                                                    << BSON("match"
+                                                                            << "c.host1:42")
+                                                                    << "gamma"
+                                                                    << BSON("match"
+                                                                            << "c.host2:43")
+                                                                    << "delta"
+                                                                    << BSON("match"
+                                                                            << "c.host3:44"))))
+                               << "writeConcernMajorityJournalDefault"
+                               << false)));
+
+    Status status = config.validate();
+    ASSERT_NOT_OK(status);
+    ASSERT_EQUALS(status.reason().find("alpha"), std::string::npos);
+    ASSERT_EQUALS(status.reason().find("gamma"), std::string::npos);
+
+    ASSERT_NOT_EQUALS(status.reason().find("beta"), std::string::npos);
+    ASSERT_NOT_EQUALS(status.reason().find("delta"), std::string::npos);
+
+    // Within-member duplicates are detected by a different piece of code, first,
+    // in the member-config code path.
+    status = config.initialize(BSON("_id"
+                                    << "rs0"
+                                    << "protocolVersion"
+                                    << 1
+                                    << "version"
+                                    << 1
+                                    << "members"
+                                    << BSON_ARRAY(
+                                           BSON("_id" << 0 << "host"
+                                                      << "same1"
+                                                      << "horizons"
+                                                      << BSON("alpha" << BSON("match"
+                                                                              << "a.host:44")
+                                                                      << "beta"
+                                                                      << BSON("match"
+                                                                              << "a.host2:44")
+                                                                      << "gamma"
+                                                                      << BSON("match"
+                                                                              << "a.host3:44")
+                                                                      << "delta"
+                                                                      << BSON("match"
+                                                                              << "a.host4:45")))
+                                           << BSON("_id" << 1 << "host"
+                                                         << "localhost:1"
+                                                         << "horizons"
+                                                         << BSON("alpha" << BSON("match"
+                                                                                 << "same1")
+                                                                         << "beta"
+                                                                         << BSON("match"
+                                                                                 << "b.host2:44")
+                                                                         << "gamma"
+                                                                         << BSON("match"
+                                                                                 << "b.host3:44")
+                                                                         << "delta"
+                                                                         << BSON("match"
+                                                                                 << "b.host4:44")))
+                                           << BSON("_id" << 2 << "host"
+                                                         << "localhost:2"
+                                                         << "horizons"
+                                                         << BSON("alpha" << BSON("match"
+                                                                                 << "c.host1:44")
+                                                                         << "beta"
+                                                                         << BSON("match"
+                                                                                 << "c.host2:44")
+                                                                         << "gamma"
+                                                                         << BSON("match"
+                                                                                 << "c.host3:44")
+                                                                         << "delta"
+                                                                         << BSON("match"
+                                                                                 << "same2")))
+                                           << BSON("_id" << 3 << "host"
+                                                         << "localhost:3"
+                                                         << "horizons"
+                                                         << BSON("alpha" << BSON("match"
+                                                                                 << "same2")
+                                                                         << "beta"
+                                                                         << BSON("match"
+                                                                                 << "d.host2:44")
+                                                                         << "gamma"
+                                                                         << BSON("match"
+                                                                                 << "d.host3:44")
+                                                                         << "delta"
+                                                                         << BSON("match"
+                                                                                 << "d.host4:44"))))
+                                    << "writeConcernMajorityJournalDefault"
+                                    << false));
+    std::cerr << status.reason();
+    ASSERT_OK(status);
+
+    status = config.validate();
+    ASSERT_NOT_OK(status);
+    ASSERT_EQUALS(status.reason().find("a.host"), std::string::npos);
+    ASSERT_EQUALS(status.reason().find("b.host"), std::string::npos);
+    ASSERT_EQUALS(status.reason().find("c.host"), std::string::npos);
+    ASSERT_EQUALS(status.reason().find("d.host"), std::string::npos);
+    ASSERT_EQUALS(status.reason().find("localhost"), std::string::npos);
+
+    ASSERT_NOT_EQUALS(status.reason().find("same1"), std::string::npos);
+    ASSERT_NOT_EQUALS(status.reason().find("same2"), std::string::npos);
+}
+
 TEST(ReplSetConfig, ReplSetId) {
     // Uninitialized configuration has no ID.
     ASSERT_FALSE(ReplSetConfig().hasReplicaSetId());

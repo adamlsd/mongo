@@ -32,14 +32,16 @@
 #include <map>
 #include <string>
 
+#include <boost/optional.hpp>
+
 #include "mongo/base/string_data.h"
-#include "mongo/rpc/metadata/client_metadata_ismaster.h"
+#include "mongo/db/client.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 namespace repl {
 struct SplitHorizon {
-    static constexpr auto defaultHorizon = "__default"_sd;
+    static constexpr auto kDefaultHorizon = "__default"_sd;
 
     struct Parameters {
         boost::optional<std::string> connectionTarget;

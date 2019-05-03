@@ -289,7 +289,7 @@ public:
                     return HostAndPort{connectionTargetBson.valueStringData()}.toString();
                 }
 
-                const int defaultIncomingPort = stdx::as_const(serverGlobalParams.port);
+                const int defaultIncomingPort = stdx::as_const(serverGlobalParams).port;
                 auto sniName = opCtx->getClient()->getSniNameForSession();
                 if (!sniName)
                     return boost::none;

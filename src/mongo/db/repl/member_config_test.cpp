@@ -318,27 +318,9 @@ TEST(MemberConfig, ParseHorizonFields) {
                                                        << "b.host:256"))),
                     &tagConfig);
 
-    std::cerr << "Horizons as seen: " << std::endl;
-    for (auto&& horizon : mc.getHorizonMappings()) {
-        std::cerr << "Horizon entry: " << horizon.first << " --- " << horizon.second << std::endl;
-    }
-
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("alpha"));
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("beta"));
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
-
-
-    std::cerr << "{" << std::endl;
-    for (auto&& mapping : mc.getHorizonReverseMappings()) {
-        std::cerr << "\t" << mapping.first.toString() << " -> " << mapping.second << std::endl;
-    }
-    std::cerr << "}" << std::endl;
-
-    std::cerr << "{" << std::endl;
-    for (auto&& mapping : mc.getHorizonMappings()) {
-        std::cerr << "\t" << mapping.first << " -> " << mapping.second.toString() << std::endl;
-    }
-    std::cerr << "}" << std::endl;
 
     ASSERT_EQUALS("alpha", mc.getHorizonReverseMappings().find(HostAndPort("a.host", 42))->second);
     ASSERT_EQUALS(mc.getHorizonReverseMappings().count(HostAndPort("a.host", 43)), std::size_t{0});
@@ -357,11 +339,6 @@ TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {
     MemberConfig mc(BSON("_id" << 0 << "host"
                                << "h"),
                     &tagConfig);
-
-    std::cerr << "Horizons as seen: " << std::endl;
-    for (auto&& horizon : mc.getHorizonMappings()) {
-        std::cerr << "Horizon entry: " << horizon.first << " --- " << horizon.second << std::endl;
-    }
 
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
 

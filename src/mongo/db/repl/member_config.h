@@ -93,7 +93,7 @@ public:
      * will contact it.
      */
     const HostAndPort& getHostAndPort(
-        const StringData& horizon = SplitHorizon::defaultHorizon) const {
+        const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
         invariant(!this->_horizonForward.empty());
         invariant(!horizon.empty());
         auto found = this->_horizonForward.find(horizon);
@@ -208,7 +208,7 @@ public:
 
 private:
     const HostAndPort& _host() const {
-        return this->_horizonForward.find(SplitHorizon::defaultHorizon)->second;
+        return this->_horizonForward.find(SplitHorizon::kDefaultHorizon)->second;
     }
 
     int _id;

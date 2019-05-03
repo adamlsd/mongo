@@ -76,6 +76,7 @@ void ClientMetadataIsMasterState::setClientMetadata(Client* client,
     state._setViaMetadata = setViaMetadata;
 }
 
+
 Status ClientMetadataIsMasterState::readFromMetadata(OperationContext* opCtx,
                                                      BSONElement& element) {
     auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(opCtx->getClient());

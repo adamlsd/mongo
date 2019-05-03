@@ -99,9 +99,7 @@ Status ReplSetConfig::initializeForInitiate(const BSONObj& cfg) {
     return _initialize(cfg, true, OID());
 }
 
-Status ReplSetConfig::_initialize(const BSONObj& cfg,
-                                  bool forInitiate,
-                                  OID defaultReplicaSetId) {
+Status ReplSetConfig::_initialize(const BSONObj& cfg, bool forInitiate, OID defaultReplicaSetId) {
     _isInitialized = false;
     _members.clear();
 
@@ -473,7 +471,6 @@ Status ReplSetConfig::validate() const {
             return rv;
         }();
 
-        std::vector<std::string> horizonNameMapping;
         if (expectedHorizonNameMapping != seenHorizonNameMapping) {
             // TODO: std::set_difference based find missing or extra fields
             return Status(ErrorCodes::BadValue,

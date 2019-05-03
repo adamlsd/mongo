@@ -108,8 +108,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         host = HostAndPort(host.host(), host.port());
     }
 
-    this->_horizonForward.emplace(SplitHorizon::defaultHorizon, host);
-    this->_horizonReverse.emplace(host, SplitHorizon::defaultHorizon);
+    this->_horizonForward.emplace(SplitHorizon::kDefaultHorizon, host);
+    this->_horizonReverse.emplace(host, SplitHorizon::kDefaultHorizon);
 
     //
     // Parse votes field.
@@ -388,7 +388,7 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
             invariant(horizons.count(horizon.second));
             std::get<0>(horizons[horizon.second]) = horizon.first;
         }
-        horizons.erase(SplitHorizon::defaultHorizon);
+        horizons.erase(SplitHorizon::kDefaultHorizon);
 
         BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
         for (const auto& horizon : horizons) {

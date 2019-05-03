@@ -66,7 +66,7 @@ StringData SplitHorizon::determineHorizon(const int incomingPort,
             return found->second;
     }
     log() << "Fallthrough case";
-    return defaultHorizon;
+    return kDefaultHorizon;
 }
 }  // namespace repl
 }  // namespace mongo

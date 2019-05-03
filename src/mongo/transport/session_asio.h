@@ -616,19 +616,6 @@ private:
                 auto& sslPeerInfo = SSLPeerInfo::forSession(shared_from_this());
 
                 if (sslPeerInfo.subjectName.empty()) {
-                    // The value of optPeerInfo is a bit complicated:
-                    //
-                    // If a failure occurs during the parsing of optPeerInfo, then there was an
-                    // error doing the SSL handshake and we should reject the connection.
-                    //
-                    // If !optPeerInfo, then the SSL handshake was successful, but the peer didn't
-                    // provide a SSL certificate, and we do not require one. sslPeerInfo should be
-                    // empty.
-                    //
-                    // Otherwise the SSL handshake was successful and the peer did provide
-                    // a certificate that is valid, and we should store that info on the
-                    // session's SSLPeerInfo decoration.
-
                     sslPeerInfo = uassertStatusOK(getSSLManager()->parseAndValidatePeerCertificate(
                         _sslSocket->native_handle(), "", _remote));
                 }

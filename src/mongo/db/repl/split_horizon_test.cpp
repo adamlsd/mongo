@@ -57,7 +57,7 @@ TEST(SplitHorizonTesting, determineHorizon) {
 
             Input(const int p, const MappingType& mapping, SplitHorizon::Parameters params)
                 : port(p), horizonParameters(std::move(params)) {
-                forwardMapping.emplace(SplitHorizon::defaultHorizon, defaultHost + ":4242");
+                forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHost + ":4242");
 
                 using ForwardMappingValueType = decltype(forwardMapping)::value_type;
                 using ElementType = MappingType::value_type;

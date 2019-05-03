@@ -67,18 +67,16 @@ int multiplyWithOverflowCheck(double term1, double term2, int maxValue) {
     return static_cast<int>(ret);
 }
 
-long long getLagMillis(Date_t myLastApplied, Date_t lastCommitted) {
+std::uint64_t getLagMillis(Date_t myLastApplied, Date_t lastCommitted) {
     if (!myLastApplied.isFormattable() || !lastCommitted.isFormattable()) {
         return 0;
     }
-    const long long lagMillis = durationCount<Milliseconds>(myLastApplied - lastCommitted);
-    return lagMillis;
+    return static_cast<std::uint64_t>(durationCount<Milliseconds>(myLastApplied - lastCommitted));
 }
 
-bool isLagged(Date_t myLastApplied, Date_t lastCommitted) {
-    const auto lagMillis = getLagMillis(myLastApplied, lastCommitted);
-    return lagMillis >= gFlowControlThresholdLagPercentage.load() *
-        durationCount<Milliseconds>(Seconds(gFlowControlTargetLagSeconds.load()));
+std::uint64_t getThresholdLagMillis() {
+    return static_cast<std::uint64_t>(1000.0 * gFlowControlThresholdLagPercentage.load() *
+                                      gFlowControlTargetLagSeconds.load());
 }
 
 Timestamp getMedianAppliedTimestamp(const std::vector<repl::MemberData>& sortedMemberData) {
@@ -117,7 +115,9 @@ bool sustainerAdvanced(const std::vector<repl::MemberData>& prevMemberData,
 }  // namespace
 
 FlowControl::FlowControl(ServiceContext* service, repl::ReplicationCoordinator* replCoord)
-    : ServerStatusSection("flowControl"), _replCoord(replCoord) {
+    : ServerStatusSection("flowControl"),
+      _replCoord(replCoord),
+      _lastTimeSustainerAdvanced(Date_t::now()) {
     FlowControlTicketholder::set(service, stdx::make_unique<FlowControlTicketholder>(1000));
 
     service->getPeriodicRunner()->scheduleJob(
@@ -176,10 +176,8 @@ double FlowControl::_getLocksPerOp() {
 
 BSONObj FlowControl::generateSection(OperationContext* opCtx,
                                      const BSONElement& configElement) const {
-    // Lag is not meaningful on arbiters.
-    const bool isArbiter =
-        _replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet &&
-        _replCoord->getMemberState().arbiter();
+    // Flow Control does not have use for lag measured on nodes that cannot accept writes.
+    const bool canAcceptWrites = _replCoord->canAcceptNonLocalWrites();
 
     // Flow Control is only enabled if FCV is 4.2.
     const bool isFCV42 =
@@ -198,7 +196,9 @@ BSONObj FlowControl::generateSection(OperationContext* opCtx,
                FlowControlTicketholder::get(opCtx)->totalTimeAcquiringMicros());
     bob.append("locksPerOp", _lastLocksPerOp.load());
     bob.append("sustainerRate", _lastSustainerAppliedCount.load());
-    bob.append("isLagged", isFCV42 && !isArbiter && isLagged(myLastAppliedWall, lastCommittedWall));
+    bob.append("isLagged",
+               isFCV42 && canAcceptWrites &&
+                   getLagMillis(myLastAppliedWall, lastCommittedWall) >= getThresholdLagMillis());
 
     return bob.obj();
 }
@@ -221,11 +221,14 @@ void FlowControl::_updateTopologyData() {
 int FlowControl::_calculateNewTicketsForLag(const std::vector<repl::MemberData>& prevMemberData,
                                             const std::vector<repl::MemberData>& currMemberData,
                                             std::int64_t locksUsedLastPeriod,
-                                            double locksPerOp) {
+                                            double locksPerOp,
+                                            std::uint64_t lagMillis,
+                                            std::uint64_t thresholdLagMillis) {
+    invariant(lagMillis >= thresholdLagMillis);
     using namespace fmt::literals;
 
     const auto currSustainerAppliedTs = getMedianAppliedTimestamp(currMemberData);
-    const auto prevSustainerAppliedTs = getMedianAppliedTimestamp(_prevMemberData);
+    const auto prevSustainerAppliedTs = getMedianAppliedTimestamp(prevMemberData);
     invariant(prevSustainerAppliedTs <= currSustainerAppliedTs,
               "PrevSustainer: {} CurrSustainer: {}"_format(prevSustainerAppliedTs.toString(),
                                                            currSustainerAppliedTs.toString()));
@@ -235,6 +238,20 @@ int FlowControl::_calculateNewTicketsForLag(const std::vector<repl::MemberData>&
     LOG(DEBUG_LOG_LEVEL) << " PrevApplied: " << prevSustainerAppliedTs
                          << " CurrApplied: " << currSustainerAppliedTs
                          << " NumSustainerApplied: " << sustainerAppliedCount;
+    if (sustainerAppliedCount > 0) {
+        _lastTimeSustainerAdvanced = Date_t::now();
+    } else {
+        auto warnThresholdSeconds = gFlowControlWarnThresholdSeconds.load();
+        const auto now = Date_t::now();
+        if (warnThresholdSeconds > 0 &&
+            now - _lastTimeSustainerAdvanced >= Seconds(warnThresholdSeconds)) {
+            warning() << "Flow control is engaged and the sustainer point is not moving. Please "
+                         "check the health of all secondaries.";
+
+            // Log once every `warnThresholdSeconds` seconds.
+            _lastTimeSustainerAdvanced = now;
+        }
+    }
 
     _lastSustainerAppliedCount.store(static_cast<int>(sustainerAppliedCount));
     if (sustainerAppliedCount == -1) {
@@ -243,20 +260,37 @@ int FlowControl::_calculateNewTicketsForLag(const std::vector<repl::MemberData>&
         return std::min(static_cast<int>(locksUsedLastPeriod / 2.0), kMaxTickets);
     }
 
-    // We know how many ops the sustainer applied, use that for calculating the new number of
-    // tickets.
-    const double sustainerAppliedPenalty = (double)(sustainerAppliedCount) / 2.0;
-    LOG(DEBUG_LOG_LEVEL) << "LocksPerOp: " << locksPerOp << " Sustainer: " << sustainerAppliedCount
-                         << " Target: " << sustainerAppliedPenalty;
+    // Given a "sustainer rate", this function wants to calculate what fraction the primary should
+    // accept writes at to allow secondaries to catch up.
+    //
+    // When the commit point lag is similar to the threshold, the function will output an exponent
+    // close to 0 resulting in a coefficient close to 1. In this state, the primary will accept
+    // writes roughly on pace with the sustainer rate.
+    //
+    // As another example, as the commit point lag increases to say, 2x the threshold, the exponent
+    // will be close to 1. In this case the primary will accept writes at roughly the
+    // `gFlowControlDecayConstant` (original default of 0.5).
+    auto exponent = static_cast<double>(lagMillis - thresholdLagMillis) /
+        static_cast<double>(thresholdLagMillis);
+    invariant(exponent >= 0.0);
+
+    const double reduce = pow(gFlowControlDecayConstant.load(), exponent);
+
+    // The fudge factor, by default is 0.95. Keeping this value close to one reduces oscillations in
+    // an environment where secondaries consistently process operations slower than the primary.
+    double sustainerAppliedPenalty =
+        sustainerAppliedCount * reduce * gFlowControlFudgeFactor.load();
+    LOG(DEBUG_LOG_LEVEL) << "Sustainer: " << sustainerAppliedCount << " LagMillis: " << lagMillis
+                         << " Threshold lag: " << thresholdLagMillis << " Exponent: " << exponent
+                         << " Reduce: " << reduce << " Penalty: " << sustainerAppliedPenalty;
 
     return multiplyWithOverflowCheck(locksPerOp, sustainerAppliedPenalty, kMaxTickets);
 }
 
 int FlowControl::getNumTickets() {
-    // Lag is not meaningful on arbiters.
-    const bool isArbiter =
-        _replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet &&
-        _replCoord->getMemberState().arbiter();
+
+    // Flow Control is only enabled on nodes that can accept writes.
+    const bool canAcceptWrites = _replCoord->canAcceptNonLocalWrites();
 
     // Flow Control is only enabled if FCV is 4.2.
     const bool isFCV42 =
@@ -272,14 +306,17 @@ int FlowControl::getNumTickets() {
     const std::int64_t locksUsedLastPeriod = _getLocksUsedLastPeriod();
 
     if (serverGlobalParams.enableMajorityReadConcern == false ||
-        gFlowControlEnabled.load() == false || isFCV42 == false || isArbiter || locksPerOp < 0.0) {
+        gFlowControlEnabled.load() == false || isFCV42 == false || canAcceptWrites == false ||
+        locksPerOp < 0.0) {
         _trimSamples(std::min(lastCommitted.opTime.getTimestamp(),
                               getMedianAppliedTimestamp(_prevMemberData)));
         return kMaxTickets;
     }
 
     int ret = 0;
-    const bool isHealthy = !isLagged(myLastApplied.wallTime, lastCommitted.wallTime) ||
+    const auto thresholdLagMillis = getThresholdLagMillis();
+    const bool isHealthy =
+        getLagMillis(myLastApplied.wallTime, lastCommitted.wallTime) < thresholdLagMillis ||
         // _approximateOpsBetween will return -1 if the input timestamps are in the same "bucket".
         // This is an indication that there are very few ops between the two timestamps.
         //
@@ -289,17 +326,28 @@ int FlowControl::getNumTickets() {
                                myLastApplied.opTime.getTimestamp()) == -1;
 
     if (isHealthy) {
-        ret =
-            multiplyWithOverflowCheck(_lastTargetTicketsPermitted.load() + 1000, 1.1, kMaxTickets);
+        // The add/multiply technique is used to ensure ticket allocation can ramp up quickly,
+        // particularly if there were very few tickets to begin with.
+        ret = multiplyWithOverflowCheck(_lastTargetTicketsPermitted.load() +
+                                            gFlowControlTicketAdderConstant.load(),
+                                        gFlowControlTicketMultiplierConstant.load(),
+                                        kMaxTickets);
+        _lastTimeSustainerAdvanced = Date_t::now();
     } else if (sustainerAdvanced(_prevMemberData, _currMemberData)) {
         // Expected case where flow control has meaningful data from the last period to make a new
         // calculation.
-        ret = _calculateNewTicketsForLag(
-            _prevMemberData, _currMemberData, locksUsedLastPeriod, locksPerOp);
+        ret =
+            _calculateNewTicketsForLag(_prevMemberData,
+                                       _currMemberData,
+                                       locksUsedLastPeriod,
+                                       locksPerOp,
+                                       getLagMillis(myLastApplied.wallTime, lastCommitted.wallTime),
+                                       thresholdLagMillis);
     } else {
         // Unexpected case where consecutive readings from the topology state don't meet some basic
         // expectations.
         ret = _lastTargetTicketsPermitted.load();
+        _lastTimeSustainerAdvanced = Date_t::now();
     }
 
     ret = std::max(ret, gFlowControlMinTicketsPerSecond.load());

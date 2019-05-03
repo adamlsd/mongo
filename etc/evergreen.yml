@@ -1811,6 +1811,7 @@ functions:
           git clone git@github.com:10gen/jstestfuzz.git
 
           cp mongodb*/bin/mongod .
+
     - command: shell.exec
       params:
         working_dir: src
@@ -1820,6 +1821,27 @@ functions:
 
           git clone --depth 1 git@github.com:10gen/mongo-enterprise-modules.git jstests/enterprise_tests
           git clone --depth 1 git@github.com:10gen/QA.git jstests/qa_tests
+
+    - command: shell.exec
+      params:
+        working_dir: src/jstestfuzz
+        script: |
+          set -o errexit
+          set -o verbose
+
+          # Add node and npm binaries to PATH
+          if [ "Windows_NT" = "$OS" ]; then
+            # An "npm" directory might not have been created in %APPDATA% by the Windows installer.
+            # Work around the issue by specifying a different %APPDATA% path.
+            # See: https://github.com/nodejs/node-v0.x-archive/issues/8141
+            export APPDATA=${workdir}/npm-app-data
+            export PATH="$PATH:/cygdrive/c/Program Files (x86)/nodejs" # Windows location
+          else
+            export PATH="$PATH:/opt/node/bin"
+          fi
+
+          npm install
+
     - command: shell.exec
       type: test
       params:
@@ -1828,6 +1850,7 @@ functions:
           set -o errexit
           set -o verbose
 
+          # Add node and npm binaries to PATH
           if [ "Windows_NT" = "$OS" ]; then
             # An "npm" directory might not have been created in %APPDATA% by the Windows installer.
             # Work around the issue by specifying a different %APPDATA% path.
@@ -3275,8 +3298,28 @@ functions:
     command: attach.artifacts
     params:
       optional: true
+      ignore_artifacts_for_spawn: false
       files:
         - ${archive_file|src/archive.json}
+
+  "attach wiki page":
+    - command: shell.exec
+      params:
+        script: |
+          set -o errexit
+          set -o verbose
+
+          ${activate_virtualenv}
+          $python -c 'import json; print(json.dumps([{
+            "name": "Wiki: Running Tests from Evergreen Tasks Locally",
+            "link": "https://github.com/mongodb/mongo/wiki/Running-Tests-from-Evergreen-Tasks-Locally",
+            "visibility": "public",
+            "ignore_for_fetch": True
+          }]))' > wiki_page_location.json
+    - command: attach.artifacts
+      params:
+        files:
+          - wiki_page_location.json
 
 
 # Pre task steps
@@ -3292,6 +3335,7 @@ post:
   - func: "attach artifacts"
   - func: "save ec2 task artifacts"
   - func: "call BF Suggestion service"
+  - func: "attach wiki page"
   - func: "kill processes"
   - func: "save local client logs"
   - func: "save code coverage data"
@@ -3452,22 +3496,7 @@ tasks:
           - "artifacts.json"
         exclude_files:
           - "*_test.pdb"
-    - command: shell.exec
-      params:
-        script: |
-          set -o errexit
-          set -o verbose
-
-          ${activate_virtualenv}
-          $python -c 'import json; print(json.dumps([{
-            "name": "mongo-debugsymbols.tgz",
-            "link": "https://s3.amazonaws.com/mciuploads/${mongo_debugsymbols}",
-            "visibility": "public"
-          }]))' > debugsymbols_location.json
-    - command: attach.artifacts
-      params:
-        files:
-          - debugsymbols_location.json
+    - func: "upload debugsymbols"
     - command: s3.put
       params:
         optional: true
@@ -3551,12 +3580,9 @@ tasks:
     - command: attach.artifacts
       params:
         optional: true
+        ignore_artifacts_for_spawn: false
         files:
           - src/artifacts.json
-
-- name: upload_debug_symbols
-  commands:
-    - func: "upload debugsymbols"
 
 ## compile_all - build all scons targets ##
 - name: compile_all
@@ -6102,6 +6128,18 @@ tasks:
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 19
 
+- name: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough_gen
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "generate resmoke tasks"
+    vars:
+      task: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough
+      depends_on: jsCore
+      use_large_distro: "true"
+      resmoke_args: --storageEngine=wiredTiger
+      fallback_num_sub_suites: 19
+
 - name: parallel_gen
   depends_on:
   - name: jsCore
@@ -6992,7 +7030,6 @@ tasks:
 - name: package
   depends_on:
   - name: compile
-  - name: upload_debug_symbols
   commands:
     - func: "fetch artifacts"
     - func: "set up remote credentials"
@@ -7011,7 +7048,6 @@ tasks:
   # Same dependencies as "push" below
   depends_on:
   - name: compile
-  - name: upload_debug_symbols
   - name: jsCore
   - name: dbtest
   - name: replica_sets_jscore_passthrough
@@ -7040,7 +7076,6 @@ tasks:
 - name: push
   patchable: false
   depends_on:
-  - name: upload_debug_symbols
   - name: jsCore
   - name: dbtest
   - name: replica_sets_jscore_passthrough
@@ -7618,25 +7653,20 @@ task_groups:
   name: compile_TG
   tasks:
   - compile
-  - upload_debug_symbols
-
 - <<: *compile_task_group_template
   name: dbtest_TG
   tasks:
   - compile_dbtest
   - dbtest
-
 - <<: *compile_task_group_template
   name: compile_all_run_unittests_TG
   tasks:
   - compile
-  - upload_debug_symbols
   - compile_unittests
   - unittests
   - compile_dbtest
   - dbtest
   - compile_all
-
 - name: embedded_sdk_build_and_test
   setup_group_can_fail_task: true
   setup_group:
@@ -7664,12 +7694,10 @@ task_groups:
   - "embedded_sdk_run_tests"
   - "embedded_sdk_s3_put_latest"
   - "embedded_sdk_tests_s3_put_latest"
-
 - <<: *stitch_support_task_group_template
   name: stitch_support_lib_build_and_archive
   tasks:
     - "stitch_support_create_lib"
-
 - <<: *stitch_support_task_group_template
   name: stitch_support_lib_build_and_test
   tasks:
@@ -7862,10 +7890,11 @@ buildvariants:
   - name: mongosTest
   - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
   - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_kill_primary_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough_gen
   - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
   - name: noPassthrough_gen
   - name: noPassthroughWithMongod_gen
-  - name: multi_shard_multi_stmt_txn_kill_primary_jscore_passthrough_gen
   - name: parallel_gen
   - name: parallel_compatibility
   - name: read_concern_linearizable_passthrough
@@ -10769,8 +10798,9 @@ buildvariants:
   - name: mongosTest
   - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
   - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
-  - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
   - name: multi_shard_multi_stmt_txn_kill_primary_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough_gen
+  - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
   - name: multiversion_auth
   - name: multiversion
   - name: noPassthroughWithMongod_gen

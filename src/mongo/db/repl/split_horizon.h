@@ -36,11 +36,13 @@
 
 #include "mongo/base/string_data.h"
 #include "mongo/db/client.h"
+#include "mongo/db/repl/repl_set_tag.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 namespace repl {
-struct SplitHorizon {
+class SplitHorizon {
+public:
     static constexpr auto kDefaultHorizon = "__default"_sd;
 
     struct Parameters {
@@ -57,13 +59,34 @@ struct SplitHorizon {
      */
     static Parameters getParameters(const Client*);
 
+	explicit SplitHorizon()= default;
+	explicit SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement> &horizonsElement );
+
+
+    StringData determineHorizon(int incomingPort, const Parameters& horizonParameters);
+
+	const HostAndPort &getHostAndPort( const StringData &horizon ) const
+	{
+        invariant(!this->forwardMapping.empty());
+        invariant(!horizon.empty());
+        auto found = this->forwardMapping.find(horizon);
+        if (found == end(this->forwardMapping))
+            uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
+        return found->second;
+	}
+
+	const auto &getHorizonMappings() const { return this->forwardMapping; }
+	const auto &getHorizonReverseMappings() const { return this->reverseMapping; }
+
+	void
+	toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configBuilder ) const;
+
+private:
     using ForwardMapping = StringMap<HostAndPort>;              // Contains reply port
     using ReverseMapping = std::map<HostAndPort, std::string>;  // Contains match port
 
-    static StringData determineHorizon(int incomingPort,
-                                       const ForwardMapping& forwardMapping,
-                                       const ReverseMapping& reverseMapping,
-                                       const Parameters& horizonParameters);
+    ForwardMapping forwardMapping;  // Maps each horizon name to a network address for this replica set member
+    ReverseMapping reverseMapping;  // Maps each network address which this replica set member has to a horizon name under which that address applies
 };
 }  // namespace repl
 }  // namespace mongo

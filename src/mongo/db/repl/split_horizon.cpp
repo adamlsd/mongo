@@ -35,6 +35,7 @@
 
 #include <utility>
 
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/client.h"
 #include "mongo/util/log.h"
 
@@ -55,8 +56,6 @@ auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
 }
 
 StringData SplitHorizon::determineHorizon(const int incomingPort,
-                                          const ForwardMapping& forwardMapping,
-                                          const ReverseMapping& reverseMapping,
                                           const SplitHorizon::Parameters& horizonParameters) {
     if (horizonParameters.connectionTarget) {
         log() << "Connection target or SNI case";
@@ -68,5 +67,160 @@ StringData SplitHorizon::determineHorizon(const int incomingPort,
     log() << "Fallthrough case";
     return kDefaultHorizon;
 }
+
+void
+SplitHorizon::toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configBuilder ) const
+{
+    // `_horizonForward` should always contain the "__default" horizon, so we need to emit the
+    // horizon repl specification when there are OTHER horizons.
+    if (this->forwardMapping.size() > 1) {
+        StringMap<std::tuple<HostAndPort, int>> horizons;
+        std::transform(begin(this->forwardMapping),
+                       end(this->forwardMapping),
+                       inserter(horizons, end(horizons)),
+                       [](const auto& entry) {
+                           return std::pair<std::string, std::tuple<HostAndPort, int>>{
+                               entry.first, {entry.second, entry.second.port()}};
+                       });
+        for (auto& horizon : this->reverseMapping) {
+            // The Horizon for each reverse should always exist.
+            invariant(horizons.count(horizon.second));
+            std::get<0>(horizons[horizon.second]) = horizon.first;
+        }
+        horizons.erase(SplitHorizon::kDefaultHorizon);
+
+        BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
+        for (const auto& horizon : horizons) {
+            BSONObjBuilder horizonBson(horizonsBson.subobjStart(horizon.first));
+            horizonBson.append("match", std::get<0>(horizon.second).toString());
+            if (std::get<0>(horizon.second).port() != std::get<1>(horizon.second)) {
+                horizonBson.append("replyPort", std::get<1>(horizon.second));
+            }
+        }
+    }
+}
+
+SplitHorizon::SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement> &horizonsElement )
+{
+    this->forwardMapping.emplace(SplitHorizon::kDefaultHorizon, host);
+    this->reverseMapping.emplace(host, SplitHorizon::kDefaultHorizon);
+
+    if(!horizonsElement) return;
+
+    using namespace std::literals::string_literals;
+    std::size_t horizonCount = 0;
+    using std::begin;
+    using std::end;
+    struct HorizonEntry {
+        std::string horizonName;
+        HostAndPort matchAddress;
+        int responsePort;
+    };
+    auto convert = [&horizonCount](auto&& horizon) -> HorizonEntry {
+        ++horizonCount;
+        const auto horizonName = horizon.fieldName();
+
+        if (horizon.type() != Object) {
+            uasserted(ErrorCodes::TypeMismatch,
+                      str::stream() << "horizons." << horizonName
+                                    << " field has non-object value of type "
+                                    << typeName(horizon.type()));
+        }
+
+        const auto& mappingField = horizon.Obj();
+        const auto endpoint = [&] {
+            HostAndPort host([&] {
+                std::string rv;
+                uassertStatusOK(bsonExtractStringField(mappingField, "match", &rv));
+                return rv;
+            }());
+            return HostAndPort(host.host(), host.port());
+        }();
+
+        const int port = [&]() -> int {
+            try {
+                long long rv;
+                uassertStatusOK(bsonExtractIntegerField(mappingField, "replyPort", &rv));
+
+                if (rv < 1 || rv > 65535) {
+                    uasserted(ErrorCodes::BadValue,
+                              str::stream() << "Reply port out of range for horizon "
+                                            << horizonName);
+                }
+                return static_cast<int>(rv);
+            }
+            // missing replyPort is fine.
+            catch (const ExceptionFor<ErrorCodes::NoSuchKey>&) {
+                return endpoint.port();
+            }
+        }();
+
+        return HorizonEntry{horizonName, endpoint, port};
+    };
+    std::vector<HorizonEntry> horizonEntries;
+
+    const auto& horizonsObject = horizonsElement->Obj();
+    std::transform(
+        begin(horizonsObject), end(horizonsObject), back_inserter(horizonEntries), convert);
+
+    std::transform(begin(horizonEntries),
+                   end(horizonEntries),
+                   inserter(forwardMapping, end(forwardMapping)),
+                   [](const auto& entry) {
+                       using ReturnType = decltype(forwardMapping)::value_type;
+
+                       // Bind the replyPort to the horizon name, to permit port mapping.
+                       HostAndPort host(entry.matchAddress.host(), entry.responsePort);
+                       return ReturnType{entry.horizonName, host};
+                   });
+
+    if (forwardMapping.size() != horizonCount + 1) {
+        auto horizonNames = [&] {
+            std::vector<std::string> rv = {"__default"};
+            std::transform(begin(horizonEntries),
+                           end(horizonEntries),
+                           back_inserter(rv),
+                           [](const auto& entry) { return entry.horizonName; });
+            return rv;
+        }();
+
+
+        std::sort(begin(horizonNames), end(horizonNames));
+        auto duplicate = std::adjacent_find(begin(horizonNames), end(horizonNames));
+        if (*duplicate == SplitHorizon::kDefaultHorizon) {
+            uasserted(ErrorCodes::BadValue,
+                      "Horizon name \"" + SplitHorizon::kDefaultHorizon +
+                          "\" is reserved for internal mongodb usage");
+        }
+        uasserted(ErrorCodes::BadValue,
+                  "Duplicate horizon name found \""s + *duplicate + "\".");
+    }
+
+    std::transform(begin(horizonEntries),
+                   end(horizonEntries),
+                   inserter(reverseMapping, end(reverseMapping)),
+                   [](auto&& entry) {
+                       using ReturnType = decltype(reverseMapping)::value_type;
+                       return ReturnType{entry.matchAddress, entry.horizonName};
+                   });
+
+    if (forwardMapping.size() != reverseMapping.size()) {
+        auto horizonMember = [&] {
+            std::vector<HostAndPort> rv = {host};
+            std::transform(begin(horizonEntries),
+                           end(horizonEntries),
+                           back_inserter(rv),
+                           [](const auto& entry) { return entry.matchAddress; });
+            return rv;
+        }();
+
+        std::sort(begin(horizonMember), end(horizonMember));
+        auto duplicate = std::adjacent_find(begin(horizonMember), end(horizonMember));
+
+        uasserted(ErrorCodes::BadValue,
+                  "Duplicate horizon member found \""s + duplicate->toString() + "\".");
+    }
+}
+
 }  // namespace repl
 }  // namespace mongo

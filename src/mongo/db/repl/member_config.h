@@ -92,28 +92,22 @@ public:
      * Gets the canonical name of this member, by which other members and clients
      * will contact it.
      */
-    const HostAndPort& getHostAndPort(
-        const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
-        invariant(!this->_horizonForward.empty());
-        invariant(!horizon.empty());
-        auto found = this->_horizonForward.find(horizon);
-        if (found == end(this->_horizonForward))
-            uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
-        return found->second;
+    const HostAndPort& getHostAndPort( const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
+		return this->_splitHorizon.getHostAndPort( horizon );
     }
 
     /**
      * Gets the mapping of horizon names to `HostAndPort` for this replica set member.
      */
     const auto& getHorizonMappings() const {
-        return this->_horizonForward;
+        return this->_splitHorizon.getHorizonMappings();
     }
 
     /**
      * Gets the mapping of `HostAndPort` to horizon names for this replica set member.
      */
     const auto& getHorizonReverseMappings() const {
-        return this->_horizonReverse;
+        return this->_splitHorizon.getHorizonReverseMappings();
     }
 
     /**
@@ -208,7 +202,7 @@ public:
 
 private:
     const HostAndPort& _host() const {
-        return this->_horizonForward.find(SplitHorizon::kDefaultHorizon)->second;
+        return this->getHostAndPort(SplitHorizon::kDefaultHorizon);
     }
 
     int _id;
@@ -220,11 +214,7 @@ private:
     bool _buildIndexes;             // if false, do not create any non-_id indexes
     std::vector<ReplSetTag> _tags;  // tagging for data center, rack, etc.
 
-    SplitHorizon::ForwardMapping _horizonForward;  // Maps each horizon name to a network address
-                                                   // for this replica set member
-    SplitHorizon::ReverseMapping _horizonReverse;  // Maps each network address which this replica
-                                                   // set member has to a horizon name under which
-                                                   // that address applies
+	SplitHorizon _splitHorizon;
 };
 
 }  // namespace repl

@@ -45,6 +45,9 @@ class SplitHorizon {
 public:
     static constexpr auto kDefaultHorizon = "__default"_sd;
 
+    using ForwardMapping = StringMap<HostAndPort>;              // Contains reply port
+    using ReverseMapping = std::map<HostAndPort, std::string>;  // Contains match port
+
     struct Parameters {
         boost::optional<std::string> connectionTarget;
     };
@@ -63,7 +66,7 @@ public:
 	explicit SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement> &horizonsElement );
 
 
-    StringData determineHorizon(int incomingPort, const Parameters& horizonParameters);
+    StringData determineHorizon(int incomingPort, const Parameters& horizonParameters) const;
 
 	const HostAndPort &getHostAndPort( const StringData &horizon ) const
 	{
@@ -82,9 +85,6 @@ public:
 	toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configBuilder ) const;
 
 private:
-    using ForwardMapping = StringMap<HostAndPort>;              // Contains reply port
-    using ReverseMapping = std::map<HostAndPort, std::string>;  // Contains match port
-
     ForwardMapping forwardMapping;  // Maps each horizon name to a network address for this replica set member
     ReverseMapping reverseMapping;  // Maps each network address which this replica set member has to a horizon name under which that address applies
 };

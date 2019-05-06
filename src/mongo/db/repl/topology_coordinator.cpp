@@ -1739,12 +1739,8 @@ void TopologyCoordinator::fillIsMasterForReplSet(IsMasterResponse* const respons
 
     const auto& self = _rsConfig.members()[_selfIndex];
 
-    const auto& forwardMapping = self.getHorizonMappings();
-    const auto& reverseMapping = self.getHorizonReverseMappings();
-
     const int incomingPort = stdx::as_const(serverGlobalParams.port);
-    const auto horizon =
-        SplitHorizon::determineHorizon(incomingPort, forwardMapping, reverseMapping, horizonParams);
+    const auto horizon = self.determineHorizon( incomingPort, horizonParams );
 
     log() << "Determined to use \"" << horizon << "\" as the horizon name";
 

@@ -56,7 +56,7 @@ auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
 }
 
 StringData SplitHorizon::determineHorizon(const int incomingPort,
-                                          const SplitHorizon::Parameters& horizonParameters) {
+                                          const SplitHorizon::Parameters& horizonParameters) const {
     if (horizonParameters.connectionTarget) {
         log() << "Connection target or SNI case";
         const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
@@ -71,7 +71,7 @@ StringData SplitHorizon::determineHorizon(const int incomingPort,
 void
 SplitHorizon::toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configBuilder ) const
 {
-    // `_horizonForward` should always contain the "__default" horizon, so we need to emit the
+    // `forwardMapping` should always contain the "__default" horizon, so we need to emit the
     // horizon repl specification when there are OTHER horizons.
     if (this->forwardMapping.size() > 1) {
         StringMap<std::tuple<HostAndPort, int>> horizons;
@@ -100,7 +100,8 @@ SplitHorizon::toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configB
     }
 }
 
-SplitHorizon::SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement> &horizonsElement )
+SplitHorizon::SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement>
+&horizonsElement ) 
 {
     this->forwardMapping.emplace(SplitHorizon::kDefaultHorizon, host);
     this->reverseMapping.emplace(host, SplitHorizon::kDefaultHorizon);

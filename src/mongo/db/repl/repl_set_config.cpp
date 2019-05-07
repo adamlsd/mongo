@@ -474,7 +474,6 @@ Status ReplSetConfig::validate() const {
         }();
 
         if (expectedHorizonNameMapping != seenHorizonNameMapping) {
-            // TODO: std::set_difference based find missing or extra fields
             std::set_symmetric_difference(
                 begin(expectedHorizonNameMapping),
                 end(expectedHorizonNameMapping),

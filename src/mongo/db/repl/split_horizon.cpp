@@ -58,13 +58,11 @@ auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
 StringData SplitHorizon::determineHorizon(const int incomingPort,
                                           const SplitHorizon::Parameters& horizonParameters) const {
     if (horizonParameters.connectionTarget) {
-        log() << "Connection target or SNI case";
         const HostAndPort connectionTarget(*horizonParameters.connectionTarget);
         auto found = reverseMapping.find(connectionTarget);
         if (found != end(reverseMapping))
             return found->second;
     }
-    log() << "Fallthrough case";
     return kDefaultHorizon;
 }
 
@@ -177,7 +175,7 @@ SplitHorizon::SplitHorizon( const HostAndPort &host, const boost::optional<BSONE
 
     if (forwardMapping.size() != horizonCount + 1) {
         auto horizonNames = [&] {
-            std::vector<std::string> rv = {"__default"};
+            std::vector<std::string> rv = {std::string{kDefaultHorizon}};
             std::transform(begin(horizonEntries),
                            end(horizonEntries),
                            back_inserter(rv),

@@ -68,7 +68,7 @@ public:
 
     StringData determineHorizon(int incomingPort, const Parameters& horizonParameters) const;
 
-	const HostAndPort &getHostAndPort( const StringData &horizon ) const
+	const HostAndPort &getHostAndPort( StringData horizon ) const
 	{
         invariant(!this->forwardMapping.empty());
         invariant(!horizon.empty());

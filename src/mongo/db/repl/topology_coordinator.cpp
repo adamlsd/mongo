@@ -1742,8 +1742,6 @@ void TopologyCoordinator::fillIsMasterForReplSet(IsMasterResponse* const respons
     const int incomingPort = stdx::as_const(serverGlobalParams.port);
     const auto horizon = self.determineHorizon( incomingPort, horizonParams );
 
-    log() << "Determined to use \"" << horizon << "\" as the horizon name";
-
     for (const auto& member : _rsConfig.members()) {
         if (member.isHidden() || member.getSlaveDelay() > Seconds{0}) {
             continue;

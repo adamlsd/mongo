@@ -110,7 +110,7 @@ public:
         return this->_splitHorizon.getHorizonReverseMappings();
     }
 
-	const auto determineHorizon( const int port, const SplitHorizon::Parameters &params ) const
+	StringData determineHorizon( const int port, const SplitHorizon::Parameters &params ) const
 	{
 		return this->_splitHorizon.determineHorizon( port, params );
 	}

@@ -441,7 +441,7 @@ Status ReplSetConfig::validate() const {
     size_t voterCount = 0;
     size_t arbiterCount = 0;
     size_t electableCount = 0;
-    const auto expectedHorizonNameMapping = [&]() {
+    const auto expectedHorizonNameMapping = [&] {
         std::vector<std::string> rv;
         std::transform(begin(_members[0].getHorizonMappings()),
                        end(_members[0].getHorizonMappings()),
@@ -451,7 +451,7 @@ Status ReplSetConfig::validate() const {
         return rv;
     }();
 
-    std::unordered_set<std::string> nonUniversalHorizons;
+    stdx::unordered_set<std::string> nonUniversalHorizons;
     std::map<HostAndPort, int> horizonHostNameCounts;
     for (size_t i = 0; i < _members.size(); ++i) {
         const MemberConfig& memberI = _members[i];

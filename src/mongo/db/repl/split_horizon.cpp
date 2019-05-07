@@ -70,27 +70,28 @@ void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& con
     // `forwardMapping` should always contain the "__default" horizon, so we need to emit the
     // horizon repl specification when there are OTHER horizons.
     if (forwardMapping.size() > 1) {
-        StringMap<std::tuple<HostAndPort, int>> horizons;
+        struct HorizonSpec { HostAndPort match; int port; };
+        StringMap<HorizonSpec> horizons;
         std::transform(begin(forwardMapping),
                        end(forwardMapping),
                        inserter(horizons, end(horizons)),
                        [](const auto& entry) {
-                           return std::pair<std::string, std::tuple<HostAndPort, int>>{
+                           return std::pair<std::string, HorizonSpec>{
                                entry.first, {entry.second, entry.second.port()}};
                        });
-        for (auto& horizon : reverseMapping) {
+        for (const auto& horizon : reverseMapping) {
             // The Horizon for each reverse should always exist.
             invariant(horizons.count(horizon.second));
-            std::get<0>(horizons[horizon.second]) = horizon.first;
+            horizons[horizon.second].match = horizon.first;
         }
         horizons.erase(SplitHorizon::kDefaultHorizon);
 
         BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
         for (const auto& horizon : horizons) {
             BSONObjBuilder horizonBson(horizonsBson.subobjStart(horizon.first));
-            horizonBson.append("match", std::get<0>(horizon.second).toString());
-            if (std::get<0>(horizon.second).port() != std::get<1>(horizon.second)) {
-                horizonBson.append("replyPort", std::get<1>(horizon.second));
+            horizonBson.append("match", horizon.second.match.toString());
+            if (horizon.second.match.port() != horizon.second.port) {
+                horizonBson.append("replyPort", horizon.second.port);
             }
         }
     }

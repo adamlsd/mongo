@@ -362,10 +362,8 @@ SSLThreadInfo::ThreadIDManager SSLThreadInfo::_idManager;
 boost::optional<std::string> getRawSNIServerName(const SSL* const ssl) {
     const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
     if (!name) {
-        log() << "Got no SNI name from the connection." << std::endl;
         return boost::none;
     }
-    log() << "Got \"" << name << "\" as the SNI name from the connection." << std::endl;
     return std::string(name);
 }
 

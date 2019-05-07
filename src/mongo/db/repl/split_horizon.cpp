@@ -55,7 +55,7 @@ auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
     return getSplitHorizonParameters(*client);
 }
 
-StringData SplitHorizon::determineHorizon(const int incomingPort,
+StringData SplitHorizon::determineHorizon(
                                           const SplitHorizon::Parameters& horizonParameters) const {
     if (horizonParameters.connectionTarget) {
         const HostAndPort connectionTarget(*horizonParameters.connectionTarget);

@@ -1739,8 +1739,7 @@ void TopologyCoordinator::fillIsMasterForReplSet(IsMasterResponse* const respons
 
     const auto& self = _rsConfig.members()[_selfIndex];
 
-    const int incomingPort = stdx::as_const(serverGlobalParams.port);
-    const auto horizon = self.determineHorizon(incomingPort, horizonParams);
+    const auto horizon = self.determineHorizon(horizonParams);
 
     for (const auto& member : _rsConfig.members()) {
         if (member.isHidden() || member.getSlaveDelay() > Seconds{0}) {

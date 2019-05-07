@@ -48,15 +48,14 @@ TEST(SplitHorizonTesting, determineHorizon) {
 
     struct {
         struct Input {
-            int port;
             SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
             SplitHorizon::ReverseMapping reverseMapping;
             SplitHorizon::Parameters horizonParameters;
             using MappingType = std::map<std::string, std::string>;
 
 
-            Input(const int p, const MappingType& mapping, SplitHorizon::Parameters params)
-                : port(p), horizonParameters(std::move(params)) {
+            Input( const MappingType& mapping, SplitHorizon::Parameters params)
+                : horizonParameters(std::move(params)) {
                 forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHost + ":4242");
 
                 using ForwardMappingValueType = decltype(forwardMapping)::value_type;
@@ -83,18 +82,18 @@ TEST(SplitHorizonTesting, determineHorizon) {
         std::string expected;
     } tests[] = {
         // No parameters and no horizon views configured.
-        {{4242, {}, {}}, "__default"},
-        {{4242, {}, {boost::none}}, "__default"},
-        {{4242, {}, {defaultHost}}, "__default"},
+        {{{}, {}}, "__default"},
+        {{{}, {boost::none}}, "__default"},
+        {{{}, {defaultHost}}, "__default"},
 
         // No SNI, no match
-        {{4242, {{"unusedHorizon", "badmatch:00001"}}, {boost::none}}, "__default"},
+        {{{{"unusedHorizon", "badmatch:00001"}}, {boost::none}}, "__default"},
 
         // Has SNI, no match
-        {{4242, {{"unusedHorizon", "badmatch:00001"}}, {defaultHost}}, "__default"},
+        {{ {{"unusedHorizon", "badmatch:00001"}}, {defaultHost}}, "__default"},
 
         // Has SNI, with match
-        {{4242, {{"targetHorizon", "badmatch:00001"}}, {"badmatch:00001"s}}, "targetHorizon"},
+        {{{{"targetHorizon", "goodMatch:00001"}}, {"goodMatch:00001"s}}, "targetHorizon"},
     };
 
     for (const auto& test : tests) {
@@ -103,7 +102,7 @@ TEST(SplitHorizonTesting, determineHorizon) {
             
         const std::string witness =
             SplitHorizon( input.forwardMapping, input.reverseMapping ).determineHorizon(
-                input.port, input.horizonParameters)
+                 input.horizonParameters)
                 .toString();
         ASSERT_EQUALS(witness, expected);
     }

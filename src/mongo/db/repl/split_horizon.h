@@ -71,7 +71,7 @@ public:
 			: forwardMapping( std::move( forward ) ), reverseMapping( std::move( reverse ) ) {}
 
 
-    StringData determineHorizon(int incomingPort, const Parameters& horizonParameters) const;
+    StringData determineHorizon(const Parameters& horizonParameters) const;
 
     const HostAndPort& getHostAndPort(StringData horizon) const {
         invariant(!this->forwardMapping.empty());

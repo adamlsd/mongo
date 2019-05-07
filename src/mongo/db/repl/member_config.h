@@ -111,8 +111,8 @@ public:
         return this->_splitHorizon.getHorizonReverseMappings();
     }
 
-    StringData determineHorizon(const int port, const SplitHorizon::Parameters& params) const {
-        return this->_splitHorizon.determineHorizon(port, params);
+    StringData determineHorizon(const SplitHorizon::Parameters& params) const {
+        return this->_splitHorizon.determineHorizon(params);
     }
 
     /**

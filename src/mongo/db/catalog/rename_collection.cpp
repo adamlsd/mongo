@@ -34,12 +34,12 @@
 #include "mongo/db/catalog/rename_collection.h"
 
 #include "mongo/db/background.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
@@ -48,6 +48,7 @@
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/repl/replication_coordinator.h"
@@ -65,8 +66,8 @@ namespace {
 
 MONGO_FAIL_POINT_DEFINE(writeConfilctInRenameCollCopyToTmp);
 
-NamespaceString getNamespaceFromUUID(OperationContext* opCtx, const UUID& uuid) {
-    return UUIDCatalog::get(opCtx).lookupNSSByUUID(uuid);
+boost::optional<NamespaceString> getNamespaceFromUUID(OperationContext* opCtx, const UUID& uuid) {
+    return CollectionCatalog::get(opCtx).lookupNSSByUUID(uuid);
 }
 
 bool isCollectionSharded(OperationContext* opCtx, const NamespaceString& nss) {
@@ -397,7 +398,6 @@ Status renameCollectionWithinDBForApplyOps(OperationContext* opCtx,
             return Status::OK();
         }
         if (uuidToDrop && uuidToDrop != targetColl->uuid()) {
-            auto dropTargetNssFromUUID = getNamespaceFromUUID(opCtx, uuidToDrop.get());
             // We need to rename the targetColl to a temporary name.
             auto status = renameTargetCollectionToTmp(
                 opCtx, source, sourceColl->uuid().get(), db, target, targetColl->uuid().get());
@@ -413,9 +413,9 @@ Status renameCollectionWithinDBForApplyOps(OperationContext* opCtx,
     if (!targetColl && uuidToDrop) {
         invariant(options.dropTarget);
         auto collToDropBasedOnUUID = getNamespaceFromUUID(opCtx, uuidToDrop.get());
-        if (!collToDropBasedOnUUID.isEmpty() && !collToDropBasedOnUUID.isDropPendingNamespace()) {
-            invariant(collToDropBasedOnUUID.db() == target.db());
-            targetColl = db->getCollection(opCtx, collToDropBasedOnUUID);
+        if (collToDropBasedOnUUID && !collToDropBasedOnUUID->isDropPendingNamespace()) {
+            invariant(collToDropBasedOnUUID->db() == target.db());
+            targetColl = db->getCollection(opCtx, *collToDropBasedOnUUID);
         }
     }
 
@@ -763,9 +763,9 @@ Status renameCollectionForApplyOps(OperationContext* opCtx,
     OptionalCollectionUUID uuidToRename;
     if (!ui.eoo()) {
         uuidToRename = uassertStatusOK(UUID::parse(ui));
-        auto nss = UUIDCatalog::get(opCtx).lookupNSSByUUID(uuidToRename.get());
-        if (!nss.isEmpty())
-            sourceNss = nss;
+        auto nss = CollectionCatalog::get(opCtx).lookupNSSByUUID(uuidToRename.get());
+        if (nss)
+            sourceNss = *nss;
     }
 
     RenameCollectionOptions options;
@@ -797,7 +797,7 @@ Status renameCollectionForApplyOps(OperationContext* opCtx,
             .getCollection();
 
     if (sourceNss.isDropPendingNamespace() || sourceColl == nullptr) {
-        NamespaceString dropTargetNss;
+        boost::optional<NamespaceString> dropTargetNss;
 
         if (options.dropTarget)
             dropTargetNss = targetNss;
@@ -806,10 +806,10 @@ Status renameCollectionForApplyOps(OperationContext* opCtx,
             dropTargetNss = getNamespaceFromUUID(opCtx, uuidToDrop.get());
 
         // Downgrade renameCollection to dropCollection.
-        if (!dropTargetNss.isEmpty()) {
+        if (dropTargetNss) {
             BSONObjBuilder unusedResult;
             return dropCollection(opCtx,
-                                  dropTargetNss,
+                                  *dropTargetNss,
                                   unusedResult,
                                   renameOpTime,
                                   DropCollectionSystemCollectionMode::kAllowSystemCollectionDrops);
@@ -838,17 +838,18 @@ Status renameCollectionForRollback(OperationContext* opCtx,
                                    const UUID& uuid) {
     // If the UUID we're targeting already exists, rename from there no matter what.
     auto source = getNamespaceFromUUID(opCtx, uuid);
-    invariant(source.db() == target.db(),
+    invariant(source);
+    invariant(source->db() == target.db(),
               str::stream() << "renameCollectionForRollback: source and target namespaces must "
                                "have the same database. source: "
-                            << source
+                            << *source
                             << ". target: "
                             << target);
 
-    log() << "renameCollectionForRollback: rename " << source << " (" << uuid << ") to " << target
+    log() << "renameCollectionForRollback: rename " << *source << " (" << uuid << ") to " << target
           << ".";
 
-    return renameCollectionWithinDB(opCtx, source, target, {});
+    return renameCollectionWithinDB(opCtx, *source, target, {});
 }
 
 }  // namespace mongo

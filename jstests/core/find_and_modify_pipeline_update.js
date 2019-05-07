@@ -1,8 +1,5 @@
 /**
  * Tests the pipeline-style update is accepted by the findAndModify command.
- *
- * TODO SERVER-40402: Remove 'assumes_write_concern_unchanged' tag.
- * @tags: [assumes_write_concern_unchanged]
  */
 (function() {
     "use strict";
@@ -23,11 +20,6 @@
         () => coll.findAndModify(
             {query: {_id: 1}, update: [{$addFields: {y: 1}}], arrayFilters: [{"i.x": 4}]}));
     assert.eq(err.code, ErrorCodes.FailedToParse);
-    // SERVER-40399 Add support for collation
-    err = assert.throws(
-        () => coll.findAndModify(
-            {query: {_id: 1}, update: [{$addFields: {y: 1}}], collation: {locale: "en_US"}}));
-    assert.eq(err.code, ErrorCodes.NotImplemented);
 
     // SERVER-40404 Add support for fields.
     err = assert.throws(() => coll.findAndModify(
@@ -37,16 +29,5 @@
     // SERVER-40405 Add support for sort.
     err = assert.throws(() => coll.findAndModify(
                             {query: {_id: 1}, update: [{$addFields: {y: 1}}], sort: {_id: -1}}));
-    assert.eq(err.code, ErrorCodes.NotImplemented);
-
-    // SERVER-40403 Add support for writeConcern.
-    err =
-        assert.throws(() => coll.findAndModify(
-                          {query: {_id: 1}, update: [{$addFields: {y: 1}}], writeConcern: {w: 1}}));
-
-    // SERVER-40401 Add support for bypassDocumentValidation.
-    err = assert.throws(
-        () => coll.findAndModify(
-            {query: {_id: 1}, update: [{$addFields: {y: 1}}], bypassDocumentValidation: true}));
     assert.eq(err.code, ErrorCodes.NotImplemented);
 }());

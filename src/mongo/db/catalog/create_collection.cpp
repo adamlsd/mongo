@@ -34,14 +34,15 @@
 #include "mongo/db/catalog/create_collection.h"
 
 #include "mongo/bson/bsonobj.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/repl/replication_coordinator.h"
@@ -222,20 +223,20 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
                         "Invalid UUID in applyOps create command: " + uuid.toString(),
                         uuid.isRFC4122v4());
 
-                auto& catalog = UUIDCatalog::get(opCtx);
+                auto& catalog = CollectionCatalog::get(opCtx);
                 const auto currentName = catalog.lookupNSSByUUID(uuid);
                 auto serviceContext = opCtx->getServiceContext();
                 auto opObserver = serviceContext->getOpObserver();
-                if (currentName == newCollName)
+                if (currentName && *currentName == newCollName)
                     return Result(Status::OK());
 
-                if (currentName.isDropPendingNamespace()) {
+                if (currentName && currentName->isDropPendingNamespace()) {
                     log() << "CMD: create " << newCollName
                           << " - existing collection with conflicting UUID " << uuid
-                          << " is in a drop-pending state: " << currentName;
+                          << " is in a drop-pending state: " << *currentName;
                     return Result(Status(ErrorCodes::NamespaceExists,
                                          str::stream() << "existing collection "
-                                                       << currentName.toString()
+                                                       << currentName->toString()
                                                        << " with conflicting UUID "
                                                        << uuid.toString()
                                                        << " is in a drop-pending state."));
@@ -280,14 +281,16 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
                 // If the collection with the requested UUID already exists, but with a different
                 // name, just rename it to 'newCollName'.
                 if (catalog.lookupCollectionByUUID(uuid)) {
+                    invariant(currentName);
                     uassert(40655,
                             str::stream() << "Invalid name " << newCollName << " for UUID " << uuid,
-                            currentName.db() == newCollName.db());
-                    Status status = db->renameCollection(opCtx, currentName, newCollName, stayTemp);
+                            currentName->db() == newCollName.db());
+                    Status status =
+                        db->renameCollection(opCtx, *currentName, newCollName, stayTemp);
                     if (!status.isOK())
                         return Result(status);
                     opObserver->onRenameCollection(opCtx,
-                                                   currentName,
+                                                   *currentName,
                                                    newCollName,
                                                    uuid,
                                                    /*dropTargetUUID*/ {},

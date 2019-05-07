@@ -34,11 +34,11 @@
 #include <initializer_list>
 #include <utility>
 
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_indexes.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db_raii.h"
@@ -2037,24 +2037,7 @@ TEST(RSRollbackTest, LocalEntryWithoutOIsFatal) {
                   RSFatalException);
 }
 
-TEST(RSRollbackTest, LocalUpdateEntryWithoutO2IsFatal) {
-    const auto validOplogEntry = BSON("op"
-                                      << "u"
-                                      << "ui"
-                                      << UUID::gen()
-                                      << "ts"
-                                      << Timestamp(1, 1)
-                                      << "t"
-                                      << 1LL
-                                      << "ns"
-                                      << "test.t"
-                                      << "o"
-                                      << BSON("_id" << 1 << "a" << 1)
-                                      << "o2"
-                                      << BSON("_id" << 1));
-    FixUpInfo fui;
-    ASSERT_OK(updateFixUpInfoFromLocalOplogEntry(
-        nullptr /* opCtx */, OplogInterfaceMock(), fui, validOplogEntry, false));
+DEATH_TEST_F(RSRollbackTest, LocalUpdateEntryWithoutO2IsFatal, "Fatal Assertion") {
     const auto invalidOplogEntry = BSON("op"
                                         << "u"
                                         << "ui"
@@ -2067,9 +2050,10 @@ TEST(RSRollbackTest, LocalUpdateEntryWithoutO2IsFatal) {
                                         << "test.t"
                                         << "o"
                                         << BSON("_id" << 1 << "a" << 1));
-    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(
-                      nullptr /* opCtx */, OplogInterfaceMock(), fui, invalidOplogEntry, false),
-                  RSFatalException);
+    FixUpInfo fui;
+    updateFixUpInfoFromLocalOplogEntry(
+        nullptr /* opCtx */, OplogInterfaceMock(), fui, invalidOplogEntry, false)
+        .ignore();
 }
 
 TEST(RSRollbackTest, LocalUpdateEntryWithEmptyO2IsFatal) {

@@ -6,15 +6,8 @@
 (function() {
     "use strict";
 
-    load("jstests/aggregation/extras/utils.js");  // For arrayEq.
+    load("jstests/aggregation/extras/utils.js");  // For assertArrayEq.
     load("jstests/libs/fixture_helpers.js");      // For FixtureHelpers.isMongos.
-
-    // Asserts that two arrays are equal - that is, if their sizes are equal and each element in
-    // the 'actual' array has a matching element in the 'expected' array, without honoring elements
-    // order.
-    function assertArrayEq({actual = [], expected = []} = {}) {
-        assert(arrayEq(actual, expected), `actual=${tojson(actual)}, expected=${tojson(expected)}`);
-    }
 
     const source = db[`${jsTest.name()}_source`];
     source.drop();

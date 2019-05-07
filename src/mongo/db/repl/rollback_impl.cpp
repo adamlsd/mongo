@@ -37,8 +37,8 @@
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/background.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database_holder.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/replication_state_transition_lock_guard.h"
@@ -53,6 +53,7 @@
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/roll_back_local_operations.h"
 #include "mongo/db/repl/storage_interface.h"
+#include "mongo/db/repl/transaction_oplog_application.h"
 #include "mongo/db/s/shard_identity_rollback_notifier.h"
 #include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/server_recovery.h"
@@ -328,7 +329,7 @@ Status RollbackImpl::runRollback(OperationContext* opCtx) {
     // transactions were aborted (i.e. the in-memory counts were rolled-back) before computing
     // collection counts, reconstruct the prepared transactions now, adding on any additional counts
     // to the now corrected record store.
-    _replicationProcess->getReplicationRecovery()->reconstructPreparedTransactions(opCtx);
+    reconstructPreparedTransactions(opCtx, OplogApplication::Mode::kRecovering);
 
     // At this point, the last applied and durable optimes on this node still point to ops on
     // the divergent branch of history. We therefore update the last optimes to the top of the
@@ -499,13 +500,13 @@ StatusWith<std::set<NamespaceString>> RollbackImpl::_namespacesForOp(const Oplog
 void RollbackImpl::_correctRecordStoreCounts(OperationContext* opCtx) {
     // This function explicitly does not check for shutdown since a clean shutdown post oplog
     // truncation is not allowed to occur until the record store counts are corrected.
-    const auto& uuidCatalog = UUIDCatalog::get(opCtx);
+    const auto& catalog = CollectionCatalog::get(opCtx);
     for (const auto& uiCount : _newCounts) {
         const auto uuid = uiCount.first;
-        const auto coll = uuidCatalog.lookupCollectionByUUID(uuid);
+        const auto coll = catalog.lookupCollectionByUUID(uuid);
         invariant(coll,
                   str::stream() << "The collection with UUID " << uuid
-                                << " is unexpectedly missing in the UUIDCatalog");
+                                << " is unexpectedly missing in the CollectionCatalog");
         const auto nss = coll->ns();
         invariant(!nss.isEmpty(),
                   str::stream() << "The collection with UUID " << uuid << " has no namespace.");
@@ -575,7 +576,7 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
     if (_isInShutdown()) {
         return Status(ErrorCodes::ShutdownInProgress, "rollback shutting down");
     }
-    const auto& uuidCatalog = UUIDCatalog::get(opCtx);
+    const auto& catalog = CollectionCatalog::get(opCtx);
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
 
     log() << "finding record store counts";
@@ -586,15 +587,15 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
             continue;
         }
 
-        auto nss = uuidCatalog.lookupNSSByUUID(uuid);
+        auto nss = catalog.lookupNSSByUUID(uuid);
         StorageInterface::CollectionCount oldCount = 0;
 
         // Drop-pending collections are not visible to rollback via the catalog when they are
         // managed by the storage engine. See StorageEngine::supportsPendingDrops().
-        if (nss.isEmpty()) {
+        if (!nss) {
             invariant(storageEngine->supportsPendingDrops(),
                       str::stream() << "The collection with UUID " << uuid
-                                    << " is unexpectedly missing in the UUIDCatalog");
+                                    << " is unexpectedly missing in the CollectionCatalog");
             auto it = _pendingDrops.find(uuid);
             if (it == _pendingDrops.end()) {
                 _newCounts[uuid] = kCollectionScanRequired;
@@ -610,7 +611,7 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
                                        "collection count during rollback.");
             oldCount = static_cast<StorageInterface::CollectionCount>(dropPendingInfo.count);
         } else {
-            auto countSW = _storageInterface->getCollectionCount(opCtx, nss);
+            auto countSW = _storageInterface->getCollectionCount(opCtx, *nss);
             if (!countSW.isOK()) {
                 return countSW.getStatus();
             }
@@ -618,7 +619,8 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
         }
 
         if (oldCount > static_cast<uint64_t>(std::numeric_limits<long long>::max())) {
-            warning() << "Count for " << nss.ns() << " (" << uuid.toString() << ") was " << oldCount
+            warning() << "Count for " << nss->ns() << " (" << uuid.toString() << ") was "
+                      << oldCount
                       << " which is larger than the maximum int64_t value. Not attempting to fix "
                          "count during rollback.";
             continue;
@@ -628,7 +630,7 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
         auto newCount = oldCountSigned + countDiff;
 
         if (newCount < 0) {
-            warning() << "Attempted to set count for " << nss.ns() << " (" << uuid.toString()
+            warning() << "Attempted to set count for " << nss->ns() << " (" << uuid.toString()
                       << ") to " << newCount
                       << " but set it to 0 instead. This is likely due to the count previously "
                          "becoming inconsistent from an unclean shutdown or a rollback that could "
@@ -636,7 +638,7 @@ Status RollbackImpl::_findRecordStoreCounts(OperationContext* opCtx) {
                       << oldCount << ". Count change: " << countDiff;
             newCount = 0;
         }
-        LOG(2) << "Record count of " << nss.ns() << " (" << uuid.toString()
+        LOG(2) << "Record count of " << nss->ns() << " (" << uuid.toString()
                << ") before rollback is " << oldCount << ". Setting it to " << newCount
                << ", due to change of " << countDiff;
         _newCounts[uuid] = newCount;
@@ -1004,33 +1006,33 @@ boost::optional<BSONObj> RollbackImpl::_findDocumentById(OperationContext* opCtx
 }
 
 Status RollbackImpl::_writeRollbackFiles(OperationContext* opCtx) {
-    const auto& uuidCatalog = UUIDCatalog::get(opCtx);
+    const auto& catalog = CollectionCatalog::get(opCtx);
     auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
     for (auto&& entry : _observerInfo.rollbackDeletedIdsMap) {
         const auto& uuid = entry.first;
-        const auto nss = uuidCatalog.lookupNSSByUUID(uuid);
+        const auto nss = catalog.lookupNSSByUUID(uuid);
 
         // Drop-pending collections are not visible to rollback via the catalog when they are
         // managed by the storage engine. See StorageEngine::supportsPendingDrops().
-        if (nss.isEmpty() && storageEngine->supportsPendingDrops()) {
+        if (!nss && storageEngine->supportsPendingDrops()) {
             log() << "The collection with UUID " << uuid
-                  << " is missing in the UUIDCatalog. This could be due to a dropped collection. "
-                     "Not writing rollback file for namespace "
-                  << nss.ns() << " with uuid " << uuid;
+                  << " is missing in the CollectionCatalog. This could be due to a dropped "
+                     " collection. Not writing rollback file for uuid "
+                  << uuid;
             continue;
         }
 
-        invariant(!nss.isEmpty(),
+        invariant(nss,
                   str::stream() << "The collection with UUID " << uuid
-                                << " is unexpectedly missing in the UUIDCatalog");
+                                << " is unexpectedly missing in the CollectionCatalog");
 
         if (_isInShutdown()) {
-            log() << "Rollback shutting down; not writing rollback file for namespace " << nss.ns()
+            log() << "Rollback shutting down; not writing rollback file for namespace " << nss->ns()
                   << " with uuid " << uuid;
             continue;
         }
 
-        _writeRollbackFileForNamespace(opCtx, uuid, nss, entry.second);
+        _writeRollbackFileForNamespace(opCtx, uuid, *nss, entry.second);
     }
 
     // TODO (SERVER-40614): This interrupt point should be removed.

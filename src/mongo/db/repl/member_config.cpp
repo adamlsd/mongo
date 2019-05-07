@@ -301,7 +301,7 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     }
     tags.done();
 
-    this->_splitHorizon.toBSON(tagConfig, configBuilder);
+    _splitHorizon.toBSON(tagConfig, configBuilder);
 
     configBuilder.append("slaveDelay", durationCount<Seconds>(_slaveDelay));
     configBuilder.append("votes", getNumVotes());

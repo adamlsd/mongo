@@ -69,16 +69,16 @@ StringData SplitHorizon::determineHorizon(
 void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const {
     // `forwardMapping` should always contain the "__default" horizon, so we need to emit the
     // horizon repl specification when there are OTHER horizons.
-    if (this->forwardMapping.size() > 1) {
+    if (forwardMapping.size() > 1) {
         StringMap<std::tuple<HostAndPort, int>> horizons;
-        std::transform(begin(this->forwardMapping),
-                       end(this->forwardMapping),
+        std::transform(begin(forwardMapping),
+                       end(forwardMapping),
                        inserter(horizons, end(horizons)),
                        [](const auto& entry) {
                            return std::pair<std::string, std::tuple<HostAndPort, int>>{
                                entry.first, {entry.second, entry.second.port()}};
                        });
-        for (auto& horizon : this->reverseMapping) {
+        for (auto& horizon : reverseMapping) {
             // The Horizon for each reverse should always exist.
             invariant(horizons.count(horizon.second));
             std::get<0>(horizons[horizon.second]) = horizon.first;
@@ -98,8 +98,8 @@ void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& con
 
 SplitHorizon::SplitHorizon(const HostAndPort& host,
                            const boost::optional<BSONElement>& horizonsElement) {
-    this->forwardMapping.emplace(SplitHorizon::kDefaultHorizon, host);
-    this->reverseMapping.emplace(host, SplitHorizon::kDefaultHorizon);
+    forwardMapping.emplace(SplitHorizon::kDefaultHorizon, host);
+    reverseMapping.emplace(host, SplitHorizon::kDefaultHorizon);
 
     if (!horizonsElement)
         return;

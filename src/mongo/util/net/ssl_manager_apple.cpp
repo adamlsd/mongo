@@ -1128,7 +1128,7 @@ public:
     }
 
     std::string getSNIServerName() const final {
-        return getRawSNIServerName(this->get()).value_or("");
+        return getRawSNIServerName(get()).value_or("");
     }
 
     ::SSLContextRef get() const {

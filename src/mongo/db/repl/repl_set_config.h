@@ -161,7 +161,7 @@ public:
     }
 
     const std::vector<MemberConfig>& members() const {
-        return this->_members;
+        return _members;
     }
 
     /**

@@ -74,19 +74,19 @@ public:
     StringData determineHorizon(const Parameters& horizonParameters) const;
 
     const HostAndPort& getHostAndPort(StringData horizon) const {
-        invariant(!this->forwardMapping.empty());
+        invariant(!forwardMapping.empty());
         invariant(!horizon.empty());
-        auto found = this->forwardMapping.find(horizon);
-        if (found == end(this->forwardMapping))
+        auto found = forwardMapping.find(horizon);
+        if (found == end(forwardMapping))
             uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
         return found->second;
     }
 
     const auto& getHorizonMappings() const {
-        return this->forwardMapping;
+        return forwardMapping;
     }
     const auto& getHorizonReverseMappings() const {
-        return this->reverseMapping;
+        return reverseMapping;
     }
 
     void toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const;

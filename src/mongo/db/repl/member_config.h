@@ -94,25 +94,25 @@ public:
      */
     const HostAndPort& getHostAndPort(
         const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
-        return this->_splitHorizon.getHostAndPort(horizon);
+        return _splitHorizon.getHostAndPort(horizon);
     }
 
     /**
      * Gets the mapping of horizon names to `HostAndPort` for this replica set member.
      */
     const auto& getHorizonMappings() const {
-        return this->_splitHorizon.getHorizonMappings();
+        return _splitHorizon.getHorizonMappings();
     }
 
     /**
      * Gets the mapping of `HostAndPort` to horizon names for this replica set member.
      */
     const auto& getHorizonReverseMappings() const {
-        return this->_splitHorizon.getHorizonReverseMappings();
+        return _splitHorizon.getHorizonReverseMappings();
     }
 
     StringData determineHorizon(const SplitHorizon::Parameters& params) const {
-        return this->_splitHorizon.determineHorizon(params);
+        return _splitHorizon.determineHorizon(params);
     }
 
     /**
@@ -207,7 +207,7 @@ public:
 
 private:
     const HostAndPort& _host() const {
-        return this->getHostAndPort(SplitHorizon::kDefaultHorizon);
+        return getHostAndPort(SplitHorizon::kDefaultHorizon);
     }
 
     int _id;

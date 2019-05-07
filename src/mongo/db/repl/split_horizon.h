@@ -66,6 +66,10 @@ public:
     explicit SplitHorizon(const HostAndPort& host,
                           const boost::optional<BSONElement>& horizonsElement);
 
+	// For testing only
+    explicit SplitHorizon(ForwardMapping forward, ReverseMapping reverse)
+			: forwardMapping( std::move( forward ) ), reverseMapping( std::move( reverse ) ) {}
+
 
     StringData determineHorizon(int incomingPort, const Parameters& horizonParameters) const;
 

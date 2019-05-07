@@ -100,9 +100,10 @@ TEST(SplitHorizonTesting, determineHorizon) {
     for (const auto& test : tests) {
         const auto& expected = test.expected;
         const auto& input = test.input;
+            
         const std::string witness =
-            SplitHorizon::determineHorizon(
-                input.port, input.forwardMapping, input.reverseMapping, input.horizonParameters)
+            SplitHorizon( input.forwardMapping, input.reverseMapping ).determineHorizon(
+                input.port, input.horizonParameters)
                 .toString();
         ASSERT_EQUALS(witness, expected);
     }

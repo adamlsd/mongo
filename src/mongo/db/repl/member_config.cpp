@@ -197,7 +197,7 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
         return result;
     }();
 
-    _splitHorizon= SplitHorizon( host, horizonsElement );
+    _splitHorizon = SplitHorizon(host, horizonsElement);
 
     //
     // Add internal tags based on other member properties.
@@ -301,7 +301,7 @@ BSONObj MemberConfig::toBSON(const ReplSetTagConfig& tagConfig) const {
     }
     tags.done();
 
-    this->_splitHorizon.toBSON( tagConfig, configBuilder );
+    this->_splitHorizon.toBSON(tagConfig, configBuilder);
 
     configBuilder.append("slaveDelay", durationCount<Seconds>(_slaveDelay));
     configBuilder.append("votes", getNumVotes());

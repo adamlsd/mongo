@@ -92,8 +92,9 @@ public:
      * Gets the canonical name of this member, by which other members and clients
      * will contact it.
      */
-    const HostAndPort& getHostAndPort( const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
-		return this->_splitHorizon.getHostAndPort( horizon );
+    const HostAndPort& getHostAndPort(
+        const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
+        return this->_splitHorizon.getHostAndPort(horizon);
     }
 
     /**
@@ -110,10 +111,9 @@ public:
         return this->_splitHorizon.getHorizonReverseMappings();
     }
 
-	StringData determineHorizon( const int port, const SplitHorizon::Parameters &params ) const
-	{
-		return this->_splitHorizon.determineHorizon( port, params );
-	}
+    StringData determineHorizon(const int port, const SplitHorizon::Parameters& params) const {
+        return this->_splitHorizon.determineHorizon(port, params);
+    }
 
     /**
      * Gets this member's priority.  Higher means more likely to be elected
@@ -219,7 +219,7 @@ private:
     bool _buildIndexes;             // if false, do not create any non-_id indexes
     std::vector<ReplSetTag> _tags;  // tagging for data center, rack, etc.
 
-	SplitHorizon _splitHorizon;
+    SplitHorizon _splitHorizon;
 };
 
 }  // namespace repl

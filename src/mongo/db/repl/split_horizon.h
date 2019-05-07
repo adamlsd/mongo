@@ -62,31 +62,36 @@ public:
      */
     static Parameters getParameters(const Client*);
 
-	explicit SplitHorizon()= default;
-	explicit SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement> &horizonsElement );
+    explicit SplitHorizon() = default;
+    explicit SplitHorizon(const HostAndPort& host,
+                          const boost::optional<BSONElement>& horizonsElement);
 
 
     StringData determineHorizon(int incomingPort, const Parameters& horizonParameters) const;
 
-	const HostAndPort &getHostAndPort( StringData horizon ) const
-	{
+    const HostAndPort& getHostAndPort(StringData horizon) const {
         invariant(!this->forwardMapping.empty());
         invariant(!horizon.empty());
         auto found = this->forwardMapping.find(horizon);
         if (found == end(this->forwardMapping))
             uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
         return found->second;
-	}
+    }
 
-	const auto &getHorizonMappings() const { return this->forwardMapping; }
-	const auto &getHorizonReverseMappings() const { return this->reverseMapping; }
+    const auto& getHorizonMappings() const {
+        return this->forwardMapping;
+    }
+    const auto& getHorizonReverseMappings() const {
+        return this->reverseMapping;
+    }
 
-	void
-	toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configBuilder ) const;
+    void toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const;
 
 private:
-    ForwardMapping forwardMapping;  // Maps each horizon name to a network address for this replica set member
-    ReverseMapping reverseMapping;  // Maps each network address which this replica set member has to a horizon name under which that address applies
+    ForwardMapping
+        forwardMapping;  // Maps each horizon name to a network address for this replica set member
+    ReverseMapping reverseMapping;  // Maps each network address which this replica set member has
+                                    // to a horizon name under which that address applies
 };
 }  // namespace repl
 }  // namespace mongo

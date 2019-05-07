@@ -66,9 +66,7 @@ StringData SplitHorizon::determineHorizon(const int incomingPort,
     return kDefaultHorizon;
 }
 
-void
-SplitHorizon::toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configBuilder ) const
-{
+void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const {
     // `forwardMapping` should always contain the "__default" horizon, so we need to emit the
     // horizon repl specification when there are OTHER horizons.
     if (this->forwardMapping.size() > 1) {
@@ -98,13 +96,13 @@ SplitHorizon::toBSON( const ReplSetTagConfig &tagConfig, BSONObjBuilder &configB
     }
 }
 
-SplitHorizon::SplitHorizon( const HostAndPort &host, const boost::optional<BSONElement>
-&horizonsElement ) 
-{
+SplitHorizon::SplitHorizon(const HostAndPort& host,
+                           const boost::optional<BSONElement>& horizonsElement) {
     this->forwardMapping.emplace(SplitHorizon::kDefaultHorizon, host);
     this->reverseMapping.emplace(host, SplitHorizon::kDefaultHorizon);
 
-    if(!horizonsElement) return;
+    if (!horizonsElement)
+        return;
 
     using namespace std::literals::string_literals;
     std::size_t horizonCount = 0;
@@ -191,8 +189,7 @@ SplitHorizon::SplitHorizon( const HostAndPort &host, const boost::optional<BSONE
                       "Horizon name \"" + SplitHorizon::kDefaultHorizon +
                           "\" is reserved for internal mongodb usage");
         }
-        uasserted(ErrorCodes::BadValue,
-                  "Duplicate horizon name found \""s + *duplicate + "\".");
+        uasserted(ErrorCodes::BadValue, "Duplicate horizon name found \""s + *duplicate + "\".");
     }
 
     std::transform(begin(horizonEntries),

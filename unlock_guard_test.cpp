@@ -1,5 +1,6 @@
 #include <mutex>
 #include <boost/noncopyable.hpp>
+#include <string>
 
 #include <cassert>
 
@@ -8,54 +9,152 @@
 
 namespace InfiniteMonkeys
 {
+	namespace Testing
+	{
+		class TestFailure
+		{
+			private:
+				std::string message;
+
+			public:
+				explicit TestFailure( std::string i_message ) : message( std::move( i_message ) ) {}
+
+				const char *what() const noexcept { return message.c_str(); }
+		};
+
+		namespace Flags
+		{
+			static bool doNotFail= false;
+		}
+
+		namespace Status
+		{
+			std::unique_ptr< TestFailure > failure;
+		}
+
+
+		void
+		assert_( bool b, const char *const reason )
+		{
+			if( b ) return;
+
+			Status::failure= std::make_unique< TestFailure >( "Assertion failed: " + std::string( reason ) );
+			if( !std::as_const( Flags::doNotFail ) )
+			{
+				std::cerr << "Assertion failure: \"" << reason << "\"" << std::endl;
+				throw *Status::failure;
+			}
+		}
+
+		class ScopedFailure
+		{
+			private:
+				const bool oldFail;
+
+			public:
+				ScopedFailure()
+					: oldFail( Flags::doNotFail )
+				{
+					assert_( !InfiniteMonkeys::Testing::Status::failure, "Test failure prior to test" );
+					Flags::doNotFail= true;
+				}
+
+				~ScopedFailure()
+				{
+					assert_( InfiniteMonkeys::Testing::Status::failure.get(), "No reported failure!" );
+					std::cerr << "A failure, when expecting one, was seen as: " << Status::failure->what() << std::endl;
+					Status::failure= nullptr;
+					Flags::doNotFail= oldFail;
+				}
+		};
+	}
+	using Testing::assert_;
+
     //namespace detail
     //{
 		using Mtx= std::mutex;
         using ULock= std::unique_lock< std::mutex >;
     //}
 
-	class Poisonable : boost::noncopyable
+	namespace WithReason
 	{
-		protected:
-			struct C { enum State { Healthy, Poisoned }; };
-			using State= C::State;
+		class Poisonable : boost::noncopyable
+		{
+			protected:
+				const char *state= nullptr;
+				Poisonable *const parent= nullptr;
 
-			State state= C::Healthy;
-			Poisonable *const parent= nullptr;
+			protected:
+				[[nodiscard]] bool alive() const { return this->state == nullptr; }
+				void validate() const { assert_( alive(), state ); }
 
-		protected:
-			[[nodiscard]] bool alive() const { return this->state == C::Healthy; }
-			void validate() const { assert( alive() ); }
+				void revive() & { this->state= nullptr; }
+				void poison( const char *reason ) & { this->state= reason; }
 
-			void revive() & { this->state= C::Healthy; }
-			void poison() & { this->state= C::Poisoned; }
+				explicit Poisonable( Poisonable *const i_parent, const char *const reason ) : parent( i_parent ) { if( this->parent ) this->parent->poison( reason ); }
+				explicit Poisonable( std::nullptr_t ) : parent( nullptr ) {}
 
-			explicit Poisonable( Poisonable *const i_parent ) : parent( i_parent ) { if( this->parent ) this->parent->poison(); }
+			public:
+				~Poisonable() noexcept( false ) { this->validate(); if( this->parent ) this->parent->revive(); }
+		};
+	}
 
-		public:
-			~Poisonable() { this->validate(); if( this->parent ) this->parent->revive(); }
-	};
+	namespace WithoutReason
+	{
+		class Poisonable : boost::noncopyable
+		{
+			protected:
+				struct C { enum State { Healthy, Poisoned }; };
+				using State= C::State;
 
-	class OwningUnlockable;
-	class Promiscuous;
+				State state= C::Healthy;
+				Poisonable *const parent= nullptr;
+
+			protected:
+				[[nodiscard]] bool alive() const { return this->state == C::Healthy; }
+				void validate() const { assert_( alive(), "Not Healthy" ); }
+
+				void revive() & { this->state= C::Healthy; }
+				void poison( const char * /* reason */ ) & { this->state= C::Poisoned; }
+
+				explicit
+				Poisonable( Poisonable *const i_parent, const char *const i_reason )
+					: parent( i_parent )
+				{
+					if( this->parent )
+					{
+						this->parent->validate();
+						this->parent->poison( i_reason );
+					}
+				}
+
+			public:
+				~Poisonable() noexcept( false ) { this->validate(); if( this->parent ) this->parent->revive(); }
+		};
+	}
+	using WithReason::Poisonable;
+
+	class OwningLock;
+	class Unlocked;
 
 
-    class Unlockable : Poisonable
+    class StrongLock : Poisonable
     {
         private:
-			friend Promiscuous;
+			friend Unlocked;
             ULock *lk;
 
 			struct BlockerBase { protected: BlockerBase()= default; };
-			struct Blocker : BlockerBase { private: Blocker()= default; friend Unlockable; };
+			struct Blocker : BlockerBase { private: Blocker()= default; friend StrongLock; };
 
 			struct Poisoner : Poisonable { Poisoner() : Poisonable( nullptr ){} };
 
 			void
 			validate() const
 			{
-				assert( lk->owns_lock() && "This Unlockable object was unlocked by someone, it cannot be used at this time." );
-				assert( this->alive() && "This Unlockable object, which is either suitable for r-value only, or experienced a nesting error -- it was poisoned" );
+				this->Poisonable::validate();
+				assert_( lk->owns_lock(), "This StrongLock object was unlocked by someone, it cannot be used at this time." );
+				assert_( this->alive(), "This StrongLock object, which is either suitable for r-value only, or experienced a nesting error -- it was poisoned" );
 			}
 
 			static Poisoner
@@ -66,27 +165,30 @@ namespace InfiniteMonkeys
 
 
         public:
-            Unlockable( ULock &i_lk ) : Poisonable( nullptr ), lk( &i_lk ) { assert( lk->owns_lock() ); }
+            StrongLock( ULock &i_lk ) : Poisonable( nullptr ), lk( &i_lk ) { assert_( lk->owns_lock(), "Cannot create a StrongLock on an unlocked lock" ); }
 			// TODO: I think the Poisoner can use the Poisonable base class as its basis, but for now it's fine.
 			// In fact, I think we can detect on the line, rather than wait for the dtor, if the `Poisoner` is a child `Poisonable`.
-            Unlockable( ULock &&i_lk, Blocker= {}, Poisoner &&p= makePoison() ) : Poisonable( &p ), lk( &i_lk ) { assert( this->lk->owns_lock() ); }
+            StrongLock( ULock &&i_lk, Blocker= {}, Poisoner &&p= makePoison() )
+				: Poisonable( &p, "Reference outlived the temporary it points to" ), lk( &i_lk )
+			{
+				assert_( this->lk->owns_lock(), "Cannot create a StrongLock on an unlocked lock" );
+			}
 
-			Unlockable( OwningUnlockable &&, Blocker= {}, Poisoner &&p= makePoison() );
-			Unlockable( OwningUnlockable & );
+			StrongLock( OwningLock && );
+			StrongLock( OwningLock & );
 
-            Unlockable( const Unlockable &copy )
-				: Poisonable( nullptr /* maybe it should be: `&copy` */ ), lk( copy.lk )
-				// Ben and I agree that this probably should be a poisoning case.
+            StrongLock( StrongLock &copy )
+				: Poisonable( &copy, "Another StrongLock is currently responsible for this lock." ), lk( copy.lk )
             {
 				this->validate();
             }
 
-			~Unlockable()
+			~StrongLock()
 			{
 				validate();
 			}
 
-			[[nodiscard]] Promiscuous promiscuous() &;
+			[[nodiscard]] Unlocked promiscuous() &;
 
 			operator ULock &() & { validate(); return *lk; }
     };
@@ -94,54 +196,59 @@ namespace InfiniteMonkeys
 	auto
 	makeUnlockGuard( ULock &lk )
 	{
-		return Unlockable( lk );
+		return StrongLock( lk );
 	}
 
-	class OwningUnlockable : Poisonable
+	class OwningLock : Poisonable
 	{
 		private:
-			friend Promiscuous;
+			friend Unlocked;
 			ULock lk;
 
-			friend Unlockable;
+			friend StrongLock;
 
-			explicit OwningUnlockable( Poisonable *const p, Mtx &mtx ) : Poisonable( p ), lk( mtx ) { assert( this->lk.owns_lock() ); }
+			explicit OwningLock( Poisonable *const p, Mtx &mtx )
+				: Poisonable( p, "Use of an unlocked scope while it was locked by a nested scope" ), lk( mtx )
+			{
+				 assert_( this->lk.owns_lock(), "Cannot create a StrongLock (owning) on an unlocked lock" );
+			}
 
 		public:
-			OwningUnlockable( Mtx &mtx ) : Poisonable( nullptr ), lk( mtx ) { assert( this->lk.owns_lock() ); }
+			OwningLock( Mtx &mtx ) : Poisonable( nullptr ), lk( mtx ) { assert_( this->lk.owns_lock(), "Internal error acquiring lock" ); }
 
-			[[nodiscard]] Promiscuous promiscuous() &;
+			[[nodiscard]] Unlocked promiscuous() &;
 	};
 
-	struct Promiscuous : Poisonable
+	struct Unlocked : Poisonable
 	{
 		private:
-			friend Unlockable;
-			friend OwningUnlockable;
+			friend StrongLock;
+			friend OwningLock;
 
 			ULock *lk;
 
 			void
 			validate()
 			{
-				assert( !lk->owns_lock() && "This Promiscuous object was locked by someone, it cannot be used at this time." );
-				assert( this->alive() && "This Promiscuous object, which is suitable only for use when not chaste, was poisoned" );
+				this->Poisonable::validate();
+				assert_( !lk->owns_lock(), "This Unlocked object was locked by someone, it cannot be used at this time." );
+				assert_( this->alive(), "This Unlocked object, which is suitable only for use when not chaste, was poisoned" );
 			}
 
-			Promiscuous( OwningUnlockable *const i_ul )
-				: Poisonable( i_ul ), lk( &i_ul->lk ) 
+			Unlocked( OwningLock *const i_ul )
+				: Poisonable( i_ul, "Use of a locked scope while it was unlocked by a nested scope" ), lk( &i_ul->lk )
 			{
 				this->lk->unlock();
 			}
 
-			Promiscuous( Unlockable *const i_ul )
-				: Poisonable( i_ul ), lk( i_ul->lk ) 
+			Unlocked( StrongLock *const i_ul )
+				: Poisonable( i_ul, "Use of a locked scope while it was unlocked by a nested scope" ), lk( i_ul->lk ) 
 			{
 				this->lk->unlock();
 			}
 
 		public:
-			~Promiscuous()
+			~Unlocked()
 			{
 				this->validate();
 				this->lk->lock();
@@ -151,51 +258,51 @@ namespace InfiniteMonkeys
 			chaste()
 			{
 				this->validate();
-				return OwningUnlockable( this, *this->lk->mutex() );
+				return OwningLock( this, *this->lk->mutex() );
 			}
 	};
 
-	[[nodiscard]] Promiscuous
-	Unlockable::promiscuous() &
+	[[nodiscard]] Unlocked
+	StrongLock::promiscuous() &
 	{
 		this->validate();
-		return Promiscuous( this );
+		return Unlocked( this );
 	}
 
-	[[nodiscard]] Promiscuous
-	OwningUnlockable::promiscuous() &
+	[[nodiscard]] Unlocked
+	OwningLock::promiscuous() &
 	{
 		this->validate();
-		return Promiscuous( this );
+		return Unlocked( this );
 	}
 
-	Unlockable::Unlockable( OwningUnlockable &o )
-		: Poisonable( nullptr ), lk( &o.lk )
+	StrongLock::StrongLock( OwningLock &o )
+		: Poisonable( &o, "A StrongLock is currently responsible for the lock owned by this OwningLock" ), lk( &o.lk )
 	{
-		assert( this->lk->owns_lock() );
+		assert_( this->lk->owns_lock(), "Cannot create a StrongLock on an unlocked lock" );
 	}
 
-	Unlockable::Unlockable( OwningUnlockable &&o, Unlockable::Blocker, Unlockable::Poisoner &&p )
-		: Poisonable( &p ), lk( &o.lk )
+	StrongLock::StrongLock( OwningLock &&o )
+		: Poisonable( &o, "Reference outlived the temporary it points to" ), lk( &o.lk )
 	{
 		std::cerr << "It's dangerous to go alone, so take this poisoner.  This allows promote, via rvalue case catching." << std::endl;
-		assert( this->lk->owns_lock() );
+		assert_( this->lk->owns_lock(), "Cannot create a StrongLock on an unlocked lock" );
 	}
 
 	auto
 	makeUnlockGuard( Mtx &mtx )
 	{
-		return OwningUnlockable( mtx );
+		return OwningLock( mtx );
 	}
 }
 
 namespace std
 {
 	template<>
-	InfiniteMonkeys::OwningUnlockable &&
-	move( InfiniteMonkeys::OwningUnlockable & ) noexcept= delete;
+	InfiniteMonkeys::OwningLock &&
+	move( InfiniteMonkeys::OwningLock & ) noexcept= delete;
 
-	template<> InfiniteMonkeys::Unlockable &&move( InfiniteMonkeys::Unlockable & ) noexcept= delete;
+	template<> InfiniteMonkeys::StrongLock &&move( InfiniteMonkeys::StrongLock & ) noexcept= delete;
 }
 
 
@@ -205,7 +312,7 @@ void disallowed();
 
 using namespace InfiniteMonkeys;
 void
-f1( Unlockable u )
+f1( StrongLock u )
 {
 	std::cerr << "F1 called" << std::endl;
 	auto prom= u.promiscuous();
@@ -224,7 +331,7 @@ f1( Unlockable u )
 }
 
 void
-f2( Unlockable u )
+f2( StrongLock u )
 {
 	f1( u );
 	f1( u );
@@ -256,13 +363,16 @@ main()
 }
 
 template< typename T, typename = void >
-struct checker : std::true_type {};
+struct syntax_checker : std::false_type {};
 
 
 // Should die at compiletime
 template< typename T >
-struct checker< T, std::void_t< decltype( std::move( std::declval< T & >() ) ) > >
-	: std::false_type {};
+struct syntax_checker< T, std::void_t< decltype( std::move( std::declval< T & >() ) ) > >
+	: std::true_type {};
+
+template< typename T >
+constexpr bool check_movable= syntax_checker< T >::value;
 
 
 #define DISALLOWED_SYNTAX
@@ -274,10 +384,13 @@ disallowed()
 	auto l2= makeUnlockGuard( mtx ); // Should work fine at runtime
 
 #ifdef DISALLOWED_SYNTAX
-	Unlockable l= makeUnlockGuard( mtx ); // Should die at runtime
+	{
+		InfiniteMonkeys::Testing::ScopedFailure failureScope;
+		StrongLock l= makeUnlockGuard( mtx ); // Should die at runtime
+	}
+	std::cerr << "Correctly caught a test failure for unlock guard." << std::endl;
 
-
-	static_assert( checker< Unlockable >::value );
-	static_assert( checker< OwningUnlockable >::value );
+	static_assert( !check_movable< StrongLock > );
+	static_assert( !check_movable< OwningLock > );
 #endif
 }

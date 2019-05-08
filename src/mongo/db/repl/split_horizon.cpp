@@ -190,7 +190,7 @@ SplitHorizon::ForwardMapping computeForwardMappings(
 
         // Process all of the BSON description of horizons into a linear list.
         auto convert = [](auto&& horizonObj) -> MapMember {
-            const auto horizonName = horizonObj.fieldName();
+            const StringData horizonName = horizonObj.fieldName();
 
             if (horizonObj.type() != String) {
                 uasserted(ErrorCodes::TypeMismatch,
@@ -206,7 +206,7 @@ SplitHorizon::ForwardMapping computeForwardMappings(
                           "Horizons cannot have empty names" );
             }
 
-            return {horizonName, HostAndPort{horizonObj.valueStringData()}};
+            return {horizonName.toString(), HostAndPort{horizonObj.valueStringData()}};
         };
 
         const auto& horizonsObject = horizonsElement->Obj();

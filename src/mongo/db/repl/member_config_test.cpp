@@ -436,6 +436,20 @@ TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {
     ASSERT_EQUALS(mc.getHorizonMappings().size(), std::size_t{1});
 }
 
+TEST(MemberConfig, HorizonFieldWithEmptyStringIsRejected) {
+    ReplSetTagConfig tagConfig;
+    try{
+    MemberConfig (BSON("_id" << 0 << "host"
+                               << "h"<<"horizons"<<BSON(""<<"example.com:42")),
+                    &tagConfig);
+    ASSERT_TRUE(false); // Never should get here
+    }
+    catch( const ExceptionFor<ErrorCodes::BadValue>&ex )
+    {
+        ASSERT_NOT_EQUALS(ex.toStatus().reason().find("Horizons cannot have empty names"), std::string::npos);
+    }
+}
+
 TEST(MemberConfig, ValidateFailsWithIdOutOfRange) {
     ReplSetTagConfig tagConfig;
     {

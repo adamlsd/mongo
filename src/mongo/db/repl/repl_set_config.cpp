@@ -474,6 +474,7 @@ Status ReplSetConfig::validate() const {
         }();
 
         if (expectedHorizonNameMapping != seenHorizonNameMapping) {
+        // Collect a list of horizons only seen on one side of the pair of horizon maps considered.  Names that are only one one side are non-universal, and should be reported -- the same set of horizon names must exist across all replica set members.  We collect the list while parsing over ALL members, this way we can report all horizons which are not universally listed in the replica set configuration in a single error message.
             std::set_symmetric_difference(
                 begin(expectedHorizonNameMapping),
                 end(expectedHorizonNameMapping),

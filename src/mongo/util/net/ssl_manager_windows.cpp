@@ -235,7 +235,8 @@ StatusWith<stdx::unordered_set<RoleName>> parsePeerRoles(PCCERT_CONTEXT cert) {
                        reinterpret_cast<char*>(extension->Value.pbData) + extension->Value.cbData));
 }
 
-// TODO(SERVER-41045): If SNI functionality is needed on Windows, this is where one would implement it.
+// TODO(SERVER-41045): If SNI functionality is needed on Windows, this is where one would implement
+// it.
 boost::optional<std::string> getSNIServerName_impl() {
     return boost::none;
 }

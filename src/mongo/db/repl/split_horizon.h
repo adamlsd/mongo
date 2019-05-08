@@ -53,7 +53,7 @@ public:
         boost::optional<std::string> sniName;
         boost::optional<HostAndPort> connectionTarget;
 
-		Parameters()= default;
+        Parameters() = default;
         Parameters(boost::optional<std::string> initialSniName,
                    boost::optional<HostAndPort> initialConnectionTarget)
             : sniName(std::move(initialSniName)),

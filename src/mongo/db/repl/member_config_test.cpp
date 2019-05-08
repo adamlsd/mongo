@@ -337,10 +337,10 @@ TEST(MemberConfig, DuplicateHorizonNames) {
                                 << "h"
                                 << "horizons"
                                 << BSON("goofyRepeatedHorizonName"
-                                                                           << "a.host:43"
-                                                                   << "goofyRepeatedHorizonName"
-                                                                   
-                                                                           << "b.host:256")),
+                                        << "a.host:43"
+                                        << "goofyRepeatedHorizonName"
+
+                                        << "b.host:256")),
                      &tagConfig);
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
@@ -352,10 +352,10 @@ TEST(MemberConfig, DuplicateHorizonNames) {
         MemberConfig(BSON("_id" << 0 << "host"
                                 << "h"
                                 << "horizons"
-                                << BSON("someUniqueHorizonName" 
-                                                                        << "a.host:43"
-                                                                << SplitHorizon::kDefaultHorizon
-                                                                        << "b.host:256")),
+                                << BSON("someUniqueHorizonName"
+                                        << "a.host:43"
+                                        << SplitHorizon::kDefaultHorizon
+                                        << "b.host:256")),
                      &tagConfig);
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
@@ -373,10 +373,10 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
         MemberConfig(BSON("_id" << 0 << "host"
                                 << "uniqueHostname.example.com:42"
                                 << "horizons"
-                                << BSON("alpha" 
-                                                        << "duplicatedHostname.example.com:42"
-                                                << "beta"
-                                                        << "duplicatedHostname.example.com:42")),
+                                << BSON("alpha"
+                                        << "duplicatedHostname.example.com:42"
+                                        << "beta"
+                                        << "duplicatedHostname.example.com:42")),
                      &tagConfig);
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
@@ -390,10 +390,10 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
         MemberConfig(BSON("_id" << 0 << "host"
                                 << "duplicatedHostname.example.com:42"
                                 << "horizons"
-                                << BSON("alpha" 
-                                                        << "uniqueHostname.example.com:42"
-                                                << "beta"
-                                                        << "duplicatedHostname.example.com:42")),
+                                << BSON("alpha"
+                                        << "uniqueHostname.example.com:42"
+                                        << "beta"
+                                        << "duplicatedHostname.example.com:42")),
                      &tagConfig);
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
@@ -406,20 +406,20 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
     MemberConfig(BSON("_id" << 0 << "host"
                             << "duplicatedHostname.example.com:42"
                             << "horizons"
-                            << BSON("alpha" 
-                                                    << "uniqueHostname.example.com:43"
-                                            << "beta"
-                                                    << "duplicatedHostname.example.com:43")),
+                            << BSON("alpha"
+                                    << "uniqueHostname.example.com:43"
+                                    << "beta"
+                                    << "duplicatedHostname.example.com:43")),
                  &tagConfig);
 
     // Repeated hostname within the horizons, with different ports should be okay.
     MemberConfig(BSON("_id" << 0 << "host"
                             << "uniqueHostname.example.com:42"
                             << "horizons"
-                            << BSON("alpha" 
-                                                    << "duplicatedHostname.example.com:42"
-                                            << "beta"
-                                                    << "duplicatedHostname.example.com:43")),
+                            << BSON("alpha"
+                                    << "duplicatedHostname.example.com:42"
+                                    << "beta"
+                                    << "duplicatedHostname.example.com:43")),
                  &tagConfig);
 }
 
@@ -438,15 +438,17 @@ TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {
 
 TEST(MemberConfig, HorizonFieldWithEmptyStringIsRejected) {
     ReplSetTagConfig tagConfig;
-    try{
-    MemberConfig (BSON("_id" << 0 << "host"
-                               << "h"<<"horizons"<<BSON(""<<"example.com:42")),
-                    &tagConfig);
-    ASSERT_TRUE(false); // Never should get here
-    }
-    catch( const ExceptionFor<ErrorCodes::BadValue>&ex )
-    {
-        ASSERT_NOT_EQUALS(ex.toStatus().reason().find("Horizons cannot have empty names"), std::string::npos);
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "h"
+                                << "horizons"
+                                << BSON(""
+                                        << "example.com:42")),
+                     &tagConfig);
+        ASSERT_TRUE(false);  // Never should get here
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        ASSERT_NOT_EQUALS(ex.toStatus().reason().find("Horizons cannot have empty names"),
+                          std::string::npos);
     }
 }
 

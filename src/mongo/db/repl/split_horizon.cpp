@@ -201,9 +201,8 @@ SplitHorizon::ForwardMapping computeForwardMappings(
                 uasserted(ErrorCodes::BadValue,
                           "Horizon name \"" + SplitHorizon::kDefaultHorizon +
                               "\" is reserved for internal mongodb usage");
-            } else if( horizonName == "" ) { 
-                uasserted(ErrorCodes::BadValue,
-                          "Horizons cannot have empty names" );
+            } else if (horizonName == "") {
+                uasserted(ErrorCodes::BadValue, "Horizons cannot have empty names");
             }
 
             return {horizonName.toString(), HostAndPort{horizonObj.valueStringData()}};
@@ -253,7 +252,8 @@ SplitHorizon::ForwardMapping computeForwardMappings(
     // Finally add the default mapping, regardless of whether we processed a configuration.
     const bool successInDefaultPlacement =
         forwardMapping.emplace(SplitHorizon::kDefaultHorizon, host).second;
-    // And that insertion BETTER succeed -- it mightn't if there's a bug in the configuration processing logic.
+    // And that insertion BETTER succeed -- it mightn't if there's a bug in the configuration
+    // processing logic.
     invariant(successInDefaultPlacement);
 
     return forwardMapping;

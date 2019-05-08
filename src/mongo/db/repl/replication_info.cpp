@@ -278,19 +278,19 @@ public:
 
         if (!seenIsMaster) {
             auto connectionTargetBson = cmdObj["connectionTarget"];
-            boost::optional< HostAndPort > connectionTarget;
+            boost::optional<HostAndPort> connectionTarget;
             if (!connectionTargetBson.eoo()) {
                 if (connectionTargetBson.type() != BSONType::String)
-                    uasserted(
-                        ErrorCodes::TypeMismatch,
-                        str::stream()
-                            << "'connectionTarget' must be of type String, but was of type "
-                            << typeName(connectionTargetBson.type()));
-                connectionTarget= HostAndPort{connectionTargetBson.valueStringData()};
+                    uasserted(ErrorCodes::TypeMismatch,
+                              str::stream()
+                                  << "'connectionTarget' must be of type String, but was of type "
+                                  << typeName(connectionTargetBson.type()));
+                connectionTarget = HostAndPort{connectionTargetBson.valueStringData()};
             }
 
             auto sniName = opCtx->getClient()->getSniNameForSession();
-            SplitHorizon::setParameters(opCtx->getClient(), std::move(sniName), std::move( connectionTarget));
+            SplitHorizon::setParameters(
+                opCtx->getClient(), std::move(sniName), std::move(connectionTarget));
         }
 
         // Parse the optional 'internalClient' field. This is provided by incoming connections from

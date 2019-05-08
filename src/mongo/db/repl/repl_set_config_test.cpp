@@ -1867,36 +1867,31 @@ TEST(ReplSetConfig, HorizonConsistency) {
                                       BSON("_id" << 0 << "host"
                                                  << "localhost:12345"
                                                  << "horizons"
-                                                 << BSON("alpha" << BSON("match"
-                                                                         << "a.host:42")
+                                                 << BSON("alpha" 
+                                                                         << "a.host:42"
                                                                  << "beta"
-                                                                 << BSON("match"
-                                                                         << "a.host2:43")
+                                                                         << "a.host2:43"
                                                                  << "gamma"
-                                                                 << BSON("match"
-                                                                         << "a.host3:44")))
+                                                                         << "a.host3:44"))
                                       << BSON("_id" << 1 << "host"
                                                     << "localhost:23456"
                                                     << "horizons"
-                                                    << BSON("alpha" << BSON("match"
-                                                                            << "b.host:42")
+                                                    << BSON("alpha" 
+                                                                            << "b.host:42"
                                                                     << "gamma"
-                                                                    << BSON("match"
-                                                                            << "b.host3:44")))
+                                                                            << "b.host3:44"))
                                       << BSON("_id" << 2 << "host"
                                                     << "localhost:34567"
                                                     << "horizons"
-                                                    << BSON("alpha" << BSON("match"
-                                                                            << "c.host:42")
+                                                    << BSON("alpha" 
+                                                                            << "c.host:42"
                                                                     << "beta"
-                                                                    << BSON("match"
-                                                                            << "c.host1:42")
+                                                                            << "c.host1:42"
                                                                     << "gamma"
-                                                                    << BSON("match"
-                                                                            << "c.host2:43")
+                                                                            << "c.host2:43"
                                                                     << "delta"
-                                                                    << BSON("match"
-                                                                            << "c.host3:44"))))
+
+                                                                            << "c.host3:44")))
                                << "writeConcernMajorityJournalDefault"
                                << false)));
 
@@ -1921,59 +1916,47 @@ TEST(ReplSetConfig, HorizonConsistency) {
                                            BSON("_id" << 0 << "host"
                                                       << "same1"
                                                       << "horizons"
-                                                      << BSON("alpha" << BSON("match"
-                                                                              << "a.host:44")
+                                                      << BSON("alpha" 
+                                                                              << "a.host:44"
                                                                       << "beta"
-                                                                      << BSON("match"
-                                                                              << "a.host2:44")
+                                                                              << "a.host2:44"
                                                                       << "gamma"
-                                                                      << BSON("match"
-                                                                              << "a.host3:44")
+                                                                              << "a.host3:44"
                                                                       << "delta"
-                                                                      << BSON("match"
-                                                                              << "a.host4:45")))
+                                                                              << "a.host4:45"))
                                            << BSON("_id" << 1 << "host"
                                                          << "localhost:1"
                                                          << "horizons"
-                                                         << BSON("alpha" << BSON("match"
-                                                                                 << "same1")
+                                                         << BSON("alpha" 
+                                                                                 << "same1"
                                                                          << "beta"
-                                                                         << BSON("match"
-                                                                                 << "b.host2:44")
+                                                                                 << "b.host2:44"
                                                                          << "gamma"
-                                                                         << BSON("match"
-                                                                                 << "b.host3:44")
+                                                                                 << "b.host3:44"
                                                                          << "delta"
-                                                                         << BSON("match"
-                                                                                 << "b.host4:44")))
+                                                                                 << "b.host4:44"))
                                            << BSON("_id" << 2 << "host"
                                                          << "localhost:2"
                                                          << "horizons"
-                                                         << BSON("alpha" << BSON("match"
-                                                                                 << "c.host1:44")
+                                                         << BSON("alpha" 
+                                                                                 << "c.host1:44"
                                                                          << "beta"
-                                                                         << BSON("match"
-                                                                                 << "c.host2:44")
+                                                                                 << "c.host2:44"
                                                                          << "gamma"
-                                                                         << BSON("match"
-                                                                                 << "c.host3:44")
+                                                                                 << "c.host3:44"
                                                                          << "delta"
-                                                                         << BSON("match"
-                                                                                 << "same2")))
+                                                                                 << "same2"))
                                            << BSON("_id" << 3 << "host"
                                                          << "localhost:3"
                                                          << "horizons"
-                                                         << BSON("alpha" << BSON("match"
-                                                                                 << "same2")
+                                                         << BSON("alpha" 
+                                                                                 << "same2"
                                                                          << "beta"
-                                                                         << BSON("match"
-                                                                                 << "d.host2:44")
+                                                                                 << "d.host2:44"
                                                                          << "gamma"
-                                                                         << BSON("match"
-                                                                                 << "d.host3:44")
+                                                                                 << "d.host3:44"
                                                                          << "delta"
-                                                                         << BSON("match"
-                                                                                 << "d.host4:44"))))
+                                                                                 << "d.host4:44")))
                                     << "writeConcernMajorityJournalDefault"
                                     << false));
     std::cerr << status.reason();

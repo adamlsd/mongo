@@ -45,17 +45,27 @@ class SplitHorizon {
 public:
     static constexpr auto kDefaultHorizon = "__default"_sd;
 
-    using ForwardMapping = StringMap<HostAndPort>;              // Contains reply port
-    using ReverseMapping = std::map<HostAndPort, std::string>;  // Contains match port
+    using ForwardMapping = StringMap<HostAndPort>;
+    using ReverseMapping = std::map<HostAndPort, std::string>;
+    using ReverseHostOnlyMapping = std::map<std::string, boost::optional<std::string>>;
 
     struct Parameters {
-        boost::optional<std::string> connectionTarget;
+        boost::optional<std::string> sniName;
+        boost::optional<HostAndPort> connectionTarget;
+
+		Parameters()= default;
+        Parameters(boost::optional<std::string> initialSniName,
+                   boost::optional<HostAndPort> initialConnectionTarget)
+            : sniName(std::move(initialSniName)),
+              connectionTarget(std::move(initialConnectionTarget)) {}
     };
 
     /**
      * Set the split horizon connection parameters, for use by future is-master commands.
      */
-    static void setParameters(Client* client, boost::optional<std::string> connectionTarget);
+    static void setParameters(Client* client,
+                              boost::optional<std::string> sniName,
+                              boost::optional<HostAndPort> connectionTarget);
 
     /**
      * Get the client's SplitHorizonParameters object.
@@ -66,10 +76,8 @@ public:
     explicit SplitHorizon(const HostAndPort& host,
                           const boost::optional<BSONElement>& horizonsElement);
 
-	// For testing only
-    explicit SplitHorizon(ForwardMapping forward, ReverseMapping reverse)
-			: forwardMapping( std::move( forward ) ), reverseMapping( std::move( reverse ) ) {}
 
+    explicit SplitHorizon(ForwardMapping forward);
 
     StringData determineHorizon(const Parameters& horizonParameters) const;
 
@@ -85,17 +93,35 @@ public:
     const auto& getHorizonMappings() const {
         return forwardMapping;
     }
+
     const auto& getHorizonReverseMappings() const {
         return reverseMapping;
+    }
+
+    const auto& getHorizonReverseHostMappings() const {
+        return reverseHostMapping;
     }
 
     void toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const;
 
 private:
-    ForwardMapping
-        forwardMapping;  // Maps each horizon name to a network address for this replica set member
-    ReverseMapping reverseMapping;  // Maps each network address which this replica set member has
-                                    // to a horizon name under which that address applies
+    // For testing only
+    explicit SplitHorizon(
+        std::tuple<ForwardMapping, ReverseMapping, ReverseHostOnlyMapping> mappings)
+        : forwardMapping(std::move(std::get<0>(mappings))),
+          reverseMapping(std::move(std::get<1>(mappings))),
+          reverseHostMapping(std::move(std::get<2>(mappings))) {}
+
+    // Maps each horizon name to a network address for this replica set member
+    ForwardMapping forwardMapping;
+
+    // Maps each network address which this replica set member has to a horizon name under which
+    // that address applies
+    ReverseMapping reverseMapping;
+
+    // Maps each network address which this replica set member has to a horizon name under which
+    // that address applies
+    ReverseHostOnlyMapping reverseHostMapping;
 };
 }  // namespace repl
 }  // namespace mongo

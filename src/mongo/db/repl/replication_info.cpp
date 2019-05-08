@@ -277,25 +277,20 @@ public:
         }
 
         if (!seenIsMaster) {
-            const auto target = [&]() -> boost::optional<std::string> {
-                auto connectionTargetBson = cmdObj["connectionTarget"];
-                if (!connectionTargetBson.eoo()) {
-                    if (connectionTargetBson.type() != BSONType::String)
-                        uasserted(
-                            ErrorCodes::TypeMismatch,
-                            str::stream()
-                                << "'connectionTarget' must be of type String, but was of type "
-                                << typeName(connectionTargetBson.type()));
-                    return HostAndPort{connectionTargetBson.valueStringData()}.toString();
-                }
+            auto connectionTargetBson = cmdObj["connectionTarget"];
+            boost::optional< HostAndPort > connectionTarget;
+            if (!connectionTargetBson.eoo()) {
+                if (connectionTargetBson.type() != BSONType::String)
+                    uasserted(
+                        ErrorCodes::TypeMismatch,
+                        str::stream()
+                            << "'connectionTarget' must be of type String, but was of type "
+                            << typeName(connectionTargetBson.type()));
+                connectionTarget= HostAndPort{connectionTargetBson.valueStringData()};
+            }
 
-                const int defaultIncomingPort = stdx::as_const(serverGlobalParams).port;
-                auto sniName = opCtx->getClient()->getSniNameForSession();
-                if (!sniName)
-                    return boost::none;
-                return HostAndPort{*sniName, defaultIncomingPort}.toString();
-            }();
-            SplitHorizon::setParameters(opCtx->getClient(), target);
+            auto sniName = opCtx->getClient()->getSniNameForSession();
+            SplitHorizon::setParameters(opCtx->getClient(), std::move(sniName), std::move( connectionTarget));
         }
 
         // Parse the optional 'internalClient' field. This is provided by incoming connections from

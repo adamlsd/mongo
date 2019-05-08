@@ -44,67 +44,140 @@ namespace mongo {
 namespace repl {
 namespace {
 static const std::string defaultHost = "default.dns.name.example.com";
+static const std::string defaultPort = "4242";
+static const std::string defaultHostAndPort = defaultHost + ":" + defaultPort;
+
+static const std::string matchingHost = "matching.dns.name.example.com";
+static const std::string matchingPort = "4243";
+static const std::string matchingHostAndPort = matchingHost + ":" + matchingPort;
+
+
+static const std::string nonmatchingHost = "nonmatching.dns.name.example.com";
+static const std::string nonmatchingPort = "4244";
+static const std::string nonmatchingHostAndPort = nonmatchingHost + ":" + nonmatchingPort;
+
+static const std::string altPort = ":666";
+
 TEST(SplitHorizonTesting, determineHorizon) {
 
+    struct Input {
+        SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
+        SplitHorizon::Parameters horizonParameters;
+        using MappingType = std::map<std::string, std::string>;
+
+
+        Input(const MappingType& mapping,
+              boost::optional<std::string> sniName,
+              boost::optional<std::string> connectionTarget)
+            : horizonParameters(std::move(sniName), [&]() -> boost::optional<HostAndPort> {
+                  if (connectionTarget)
+                      return HostAndPort{*connectionTarget};
+                  return boost::none;
+              }()) {
+            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
+
+            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
+            using ElementType = MappingType::value_type;
+            auto createForwardMapping = [](const ElementType& element) {
+                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
+            };
+            std::transform(begin(mapping),
+                           end(mapping),
+                           inserter(forwardMapping, end(forwardMapping)),
+                           createForwardMapping);
+        }
+    };
     struct {
-        struct Input {
-            SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
-            SplitHorizon::ReverseMapping reverseMapping;
-            SplitHorizon::Parameters horizonParameters;
-            using MappingType = std::map<std::string, std::string>;
-
-
-            Input( const MappingType& mapping, SplitHorizon::Parameters params)
-                : horizonParameters(std::move(params)) {
-                forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHost + ":4242");
-
-                using ForwardMappingValueType = decltype(forwardMapping)::value_type;
-                using ElementType = MappingType::value_type;
-                auto createForwardMapping = [](const ElementType& element) {
-                    return ForwardMappingValueType{element.first, HostAndPort(element.second)};
-                };
-                std::transform(begin(mapping),
-                               end(mapping),
-                               inserter(forwardMapping, end(forwardMapping)),
-                               createForwardMapping);
-
-                auto createReverseMapping =
-                    [](const auto& element) -> decltype(reverseMapping)::value_type {
-                    return {element.second, element.first};
-                };
-                std::transform(begin(stdx::as_const(forwardMapping)),
-                               end(stdx::as_const(forwardMapping)),
-                               inserter(reverseMapping, end(reverseMapping)),
-                               createReverseMapping);
-            }
-        } input;
+        const int lineNumber;
+        Input input;
 
         std::string expected;
     } tests[] = {
         // No parameters and no horizon views configured.
-        {{{}, {}}, "__default"},
-        {{{}, {boost::none}}, "__default"},
-        {{{}, {defaultHost}}, "__default"},
+        {__LINE__, {{}, boost::none, boost::none}, "__default"},
+        {__LINE__, {{}, defaultHost, boost::none}, "__default"},
+        {__LINE__, {{}, boost::none, defaultHostAndPort}, "__default"},
+        {__LINE__, {{}, defaultHost, defaultHostAndPort}, "__default"},
 
-        // No SNI, no match
-        {{{{"unusedHorizon", "badmatch:00001"}}, {boost::none}}, "__default"},
+        // No SNI, no connectionTarget -> no match
+        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, boost::none, boost::none}, "__default"},
 
-        // Has SNI, no match
-        {{ {{"unusedHorizon", "badmatch:00001"}}, {defaultHost}}, "__default"},
+        // Unmatching SNI, no connectionTarget -> no match
+        {__LINE__,
+         {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost, boost::none},
+         "__default"},
+        // No SNI, Unmatching connectionTarget -> no match
+        {__LINE__,
+         {{{"unusedHorizon", "badmatch:00001"}}, boost::none, nonmatchingHostAndPort},
+         "__default"},
 
-        // Has SNI, with match
-        {{{{"targetHorizon", "goodMatch:00001"}}, {"goodMatch:00001"s}}, "targetHorizon"},
+        // Unmatching SNI, Unmatching connectionTarget -> no match
+        {__LINE__,
+         {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost, nonmatchingHostAndPort},
+         "__default"},
+
+        // Matching SNI, no connectionTarget -> match
+        {__LINE__,
+         {{{"targetHorizon", matchingHostAndPort}}, matchingHost, boost::none},
+         "targetHorizon"},
+
+        // No SNI, matching connectionTarget -> match
+        {__LINE__,
+         {{{"targetHorizon", matchingHostAndPort}}, boost::none, matchingHostAndPort},
+         "targetHorizon"},
+
+        // Matching SNI, matching connectionTarget -> match
+        {__LINE__,
+         {{{"targetHorizon", matchingHostAndPort}}, matchingHost, matchingHostAndPort},
+         "targetHorizon"},
+
+        // Matching SNI, matching connectionTarget, multiPort -> match
+        {__LINE__,
+         {{{"targetHorizon", matchingHostAndPort}, {"badHorizon", matchingHost + altPort}},
+          matchingHost,
+          matchingHostAndPort},
+         "targetHorizon"},
+
+        // Matching SNI, matching connectionTarget, multiPort, default collision -> match
+        {__LINE__,
+         {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
+          defaultHost,
+          defaultHost + altPort},
+         "targetHorizon"},
+
+        // Default horizon ambiguous case is not a failure
+        {__LINE__,
+         {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
+          defaultHost,
+          boost::none},
+         "__default"},
+
     };
 
     for (const auto& test : tests) {
         const auto& expected = test.expected;
         const auto& input = test.input;
-            
+
         const std::string witness =
-            SplitHorizon( input.forwardMapping, input.reverseMapping ).determineHorizon(
-                 input.horizonParameters)
-                .toString();
+            SplitHorizon(input.forwardMapping).determineHorizon(input.horizonParameters).toString();
+        const bool equals = (witness == expected);
+        if (!equals)
+            std::cerr << "Failing test input from line: " << test.lineNumber << std::endl;
         ASSERT_EQUALS(witness, expected);
+    }
+
+    const Input failingCases[] = {
+        // Matching SNI, no connectionTarget, multiPort, collision -> match
+        {{{"targetHorizon", matchingHost + altPort}, {"badHorizon", matchingHostAndPort}},
+         matchingHost,
+         boost::none},
+    };
+
+    for (const auto& input : failingCases) {
+        SplitHorizon horizon(input.forwardMapping);
+
+        ASSERT_THROWS(horizon.determineHorizon(input.horizonParameters),
+                      ExceptionFor<ErrorCodes::HostNotFound>);
     }
 }
 }  // namespace

@@ -175,7 +175,7 @@ AllMappings computeReverseMappings(SplitHorizon::ForwardMapping forwardMapping) 
 }
 }  // namespace
 
-// A split horizon build from a known forward mapping table should just need to construct the
+// A split horizon built from a known forward mapping table should just need to construct the
 // reverse mappings.
 SplitHorizon::SplitHorizon(ForwardMapping mapping)
     : SplitHorizon(computeReverseMappings(std::move(mapping))) {}

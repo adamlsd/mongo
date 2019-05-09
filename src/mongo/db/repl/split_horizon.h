@@ -61,7 +61,7 @@ public:
     };
 
     /**
-     * Set the split horizon connection parameters, for use by future is-master commands.
+     * Set the split horizon connection parameters, for use by future `isMaster` commands.
      */
     static void setParameters(Client* client,
                               boost::optional<std::string> sniName,
@@ -115,12 +115,12 @@ private:
     // Maps each horizon name to a network address for this replica set member
     ForwardMapping forwardMapping;
 
-    // Maps each network address which this replica set member has to a horizon name under which
-    // that address applies
+    // Maps each network address (`HostAndPort`) which this replica set member has to a horizon name
+    // under which that address applies
     ReverseMapping reverseMapping;
 
-    // Maps each network address which this replica set member has to a horizon name under which
-    // that address applies
+    // Maps each hostname which this replica set member has to a horizon name under which that
+    // address applies
     ReverseHostOnlyMapping reverseHostMapping;
 };
 }  // namespace repl

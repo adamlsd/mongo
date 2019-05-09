@@ -59,7 +59,6 @@ static const std::string nonmatchingHostAndPort = nonmatchingHost + ":" + nonmat
 static const std::string altPort = ":666";
 
 TEST(SplitHorizonTesting, determineHorizon) {
-
     struct Input {
         SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
         SplitHorizon::Parameters horizonParameters;
@@ -67,13 +66,8 @@ TEST(SplitHorizonTesting, determineHorizon) {
 
 
         Input(const MappingType& mapping,
-              boost::optional<std::string> sniName,
-              boost::optional<std::string> connectionTarget)
-            : horizonParameters(std::move(sniName), [&]() -> boost::optional<HostAndPort> {
-                  if (connectionTarget)
-                      return HostAndPort{*connectionTarget};
-                  return boost::none;
-              }()) {
+              boost::optional<std::string> sniName)
+            : horizonParameters(std::move(sniName)){
             forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
 
             using ForwardMappingValueType = decltype(forwardMapping)::value_type;
@@ -87,6 +81,7 @@ TEST(SplitHorizonTesting, determineHorizon) {
                            createForwardMapping);
         }
     };
+
     struct {
         const int lineNumber;
         Input input;
@@ -94,64 +89,21 @@ TEST(SplitHorizonTesting, determineHorizon) {
         std::string expected;
     } tests[] = {
         // No parameters and no horizon views configured.
-        {__LINE__, {{}, boost::none, boost::none}, "__default"},
-        {__LINE__, {{}, defaultHost, boost::none}, "__default"},
-        {__LINE__, {{}, boost::none, defaultHostAndPort}, "__default"},
-        {__LINE__, {{}, defaultHost, defaultHostAndPort}, "__default"},
+        {__LINE__, {{}, boost::none}, "__default"},
+        {__LINE__, {{}, defaultHost}, "__default"},
 
-        // No SNI, no connectionTarget -> no match
-        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, boost::none, boost::none}, "__default"},
+        // No SNI -> no match
+        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, boost::none }, "__default"},
 
-        // Unmatching SNI, no connectionTarget -> no match
+        // Unmatching SNI -> no match
         {__LINE__,
-         {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost, boost::none},
-         "__default"},
-        // No SNI, Unmatching connectionTarget -> no match
-        {__LINE__,
-         {{{"unusedHorizon", "badmatch:00001"}}, boost::none, nonmatchingHostAndPort},
+         {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost},
          "__default"},
 
-        // Unmatching SNI, Unmatching connectionTarget -> no match
+        // Matching SNI -> match
         {__LINE__,
-         {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost, nonmatchingHostAndPort},
-         "__default"},
-
-        // Matching SNI, no connectionTarget -> match
-        {__LINE__,
-         {{{"targetHorizon", matchingHostAndPort}}, matchingHost, boost::none},
+         {{{"targetHorizon", matchingHostAndPort}}, matchingHost},
          "targetHorizon"},
-
-        // No SNI, matching connectionTarget -> match
-        {__LINE__,
-         {{{"targetHorizon", matchingHostAndPort}}, boost::none, matchingHostAndPort},
-         "targetHorizon"},
-
-        // Matching SNI, matching connectionTarget -> match
-        {__LINE__,
-         {{{"targetHorizon", matchingHostAndPort}}, matchingHost, matchingHostAndPort},
-         "targetHorizon"},
-
-        // Matching SNI, matching connectionTarget, multiPort -> match
-        {__LINE__,
-         {{{"targetHorizon", matchingHostAndPort}, {"badHorizon", matchingHost + altPort}},
-          matchingHost,
-          matchingHostAndPort},
-         "targetHorizon"},
-
-        // Matching SNI, matching connectionTarget, multiPort, default collision -> match
-        {__LINE__,
-         {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
-          defaultHost,
-          defaultHost + altPort},
-         "targetHorizon"},
-
-        // Default horizon ambiguous case is not a failure
-        {__LINE__,
-         {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
-          defaultHost,
-          boost::none},
-         "__default"},
-
     };
 
     for (const auto& test : tests) {
@@ -167,17 +119,24 @@ TEST(SplitHorizonTesting, determineHorizon) {
     }
 
     const Input failingCases[] = {
-        // Matching SNI, no connectionTarget, multiPort, collision -> match
-        {{{"targetHorizon", matchingHost + altPort}, {"badHorizon", matchingHostAndPort}},
-         matchingHost,
-         boost::none},
     };
-
     for (const auto& input : failingCases) {
         SplitHorizon horizon(input.forwardMapping);
 
         ASSERT_THROWS(horizon.determineHorizon(input.horizonParameters),
                       ExceptionFor<ErrorCodes::HostNotFound>);
+    }
+
+    const Input failingCtorCases[] = {
+        // Matching SNI, multiPort, collision -> match
+        {{{"targetHorizon", matchingHost + altPort}, {"badHorizon", matchingHostAndPort}},
+         matchingHost},
+        // Default horizon ambiguous case is a failure
+         {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
+          defaultHost},
+    };
+    for (const auto& input : failingCases) {
+        ASSERT_THROWS(SplitHorizon(input.forwardMapping),ExceptionFor<ErrorCodes::BadValue>);
     }
 }
 }  // namespace

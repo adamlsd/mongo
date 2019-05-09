@@ -51,10 +51,9 @@ const auto getSplitHorizonParameters = Client::declareDecoration<SplitHorizon::P
 }  // namespace
 
 void SplitHorizon::setParameters(Client* const client,
-                                 boost::optional<std::string> sniName,
-                                 boost::optional<HostAndPort> connectionTarget) {
+                                 boost::optional<std::string> sniName){
     stdx::lock_guard<Client> lk(*client);
-    getSplitHorizonParameters(*client) = {std::move(sniName), std::move(connectionTarget)};
+    getSplitHorizonParameters(*client) = {std::move(sniName)};
 }
 
 auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
@@ -62,22 +61,11 @@ auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
 }
 
 StringData SplitHorizon::determineHorizon(const SplitHorizon::Parameters& horizonParameters) const {
-    if (horizonParameters.connectionTarget) {
-        const auto& connectionTarget = *horizonParameters.connectionTarget;
-        auto found = reverseMapping.find(connectionTarget);
-        if (found != end(reverseMapping))
-            return found->second;
-    } else if (horizonParameters.sniName) {
+ if (horizonParameters.sniName) {
         const auto sniName = *horizonParameters.sniName;
-        auto found = reverseHostMapping.find(sniName);
+        const auto found = reverseHostMapping.find(sniName);
         if (found != end(reverseHostMapping)) {
-            if (!found->second) {
-                const auto message = "Attempt to lookup a multi-port mapping by SNI name only (" +
-                    sniName + ")-- legacy driver use in unsupported situation detected.";
-                log() << message;
-                uasserted(ErrorCodes::HostNotFound, message);
-            }
-            return *found->second;
+            return found->second;
         }
     }
     return kDefaultHorizon;
@@ -95,6 +83,7 @@ void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& con
 
     BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
     for (const auto& horizon : forwardMapping) {
+        // The "__default" horizon should never be emitted in the horizon table.
         if (horizon.first == SplitHorizon::kDefaultHorizon)
             continue;
         horizonsBson.append(horizon.first, horizon.second.toString());
@@ -103,46 +92,13 @@ void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& con
 
 namespace {
 using AllMappings = std::tuple<SplitHorizon::ForwardMapping,
-                               SplitHorizon::ReverseMapping,
                                SplitHorizon::ReverseHostOnlyMapping>;
 
 // The reverse mappings for a forward mapping are used to fully initialize a `SplitHorizon`
 // instance.
 AllMappings computeReverseMappings(SplitHorizon::ForwardMapping forwardMapping) {
     using ForwardMapping = SplitHorizon::ForwardMapping;
-    using ReverseMapping = SplitHorizon::ReverseMapping;
     using ReverseHostOnlyMapping = SplitHorizon::ReverseHostOnlyMapping;
-
-    // Build the reverse mapping (from `HostAndPort` to horizon names) from the forward mapping
-    // table.
-    ReverseMapping reverseMapping;
-    std::transform(begin(forwardMapping),
-                   end(forwardMapping),
-                   inserter(reverseMapping, end(reverseMapping)),
-                   [](auto&& entry) {
-                       using ReturnType = decltype(reverseMapping)::value_type;
-                       return ReturnType{entry.second, entry.first};
-                   });
-
-
-    // Check for duplicate host-and-port entries.
-    if (forwardMapping.size() != reverseMapping.size()) {
-        const auto horizonMember = [&] {
-            std::vector<HostAndPort> rv;
-            std::transform(begin(forwardMapping),
-                           end(forwardMapping),
-                           back_inserter(rv),
-                           [](const auto& entry) { return entry.second; });
-            std::sort(begin(rv), end(rv));
-            return rv;
-        }();
-
-        auto duplicate = std::adjacent_find(begin(horizonMember), end(horizonMember));
-        invariant(duplicate != end(horizonMember));
-
-        uasserted(ErrorCodes::BadValue,
-                  "Duplicate horizon member found \""s + duplicate->toString() + "\".");
-    }
 
     // Build the reverse mapping (from host-only to horizon names) from the forward mapping table.
     ReverseHostOnlyMapping reverseHostMapping;
@@ -152,26 +108,30 @@ AllMappings computeReverseMappings(SplitHorizon::ForwardMapping forwardMapping) 
     reverseHostMapping.emplace(forwardMapping[SplitHorizon::kDefaultHorizon].host(),
                                std::string{SplitHorizon::kDefaultHorizon});
     for (const auto& entry : forwardMapping) {
-        // If a host appears more than once, by name, disable SNI lookup for it, as it indicates
-        // multi-port scenarios.  In those cases, duplicate ports will be found by the detection
-        // code for the full reverse mapping.
-        if (reverseHostMapping.count(entry.second.host())) {
-            // However, if the repeated host is the default horizon's host, this configuration is
-            // not disabled, but legacy connections will not be able to avail themselves of the
-            // other horizons -- they will appear to be `"__default"`.
-            if (reverseHostMapping[entry.second.host()] == SplitHorizon::kDefaultHorizon.toString())
-                continue;
-
-            // When we can't disambiguate on reverse lookup by host alone, disable that host for SNI
-            // lookup into horizon name.
-            reverseHostMapping[entry.second.host()] = boost::none;
-        } else {
-            // Otherwise, just preserve the mapping.
             reverseHostMapping[entry.second.host()] = entry.first;
-        }
     }
 
-    return {std::move(forwardMapping), std::move(reverseMapping), std::move(reverseHostMapping)};
+    // Check for duplicate host-and-port entries.
+    if (forwardMapping.size() != reverseHostMapping.size()) {
+        const auto horizonMember = [&] {
+            std::vector<std::string> rv;
+            std::transform(begin(forwardMapping),
+                           end(forwardMapping),
+                           back_inserter(rv),
+                           [](const auto& entry) { return entry.second.host(); });
+            std::sort(begin(rv), end(rv));
+            return rv;
+        }();
+
+        auto duplicate = std::adjacent_find(begin(horizonMember), end(horizonMember));
+        invariant(duplicate != end(horizonMember));
+
+        uasserted(ErrorCodes::BadValue,
+                  "Duplicate horizon member found \""s + *duplicate + "\".");
+    }
+    
+
+    return {std::move(forwardMapping),  std::move(reverseHostMapping)};
 }
 }  // namespace
 

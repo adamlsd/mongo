@@ -127,6 +127,7 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/storage/backup_cursor_hooks.h"
 #include "mongo/db/storage/encryption_hooks.h"
+#include "mongo/db/storage/flow_control_parameters_gen.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/storage/storage_engine_lock_file.h"
@@ -436,6 +437,10 @@ ExitCode _initAndListen(int listenPort) {
         invariant(serverGlobalParams.featureCompatibility.isVersionInitialized());
     }
 
+    if (gFlowControlEnabled.load()) {
+        log() << "Flow Control is enabled on this deployment.";
+    }
+
     if (storageGlobalParams.upgrade) {
         log() << "finished checking dbs";
         exitCleanly(EXIT_CLEAN);
@@ -506,7 +511,11 @@ ExitCode _initAndListen(int listenPort) {
     auto shardingInitialized = ShardingInitializationMongoD::get(startupOpCtx.get())
                                    ->initializeShardingAwarenessIfNeeded(startupOpCtx.get());
     if (shardingInitialized) {
-        waitForShardRegistryReload(startupOpCtx.get()).transitional_ignore();
+        auto status = waitForShardRegistryReload(startupOpCtx.get());
+        if (!status.isOK()) {
+            LOG(0) << "Failed to load the shard registry as part of startup"
+                   << causedBy(redact(status));
+        }
     }
 
     auto storageEngine = serviceContext->getStorageEngine();
@@ -617,8 +626,7 @@ ExitCode _initAndListen(int listenPort) {
         kind = LogicalSessionCacheServer::kReplicaSet;
     }
 
-    auto sessionCache = makeLogicalSessionCacheD(kind);
-    LogicalSessionCache::set(serviceContext, std::move(sessionCache));
+    LogicalSessionCache::set(serviceContext, makeLogicalSessionCacheD(kind));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the
     // operation context anymore
@@ -896,6 +904,11 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
     if (auto balancer = Balancer::get(serviceContext)) {
         balancer->interruptBalancer();
         balancer->waitForBalancerToStop();
+    }
+
+    // Join the logical session cache before the transport layer.
+    if (auto lsc = LogicalSessionCache::get(serviceContext)) {
+        lsc->joinOnShutDown();
     }
 
     // Shutdown the TransportLayer so that new connections aren't accepted

@@ -620,7 +620,7 @@ void TransactionParticipant::Participant::_setSpeculativeTransactionReadTimestam
 
 TransactionParticipant::OplogSlotReserver::OplogSlotReserver(OperationContext* opCtx,
                                                              int numSlotsToReserve)
-    : _opCtx(opCtx) {
+    : _opCtx(opCtx), _globalLock(opCtx, MODE_IX) {
     // Stash the transaction on the OperationContext on the stack. At the end of this function it
     // will be unstashed onto the OperationContext.
     TransactionParticipant::SideTransactionBlock sideTxn(opCtx);
@@ -690,7 +690,8 @@ TransactionParticipant::TxnResources::TxnResources(WithLock wl,
     // On secondaries, we yield the locks for transactions.
     if (stashStyle == StashStyle::kSecondary) {
         _lockSnapshot = std::make_unique<Locker::LockSnapshot>();
-        _locker->releaseWriteUnitOfWorkAndUnlock(_lockSnapshot.get());
+        // Transactions have at least a global IX lock. Invariant that we have something to release.
+        invariant(_locker->releaseWriteUnitOfWorkAndUnlock(_lockSnapshot.get()));
     }
 
     // This thread must still respect the transaction lock timeout, since it can prevent the

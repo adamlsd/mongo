@@ -167,8 +167,6 @@ using std::string;
 
 namespace dps = ::mongo::dotted_path_support;
 
-const int WiredTigerKVEngine::kDefaultJournalDelayMillis = 100;
-
 class WiredTigerKVEngine::WiredTigerSessionSweeper : public BackgroundJob {
 public:
     explicit WiredTigerSessionSweeper(WiredTigerSessionCache* sessionCache)
@@ -240,9 +238,6 @@ public:
             }
 
             int ms = storageGlobalParams.journalCommitIntervalMs.load();
-            if (!ms) {
-                ms = kDefaultJournalDelayMillis;
-            }
 
             MONGO_IDLE_THREAD_BLOCK;
             sleepmillis(ms);
@@ -588,6 +583,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         ss << "file_manager=(close_idle_time=100000),";  //~28 hours, will put better fix in 3.1.x
         ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
         ss << "verbose=(recovery_progress),";
+        ss << "verbose=(checkpoint_progress),";
 
         if (shouldLog(::mongo::logger::LogComponent::kStorageRecovery,
                       logger::LogSeverity::Debug(3))) {

@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include "mongo/db/index/index_descriptor.h"
+
 #include <set>
 #include <string>
 

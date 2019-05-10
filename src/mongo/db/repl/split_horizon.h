@@ -46,26 +46,24 @@ public:
     static constexpr auto kDefaultHorizon = "__default"_sd;
 
     using ForwardMapping = StringMap<HostAndPort>;
-    using ReverseMapping = std::map<HostAndPort, std::string>;
-    using ReverseHostOnlyMapping = std::map<std::string, boost::optional<std::string>>;
+    using ReverseHostOnlyMapping = std::map<std::string, std::string>;
+
+	using AllMappings = std::tuple<SplitHorizon::ForwardMapping,
+                               SplitHorizon::ReverseHostOnlyMapping>;
 
     struct Parameters {
         boost::optional<std::string> sniName;
-        boost::optional<HostAndPort> connectionTarget;
 
         Parameters() = default;
-        Parameters(boost::optional<std::string> initialSniName,
-                   boost::optional<HostAndPort> initialConnectionTarget)
-            : sniName(std::move(initialSniName)),
-              connectionTarget(std::move(initialConnectionTarget)) {}
+        Parameters(boost::optional<std::string> initialSniName)
+            : sniName(std::move(initialSniName)){}
     };
 
     /**
      * Set the split horizon connection parameters, for use by future `isMaster` commands.
      */
     static void setParameters(Client* client,
-                              boost::optional<std::string> sniName,
-                              boost::optional<HostAndPort> connectionTarget);
+                              boost::optional<std::string> sniName);
 
     /**
      * Get the client's SplitHorizonParameters object.
@@ -90,15 +88,11 @@ public:
         return found->second;
     }
 
-    const auto& getHorizonMappings() const {
+    const auto& getForwardMappings() const {
         return forwardMapping;
     }
 
-    const auto& getHorizonReverseMappings() const {
-        return reverseMapping;
-    }
-
-    const auto& getHorizonReverseHostMappings() const {
+    const auto& getReverseHostMappings() const {
         return reverseHostMapping;
     }
 
@@ -106,18 +100,13 @@ public:
 
 private:
     // For testing only
-    explicit SplitHorizon(
-        std::tuple<ForwardMapping, ReverseMapping, ReverseHostOnlyMapping> mappings)
+    explicit SplitHorizon( AllMappings
+         mappings)
         : forwardMapping(std::move(std::get<0>(mappings))),
-          reverseMapping(std::move(std::get<1>(mappings))),
-          reverseHostMapping(std::move(std::get<2>(mappings))) {}
+          reverseHostMapping(std::move(std::get<1>(mappings))) {}
 
     // Maps each horizon name to a network address for this replica set member
     ForwardMapping forwardMapping;
-
-    // Maps each network address (`HostAndPort`) which this replica set member has to a horizon name
-    // under which that address applies
-    ReverseMapping reverseMapping;
 
     // Maps each hostname which this replica set member has to a horizon name under which that
     // address applies

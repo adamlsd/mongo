@@ -101,15 +101,12 @@ public:
      * Gets the mapping of horizon names to `HostAndPort` for this replica set member.
      */
     const auto& getHorizonMappings() const {
-        return _splitHorizon.getHorizonMappings();
+        return _splitHorizon.getForwardMappings();
     }
 
-    /**
-     * Gets the mapping of `HostAndPort` to horizon names for this replica set member.
-     */
-    const auto& getHorizonReverseMappings() const {
-        return _splitHorizon.getHorizonReverseMappings();
-    }
+	const auto &getHorizonReverseHostMappings() const {
+		return _splitHorizon.getReverseHostMappings();
+	}
 
     StringData determineHorizon(const SplitHorizon::Parameters& params) const {
         return _splitHorizon.determineHorizon(params);

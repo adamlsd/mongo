@@ -319,9 +319,9 @@ TEST(MemberConfig, ParseHorizonFields) {
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("beta"));
     ASSERT_EQUALS(std::size_t{1}, mc.getHorizonMappings().count("__default"));
 
-    ASSERT_EQUALS("alpha", mc.getHorizonReverseMappings().find(HostAndPort("a.host", 43))->second);
-    ASSERT_EQUALS("beta", mc.getHorizonReverseMappings().find(HostAndPort("b.host", 256))->second);
-    ASSERT_EQUALS("__default", mc.getHorizonReverseMappings().find(HostAndPort("h"))->second);
+    ASSERT_EQUALS("alpha", mc.getHorizonReverseHostMappings().find("a.host")->second);
+    ASSERT_EQUALS("beta", mc.getHorizonReverseHostMappings().find("b.host")->second);
+    ASSERT_EQUALS("__default", mc.getHorizonReverseHostMappings().find("h")->second);
 
     ASSERT_EQUALS(HostAndPort("a.host", 43), mc.getHorizonMappings().find("alpha")->second);
     ASSERT_EQUALS(HostAndPort("b.host", 256), mc.getHorizonMappings().find("beta")->second);
@@ -381,8 +381,8 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
         const Status& s = ex.toStatus();
-        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com:42"), std::string::npos);
-        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com:42"), std::string::npos);
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com"), std::string::npos);
     }
 
     // Repeated `HostAndPort` across the host and members.
@@ -398,11 +398,12 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
         const Status& s = ex.toStatus();
-        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com:42"), std::string::npos);
-        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com:42"), std::string::npos);
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com"), std::string::npos);
     }
 
-    // Repeated hostname across host and horizons, with different ports should be okay.
+    // Repeated hostname across host and horizons, with different ports should fail.
+    try {
     MemberConfig(BSON("_id" << 0 << "host"
                             << "duplicatedHostname.example.com:42"
                             << "horizons"
@@ -411,8 +412,15 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
                                     << "beta"
                                     << "duplicatedHostname.example.com:43")),
                  &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com"), std::string::npos);
+    }
 
-    // Repeated hostname within the horizons, with different ports should be okay.
+    // Repeated hostname within the horizons, with different ports should fail.
+    try{
     MemberConfig(BSON("_id" << 0 << "host"
                             << "uniqueHostname.example.com:42"
                             << "horizons"
@@ -421,6 +429,12 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
                                     << "beta"
                                     << "duplicatedHostname.example.com:43")),
                  &tagConfig);
+        ASSERT_TRUE(false);  // Should not succeed.
+    } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
+        const Status& s = ex.toStatus();
+        ASSERT_EQUALS(s.reason().find("uniqueHostname.example.com"), std::string::npos);
+        ASSERT_NOT_EQUALS(s.reason().find("duplicatedHostname.example.com"), std::string::npos);
+    }
 }
 
 TEST(MemberConfig, HorizonFieldsWithNoneInSpec) {

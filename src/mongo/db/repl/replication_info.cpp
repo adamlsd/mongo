@@ -35,6 +35,7 @@
 
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclient_connection.h"
+#include "mongo/client/mongo_uri.h"
 #include "mongo/db/auth/sasl_mechanism_registry.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/server_status.h"
@@ -285,7 +286,9 @@ public:
                               str::stream()
                                   << "'connectionTarget' must be of type String, but was of type "
                                   << typeName(connectionTargetBson.type()));
-                connectionTarget = HostAndPort{connectionTargetBson.valueStringData()};
+                const auto uri =
+                    uassertStatusOK(MongoURI::parse(connectionTargetBson.valueStringData()));
+                connectionTarget = uri.getServers().front();
             }
 
             auto sniName = opCtx->getClient()->getSniNameForSession();

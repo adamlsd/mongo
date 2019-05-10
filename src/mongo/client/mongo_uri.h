@@ -73,7 +73,7 @@ StatusWith<std::string> uriDecode(StringData str);
  *    mongodb://[usr:pwd@]host1[:port1]...[,hostN[:portN]]][/[db][?options]]
  *    mongodb+srv://[usr:pwd@]host[/[db][?options]]
  *
- * `mongodb+srv://` URIs will perform DNS SRV and TXT lookups and expand per the DNS Seedlist
+ * 'mongodb+srv://' URIs will perform DNS SRV and TXT lookups and expand per the DNS Seedlist
  * specification.
  *
  * While this format is generally RFC 3986 compliant, some exceptions do exist:
@@ -89,16 +89,18 @@ StatusWith<std::string> uriDecode(StringData str);
  * Examples:
  *
  *    A replica set with three members (one running on default port 27017):
- *      string uri = mongodb://localhost,localhost:27018,localhost:27019
+ *      `std::string uri = "mongodb://localhost,localhost:27018,localhost:27019"`
  *
  *    Authenticated connection to db 'bedrock' with user 'barney' and pwd 'rubble':
- *      string url = mongodb://barney:rubble@localhost/bedrock
+ *      `std::string url = "mongodb://barney:rubble@localhost/bedrock"`
  *
  *    Use parse() to parse the url, then validate and connect:
+ * ```
  *      string errmsg;
- *      ConnectionString cs = ConnectionString::parse( url, errmsg );
+ *      MongoURI cs = MongoURI::parse( url, errmsg );
  *      if ( ! cs.isValid() ) throw "bad connection string: " + errmsg;
  *      DBClientBase * conn = cs.connect( errmsg );
+ * ```
  */
 class MongoURI {
 public:

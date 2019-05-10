@@ -102,7 +102,7 @@ public:
         return reverseHostMapping;
     }
 
-    void toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const;
+    void toBSON(BSONObjBuilder& configBuilder) const;
 
 private:
     // For testing only

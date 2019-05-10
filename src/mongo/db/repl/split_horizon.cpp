@@ -83,7 +83,7 @@ StringData SplitHorizon::determineHorizon(const SplitHorizon::Parameters& horizo
     return kDefaultHorizon;
 }
 
-void SplitHorizon::toBSON(const ReplSetTagConfig& tagConfig, BSONObjBuilder& configBuilder) const {
+void SplitHorizon::toBSON(BSONObjBuilder& configBuilder) const {
     invariant(!forwardMapping.empty());
     invariant(forwardMapping.count(SplitHorizon::kDefaultHorizon));
 

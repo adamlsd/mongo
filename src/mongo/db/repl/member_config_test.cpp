@@ -404,14 +404,14 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
 
     // Repeated hostname across host and horizons, with different ports should fail.
     try {
-    MemberConfig(BSON("_id" << 0 << "host"
-                            << "duplicatedHostname.example.com:42"
-                            << "horizons"
-                            << BSON("alpha"
-                                    << "uniqueHostname.example.com:43"
-                                    << "beta"
-                                    << "duplicatedHostname.example.com:43")),
-                 &tagConfig);
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "duplicatedHostname.example.com:42"
+                                << "horizons"
+                                << BSON("alpha"
+                                        << "uniqueHostname.example.com:43"
+                                        << "beta"
+                                        << "duplicatedHostname.example.com:43")),
+                     &tagConfig);
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
         const Status& s = ex.toStatus();
@@ -420,15 +420,15 @@ TEST(MemberConfig, DuplicateHorizonHostAndPort) {
     }
 
     // Repeated hostname within the horizons, with different ports should fail.
-    try{
-    MemberConfig(BSON("_id" << 0 << "host"
-                            << "uniqueHostname.example.com:42"
-                            << "horizons"
-                            << BSON("alpha"
-                                    << "duplicatedHostname.example.com:42"
-                                    << "beta"
-                                    << "duplicatedHostname.example.com:43")),
-                 &tagConfig);
+    try {
+        MemberConfig(BSON("_id" << 0 << "host"
+                                << "uniqueHostname.example.com:42"
+                                << "horizons"
+                                << BSON("alpha"
+                                        << "duplicatedHostname.example.com:42"
+                                        << "beta"
+                                        << "duplicatedHostname.example.com:43")),
+                     &tagConfig);
         ASSERT_TRUE(false);  // Should not succeed.
     } catch (const ExceptionFor<ErrorCodes::BadValue>& ex) {
         const Status& s = ex.toStatus();

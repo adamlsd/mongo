@@ -278,8 +278,7 @@ public:
 
         if (!seenIsMaster) {
             auto sniName = opCtx->getClient()->getSniNameForSession();
-            SplitHorizon::setParameters(
-                opCtx->getClient(), std::move(sniName));
+            SplitHorizon::setParameters(opCtx->getClient(), std::move(sniName));
         }
 
         // Parse the optional 'internalClient' field. This is provided by incoming connections from

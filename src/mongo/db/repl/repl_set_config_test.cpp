@@ -1291,8 +1291,7 @@ bool operator==(const MemberConfig& a, const MemberConfig& b) {
         a.getPriority() == b.getPriority() && a.getSlaveDelay() == b.getSlaveDelay() &&
         a.isVoter() == b.isVoter() && a.isArbiter() == b.isArbiter() &&
         a.isHidden() == b.isHidden() && a.shouldBuildIndexes() == b.shouldBuildIndexes() &&
-        a.getNumTags() == b.getNumTags() &&
-        a.getHorizonMappings() == b.getHorizonMappings() &&
+        a.getNumTags() == b.getNumTags() && a.getHorizonMappings() == b.getHorizonMappings() &&
         a.getHorizonReverseHostMappings() == b.getHorizonReverseHostMappings();
 }
 
@@ -1382,8 +1381,10 @@ TEST(ReplSetConfig, toBSONRoundTripAbilityWithHorizon) {
         << 1
         << "members"
         << BSON_ARRAY(BSON("_id" << 0 << "host"
-                                 << "localhost:12345" << "horizons" << BSON("horizon"<<
-"example.com:42")))
+                                 << "localhost:12345"
+                                 << "horizons"
+                                 << BSON("horizon"
+                                         << "example.com:42")))
         << "settings"
         << BSON("heartbeatIntervalMillis" << 5000 << "heartbeatTimeoutSecs" << 20 << "replicaSetId"
                                           << OID::gen()))));

@@ -1291,7 +1291,9 @@ bool operator==(const MemberConfig& a, const MemberConfig& b) {
         a.getPriority() == b.getPriority() && a.getSlaveDelay() == b.getSlaveDelay() &&
         a.isVoter() == b.isVoter() && a.isArbiter() == b.isArbiter() &&
         a.isHidden() == b.isHidden() && a.shouldBuildIndexes() == b.shouldBuildIndexes() &&
-        a.getNumTags() == b.getNumTags();
+        a.getNumTags() == b.getNumTags() &&
+        a.getHorizonMappings() == b.getHorizonMappings() &&
+        a.getHorizonReverseHostMappings() == b.getHorizonReverseHostMappings();
 }
 
 bool operator==(const ReplSetConfig& a, const ReplSetConfig& b) {
@@ -1361,6 +1363,27 @@ TEST(ReplSetConfig, toBSONRoundTripAbility) {
         << "members"
         << BSON_ARRAY(BSON("_id" << 0 << "host"
                                  << "localhost:12345"))
+        << "settings"
+        << BSON("heartbeatIntervalMillis" << 5000 << "heartbeatTimeoutSecs" << 20 << "replicaSetId"
+                                          << OID::gen()))));
+    ASSERT_OK(configB.initialize(configA.toBSON()));
+    ASSERT_TRUE(configA == configB);
+}
+
+TEST(ReplSetConfig, toBSONRoundTripAbilityWithHorizon) {
+    ReplSetConfig configA;
+    ReplSetConfig configB;
+    ASSERT_OK(configA.initialize(BSON(
+        "_id"
+        << "rs0"
+        << "version"
+        << 1
+        << "protocolVersion"
+        << 1
+        << "members"
+        << BSON_ARRAY(BSON("_id" << 0 << "host"
+                                 << "localhost:12345" << "horizons" << BSON("horizon"<<
+"example.com:42")))
         << "settings"
         << BSON("heartbeatIntervalMillis" << 5000 << "heartbeatTimeoutSecs" << 20 << "replicaSetId"
                                           << OID::gen()))));

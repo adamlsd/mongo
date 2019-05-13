@@ -97,6 +97,23 @@ SplitHorizon::ForwardMapping computeForwardMappings(
     if (horizonsElement) {
         using MapMember = std::pair<std::string, HostAndPort>;
 
+        if (horizonsElement->eoo()) {
+            uasserted(ErrorCodes::BadValue,
+                      str::stream() << "The horizons field cannot be empty, if present.");
+        }
+
+        if (horizonsElement->type() != Object) {
+            uasserted(ErrorCodes::TypeMismatch,
+                      str::stream() << "The horizons field must be an object");
+        }
+
+        const auto& horizonsObject = horizonsElement->Obj();
+
+        if (horizonsObject.isEmpty()) {
+            uasserted(ErrorCodes::BadValue,
+                      str::stream() << "The horizons field cannot be empty, if present.");
+        }
+
         // Process all of the BSON description of horizons into a linear list.
         auto convert = [](auto&& horizonObj) -> MapMember {
             const StringData horizonName = horizonObj.fieldName();
@@ -121,7 +138,6 @@ SplitHorizon::ForwardMapping computeForwardMappings(
             return {horizonName.toString(), HostAndPort{horizonObj.valueStringData()}};
         };
 
-        const auto& horizonsObject = horizonsElement->Obj();
         const auto horizonEntries = [&] {
             std::vector<MapMember> rv;
             std::transform(

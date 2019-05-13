@@ -189,9 +189,8 @@ MemberConfig::MemberConfig(const BSONObj& mcfg, ReplSetTagConfig* tagConfig) {
     }
 
     const auto horizonsElement = [&]() -> boost::optional<BSONElement> {
-        BSONElement result;
-        Status status = bsonExtractTypedField(mcfg, kHorizonsFieldName, Object, &result);
-        if (!status.isOK()) {
+        const BSONElement result = mcfg[kHorizonsFieldName];
+        if (result.eoo()) {
             return boost::none;
         }
         return result;

@@ -82,23 +82,22 @@ TEST(SplitHorizonTesting, determineHorizon) {
     };
 
     struct {
-        const int lineNumber;
         Input input;
 
         std::string expected;
     } tests[] = {
         // No parameters and no horizon views configured.
-        {__LINE__, {{}, boost::none}, "__default"},
-        {__LINE__, {{}, defaultHost}, "__default"},
+        {{{}, boost::none}, "__default"},
+        {{{}, defaultHost}, "__default"},
 
         // No SNI -> no match
-        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, boost::none}, "__default"},
+        {{{{"unusedHorizon", "badmatch:00001"}}, boost::none}, "__default"},
 
         // Unmatching SNI -> no match
-        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost}, "__default"},
+        {{{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost}, "__default"},
 
         // Matching SNI -> match
-        {__LINE__, {{{"targetHorizon", matchingHostAndPort}}, matchingHost}, "targetHorizon"},
+        {{{{"targetHorizon", matchingHostAndPort}}, matchingHost}, "targetHorizon"},
     };
 
     for (const auto& test : tests) {
@@ -107,10 +106,6 @@ TEST(SplitHorizonTesting, determineHorizon) {
 
         const std::string witness =
             SplitHorizon(input.forwardMapping).determineHorizon(input.horizonParameters).toString();
-        const bool equals = (witness == expected);
-
-        if (!equals)
-            std::cerr << "Failing test input from line: " << test.lineNumber << std::endl;
         ASSERT_EQUALS(witness, expected);
     }
 
@@ -124,7 +119,7 @@ TEST(SplitHorizonTesting, determineHorizon) {
     }
 
     const Input failingCtorCases[] = {
-        // Matching SNI, multiPort, collision -> match
+        // Matching SNI, different port, collision -> fails
         {{{"targetHorizon", matchingHost + altPort}, {"badHorizon", matchingHostAndPort}},
          matchingHost},
 
@@ -162,10 +157,43 @@ TEST(SplitHorizonTesting, basicConstruction) {
     const struct {
         Input input;
         ErrorCodes::Error expectedErrorCode;
-    } tests[] = {{{{}}, ErrorCodes::OK},
-                 {{{{"extraHorizon", "example.com:42"}}}, ErrorCodes::OK},
-                 {{{{"extraHorizon", "example.com:42"}, {"extraHorizon2", "extra.example.com:42"}}},
-                  ErrorCodes::OK}};
+        std::vector<std::string> expectedErrorMessageFragments;
+        std::vector<std::string> absentErrorMessageFragments;
+    } tests[] = {
+        // Empty case (the `Input` type constructs the expected "__default" member.)
+        {{{}}, ErrorCodes::OK, {}, {}},
+
+        // A single horizon case, with no conflicts.
+        {{{{"extraHorizon", "example.com:42"}}}, ErrorCodes::OK, {}, {}},
+
+        // Two horizons with no conflicts
+        {{{{"extraHorizon", "example.com:42"}, {"extraHorizon2", "extra.example.com:42"}}},
+         ErrorCodes::OK,
+         {},
+         {}},
+
+        // Two horizons, with the same host and port
+        {{{{"horizon1", "same.example.com:42"}, {"horizon2", "same.example.com:42"}}},
+         ErrorCodes::BadValue,
+         {"Duplicate horizon member found", "same.example.com"},
+         {}},
+
+        // Two horizons, with the same host and different port
+        {{{{"horizon1", "same.example.com:42"}, {"horizon2", "same.example.com:43"}}},
+         ErrorCodes::BadValue,
+         {"Duplicate horizon member found", "same.example.com"},
+         {}},
+
+        // Three horizons, with two of them having the same host and port (checking that
+        // the distinct horizon isn't reported in the error message.
+        {{{{"horizon1", "same.example.com:42"},
+           {"horizon2", "different.example.com:42"},
+           {"horizon3", "same.example.com:42"}}},
+         ErrorCodes::BadValue,
+         {"Duplicate horizon member found", "same.example.com"},
+         {"different.example.com"}},
+    };
+
     for (const auto& test : tests) {
         const auto& input = test.input;
         const auto& expectedErrorCode = test.expectedErrorCode;
@@ -173,28 +201,184 @@ TEST(SplitHorizonTesting, basicConstruction) {
             try {
                 return SplitHorizon(input.forwardMapping);
             } catch (const DBException& ex) {
+                ASSERT_NOT_EQUALS(expectedErrorCode, ErrorCodes::OK);
                 ASSERT_EQUALS(ex.toStatus().code(), expectedErrorCode);
+                for (const auto& fragment : test.expectedErrorMessageFragments) {
+                    ASSERT_NOT_EQUALS(ex.toStatus().reason().find(fragment), std::string::npos);
+                }
+                for (const auto& fragment : test.absentErrorMessageFragments) {
+                    ASSERT_EQUALS(ex.toStatus().reason().find(fragment), std::string::npos);
+                }
                 return boost::none;
             }
         }();
 
         if (!horizonOpt)
             continue;
+        ASSERT_EQUALS(expectedErrorCode, ErrorCodes::OK);
 
         const auto& horizon = *horizonOpt;
+
         for (const auto& element : input.forwardMapping) {
-            const auto found = horizon.getForwardMappings().find(element.first);
-            ASSERT_TRUE(found != end(horizon.getForwardMappings()));
-            ASSERT_EQUALS(HostAndPort(element.second).toString(), found->second.toString());
+            {
+                const auto found = horizon.getForwardMappings().find(element.first);
+                ASSERT_TRUE(found != end(horizon.getForwardMappings()));
+                ASSERT_EQUALS(HostAndPort(element.second).toString(), found->second.toString());
+            }
+
+            {
+                const auto found =
+                    horizon.getReverseHostMappings().find(HostAndPort(element.second).host());
+                ASSERT_TRUE(found != end(horizon.getReverseHostMappings()));
+                ASSERT_EQUALS(element.first, found->second);
+            }
         }
         ASSERT_EQUALS(input.forwardMapping.size(), horizon.getForwardMappings().size());
         ASSERT_EQUALS(input.forwardMapping.size(), horizon.getReverseHostMappings().size());
     }
 }
 
-TEST(SplitHorizonTesting, BSONConstruction) {}
+TEST(SplitHorizonTesting, BSONConstruction) {
+    // The none-case can be tested outside ot the table, to help keep the table ctors
+    // easier.
+    {
+        const SplitHorizon horizon(HostAndPort(matchingHostAndPort), boost::none);
 
-TEST(SplitHorizonTesting, toBSON) {}
+        {
+            const auto forwardFound = horizon.getForwardMappings().find("__default");
+            ASSERT_TRUE(forwardFound != end(horizon.getForwardMappings()));
+            ASSERT_EQUALS(forwardFound->second, HostAndPort(matchingHostAndPort));
+            ASSERT_EQUALS(horizon.getForwardMappings().size(), std::size_t{1});
+        }
+
+        {
+            const auto reverseFound = horizon.getReverseHostMappings().find(matchingHost);
+            ASSERT_TRUE(reverseFound != end(horizon.getReverseHostMappings()));
+            ASSERT_EQUALS(reverseFound->second, "__default");
+
+            ASSERT_EQUALS(horizon.getReverseHostMappings().size(), std::size_t{1});
+        }
+    }
+
+    const struct {
+        BSONObj bsonContents;
+        std::string host;
+        std::vector<std::pair<std::string, std::string>> expectedMapping;  // bidirectional
+        ErrorCodes::Error expectedErrorCode;
+        std::vector<std::string> expectedErrorMessageFragments;
+        std::vector<std::string> absentErrorMessageFragments;
+    } tests[] = {
+        // Empty bson object
+        {BSONObj(),
+         defaultHostAndPort,
+         {},
+         ErrorCodes::BadValue,
+         {"horizons field cannot be empty, if present"},
+         {"example.com"}},
+
+        // One simple horizon case.
+        {BSON("horizon" << matchingHostAndPort),
+         defaultHostAndPort,
+         {{"__default", defaultHostAndPort}, {"horizon", matchingHostAndPort}},
+         ErrorCodes::OK,
+         {},
+         {}},
+
+        // Two simple horizons case
+        {BSON("horizon" << matchingHostAndPort << "horizon2" << nonmatchingHostAndPort),
+         defaultHostAndPort,
+         {{"__default", defaultHostAndPort},
+          {"horizon", matchingHostAndPort},
+          {"horizon2", nonmatchingHostAndPort}},
+         ErrorCodes::OK,
+         {},
+         {}},
+
+        // Three horizons, two having duplicate names
+        {BSON("duplicateHorizon"
+              << "horizon1.example.com:42"
+              << "duplicateHorizon"
+              << "horizon2.example.com:42"
+              << "uniqueHorizon"
+              << "horizon3.example.com:42"),
+         defaultHostAndPort,
+         {},
+         ErrorCodes::BadValue,
+         {"Duplicate horizon name found", "duplicateHorizon"},
+         {"uniqueHorizon", "__default"}},
+
+        // Two horizons with duplicate host and ports.
+        {BSON("horizonWithDuplicateHost1" << matchingHostAndPort << "horizonWithDuplicateHost2"
+                                          << matchingHostAndPort
+                                          << "uniqueHorizon"
+                                          << nonmatchingHost),
+         defaultHostAndPort,
+         {},
+         ErrorCodes::BadValue,
+         {"Duplicate horizon member found", matchingHost},
+         {"uniqueHorizon", nonmatchingHost, defaultHost}},
+    };
+
+    for (const auto& test : tests) {
+        const BSONObj bson = BSON("horizons" << test.bsonContents);
+        const auto& expectedErrorCode = test.expectedErrorCode;
+
+        const auto horizonOpt = [&]() -> boost::optional<SplitHorizon> {
+            const auto host = HostAndPort(test.host);
+            const auto& bsonElement = bson.firstElement();
+            try {
+                return SplitHorizon(host, bsonElement);
+            } catch (const DBException& ex) {
+                ASSERT_NOT_EQUALS(expectedErrorCode, ErrorCodes::OK)
+                    << "Failing on test case # " << (&test - tests)
+                    << " with unexpected failure: " << ex.toStatus().reason();
+                ASSERT_EQUALS(ex.toStatus().code(), expectedErrorCode)
+                    << "Failing status code comparison on test case " << (&test - tests)
+                    << " reason: " << ex.toStatus().reason();
+                for (const auto& fragment : test.expectedErrorMessageFragments) {
+                    ASSERT_NOT_EQUALS(ex.toStatus().reason().find(fragment), std::string::npos)
+                        << "Wanted to see the text fragment \"" << fragment
+                        << "\" in the message: \"" << ex.toStatus().reason() << "\"";
+                }
+                for (const auto& fragment : test.absentErrorMessageFragments) {
+                    ASSERT_EQUALS(ex.toStatus().reason().find(fragment), std::string::npos);
+                }
+                return boost::none;
+            }
+        }();
+
+        if (!horizonOpt)
+            continue;
+        ASSERT_EQUALS(expectedErrorCode, ErrorCodes::OK);
+
+        const auto& horizon = *horizonOpt;
+
+        for (const auto& element : test.expectedMapping) {
+            {
+                const auto found = horizon.getForwardMappings().find(element.first);
+                ASSERT_TRUE(found != end(horizon.getForwardMappings()));
+                ASSERT_EQUALS(HostAndPort(element.second).toString(), found->second.toString());
+            }
+
+            {
+                const auto found =
+                    horizon.getReverseHostMappings().find(HostAndPort(element.second).host());
+                ASSERT_TRUE(found != end(horizon.getReverseHostMappings()))
+                    << "Failed test # " << (&test - tests)
+                    << " because we didn't find a reverse mapping for the host " << element.first;
+                ASSERT_EQUALS(element.first, found->second);
+            }
+        }
+
+        ASSERT_EQUALS(test.expectedMapping.size(), horizon.getForwardMappings().size());
+        ASSERT_EQUALS(test.expectedMapping.size(), horizon.getReverseHostMappings().size());
+    }
+}
+
+TEST(SplitHorizonTesting, toBSON) {
+    // TODO: Exhaustive bson conversion testing.  For the moment only the `ReplSetConfig` class has
+    // testing of this functionality.
+}
 }  // namespace
 }  // namespace repl
 }  // namespace mongo

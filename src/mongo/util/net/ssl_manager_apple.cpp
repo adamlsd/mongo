@@ -1459,8 +1459,7 @@ StatusWith<SSLPeerInfo> SSLManagerApple::parseAndValidatePeerCertificate(
         return SSLPeerInfo(sniName);
     }
 
-    const auto badCert = [](StringData msg,
-                            bool warn = false) -> StatusWith<boost::optional<SSLPeerInfo>> {
+    const auto badCert = [&](StringData msg, bool warn = false) -> StatusWith<SSLPeerInfo> {
         constexpr StringData prefix = "SSL peer certificate validation failed: "_sd;
         if (warn) {
             warning() << prefix << msg;
@@ -1568,9 +1567,9 @@ StatusWith<SSLPeerInfo> SSLManagerApple::parseAndValidatePeerCertificate(
         if (!swPeerCertificateRoles.isOK()) {
             return swPeerCertificateRoles.getStatus();
         }
-        return boost::make_optional(SSLPeerInfo(peerSubjectName,
-                                                getRawSNIServerName(ssl),
-                                                std::move(swPeerCertificateRoles.getValue())));
+        return SSLPeerInfo(peerSubjectName,
+                           getRawSNIServerName(ssl),
+                           std::move(swPeerCertificateRoles.getValue()));
     }
 
     // If this is an SSL client context (on a MongoDB server or client)
@@ -1639,7 +1638,7 @@ StatusWith<SSLPeerInfo> SSLManagerApple::parseAndValidatePeerCertificate(
         }
     }
 
-    return boost::make_optional(SSLPeerInfo(peerSubjectName));
+    return SSLPeerInfo(peerSubjectName);
 }
 
 int SSLManagerApple::SSL_read(SSLConnectionInterface* conn, void* buf, int num) {

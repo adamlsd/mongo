@@ -41,6 +41,16 @@
 
 namespace mongo {
 namespace repl {
+
+/**
+ * Every Replica Set member has several views under which it can respond.  The Split Horizon class
+ * represents the unification of all of those views.  For example, a member might be reachable under
+ * "internal.example.com:27017" and "external.example.com:25000".  The replica set needs to be able
+ * to respond, as a group, with the correct view, when `isMaster` requests come in.  Each member of
+ * the replica set has its own `SplitHorizon` class to manage the mapping between server names and
+ * horizon names.  `SplitHorizon` models a single member's view across all horizons, not views for
+ * all of the members.
+ */
 class SplitHorizon {
 public:
     static constexpr auto kDefaultHorizon = "__default"_sd;
@@ -48,22 +58,21 @@ public:
     using ForwardMapping = StringMap<HostAndPort>;
     using ReverseHostOnlyMapping = std::map<std::string, std::string>;
 
-	using AllMappings = std::tuple<SplitHorizon::ForwardMapping,
-                               SplitHorizon::ReverseHostOnlyMapping>;
+    using AllMappings =
+        std::tuple<SplitHorizon::ForwardMapping, SplitHorizon::ReverseHostOnlyMapping>;
 
     struct Parameters {
         boost::optional<std::string> sniName;
 
         Parameters() = default;
         Parameters(boost::optional<std::string> initialSniName)
-            : sniName(std::move(initialSniName)){}
+            : sniName(std::move(initialSniName)) {}
     };
 
     /**
      * Set the split horizon connection parameters, for use by future `isMaster` commands.
      */
-    static void setParameters(Client* client,
-                              boost::optional<std::string> sniName);
+    static void setParameters(Client* client, boost::optional<std::string> sniName);
 
     /**
      * Get the client's SplitHorizonParameters object.
@@ -77,40 +86,43 @@ public:
 
     explicit SplitHorizon(ForwardMapping forward);
 
+    /**
+     * Gets the horizon name for which the parameters (captured during the first `isMaster`)
+     * correspond.
+     */
     StringData determineHorizon(const Parameters& horizonParameters) const;
 
     const HostAndPort& getHostAndPort(StringData horizon) const {
-        invariant(!forwardMapping.empty());
+        invariant(!_forwardMapping.empty());
         invariant(!horizon.empty());
-        auto found = forwardMapping.find(horizon);
-        if (found == end(forwardMapping))
+        auto found = _forwardMapping.find(horizon);
+        if (found == end(_forwardMapping))
             uasserted(ErrorCodes::NoSuchKey, str::stream() << "No horizon named " << horizon);
         return found->second;
     }
 
     const auto& getForwardMappings() const {
-        return forwardMapping;
+        return _forwardMapping;
     }
 
     const auto& getReverseHostMappings() const {
-        return reverseHostMapping;
+        return _reverseHostMapping;
     }
 
     void toBSON(BSONObjBuilder& configBuilder) const;
 
 private:
-    // For testing only
-    explicit SplitHorizon( AllMappings
-         mappings)
-        : forwardMapping(std::move(std::get<0>(mappings))),
-          reverseHostMapping(std::move(std::get<1>(mappings))) {}
+    // Unified Constructor -- All other constructors delegate to this one.
+    explicit SplitHorizon(AllMappings mappings)
+        : _forwardMapping(std::move(std::get<0>(mappings))),
+          _reverseHostMapping(std::move(std::get<1>(mappings))) {}
 
     // Maps each horizon name to a network address for this replica set member
-    ForwardMapping forwardMapping;
+    ForwardMapping _forwardMapping;
 
     // Maps each hostname which this replica set member has to a horizon name under which that
     // address applies
-    ReverseHostOnlyMapping reverseHostMapping;
+    ReverseHostOnlyMapping _reverseHostMapping;
 };
 }  // namespace repl
 }  // namespace mongo

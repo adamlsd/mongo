@@ -48,51 +48,8 @@ namespace mongo {
 namespace repl {
 namespace {
 const auto getSplitHorizonParameters = Client::declareDecoration<SplitHorizon::Parameters>();
-}  // namespace
 
-void SplitHorizon::setParameters(Client* const client,
-                                 boost::optional<std::string> sniName){
-    stdx::lock_guard<Client> lk(*client);
-    getSplitHorizonParameters(*client) = {std::move(sniName)};
-}
-
-auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
-    return getSplitHorizonParameters(*client);
-}
-
-StringData SplitHorizon::determineHorizon(const SplitHorizon::Parameters& horizonParameters) const {
- if (horizonParameters.sniName) {
-        const auto sniName = *horizonParameters.sniName;
-        const auto found = reverseHostMapping.find(sniName);
-        if (found != end(reverseHostMapping)) {
-            return found->second;
-        }
-    }
-    return kDefaultHorizon;
-}
-
-void SplitHorizon::toBSON(BSONObjBuilder& configBuilder) const {
-    invariant(!forwardMapping.empty());
-    invariant(forwardMapping.count(SplitHorizon::kDefaultHorizon));
-
-    // `forwardMapping` should always contain the "__default" horizon, so we need to emit the
-    // horizon repl specification only when there are OTHER horizons besides it.  If there's only
-    // one horizon, it's gotta be "__default", so we do nothing.
-    if (forwardMapping.size() == 1)
-        return;
-
-    BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
-    for (const auto& horizon : forwardMapping) {
-        // The "__default" horizon should never be emitted in the horizon table.
-        if (horizon.first == SplitHorizon::kDefaultHorizon)
-            continue;
-        horizonsBson.append(horizon.first, horizon.second.toString());
-    }
-}
-
-namespace {
-using AllMappings = std::tuple<SplitHorizon::ForwardMapping,
-                               SplitHorizon::ReverseHostOnlyMapping>;
+using AllMappings = SplitHorizon::AllMappings;
 
 // The reverse mappings for a forward mapping are used to fully initialize a `SplitHorizon`
 // instance.
@@ -108,7 +65,7 @@ AllMappings computeReverseMappings(SplitHorizon::ForwardMapping forwardMapping) 
     reverseHostMapping.emplace(forwardMapping[SplitHorizon::kDefaultHorizon].host(),
                                std::string{SplitHorizon::kDefaultHorizon});
     for (const auto& entry : forwardMapping) {
-            reverseHostMapping[entry.second.host()] = entry.first;
+        reverseHostMapping[entry.second.host()] = entry.first;
     }
 
     // Check for duplicate host-and-port entries.
@@ -126,21 +83,13 @@ AllMappings computeReverseMappings(SplitHorizon::ForwardMapping forwardMapping) 
         auto duplicate = std::adjacent_find(begin(horizonMember), end(horizonMember));
         invariant(duplicate != end(horizonMember));
 
-        uasserted(ErrorCodes::BadValue,
-                  "Duplicate horizon member found \""s + *duplicate + "\".");
+        uasserted(ErrorCodes::BadValue, "Duplicate horizon member found \""s + *duplicate + "\".");
     }
-    
 
-    return {std::move(forwardMapping),  std::move(reverseHostMapping)};
+
+    return {std::move(forwardMapping), std::move(reverseHostMapping)};
 }
-}  // namespace
 
-// A split horizon built from a known forward mapping table should just need to construct the
-// reverse mappings.
-SplitHorizon::SplitHorizon(ForwardMapping mapping)
-    : SplitHorizon(computeReverseMappings(std::move(mapping))) {}
-
-namespace {
 SplitHorizon::ForwardMapping computeForwardMappings(
     const HostAndPort& host, const boost::optional<BSONElement>& horizonsElement) {
     SplitHorizon::ForwardMapping forwardMapping;
@@ -163,6 +112,10 @@ SplitHorizon::ForwardMapping computeForwardMappings(
                               "\" is reserved for internal mongodb usage");
             } else if (horizonName == "") {
                 uasserted(ErrorCodes::BadValue, "Horizons cannot have empty names");
+            } else if (horizonName.find("__") == 0) {
+                log() << "Warning: Horizon name \"" << horizonName
+                      << "\" is reserved, and may acquire special semantics in future versions."
+                      << std::endl;
             }
 
             return {horizonName.toString(), HostAndPort{horizonObj.valueStringData()}};
@@ -219,6 +172,50 @@ SplitHorizon::ForwardMapping computeForwardMappings(
     return forwardMapping;
 }
 }  // namespace
+
+void SplitHorizon::setParameters(Client* const client, boost::optional<std::string> sniName) {
+    stdx::lock_guard<Client> lk(*client);
+    getSplitHorizonParameters(*client) = {std::move(sniName)};
+}
+
+auto SplitHorizon::getParameters(const Client* const client) -> Parameters {
+    return getSplitHorizonParameters(*client);
+}
+
+StringData SplitHorizon::determineHorizon(const SplitHorizon::Parameters& horizonParameters) const {
+    if (horizonParameters.sniName) {
+        const auto sniName = *horizonParameters.sniName;
+        const auto found = _reverseHostMapping.find(sniName);
+        if (found != end(_reverseHostMapping)) {
+            return found->second;
+        }
+    }
+    return kDefaultHorizon;
+}
+
+void SplitHorizon::toBSON(BSONObjBuilder& configBuilder) const {
+    invariant(!_forwardMapping.empty());
+    invariant(_forwardMapping.count(SplitHorizon::kDefaultHorizon));
+
+    // `forwardMapping` should always contain the "__default" horizon, so we need to emit the
+    // horizon repl specification only when there are OTHER horizons besides it.  If there's only
+    // one horizon, it's gotta be "__default", so we do nothing.
+    if (_forwardMapping.size() == 1)
+        return;
+
+    BSONObjBuilder horizonsBson(configBuilder.subobjStart("horizons"));
+    for (const auto& horizon : _forwardMapping) {
+        // The "__default" horizon should never be emitted in the horizon table.
+        if (horizon.first == SplitHorizon::kDefaultHorizon)
+            continue;
+        horizonsBson.append(horizon.first, horizon.second.toString());
+    }
+}
+
+// A split horizon built from a known forward mapping table should just need to construct the
+// reverse mappings.
+SplitHorizon::SplitHorizon(ForwardMapping mapping)
+    : SplitHorizon(computeReverseMappings(std::move(mapping))) {}
 
 // A split horizon constructed from the BSON configuration and the host specifier for this member
 // needs to compute the forward mapping table.  In turn that will be used to compute the reverse

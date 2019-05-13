@@ -92,8 +92,7 @@ public:
      * Gets the canonical name of this member, by which other members and clients
      * will contact it.
      */
-    const HostAndPort& getHostAndPort(
-        const StringData& horizon = SplitHorizon::kDefaultHorizon) const {
+    const HostAndPort& getHostAndPort(StringData horizon = SplitHorizon::kDefaultHorizon) const {
         return _splitHorizon.getHostAndPort(horizon);
     }
 
@@ -104,10 +103,18 @@ public:
         return _splitHorizon.getForwardMappings();
     }
 
-	const auto &getHorizonReverseHostMappings() const {
-		return _splitHorizon.getReverseHostMappings();
-	}
+    /**
+     * Gets the mapping of host names (not `HostAndPort`) to horizon names for this replica set
+     * member.
+     */
+    const auto& getHorizonReverseHostMappings() const {
+        return _splitHorizon.getReverseHostMappings();
+    }
 
+    /**
+     * Gets the horizon name for which the parameters (captured during the first `isMaster`)
+     * correspond.
+     */
     StringData determineHorizon(const SplitHorizon::Parameters& params) const {
         return _splitHorizon.determineHorizon(params);
     }

@@ -65,9 +65,8 @@ TEST(SplitHorizonTesting, determineHorizon) {
         using MappingType = std::map<std::string, std::string>;
 
 
-        Input(const MappingType& mapping,
-              boost::optional<std::string> sniName)
-            : horizonParameters(std::move(sniName)){
+        Input(const MappingType& mapping, boost::optional<std::string> sniName)
+            : horizonParameters(std::move(sniName)) {
             forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
 
             using ForwardMappingValueType = decltype(forwardMapping)::value_type;
@@ -93,17 +92,13 @@ TEST(SplitHorizonTesting, determineHorizon) {
         {__LINE__, {{}, defaultHost}, "__default"},
 
         // No SNI -> no match
-        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, boost::none }, "__default"},
+        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, boost::none}, "__default"},
 
         // Unmatching SNI -> no match
-        {__LINE__,
-         {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost},
-         "__default"},
+        {__LINE__, {{{"unusedHorizon", "badmatch:00001"}}, nonmatchingHost}, "__default"},
 
         // Matching SNI -> match
-        {__LINE__,
-         {{{"targetHorizon", matchingHostAndPort}}, matchingHost},
-         "targetHorizon"},
+        {__LINE__, {{{"targetHorizon", matchingHostAndPort}}, matchingHost}, "targetHorizon"},
     };
 
     for (const auto& test : tests) {
@@ -113,13 +108,14 @@ TEST(SplitHorizonTesting, determineHorizon) {
         const std::string witness =
             SplitHorizon(input.forwardMapping).determineHorizon(input.horizonParameters).toString();
         const bool equals = (witness == expected);
+
         if (!equals)
             std::cerr << "Failing test input from line: " << test.lineNumber << std::endl;
         ASSERT_EQUALS(witness, expected);
     }
 
-    const Input failingCases[] = {
-    };
+    const Input failingCases[] = {};
+
     for (const auto& input : failingCases) {
         SplitHorizon horizon(input.forwardMapping);
 
@@ -131,14 +127,74 @@ TEST(SplitHorizonTesting, determineHorizon) {
         // Matching SNI, multiPort, collision -> match
         {{{"targetHorizon", matchingHost + altPort}, {"badHorizon", matchingHostAndPort}},
          matchingHost},
+
         // Default horizon ambiguous case is a failure
-         {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
-          defaultHost},
+        {{{"targetHorizon", defaultHost + altPort}, {"badHorizon", nonmatchingHostAndPort}},
+         defaultHost},
     };
+
     for (const auto& input : failingCases) {
-        ASSERT_THROWS(SplitHorizon(input.forwardMapping),ExceptionFor<ErrorCodes::BadValue>);
+        ASSERT_THROWS(SplitHorizon(input.forwardMapping), ExceptionFor<ErrorCodes::BadValue>);
     }
 }
+
+TEST(SplitHorizonTesting, basicConstruction) {
+    struct Input {
+        SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
+        using MappingType = std::map<std::string, std::string>;
+
+
+        Input(const MappingType& mapping) {
+            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
+
+            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
+            using ElementType = MappingType::value_type;
+            auto createForwardMapping = [](const ElementType& element) {
+                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
+            };
+            std::transform(begin(mapping),
+                           end(mapping),
+                           inserter(forwardMapping, end(forwardMapping)),
+                           createForwardMapping);
+        }
+    };
+
+    const struct {
+        Input input;
+        ErrorCodes::Error expectedErrorCode;
+    } tests[] = {{{{}}, ErrorCodes::OK},
+                 {{{{"extraHorizon", "example.com:42"}}}, ErrorCodes::OK},
+                 {{{{"extraHorizon", "example.com:42"}, {"extraHorizon2", "extra.example.com:42"}}},
+                  ErrorCodes::OK}};
+    for (const auto& test : tests) {
+        const auto& input = test.input;
+        const auto& expectedErrorCode = test.expectedErrorCode;
+        const auto horizonOpt = [&]() -> boost::optional<SplitHorizon> {
+            try {
+                return SplitHorizon(input.forwardMapping);
+            } catch (const DBException& ex) {
+                ASSERT_EQUALS(ex.toStatus().code(), expectedErrorCode);
+                return boost::none;
+            }
+        }();
+
+        if (!horizonOpt)
+            continue;
+
+        const auto& horizon = *horizonOpt;
+        for (const auto& element : input.forwardMapping) {
+            const auto found = horizon.getForwardMappings().find(element.first);
+            ASSERT_TRUE(found != end(horizon.getForwardMappings()));
+            ASSERT_EQUALS(HostAndPort(element.second).toString(), found->second.toString());
+        }
+        ASSERT_EQUALS(input.forwardMapping.size(), horizon.getForwardMappings().size());
+        ASSERT_EQUALS(input.forwardMapping.size(), horizon.getReverseHostMappings().size());
+    }
+}
+
+TEST(SplitHorizonTesting, BSONConstruction) {}
+
+TEST(SplitHorizonTesting, toBSON) {}
 }  // namespace
 }  // namespace repl
 }  // namespace mongo

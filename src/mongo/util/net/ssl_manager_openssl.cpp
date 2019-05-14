@@ -1540,8 +1540,7 @@ StatusWith<SSLPeerInfo> SSLManagerOpenSSL::parseAndValidatePeerCertificate(
     // If this is an SSL client context (on a MongoDB server or client)
     // perform hostname validation of the remote server
     if (remoteHost.empty()) {
-        return SSLPeerInfo(
-            peerSubject, getRawSNIServerName(conn), std::move(swPeerCertificateRoles.getValue()));
+        return SSLPeerInfo(peerSubject, sniName, std::move(swPeerCertificateRoles.getValue()));
     }
 
     // This is to standardize the IPAddress format for comparison.

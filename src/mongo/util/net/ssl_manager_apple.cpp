@@ -1567,9 +1567,7 @@ StatusWith<SSLPeerInfo> SSLManagerApple::parseAndValidatePeerCertificate(
         if (!swPeerCertificateRoles.isOK()) {
             return swPeerCertificateRoles.getStatus();
         }
-        return SSLPeerInfo(peerSubjectName,
-                           getRawSNIServerName(ssl),
-                           std::move(swPeerCertificateRoles.getValue()));
+        return SSLPeerInfo(peerSubjectName, sniName, std::move(swPeerCertificateRoles.getValue()));
     }
 
     // If this is an SSL client context (on a MongoDB server or client)

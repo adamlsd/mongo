@@ -30,7 +30,3 @@
 #pragma once
 
 #include <functional>
-
-namespace mongo {
-namespace stdx {}  // namespace stdx
-}  // namespace mongo

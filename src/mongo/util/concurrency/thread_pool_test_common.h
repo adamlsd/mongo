@@ -31,8 +31,7 @@
 
 #include <memory>
 #include <string>
-
-#include "mongo/stdx/functional.h"
+#include <functional>
 
 namespace mongo {
 

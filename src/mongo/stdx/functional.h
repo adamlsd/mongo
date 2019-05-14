@@ -28,5 +28,3 @@
  */
 
 #pragma once
-
-#include <functional>

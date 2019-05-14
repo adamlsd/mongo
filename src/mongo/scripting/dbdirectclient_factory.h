@@ -30,8 +30,7 @@
 #pragma once
 
 #include <memory>
-
-#include "mongo/stdx/functional.h"
+#include <functional>
 
 namespace mongo {
 

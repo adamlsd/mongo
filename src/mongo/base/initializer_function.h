@@ -29,8 +29,9 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/status.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

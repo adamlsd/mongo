@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "mongo/stdx/functional.h"
+#include <functional>
 
 namespace mongo {
 /**

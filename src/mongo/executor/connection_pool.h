@@ -70,7 +70,7 @@ public:
     class DependentTypeFactoryInterface;
     class TimerInterface;
 
-    using ConnectionHandleDeleter = stdx::function<void(ConnectionInterface* connection)>;
+    using ConnectionHandleDeleter = std::function<void(ConnectionInterface* connection)>;
     using ConnectionHandle = std::unique_ptr<ConnectionInterface, ConnectionHandleDeleter>;
 
     using GetConnectionCallback = unique_function<void(StatusWith<ConnectionHandle>)>;
@@ -152,7 +152,7 @@ public:
     void dropConnections(transport::Session::TagMask tags) override;
 
     void mutateTags(const HostAndPort& hostAndPort,
-                    const stdx::function<transport::Session::TagMask(transport::Session::TagMask)>&
+                    const std::function<transport::Session::TagMask(transport::Session::TagMask)>&
                         mutateFunc) override;
 
     Future<ConnectionHandle> get(const HostAndPort& hostAndPort,
@@ -194,7 +194,7 @@ class ConnectionPool::TimerInterface {
 public:
     TimerInterface() = default;
 
-    using TimeoutCallback = stdx::function<void()>;
+    using TimeoutCallback = std::function<void()>;
 
     virtual ~TimerInterface() = default;
 
@@ -294,8 +294,8 @@ protected:
      * Making these protected makes the definitions available to override in
      * children.
      */
-    using SetupCallback = stdx::function<void(ConnectionInterface*, Status)>;
-    using RefreshCallback = stdx::function<void(ConnectionInterface*, Status)>;
+    using SetupCallback = std::function<void(ConnectionInterface*, Status)>;
+    using RefreshCallback = std::function<void(ConnectionInterface*, Status)>;
 
     /**
      * Sets up the connection. This should include connection + auth + any

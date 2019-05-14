@@ -102,8 +102,8 @@ public:
     }
 
     stdx::future<void> runTaskAndKill(OperationContext* opCtx,
-                                      stdx::function<void()> fn,
-                                      stdx::function<void()> postKill = nullptr) {
+                                      std::function<void()> fn,
+                                      std::function<void()> postKill = nullptr) {
         auto task = stdx::packaged_task<void()>(fn);
         auto result = task.get_future();
         stdx::thread taskThread{std::move(task)};
@@ -181,7 +181,7 @@ TEST_F(DConcurrencyTestFixture, ResourceMutex) {
             auto actual = step.fetchAndAdd(1);
             ASSERT_EQ(actual, n);
         }
-        void waitFor(stdx::function<bool()> cond) {
+        void waitFor(std::function<bool()> cond) {
             while (!cond())
                 sleepmillis(0);
         }

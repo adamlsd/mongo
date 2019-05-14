@@ -56,7 +56,7 @@ class SaslClientSession {
     SaslClientSession& operator=(const SaslClientSession&) = delete;
 
 public:
-    typedef stdx::function<SaslClientSession*(const std::string&)> SaslClientSessionFactoryFn;
+    typedef std::function<SaslClientSession*(const std::string&)> SaslClientSessionFactoryFn;
     static SaslClientSessionFactoryFn create;
 
     /**

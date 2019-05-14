@@ -385,7 +385,7 @@ public:
             }
 
             // Only used by the failpoints.
-            stdx::function<void()> dropAndReacquireReadLock = [&readLock, opCtx, this]() {
+            std::function<void()> dropAndReacquireReadLock = [&readLock, opCtx, this]() {
                 // Make sure an interrupted operation does not prevent us from reacquiring the lock.
                 UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 

@@ -77,8 +77,8 @@ private:
  */
 class ConnectionImpl final : public ConnectionPool::ConnectionInterface {
 public:
-    using PushSetupCallback = stdx::function<Status()>;
-    using PushRefreshCallback = stdx::function<Status()>;
+    using PushSetupCallback = std::function<Status()>;
+    using PushRefreshCallback = std::function<Status()>;
 
     ConnectionImpl(const HostAndPort& hostAndPort, size_t generation, PoolImpl* global);
 

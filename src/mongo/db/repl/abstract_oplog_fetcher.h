@@ -64,7 +64,7 @@ public:
      * This function will be called 0 times if startup() fails and at most once after startup()
      * returns success.
      */
-    using OnShutdownCallbackFn = stdx::function<void(const Status& shutdownStatus)>;
+    using OnShutdownCallbackFn = std::function<void(const Status& shutdownStatus)>;
 
     /**
      * Invariants if validation fails on any of the provided arguments.

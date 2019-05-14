@@ -43,7 +43,7 @@ class DeinitializerContext;
  * On successful execution, an InitializerFunction returns Status::OK().  It may
  * inspect and mutate the supplied InitializerContext.
  */
-typedef stdx::function<Status(InitializerContext*)> InitializerFunction;
+typedef std::function<Status(InitializerContext*)> InitializerFunction;
 
 /**
 * A DeinitializerFunction implements the behavior of a deinitializer operation.
@@ -51,7 +51,7 @@ typedef stdx::function<Status(InitializerContext*)> InitializerFunction;
 * On successful execution, a DeinitializerFunction returns Status::OK(). It may
 * inspect and mutate the supplied DeinitializerContext.
 */
-typedef stdx::function<Status(DeinitializerContext*)> DeinitializerFunction;
+typedef std::function<Status(DeinitializerContext*)> DeinitializerFunction;
 
 
 }  // namespace mongo

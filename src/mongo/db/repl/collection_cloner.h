@@ -100,7 +100,7 @@ public:
      *
      * Used for testing only.
      */
-    using CreateClientFn = stdx::function<std::unique_ptr<DBClientConnection>()>;
+    using CreateClientFn = std::function<std::unique_ptr<DBClientConnection>()>;
 
     /**
      * Creates CollectionCloner task in inactive state. Use start() to activate cloner.

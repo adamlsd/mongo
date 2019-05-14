@@ -42,7 +42,7 @@ namespace biggie {
 
 class RecoveryUnit : public ::mongo::RecoveryUnit {
 public:
-    RecoveryUnit(KVEngine* parentKVEngine, stdx::function<void()> cb = nullptr);
+    RecoveryUnit(KVEngine* parentKVEngine, std::function<void()> cb = nullptr);
     ~RecoveryUnit();
 
     void beginUnitOfWork(OperationContext* opCtx) override final;
@@ -80,7 +80,7 @@ public:
 private:
     void _abort();
 
-    stdx::function<void()> _waitUntilDurableCallback;
+    std::function<void()> _waitUntilDurableCallback;
     // Official master is kept by KVEngine
     KVEngine* _KVEngine;
     StringStore _mergeBase;

@@ -216,14 +216,14 @@ Status bsonExtractOIDFieldWithDefault(const BSONObj& object,
 Status bsonExtractIntegerFieldWithDefaultIf(const BSONObj& object,
                                             StringData fieldName,
                                             long long defaultValue,
-                                            stdx::function<bool(long long)> pred,
+                                            std::function<bool(long long)> pred,
                                             const std::string& predDescription,
                                             long long* out);
 
 Status bsonExtractIntegerFieldWithDefaultIf(const BSONObj& object,
                                             StringData fieldName,
                                             long long defaultValue,
-                                            stdx::function<bool(long long)> pred,
+                                            std::function<bool(long long)> pred,
                                             long long* out);
 
 }  // namespace mongo

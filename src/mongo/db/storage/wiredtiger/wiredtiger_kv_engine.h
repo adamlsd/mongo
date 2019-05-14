@@ -295,7 +295,7 @@ public:
      * background job, for example). Intended to be called from a MONGO_INITIALIZER and therefore in
      * a single threaded context.
      */
-    static void setInitRsOplogBackgroundThreadCallback(stdx::function<bool(StringData)> cb);
+    static void setInitRsOplogBackgroundThreadCallback(std::function<bool(StringData)> cb);
 
     /**
      * Initializes a background job to remove excess documents in the oplog collections.

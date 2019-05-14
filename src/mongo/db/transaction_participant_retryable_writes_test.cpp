@@ -102,7 +102,7 @@ public:
 
     bool onTransactionPrepareThrowsException = false;
     bool transactionPrepared = false;
-    stdx::function<void()> onTransactionPrepareFn = [this]() { transactionPrepared = true; };
+    std::function<void()> onTransactionPrepareFn = [this]() { transactionPrepared = true; };
 
     void onUnpreparedTransactionCommit(
         OperationContext* opCtx, const std::vector<repl::ReplOperation>& statements) override {
@@ -119,7 +119,7 @@ public:
     bool onUnpreparedTransactionCommitThrowsException = false;
     bool unpreparedTransactionCommitted = false;
 
-    stdx::function<void()> onUnpreparedTransactionCommitFn = [this]() {
+    std::function<void()> onUnpreparedTransactionCommitFn = [this]() {
         unpreparedTransactionCommitted = true;
     };
 
@@ -142,7 +142,7 @@ public:
 
     bool onPreparedTransactionCommitThrowsException = false;
     bool preparedTransactionCommitted = false;
-    stdx::function<void(OplogSlot, Timestamp)> onPreparedTransactionCommitFn =
+    std::function<void(OplogSlot, Timestamp)> onPreparedTransactionCommitFn =
         [this](OplogSlot commitOplogEntryOpTime, Timestamp commitTimestamp) {
             preparedTransactionCommitted = true;
         };

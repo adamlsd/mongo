@@ -53,13 +53,13 @@ public:
         _isValid.store(isValid);
     }
 
-    void setValidHook(stdx::function<bool()> validHook) {
+    void setValidHook(std::function<bool()> validHook) {
         _isValidHook = std::move(validHook);
     }
 
 private:
     AtomicWord<bool> _isValid{true};
-    boost::optional<stdx::function<bool()>> _isValidHook;
+    boost::optional<std::function<bool()>> _isValidHook;
 };
 
 struct TestValueInvalidator {

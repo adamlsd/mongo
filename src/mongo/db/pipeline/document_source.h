@@ -129,7 +129,7 @@ class Document;
 
 class DocumentSource : public RefCountable {
 public:
-    using Parser = stdx::function<std::list<boost::intrusive_ptr<DocumentSource>>(
+    using Parser = std::function<std::list<boost::intrusive_ptr<DocumentSource>>(
         BSONElement, const boost::intrusive_ptr<ExpressionContext>&)>;
 
     using ChangeStreamRequirement = StageConstraints::ChangeStreamRequirement;

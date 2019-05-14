@@ -76,7 +76,7 @@ public:
      * Calls 'whileYieldingFn' after relinquishing locks and before reacquiring the locks that have
      * been relinquished.
      */
-    virtual Status yieldOrInterrupt(stdx::function<void()> whileYieldingFn = nullptr);
+    virtual Status yieldOrInterrupt(std::function<void()> whileYieldingFn = nullptr);
 
     /**
      * All calls to shouldYieldOrInterrupt() will return true until the next call to
@@ -153,7 +153,7 @@ private:
      * The whileYieldingFn will be executed after unlocking the locks and before re-acquiring them.
      */
     void _yieldAllLocks(OperationContext* opCtx,
-                        stdx::function<void()> whileYieldingFn,
+                        std::function<void()> whileYieldingFn,
                         const NamespaceString& planExecNS);
 };
 

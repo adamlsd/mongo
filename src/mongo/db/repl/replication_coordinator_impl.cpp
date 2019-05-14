@@ -146,7 +146,7 @@ private:
     const bool _initialState;
 };
 
-void lockAndCall(stdx::unique_lock<stdx::mutex>* lk, const stdx::function<void()>& fn) {
+void lockAndCall(stdx::unique_lock<stdx::mutex>* lk, const std::function<void()>& fn) {
     if (!lk->owns_lock()) {
         lk->lock();
     }
@@ -246,8 +246,7 @@ void ReplicationCoordinatorImpl::WaiterList::add_inlock(WaiterType waiter) {
     _list.push_back(waiter);
 }
 
-void ReplicationCoordinatorImpl::WaiterList::signalIf_inlock(
-    stdx::function<bool(WaiterType)> func) {
+void ReplicationCoordinatorImpl::WaiterList::signalIf_inlock(std::function<bool(WaiterType)> func) {
     for (auto it = _list.begin(); it != _list.end();) {
         if (!func(*it)) {
             // This element doesn't match, so we advance the iterator to the next one.
@@ -685,7 +684,7 @@ void ReplicationCoordinatorImpl::_stopDataReplication(OperationContext* opCtx) {
 }
 
 void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
-                                                       stdx::function<void()> startCompleted) {
+                                                       std::function<void()> startCompleted) {
     // Check to see if we need to do an initial sync.
     const auto lastOpTime = getMyLastAppliedOpTime();
     const auto needsInitialSync =
@@ -2275,7 +2274,7 @@ int ReplicationCoordinatorImpl::_getMyId_inlock() const {
 Status ReplicationCoordinatorImpl::resyncData(OperationContext* opCtx, bool waitUntilCompleted) {
     _stopDataReplication(opCtx);
     auto finishedEvent = uassertStatusOK(_replExecutor->makeEvent());
-    stdx::function<void()> f;
+    std::function<void()> f;
     if (waitUntilCompleted)
         f = [&finishedEvent, this]() { _replExecutor->signalEvent(finishedEvent); };
 
@@ -3869,7 +3868,7 @@ WriteConcernOptions ReplicationCoordinatorImpl::populateUnsetWriteConcernOptions
     return writeConcern;
 }
 
-CallbackFn ReplicationCoordinatorImpl::_wrapAsCallbackFn(const stdx::function<void()>& work) {
+CallbackFn ReplicationCoordinatorImpl::_wrapAsCallbackFn(const std::function<void()>& work) {
     return [work](const CallbackArgs& cbData) {
         if (cbData.status == ErrorCodes::CallbackCanceled) {
             return;

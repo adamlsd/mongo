@@ -45,7 +45,7 @@ public:
     /**
      * Callback function to report final status of cloning.
      */
-    using CallbackFn = stdx::function<void(const Status&)>;
+    using CallbackFn = std::function<void(const Status&)>;
 
     virtual ~BaseCloner() {}
 

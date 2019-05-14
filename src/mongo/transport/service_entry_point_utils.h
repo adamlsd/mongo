@@ -34,6 +34,6 @@
 
 namespace mongo {
 
-Status launchServiceWorkerThread(stdx::function<void()> task);
+Status launchServiceWorkerThread(std::function<void()> task);
 
 }  // namespace mongo

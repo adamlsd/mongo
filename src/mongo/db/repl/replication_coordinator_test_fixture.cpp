@@ -252,7 +252,7 @@ void ReplCoordTest::simulateEnoughHeartbeatsForAllNodesUp() {
 }
 
 void ReplCoordTest::simulateSuccessfulDryRun(
-    stdx::function<void(const RemoteCommandRequest& request)> onDryRunRequest) {
+    std::function<void(const RemoteCommandRequest& request)> onDryRunRequest) {
     ReplicationCoordinatorImpl* replCoord = getReplCoord();
     ReplSetConfig rsConfig = replCoord->getReplicaSetConfig_forTest();
     NetworkInterfaceMock* net = getNet();

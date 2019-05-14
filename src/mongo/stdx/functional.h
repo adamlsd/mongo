@@ -32,11 +32,5 @@
 #include <functional>
 
 namespace mongo {
-namespace stdx {
-
-using ::std::cref;      // NOLINT
-using ::std::function;  // NOLINT
-using ::std::ref;       // NOLINT
-
-}  // namespace stdx
+namespace stdx {}  // namespace stdx
 }  // namespace mongo

@@ -82,17 +82,17 @@ class StorageInterface;
 
 struct InitialSyncerOptions {
     /** Function to return optime of last operation applied on this node */
-    using GetMyLastOptimeFn = stdx::function<OpTime()>;
+    using GetMyLastOptimeFn = std::function<OpTime()>;
 
     /** Function to update optime of last operation applied on this node */
-    using SetMyLastOptimeFn = stdx::function<void(
+    using SetMyLastOptimeFn = std::function<void(
         const OpTimeAndWallTime&, ReplicationCoordinator::DataConsistency consistency)>;
 
     /** Function to reset all optimes on this node (e.g. applied & durable). */
-    using ResetOptimesFn = stdx::function<void()>;
+    using ResetOptimesFn = std::function<void()>;
 
     /** Function to sets this node into a specific follower mode. */
-    using SetFollowerModeFn = stdx::function<bool(const MemberState&)>;
+    using SetFollowerModeFn = std::function<bool(const MemberState&)>;
 
     // Error and retry values
     Milliseconds syncSourceRetryWait{1000};
@@ -145,7 +145,7 @@ public:
     /**
      * Callback function to report last applied optime of initial sync.
      */
-    typedef stdx::function<void(const StatusWith<OpTimeAndWallTime>& lastApplied)> OnCompletionFn;
+    typedef std::function<void(const StatusWith<OpTimeAndWallTime>& lastApplied)> OnCompletionFn;
 
     /**
      * Callback completion guard for initial syncer.

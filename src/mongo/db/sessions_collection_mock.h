@@ -59,8 +59,8 @@ public:
 
     MockSessionsCollectionImpl();
 
-    using RefreshHook = stdx::function<Status(const LogicalSessionRecordSet&)>;
-    using RemoveHook = stdx::function<Status(const LogicalSessionIdSet&)>;
+    using RefreshHook = std::function<Status(const LogicalSessionRecordSet&)>;
+    using RemoveHook = std::function<Status(const LogicalSessionIdSet&)>;
 
     // Set custom hooks to override default behavior
     void setRefreshHook(RefreshHook hook);

@@ -43,7 +43,7 @@ class CompositeIndexabilityDiscriminator;
 class MatchExpression;
 struct CoreIndexInfo;
 
-using IndexabilityDiscriminator = stdx::function<bool(const MatchExpression* me)>;
+using IndexabilityDiscriminator = std::function<bool(const MatchExpression* me)>;
 using IndexabilityDiscriminators = std::vector<IndexabilityDiscriminator>;
 using IndexToDiscriminatorMap = StringMap<CompositeIndexabilityDiscriminator>;
 

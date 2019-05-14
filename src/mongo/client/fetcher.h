@@ -84,7 +84,7 @@ public:
     /**
      * Type of a fetcher callback function.
      */
-    typedef stdx::function<void(const StatusWith<QueryResponse>&, NextAction*, BSONObjBuilder*)>
+    typedef std::function<void(const StatusWith<QueryResponse>&, NextAction*, BSONObjBuilder*)>
         CallbackFn;
 
     /**

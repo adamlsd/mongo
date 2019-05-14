@@ -43,7 +43,7 @@ struct DepsTracker;
 
 namespace expression {
 
-using NodeTraversalFunc = stdx::function<void(MatchExpression*, std::string)>;
+using NodeTraversalFunc = std::function<void(MatchExpression*, std::string)>;
 
 /**
  * Returns true if the documents matched by 'lhs' are a subset of the documents matched by

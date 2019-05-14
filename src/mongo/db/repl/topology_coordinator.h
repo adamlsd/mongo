@@ -523,7 +523,7 @@ public:
     void processLoseElection();
 
 
-    using StepDownAttemptAbortFn = stdx::function<void()>;
+    using StepDownAttemptAbortFn = std::function<void()>;
     /**
      * Readies the TopologyCoordinator for an attempt to stepdown that may fail.  This is used
      * when we receive a stepdown command (which can fail if not enough secondaries are caught up)

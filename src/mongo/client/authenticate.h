@@ -48,10 +48,10 @@ class BSONObj;
 
 namespace auth {
 
-using RunCommandHook = stdx::function<Future<BSONObj>(OpMsgRequest request)>;
+using RunCommandHook = std::function<Future<BSONObj>(OpMsgRequest request)>;
 
 /* Hook for legacy MONGODB-CR support provided by shell client only */
-using AuthMongoCRHandler = stdx::function<Future<void>(RunCommandHook, const BSONObj&)>;
+using AuthMongoCRHandler = std::function<Future<void>(RunCommandHook, const BSONObj&)>;
 extern AuthMongoCRHandler authMongoCR;
 
 /**

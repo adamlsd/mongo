@@ -69,7 +69,7 @@ public:
     using CallbackFn = unique_function<void(const Status&)>;
 
     using MultiApplyFn =
-        stdx::function<StatusWith<OpTime>(OperationContext*, MultiApplier::Operations)>;
+        std::function<StatusWith<OpTime>(OperationContext*, MultiApplier::Operations)>;
 
     /**
      * Creates MultiApplier in inactive state.

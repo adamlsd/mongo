@@ -120,7 +120,7 @@ private:
      */
     class PeriodicRunner {
     public:
-        using RefreshFunc = stdx::function<StatusWith<KeysCollectionDocument>(OperationContext*)>;
+        using RefreshFunc = std::function<StatusWith<KeysCollectionDocument>(OperationContext*)>;
 
         /**
          * Preemptively inform the monitoring thread it needs to perform a refresh. Returns an

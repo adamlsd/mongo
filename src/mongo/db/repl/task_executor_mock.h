@@ -40,9 +40,9 @@ namespace repl {
  */
 class TaskExecutorMock : public unittest::TaskExecutorProxy {
 public:
-    using ShouldFailScheduleWorkRequestFn = stdx::function<bool()>;
+    using ShouldFailScheduleWorkRequestFn = std::function<bool()>;
     using ShouldFailScheduleRemoteCommandRequestFn =
-        stdx::function<bool(const executor::RemoteCommandRequest&)>;
+        std::function<bool(const executor::RemoteCommandRequest&)>;
 
     explicit TaskExecutorMock(executor::TaskExecutor* executor);
 

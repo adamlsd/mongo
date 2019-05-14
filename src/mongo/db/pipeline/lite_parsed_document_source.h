@@ -61,7 +61,7 @@ public:
      * which this aggregation is being performed, and the BSONElement will be the element whose
      * field name is the name of this stage (e.g. the first and only element in {$limit: 1}).
      */
-    using Parser = stdx::function<std::unique_ptr<LiteParsedDocumentSource>(
+    using Parser = std::function<std::unique_ptr<LiteParsedDocumentSource>(
         const AggregationRequest&, const BSONElement&)>;
 
     /**

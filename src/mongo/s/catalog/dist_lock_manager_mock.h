@@ -63,7 +63,7 @@ public:
     void unlockAll(OperationContext* opCtx, const std::string& processID) override;
 
     using LockFunc =
-        stdx::function<void(StringData name, StringData whyMessage, Milliseconds waitFor)>;
+        std::function<void(StringData name, StringData whyMessage, Milliseconds waitFor)>;
 
     void expectLock(LockFunc checkerFunc, Status lockStatus);
 

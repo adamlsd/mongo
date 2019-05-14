@@ -44,7 +44,7 @@ class SyncSourceSelectorMock : public SyncSourceSelector {
     SyncSourceSelectorMock& operator=(const SyncSourceSelectorMock&) = delete;
 
 public:
-    using ChooseNewSyncSourceHook = stdx::function<void()>;
+    using ChooseNewSyncSourceHook = std::function<void()>;
 
     SyncSourceSelectorMock();
     virtual ~SyncSourceSelectorMock();

@@ -100,13 +100,13 @@ public:
 
     bool onTransactionPrepareThrowsException = false;
     bool transactionPrepared = false;
-    stdx::function<void()> onTransactionPrepareFn = []() {};
+    std::function<void()> onTransactionPrepareFn = []() {};
 
     void onUnpreparedTransactionCommit(OperationContext* opCtx,
                                        const std::vector<repl::ReplOperation>& statements) override;
     bool onUnpreparedTransactionCommitThrowsException = false;
     bool unpreparedTransactionCommitted = false;
-    stdx::function<void(const std::vector<repl::ReplOperation>&)> onUnpreparedTransactionCommitFn =
+    std::function<void(const std::vector<repl::ReplOperation>&)> onUnpreparedTransactionCommitFn =
         [](const std::vector<repl::ReplOperation>& statements) {};
 
 
@@ -117,7 +117,7 @@ public:
         const std::vector<repl::ReplOperation>& statements) noexcept override;
     bool onPreparedTransactionCommitThrowsException = false;
     bool preparedTransactionCommitted = false;
-    stdx::function<void(OplogSlot, Timestamp, const std::vector<repl::ReplOperation>&)>
+    std::function<void(OplogSlot, Timestamp, const std::vector<repl::ReplOperation>&)>
         onPreparedTransactionCommitFn = [](OplogSlot commitOplogEntryOpTime,
                                            Timestamp commitTimestamp,
                                            const std::vector<repl::ReplOperation>& statements) {};
@@ -126,7 +126,7 @@ public:
                             boost::optional<OplogSlot> abortOplogEntryOpTime) override;
     bool onTransactionAbortThrowsException = false;
     bool transactionAborted = false;
-    stdx::function<void()> onTransactionAbortFn = []() {};
+    std::function<void()> onTransactionAbortFn = []() {};
 
     repl::OpTime onDropCollection(OperationContext* opCtx,
                                   const NamespaceString& collectionName,

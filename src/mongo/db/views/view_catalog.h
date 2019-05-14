@@ -65,7 +65,7 @@ class ViewCatalog {
 
 public:
     using ViewMap = StringMap<std::shared_ptr<ViewDefinition>>;
-    using ViewIteratorCallback = stdx::function<void(const ViewDefinition& view)>;
+    using ViewIteratorCallback = std::function<void(const ViewDefinition& view)>;
 
     static ViewCatalog* get(const Database* db);
     static void set(Database* db, std::unique_ptr<ViewCatalog> catalog);

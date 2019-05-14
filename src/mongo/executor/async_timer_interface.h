@@ -47,7 +47,7 @@ class AsyncTimerInterface {
 public:
     virtual ~AsyncTimerInterface() = default;
 
-    using Handler = stdx::function<void(std::error_code)>;
+    using Handler = std::function<void(std::error_code)>;
 
     /**
      * Cancel any asynchronous operations waiting on this timer, invoking

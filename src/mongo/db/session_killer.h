@@ -91,7 +91,7 @@ public:
      * A process specific kill function (we have a different impl in mongos versus mongod).
      */
     using KillFunc =
-        stdx::function<Result(OperationContext*, const Matcher&, UniformRandomBitGenerator* urbg)>;
+        std::function<Result(OperationContext*, const Matcher&, UniformRandomBitGenerator* urbg)>;
 
     /**
      * The killer lives as a decoration on the service context.

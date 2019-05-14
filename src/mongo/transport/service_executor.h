@@ -49,7 +49,7 @@ namespace transport {
 class ServiceExecutor {
 public:
     virtual ~ServiceExecutor() = default;
-    using Task = stdx::function<void()>;
+    using Task = std::function<void()>;
     enum ScheduleFlags {
         // No flags (kEmptyFlags) specifies that this is a normal task and that the executor should
         // launch new threads as needed to run the task.

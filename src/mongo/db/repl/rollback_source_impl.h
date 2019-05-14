@@ -51,7 +51,7 @@ public:
     /**
      * Type of function to return a connection to the sync source.
      */
-    using GetConnectionFn = stdx::function<DBClientBase*()>;
+    using GetConnectionFn = std::function<DBClientBase*()>;
 
     RollbackSourceImpl(GetConnectionFn getConnection,
                        const HostAndPort& source,

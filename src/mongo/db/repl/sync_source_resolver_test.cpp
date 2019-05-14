@@ -52,7 +52,7 @@ using namespace mongo::repl;
 
 class TaskExecutorWithFailureInScheduleRemoteCommand : public unittest::TaskExecutorProxy {
 public:
-    using ShouldFailRequestFn = stdx::function<bool(const executor::RemoteCommandRequest&)>;
+    using ShouldFailRequestFn = std::function<bool(const executor::RemoteCommandRequest&)>;
 
     TaskExecutorWithFailureInScheduleRemoteCommand(executor::TaskExecutor* executor,
                                                    ShouldFailRequestFn shouldFailRequest)

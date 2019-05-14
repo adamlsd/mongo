@@ -52,7 +52,7 @@ class ShardingInitializationMongoD {
     ShardingInitializationMongoD& operator=(const ShardingInitializationMongoD&) = delete;
 
 public:
-    using ShardingEnvironmentInitFunc = stdx::function<void(
+    using ShardingEnvironmentInitFunc = std::function<void(
         OperationContext* opCtx, const ShardIdentity& shardIdentity, StringData distLockProcessId)>;
 
     ShardingInitializationMongoD();

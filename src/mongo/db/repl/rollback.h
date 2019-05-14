@@ -50,7 +50,7 @@ public:
      * passed in.
      */
     using OnCompletionFn =
-        stdx::function<void(const StatusWith<OpTime>& lastOpTimeApplied) noexcept>;
+        std::function<void(const StatusWith<OpTime>& lastOpTimeApplied) noexcept>;
 
     Rollback() = default;
 

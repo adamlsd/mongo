@@ -65,7 +65,7 @@ public:
                          const NamespaceString& collectionName,
                          const BSONObj& query,
                          const BSONObj& projection,
-                         const stdx::function<void(const BSONObj&)>& resultProcessor);
+                         const std::function<void(const BSONObj&)>& resultProcessor);
 };
 
 }  // namespace mongo

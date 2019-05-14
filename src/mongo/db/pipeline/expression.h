@@ -91,7 +91,7 @@ class DocumentSource;
 
 class Expression : public RefCountable {
 public:
-    using Parser = stdx::function<boost::intrusive_ptr<Expression>(
+    using Parser = std::function<boost::intrusive_ptr<Expression>(
         const boost::intrusive_ptr<ExpressionContext>&, BSONElement, const VariablesParseState&)>;
 
     /**

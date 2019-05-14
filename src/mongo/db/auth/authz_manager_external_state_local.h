@@ -101,7 +101,7 @@ public:
                          const NamespaceString& collectionName,
                          const BSONObj& query,
                          const BSONObj& projection,
-                         const stdx::function<void(const BSONObj&)>& resultProcessor) = 0;
+                         const std::function<void(const BSONObj&)>& resultProcessor) = 0;
 
     void logOp(OperationContext* opCtx,
                AuthorizationManagerImpl* authManager,

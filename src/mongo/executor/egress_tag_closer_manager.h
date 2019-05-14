@@ -61,7 +61,7 @@ public:
 
     void mutateTags(
         const HostAndPort& hostAndPort,
-        const stdx::function<transport::Session::TagMask(transport::Session::TagMask)>& mutateFunc);
+        const std::function<transport::Session::TagMask(transport::Session::TagMask)>& mutateFunc);
 
 private:
     stdx::mutex _mutex;

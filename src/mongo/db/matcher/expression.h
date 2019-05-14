@@ -332,7 +332,7 @@ protected:
      * in the specification of MatchExpression::getOptimizer(std::unique_ptr<MatchExpression>).
      */
     using ExpressionOptimizerFunc =
-        stdx::function<std::unique_ptr<MatchExpression>(std::unique_ptr<MatchExpression>)>;
+        std::function<std::unique_ptr<MatchExpression>(std::unique_ptr<MatchExpression>)>;
 
     /**
      * Subclasses that are collation-aware must implement this method in order to capture changes

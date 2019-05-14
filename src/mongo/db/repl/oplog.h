@@ -163,7 +163,7 @@ void acquireOplogCollectionForLogging(OperationContext* opCtx);
  */
 void establishOplogCollectionForLogging(OperationContext* opCtx, Collection* oplog);
 
-using IncrementOpsAppliedStatsFn = stdx::function<void()>;
+using IncrementOpsAppliedStatsFn = std::function<void()>;
 
 /**
  * This class represents the different modes of oplog application that are used within the

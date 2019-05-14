@@ -63,7 +63,7 @@ class NoopWriter::PeriodicNoopRunner {
     PeriodicNoopRunner(const PeriodicNoopRunner&) = delete;
     PeriodicNoopRunner& operator=(const PeriodicNoopRunner&) = delete;
 
-    using NoopWriteFn = stdx::function<void(OperationContext*)>;
+    using NoopWriteFn = std::function<void(OperationContext*)>;
 
 public:
     PeriodicNoopRunner(Seconds waitTime, NoopWriteFn noopWrite)

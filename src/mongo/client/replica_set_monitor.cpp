@@ -1055,7 +1055,7 @@ HostAndPort SetState::getMatchingHost(const ReadPreferenceSetting& criteria) con
         // The difference between these is handled by Node::matches
         case ReadPreference::SecondaryOnly:
         case ReadPreference::Nearest: {
-            stdx::function<bool(const Node&)> matchNode = [](const Node& node) -> bool {
+            std::function<bool(const Node&)> matchNode = [](const Node& node) -> bool {
                 return true;
             };
             // build comparator

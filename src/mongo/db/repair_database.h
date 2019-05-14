@@ -52,7 +52,7 @@ typedef std::pair<std::vector<std::string>, std::vector<BSONObj>> IndexNameObjs;
  */
 StatusWith<IndexNameObjs> getIndexNameObjs(OperationContext* opCtx,
                                            CollectionCatalogEntry* cce,
-                                           stdx::function<bool(const std::string&)> filter =
+                                           std::function<bool(const std::string&)> filter =
                                                [](const std::string& indexName) { return true; });
 
 /**
@@ -76,6 +76,6 @@ Status rebuildIndexesOnCollection(OperationContext* opCtx,
 Status repairDatabase(OperationContext* opCtx,
                       StorageEngine* engine,
                       const std::string& dbName,
-                      stdx::function<void(const std::string& dbName)> onRecordStoreRepair);
+                      std::function<void(const std::string& dbName)> onRecordStoreRepair);
 
 }  // namespace mongo

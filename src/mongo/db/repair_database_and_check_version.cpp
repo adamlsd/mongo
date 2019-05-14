@@ -379,7 +379,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
             invariant(dbNames.front() == NamespaceString::kLocalDb);
         }
 
-        stdx::function<void(const std::string& dbName)> onRecordStoreRepair =
+        std::function<void(const std::string& dbName)> onRecordStoreRepair =
             [opCtx](const std::string& dbName) {
                 if (dbName == NamespaceString::kLocalDb) {
                     setReplSetMemberInStandaloneMode(opCtx);

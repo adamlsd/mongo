@@ -315,7 +315,7 @@ public:
      * stage. Returns nullptr if there is no first stage which meets these criteria.
      */
     boost::intrusive_ptr<DocumentSource> popFrontWithNameAndCriteria(
-        StringData targetStageName, stdx::function<bool(const DocumentSource* const)> predicate);
+        StringData targetStageName, std::function<bool(const DocumentSource* const)> predicate);
 
     /**
      * PipelineD is a "sister" class that has additional functionality for the Pipeline. It exists

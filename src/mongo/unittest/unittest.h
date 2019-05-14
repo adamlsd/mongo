@@ -313,7 +313,7 @@ mongo::logger::LogstreamBuilder warning();
 /**
  * Type representing the function composing a test.
  */
-typedef stdx::function<void(void)> TestFunction;
+typedef std::function<void(void)> TestFunction;
 
 /**
  * Container holding a test function and its name.  Suites

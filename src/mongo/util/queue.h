@@ -54,7 +54,7 @@ class BlockingQueue {
     BlockingQueue& operator=(const BlockingQueue&) = delete;
 
 public:
-    using GetSizeFn = stdx::function<size_t(const T&)>;
+    using GetSizeFn = std::function<size_t(const T&)>;
 
     BlockingQueue() : BlockingQueue(std::numeric_limits<std::size_t>::max()) {}
     BlockingQueue(size_t size) : BlockingQueue(size, [](const T&) { return 1; }) {}

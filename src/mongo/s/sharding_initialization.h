@@ -52,7 +52,7 @@ class TaskExecutor;
 
 namespace rpc {
 class EgressMetadataHook;
-using ShardingEgressMetadataHookBuilder = stdx::function<std::unique_ptr<EgressMetadataHook>()>;
+using ShardingEgressMetadataHookBuilder = std::function<std::unique_ptr<EgressMetadataHook>()>;
 }  // namespace rpc
 
 /**

@@ -148,7 +148,7 @@ void rollback(OperationContext* opCtx,
               int requiredRBID,
               ReplicationCoordinator* replCoord,
               ReplicationProcess* replicationProcess,
-              stdx::function<void(int)> sleepSecsFn = [](int secs) { sleepsecs(secs); });
+              std::function<void(int)> sleepSecsFn = [](int secs) { sleepsecs(secs); });
 
 /**
  * Initiates the rollback process after transition to ROLLBACK.

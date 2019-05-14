@@ -50,7 +50,7 @@ namespace document_path_support {
  */
 void visitAllValuesAtPath(const Document& doc,
                           const FieldPath& path,
-                          stdx::function<void(const Value&)> callback);
+                          std::function<void(const Value&)> callback);
 
 /**
  * Returns the element at 'path' in 'doc', or a missing Value if the path does not fully exist.

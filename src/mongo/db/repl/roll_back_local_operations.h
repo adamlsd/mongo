@@ -85,7 +85,7 @@ public:
      * Type of function to roll back an operation or process it for future use.
      * It can return any status except ErrorCodes::NoSuchKey. See onRemoteOperation().
      */
-    using RollbackOperationFn = stdx::function<Status(const BSONObj&)>;
+    using RollbackOperationFn = std::function<Status(const BSONObj&)>;
 
     /**
      * Initializes rollback processor with a valid local oplog.

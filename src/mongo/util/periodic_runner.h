@@ -51,7 +51,7 @@ class Client;
  */
 class PeriodicRunner {
 public:
-    using Job = stdx::function<void(Client* client)>;
+    using Job = std::function<void(Client* client)>;
 
     struct PeriodicJob {
         PeriodicJob(std::string name, Job callable, Milliseconds period)

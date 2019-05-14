@@ -83,7 +83,7 @@ public:
      * status.
      */
     using HandshakeValidationHook =
-        stdx::function<Status(const executor::RemoteCommandResponse& isMasterReply)>;
+        std::function<Status(const executor::RemoteCommandResponse& isMasterReply)>;
 
     /**
        @param _autoReconnect if true, automatically reconnect on a connection failure
@@ -162,7 +162,7 @@ public:
             nsOrUuid, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
     }
 
-    unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+    unsigned long long query(std::function<void(DBClientCursorBatchIterator&)> f,
                              const NamespaceStringOrUUID& nsOrUuid,
                              Query query,
                              const BSONObj* fieldsToReturn,

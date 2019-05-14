@@ -164,7 +164,7 @@ public:
     /**
      * Callback function for callers of insertDocumentForBulkLoader().
      */
-    using OnRecordInsertedFn = stdx::function<Status(const RecordId& loc)>;
+    using OnRecordInsertedFn = std::function<Status(const RecordId& loc)>;
 
     Collection() = default;
     virtual ~Collection() = default;

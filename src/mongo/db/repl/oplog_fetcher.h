@@ -104,9 +104,9 @@ public:
      * Additional information on the operations is provided in a DocumentsInfo
      * struct.
      */
-    using EnqueueDocumentsFn = stdx::function<Status(Fetcher::Documents::const_iterator begin,
-                                                     Fetcher::Documents::const_iterator end,
-                                                     const DocumentsInfo& info)>;
+    using EnqueueDocumentsFn = std::function<Status(Fetcher::Documents::const_iterator begin,
+                                                    Fetcher::Documents::const_iterator end,
+                                                    const DocumentsInfo& info)>;
 
     /**
      * Validates documents in current batch of results returned from tailing the remote oplog.

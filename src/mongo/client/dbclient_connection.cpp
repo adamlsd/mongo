@@ -518,7 +518,7 @@ uint64_t DBClientConnection::getSockCreationMicroSec() const {
     }
 }
 
-unsigned long long DBClientConnection::query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+unsigned long long DBClientConnection::query(std::function<void(DBClientCursorBatchIterator&)> f,
                                              const NamespaceStringOrUUID& nsOrUuid,
                                              Query query,
                                              const BSONObj* fieldsToReturn,

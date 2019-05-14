@@ -156,7 +156,7 @@ public:
     /*
      * Sets a function to be called after the session is ended
      */
-    void setCleanupHook(stdx::function<void()> hook);
+    void setCleanupHook(std::function<void()> hook);
 
 private:
     /*
@@ -232,7 +232,7 @@ private:
     const std::string _threadName;
     ServiceContext::UniqueClient _dbClient;
     const Client* _dbClientPtr;
-    stdx::function<void()> _cleanupHook;
+    std::function<void()> _cleanupHook;
 
     bool _inExhaust = false;
     boost::optional<MessageCompressorId> _compressorId;

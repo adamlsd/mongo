@@ -51,7 +51,7 @@ class ShardFactory {
 
 public:
     using BuilderCallable =
-        stdx::function<std::unique_ptr<Shard>(const ShardId&, const ConnectionString&)>;
+        std::function<std::unique_ptr<Shard>(const ShardId&, const ConnectionString&)>;
     using BuildersMap = std::map<ConnectionString::ConnectionType, BuilderCallable>;
 
     ShardFactory(BuildersMap&&, std::unique_ptr<RemoteCommandTargeterFactory>);

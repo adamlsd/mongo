@@ -61,7 +61,7 @@ namespace mongo {
 
 StatusWith<IndexNameObjs> getIndexNameObjs(OperationContext* opCtx,
                                            CollectionCatalogEntry* cce,
-                                           stdx::function<bool(const std::string&)> filter) {
+                                           std::function<bool(const std::string&)> filter) {
     IndexNameObjs ret;
     std::vector<std::string>& indexNames = ret.first;
     std::vector<BSONObj>& indexSpecs = ret.second;
@@ -139,7 +139,7 @@ namespace {
 Status repairCollections(OperationContext* opCtx,
                          StorageEngine* engine,
                          const std::string& dbName,
-                         stdx::function<void(const std::string& dbName)> onRecordStoreRepair) {
+                         std::function<void(const std::string& dbName)> onRecordStoreRepair) {
 
     auto colls = CollectionCatalog::get(opCtx).getAllCollectionNamesFromDb(opCtx, dbName);
 
@@ -178,7 +178,7 @@ Status repairCollections(OperationContext* opCtx,
 Status repairDatabase(OperationContext* opCtx,
                       StorageEngine* engine,
                       const std::string& dbName,
-                      stdx::function<void(const std::string& dbName)> onRecordStoreRepair) {
+                      std::function<void(const std::string& dbName)> onRecordStoreRepair) {
     DisableDocumentValidation validationDisabler(opCtx);
 
     // We must hold some form of lock here

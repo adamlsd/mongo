@@ -183,9 +183,9 @@ public:
     /**
      * Atomically manipulate the tags in the pool
      */
-    void mutateTags(const stdx::unique_lock<stdx::mutex>& lk,
-                    const stdx::function<transport::Session::TagMask(transport::Session::TagMask)>&
-                        mutateFunc) {
+    void mutateTags(
+        const stdx::unique_lock<stdx::mutex>& lk,
+        const std::function<transport::Session::TagMask(transport::Session::TagMask)>& mutateFunc) {
         _tags = mutateFunc(_tags);
     }
 
@@ -364,7 +364,7 @@ void ConnectionPool::dropConnections(transport::Session::TagMask tags) {
 
 void ConnectionPool::mutateTags(
     const HostAndPort& hostAndPort,
-    const stdx::function<transport::Session::TagMask(transport::Session::TagMask)>& mutateFunc) {
+    const std::function<transport::Session::TagMask(transport::Session::TagMask)>& mutateFunc) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
     auto iter = _pools.find(hostAndPort);

@@ -81,14 +81,14 @@ class DBClientQueryInterface {
                                                   int queryOptions = 0,
                                                   int batchSize = 0) = 0;
 
-    virtual unsigned long long query(stdx::function<void(const BSONObj&)> f,
+    virtual unsigned long long query(std::function<void(const BSONObj&)> f,
                                      const NamespaceStringOrUUID& nsOrUuid,
                                      Query query,
                                      const BSONObj* fieldsToReturn = 0,
                                      int queryOptions = 0,
                                      int batchSize = 0) = 0;
 
-    virtual unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+    virtual unsigned long long query(std::function<void(DBClientCursorBatchIterator&)> f,
                                      const NamespaceStringOrUUID& nsOrUuid,
                                      Query query,
                                      const BSONObj* fieldsToReturn = 0,
@@ -200,7 +200,7 @@ public:
 
     /**
      * Gets the RequestMetadataWriter that is set on this connection. This may
-     * be an uninitialized stdx::function, so it should be checked for validity
+     * be an uninitialized std::function, so it should be checked for validity
      * with operator bool() first.
      */
     const rpc::RequestMetadataWriter& getRequestMetadataWriter();
@@ -214,7 +214,7 @@ public:
 
     /**
      * Gets the ReplyMetadataReader that is set on this connection. This may
-     * be an uninitialized stdx::function, so it should be checked for validity
+     * be an uninitialized std::function, so it should be checked for validity
      * with operator bool() first.
      */
     const rpc::ReplyMetadataReader& getReplyMetadataReader();
@@ -602,14 +602,14 @@ public:
         The version that takes a BSONObj cannot return the namespace queried when the query is
         is done by UUID.  If this is required, use the DBClientBatchIterator version.
      */
-    unsigned long long query(stdx::function<void(const BSONObj&)> f,
+    unsigned long long query(std::function<void(const BSONObj&)> f,
                              const NamespaceStringOrUUID& nsOrUuid,
                              Query query,
                              const BSONObj* fieldsToReturn = 0,
                              int queryOptions = QueryOption_Exhaust,
                              int batchSize = 0) final;
 
-    unsigned long long query(stdx::function<void(DBClientCursorBatchIterator&)> f,
+    unsigned long long query(std::function<void(DBClientCursorBatchIterator&)> f,
                              const NamespaceStringOrUUID& nsOrUuid,
                              Query query,
                              const BSONObj* fieldsToReturn = 0,

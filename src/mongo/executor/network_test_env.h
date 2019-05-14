@@ -157,16 +157,16 @@ public:
             std::move(future), _executor, _mockNetwork};
     }
 
-    using OnCommandFunction = stdx::function<StatusWith<BSONObj>(const RemoteCommandRequest&)>;
+    using OnCommandFunction = std::function<StatusWith<BSONObj>(const RemoteCommandRequest&)>;
     using OnCommandWithMetadataFunction =
-        stdx::function<RemoteCommandResponse(const RemoteCommandRequest&)>;
+        std::function<RemoteCommandResponse(const RemoteCommandRequest&)>;
 
     using OnFindCommandFunction =
-        stdx::function<StatusWith<std::vector<BSONObj>>(const RemoteCommandRequest&)>;
+        std::function<StatusWith<std::vector<BSONObj>>(const RemoteCommandRequest&)>;
     // Function that accepts a find request and returns a tuple of resulting documents and response
     // metadata.
     using OnFindCommandWithMetadataFunction =
-        stdx::function<StatusWith<std::tuple<std::vector<BSONObj>, BSONObj>>(
+        std::function<StatusWith<std::tuple<std::vector<BSONObj>, BSONObj>>(
             const RemoteCommandRequest&)>;
 
     /**

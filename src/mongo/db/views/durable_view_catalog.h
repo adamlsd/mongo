@@ -59,7 +59,7 @@ public:
      */
     static void onExternalChange(OperationContext* opCtx, const NamespaceString& name);
 
-    using Callback = stdx::function<Status(const BSONObj& view)>;
+    using Callback = std::function<Status(const BSONObj& view)>;
     virtual Status iterate(OperationContext* opCtx, Callback callback) = 0;
     virtual void upsert(OperationContext* opCtx,
                         const NamespaceString& name,

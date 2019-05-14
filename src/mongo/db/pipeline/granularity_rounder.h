@@ -75,7 +75,7 @@ namespace mongo {
  */
 class GranularityRounder : public RefCountable {
 public:
-    using Rounder = stdx::function<boost::intrusive_ptr<GranularityRounder>(
+    using Rounder = std::function<boost::intrusive_ptr<GranularityRounder>(
         const boost::intrusive_ptr<ExpressionContext>&)>;
 
     /**

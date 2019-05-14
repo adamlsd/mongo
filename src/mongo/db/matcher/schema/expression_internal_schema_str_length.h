@@ -37,7 +37,7 @@ namespace mongo {
 
 class InternalSchemaStrLengthMatchExpression : public LeafMatchExpression {
 public:
-    using Validator = stdx::function<bool(int)>;
+    using Validator = std::function<bool(int)>;
 
     InternalSchemaStrLengthMatchExpression(MatchType type,
                                            StringData path,

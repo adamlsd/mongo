@@ -287,7 +287,7 @@ public:
      * Sets the function to generate the return value for calls to awaitReplication().
      * 'opTime' is the optime passed to awaitReplication().
      */
-    using AwaitReplicationReturnValueFunction = stdx::function<StatusAndDuration(const OpTime&)>;
+    using AwaitReplicationReturnValueFunction = std::function<StatusAndDuration(const OpTime&)>;
     void setAwaitReplicationReturnValueFunction(
         AwaitReplicationReturnValueFunction returnValueFunction);
 

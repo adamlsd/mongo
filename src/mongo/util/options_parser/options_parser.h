@@ -95,7 +95,7 @@ public:
      *  true - unknown config options will generate an error during parsing.
      *  false - unknow config options will be ignored during parsing.
      */
-    static stdx::function<bool()> useStrict;
+    static std::function<bool()> useStrict;
 
     OptionsParser() {}
     virtual ~OptionsParser() {}

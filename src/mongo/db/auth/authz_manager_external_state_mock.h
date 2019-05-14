@@ -70,7 +70,7 @@ public:
                          const NamespaceString& collectionName,
                          const BSONObj& query,
                          const BSONObj& projection,  // Currently unused in mock
-                         const stdx::function<void(const BSONObj&)>& resultProcessor);
+                         const std::function<void(const BSONObj&)>& resultProcessor);
 
     /**
      * Inserts the given user object into the "admin" database.

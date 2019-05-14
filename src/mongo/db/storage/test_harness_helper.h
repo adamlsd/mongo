@@ -95,7 +95,7 @@ std::unique_ptr<Target> noexcept_ptr_conversion(std::unique_ptr<Current>&& p, Ta
 }
 }  // namespace harness_helper_detail
 
-extern void registerHarnessHelperFactory(stdx::function<std::unique_ptr<HarnessHelper>()> factory);
+extern void registerHarnessHelperFactory(std::function<std::unique_ptr<HarnessHelper>()> factory);
 
 template <typename Target, typename Current>
 std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current>&& p) {

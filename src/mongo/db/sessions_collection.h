@@ -101,11 +101,11 @@ protected:
     /**
      * Makes a send function for the given client.
      */
-    using SendBatchFn = stdx::function<Status(BSONObj batch)>;
+    using SendBatchFn = std::function<Status(BSONObj batch)>;
     static SendBatchFn makeSendFnForCommand(const NamespaceString& ns, DBClientBase* client);
     static SendBatchFn makeSendFnForBatchWrite(const NamespaceString& ns, DBClientBase* client);
 
-    using FindBatchFn = stdx::function<StatusWith<BSONObj>(BSONObj batch)>;
+    using FindBatchFn = std::function<StatusWith<BSONObj>(BSONObj batch)>;
     static FindBatchFn makeFindFnForCommand(const NamespaceString& ns, DBClientBase* client);
 
     /**

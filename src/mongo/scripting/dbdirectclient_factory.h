@@ -42,7 +42,7 @@ class ServiceContext;
 class DBDirectClientFactory {
 public:
     using Result = std::unique_ptr<DBClientBase>;
-    using Impl = stdx::function<Result(OperationContext*)>;
+    using Impl = std::function<Result(OperationContext*)>;
 
     static DBDirectClientFactory& get(ServiceContext* service);
     static DBDirectClientFactory& get(OperationContext* opCtx);

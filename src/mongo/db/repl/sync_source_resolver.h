@@ -107,7 +107,7 @@ public:
     /**
      * Callback function to report final status of resolving sync source.
      */
-    typedef stdx::function<void(const SyncSourceResolverResponse&)> OnCompletionFn;
+    typedef std::function<void(const SyncSourceResolverResponse&)> OnCompletionFn;
 
     SyncSourceResolver(executor::TaskExecutor* taskExecutor,
                        SyncSourceSelector* syncSourceSelector,

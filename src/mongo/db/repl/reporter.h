@@ -73,7 +73,7 @@ public:
      *
      * The returned status indicates whether or not the command was created.
      */
-    using PrepareReplSetUpdatePositionCommandFn = stdx::function<StatusWith<BSONObj>()>;
+    using PrepareReplSetUpdatePositionCommandFn = std::function<StatusWith<BSONObj>()>;
 
     Reporter(executor::TaskExecutor* executor,
              PrepareReplSetUpdatePositionCommandFn prepareReplSetUpdatePositionCommandFn,

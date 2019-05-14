@@ -104,7 +104,7 @@ public:
      * the BSONObj returned by the command, with the "ok" field indicating the success of the
      * command in the usual way.
      */
-    using RemoteCommandCallbackFn = stdx::function<void(const RemoteCommandCallbackArgs&)>;
+    using RemoteCommandCallbackFn = std::function<void(const RemoteCommandCallbackArgs&)>;
 
     /**
      * Destroys the task executor. Implicitly performs the equivalent of shutdown() and join()

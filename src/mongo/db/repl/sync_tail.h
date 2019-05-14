@@ -67,10 +67,10 @@ class OpTime;
 class SyncTail {
 public:
     using MultiSyncApplyFunc =
-        stdx::function<Status(OperationContext* opCtx,
-                              MultiApplier::OperationPtrs* ops,
-                              SyncTail* st,
-                              WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
+        std::function<Status(OperationContext* opCtx,
+                             MultiApplier::OperationPtrs* ops,
+                             SyncTail* st,
+                             WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
 
     /**
      * Applies the operation that is in param o.

@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/shim.h"
 #include "mongo/base/status.h"
@@ -42,7 +43,6 @@
 #include "mongo/db/auth/user.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

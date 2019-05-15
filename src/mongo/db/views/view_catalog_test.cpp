@@ -31,6 +31,7 @@
 
 #include <memory>
 #include <set>
+#include <functional>
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
@@ -50,7 +51,6 @@
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/db/views/view_graph.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/str.h"

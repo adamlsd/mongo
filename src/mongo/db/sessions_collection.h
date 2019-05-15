@@ -29,8 +29,9 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/db/logical_session_id.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

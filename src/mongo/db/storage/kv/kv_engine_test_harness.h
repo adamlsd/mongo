@@ -30,9 +30,9 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 
 #include "mongo/db/storage/kv/kv_engine.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

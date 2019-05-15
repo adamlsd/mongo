@@ -29,10 +29,11 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/platform/bitwise_enum_operators.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/transport/service_executor_task_names.h"
 #include "mongo/transport/transport_mode.h"
 #include "mongo/util/duration.h"

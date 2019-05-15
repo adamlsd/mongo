@@ -29,11 +29,12 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/status_with.h"
 #include "mongo/s/catalog/dist_lock_catalog.h"
 #include "mongo/s/catalog/type_lockpings.h"
 #include "mongo/s/catalog/type_locks.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

@@ -30,12 +30,11 @@
 #pragma once
 
 #include <queue>
-
 #include <boost/optional.hpp>
+#include <functional>
 
 #include "mongo/db/logical_session_id.h"
 #include "mongo/s/query/cluster_client_cursor.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

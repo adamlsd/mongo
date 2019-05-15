@@ -35,9 +35,9 @@
 
 #include <boost/optional.hpp>
 #include <stack>
+#include <functional>
 
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/log.h"

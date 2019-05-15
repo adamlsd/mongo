@@ -30,11 +30,11 @@
 #include <functional>
 #include <limits>
 #include <string>
+#include <functional>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/unittest/unittest.h"
 
 using namespace mongo;

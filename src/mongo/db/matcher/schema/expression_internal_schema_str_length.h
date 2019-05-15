@@ -29,9 +29,10 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/string_data.h"
 #include "mongo/db/matcher/expression_leaf.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

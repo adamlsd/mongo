@@ -30,12 +30,12 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/config.h"
 #include "mongo/db/service_context.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"

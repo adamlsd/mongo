@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -63,7 +64,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"

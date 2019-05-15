@@ -30,12 +30,12 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/db/auth/authz_manager_external_state_local.h"
 #include "mongo/db/auth/role_graph.h"
 #include "mongo/db/auth/user_name.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

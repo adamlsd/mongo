@@ -32,6 +32,7 @@
 #include <boost/optional.hpp>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/counter.h"
 #include "mongo/base/init.h"
@@ -48,7 +49,6 @@
 #include "mongo/db/write_concern.h"
 #include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/reply_builder_interface.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/string_map.h"
 

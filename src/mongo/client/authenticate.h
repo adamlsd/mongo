@@ -30,6 +30,7 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
@@ -37,7 +38,6 @@
 #include "mongo/db/auth/user_name.h"
 #include "mongo/executor/remote_command_response.h"
 #include "mongo/rpc/op_msg.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/future.h"
 #include "mongo/util/md5.h"
 #include "mongo/util/net/hostandport.h"

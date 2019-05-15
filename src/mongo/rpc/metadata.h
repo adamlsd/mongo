@@ -30,10 +30,10 @@
 #pragma once
 
 #include <tuple>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/rpc/op_msg.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 class BSONObj;

@@ -34,9 +34,9 @@
 #include <iterator>
 #include <type_traits>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/static_assert.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/decoration_container.h"
 #include "mongo/util/scopeguard.h"
 

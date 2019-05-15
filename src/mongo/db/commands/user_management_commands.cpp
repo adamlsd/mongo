@@ -35,6 +35,7 @@
 
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/mutable/algorithm.h"
@@ -68,7 +69,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/util/icu.h"

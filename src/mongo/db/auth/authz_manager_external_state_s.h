@@ -31,12 +31,12 @@
 
 #include <memory>
 #include <string>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/db/auth/authz_manager_external_state.h"
 #include "mongo/db/auth/privilege_format.h"
 #include "mongo/db/auth/user_name.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

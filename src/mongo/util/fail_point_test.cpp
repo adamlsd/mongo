@@ -34,8 +34,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <functional>
 
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/fail_point.h"

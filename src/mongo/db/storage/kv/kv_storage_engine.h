@@ -31,6 +31,7 @@
 
 #include <map>
 #include <string>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
@@ -44,7 +45,6 @@
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/temporary_record_store.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/periodic_runner.h"

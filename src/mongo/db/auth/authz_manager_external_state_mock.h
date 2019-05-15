@@ -32,13 +32,13 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/db/auth/authz_manager_external_state_local.h"
 #include "mongo/db/auth/role_graph.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

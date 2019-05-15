@@ -31,9 +31,9 @@
 
 #include <memory>
 #include <set>
+#include <functional>
 
 #include "mongo/base/string_data.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/string_map.h"
 
 namespace mongo {

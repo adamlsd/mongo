@@ -32,10 +32,10 @@
 #include <boost/optional.hpp>
 #include <limits>
 #include <queue>
+#include <functional>
 
 #include "mongo/stdx/chrono.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

@@ -34,6 +34,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -43,7 +44,6 @@
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_graph.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/with_lock.h"
 #include "mongo/util/string_map.h"

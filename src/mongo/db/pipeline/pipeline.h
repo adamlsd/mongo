@@ -31,6 +31,7 @@
 
 #include <list>
 #include <vector>
+#include <functional>
 
 #include <boost/intrusive_ptr.hpp>
 
@@ -42,7 +43,6 @@
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/s/query/async_results_merger_params_gen.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/timer.h"
 

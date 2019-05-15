@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 #include "mongo/base/string_data.h"
 #include "mongo/client/authenticate.h"
@@ -49,7 +50,6 @@
 #include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/protocol.h"
 #include "mongo/rpc/unique_message.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"

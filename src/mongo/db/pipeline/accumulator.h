@@ -34,6 +34,7 @@
 #include <boost/intrusive_ptr.hpp>
 #include <boost/optional.hpp>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/bsontypes.h"
@@ -41,7 +42,6 @@
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/util/summation.h"
 

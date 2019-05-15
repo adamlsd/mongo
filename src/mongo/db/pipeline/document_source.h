@@ -37,6 +37,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -54,7 +55,6 @@
 #include "mongo/db/pipeline/stage_constraints.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/query/explain_options.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/intrusive_counter.h"
 
 namespace mongo {

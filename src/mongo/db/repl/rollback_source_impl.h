@@ -30,10 +30,10 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "mongo/db/repl/oplog_interface_remote.h"
 #include "mongo/db/repl/rollback_source.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/net/hostandport.h"
 
 namespace mongo {

@@ -29,11 +29,12 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/string_data.h"
 #include "mongo/client/replica_set_change_notifier.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/type_shard_identity.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

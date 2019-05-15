@@ -30,8 +30,8 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
-#include "mongo/stdx/functional.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {

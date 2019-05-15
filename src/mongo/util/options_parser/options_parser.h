@@ -32,9 +32,9 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/duration.h"
 
 namespace mongo {

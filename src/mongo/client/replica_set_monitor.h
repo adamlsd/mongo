@@ -34,13 +34,13 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <functional>
 
 #include "mongo/base/string_data.h"
 #include "mongo/client/mongo_uri.h"
 #include "mongo/client/replica_set_change_notifier.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/concurrency/with_lock.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"

@@ -36,6 +36,7 @@
 #include <memory>
 #include <set>
 #include <vector>
+#include <functional>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/concurrency/lock_state.h"
@@ -63,7 +64,6 @@
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/rpc/metadata/oplog_query_metadata.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/barrier.h"

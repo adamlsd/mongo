@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/timestamp.h"
@@ -38,7 +39,6 @@
 #include "mongo/db/repl/abstract_oplog_fetcher.h"
 #include "mongo/db/repl/data_replicator_external_state.h"
 #include "mongo/db/repl/repl_set_config.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/fail_point_service.h"
 
 namespace mongo {

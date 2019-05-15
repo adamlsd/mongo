@@ -30,6 +30,7 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/commands.h"
@@ -38,7 +39,6 @@
 #include "mongo/db/ftdc/controller.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

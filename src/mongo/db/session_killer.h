@@ -33,11 +33,11 @@
 #include <memory>
 #include <random>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/kill_sessions.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/stdx/unordered_set.h"

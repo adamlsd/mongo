@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
+#include <functional>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_noop.h"
@@ -39,7 +40,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_test_fixture.h"
 #include "mongo/db/storage/sorted_data_interface.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/unowned_ptr.h"
 

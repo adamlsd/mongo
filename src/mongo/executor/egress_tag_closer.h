@@ -29,7 +29,8 @@
 
 #pragma once
 
-#include "mongo/stdx/functional.h"
+#include <functional>
+
 #include "mongo/transport/session.h"
 #include "mongo/util/net/hostandport.h"
 

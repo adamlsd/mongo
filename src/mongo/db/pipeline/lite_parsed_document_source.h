@@ -32,12 +32,12 @@
 #include <boost/optional.hpp>
 #include <memory>
 #include <vector>
+#include <functional>
 
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/aggregation_request.h"
 #include "mongo/db/repl/read_concern_args.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_set.h"
 

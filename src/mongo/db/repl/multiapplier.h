@@ -34,6 +34,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -43,7 +44,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

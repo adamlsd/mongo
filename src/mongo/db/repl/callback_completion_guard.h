@@ -31,8 +31,8 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <functional>
 
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
 

@@ -30,9 +30,9 @@
 #pragma once
 
 #include <vector>
+#include <functional>
 
 #include "mongo/executor/task_executor.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

@@ -32,6 +32,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
@@ -48,7 +49,6 @@
 #include "mongo/db/repl/task_runner.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/net/hostandport.h"

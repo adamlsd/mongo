@@ -31,13 +31,13 @@
 
 #include <iosfwd>
 #include <string>
+#include <functional>
 
 #include "mongo/db/repl/last_vote.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/update_position_args.h"
 #include "mongo/db/server_options.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
 

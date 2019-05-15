@@ -34,6 +34,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -44,7 +45,6 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/record_id.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/fail_point_service.h"
 

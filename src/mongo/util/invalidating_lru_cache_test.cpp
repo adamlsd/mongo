@@ -31,10 +31,10 @@
 
 #include "mongo/platform/basic.h"
 
-#include "boost/optional.hpp"
+#include <boost/optional.hpp>
+#include <functional>
 
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/future.h"

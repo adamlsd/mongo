@@ -30,6 +30,7 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/jsobj.h"
@@ -42,7 +43,6 @@
 #include "mongo/db/repl/rollback_impl.h"
 #include "mongo/db/repl/sync_source_resolver.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/net/hostandport.h"

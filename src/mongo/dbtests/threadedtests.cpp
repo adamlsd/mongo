@@ -33,13 +33,13 @@
 
 #include <boost/version.hpp>
 #include <iostream>
+#include <functional>
 
 #include "mongo/config.h"
 #include "mongo/db/client.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/bits.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/concurrency/ticketholder.h"

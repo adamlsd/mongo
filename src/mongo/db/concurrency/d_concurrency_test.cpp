@@ -34,6 +34,7 @@
 #include <boost/optional/optional_io.hpp>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/lock_manager_test_help.h"
@@ -41,7 +42,6 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/db/storage/recovery_unit_noop.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"

@@ -30,12 +30,12 @@
 #pragma once
 
 #include <vector>
+#include <functional>
 
 #include "mongo/base/init.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/value.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/intrusive_counter.h"
 
 namespace mongo {

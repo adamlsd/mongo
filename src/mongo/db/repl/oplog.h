@@ -31,6 +31,7 @@
 
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
@@ -40,7 +41,6 @@
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 class Collection;

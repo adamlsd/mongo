@@ -31,6 +31,7 @@
 
 #include <deque>
 #include <memory>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
@@ -42,7 +43,6 @@
 #include "mongo/db/repl/replication_consistency_markers.h"
 #include "mongo/db/repl/session_update_tracker.h"
 #include "mongo/db/repl/storage_interface.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/thread_pool.h"
 

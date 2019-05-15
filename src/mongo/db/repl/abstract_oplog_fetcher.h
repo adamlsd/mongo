@@ -29,12 +29,13 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/status_with.h"
 #include "mongo/client/fetcher.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/abstract_async_component.h"
 #include "mongo/db/repl/optime_with.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

@@ -35,9 +35,9 @@
 
 #include <limits>
 #include <string>
+#include <functional>
 
 #include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"

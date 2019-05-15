@@ -33,12 +33,11 @@
 #include <map>
 #include <memory>
 #include <string>
-
+#include <functional>
 
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter_factory.h"
 #include "mongo/s/client/shard.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

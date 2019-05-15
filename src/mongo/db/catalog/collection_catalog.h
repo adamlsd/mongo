@@ -32,11 +32,11 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <functional>
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/service_context.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {

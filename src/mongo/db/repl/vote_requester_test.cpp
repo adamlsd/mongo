@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <memory>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/db/commands.h"
@@ -38,7 +39,6 @@
 #include "mongo/db/repl/vote_requester.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/executor/remote_command_response.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/str.h"
 

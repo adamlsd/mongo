@@ -33,7 +33,8 @@
 
 #include "mongo/transport/service_entry_point_utils.h"
 
-#include "mongo/stdx/functional.h"
+#include <functional>
+
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/assert_util.h"

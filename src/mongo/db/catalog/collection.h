@@ -33,6 +33,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -52,7 +53,6 @@
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

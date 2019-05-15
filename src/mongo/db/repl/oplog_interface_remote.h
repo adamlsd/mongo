@@ -29,8 +29,9 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/db/repl/oplog_interface.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

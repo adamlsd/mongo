@@ -32,6 +32,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -39,7 +40,6 @@
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/executor/remote_command_response.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/transport/baton.h"
 #include "mongo/util/future.h"
 #include "mongo/util/out_of_line_executor.h"

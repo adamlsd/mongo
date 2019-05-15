@@ -33,6 +33,7 @@
 
 #include <memory>
 #include <string>
+#include <functional>
 
 #include "mongo/base/secure_allocator.h"
 #include "mongo/base/status.h"
@@ -49,7 +50,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/invalidating_lru_cache.h"

@@ -29,13 +29,14 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/status.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

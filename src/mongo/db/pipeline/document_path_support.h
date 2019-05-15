@@ -30,13 +30,13 @@
 #pragma once
 
 #include <vector>
+#include <functional>
 
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 namespace document_path_support {

@@ -37,12 +37,12 @@
 #include <boost/multi_index_container.hpp>
 #include <boost/optional.hpp>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/string_data_comparator_interface.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

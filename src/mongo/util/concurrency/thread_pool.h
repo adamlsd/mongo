@@ -32,9 +32,9 @@
 #include <deque>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/concurrency/thread_pool_interface.h"

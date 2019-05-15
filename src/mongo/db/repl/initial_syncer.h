@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <memory>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"
@@ -52,7 +53,6 @@
 #include "mongo/db/repl/sync_source_selector.h"
 #include "mongo/dbtests/mock/mock_dbclient_connection.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/fail_point_service.h"

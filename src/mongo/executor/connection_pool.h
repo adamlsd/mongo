@@ -31,11 +31,11 @@
 
 #include <memory>
 #include <queue>
+#include <functional>
 
 #include "mongo/executor/egress_tag_closer.h"
 #include "mongo/executor/egress_tag_closer_manager.h"
 #include "mongo/stdx/chrono.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/transport/session.h"

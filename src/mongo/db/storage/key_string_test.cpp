@@ -38,6 +38,7 @@
 #include <random>
 #include <typeinfo>
 #include <vector>
+#include <functional>
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/simple_string_data_comparator.h"
@@ -46,7 +47,6 @@
 #include "mongo/config.h"
 #include "mongo/db/storage/key_string.h"
 #include "mongo/platform/decimal128.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/death_test.h"

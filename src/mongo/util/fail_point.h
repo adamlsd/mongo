@@ -29,11 +29,12 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/status_with.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

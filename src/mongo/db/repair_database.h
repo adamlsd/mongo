@@ -30,9 +30,9 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "mongo/bson/bsonobj.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 class CollectionCatalogEntry;

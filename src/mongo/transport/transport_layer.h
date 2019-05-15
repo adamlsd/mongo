@@ -30,10 +30,10 @@
 #pragma once
 
 #include <memory>
+#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/transport/session.h"
 #include "mongo/util/functional.h"
 #include "mongo/util/future.h"

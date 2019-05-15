@@ -29,9 +29,10 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/sessions_collection.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
 

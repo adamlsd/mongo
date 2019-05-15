@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 #include "mongo/base/string_data.h"
 #include "mongo/client/connection_string.h"
@@ -48,7 +49,6 @@
 #include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/protocol.h"
 #include "mongo/rpc/unique_message.h"
-#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/session.h"

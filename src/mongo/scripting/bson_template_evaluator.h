@@ -46,10 +46,10 @@
 
 #include <map>
 #include <string>
+#include <functional>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/random.h"
-#include "mongo/stdx/functional.h"
 
 namespace mongo {
 

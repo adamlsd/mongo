@@ -90,9 +90,9 @@ public:
         verify(statusWithMatcher.isOK());
         unique_ptr<MatchExpression> filterExpr = std::move(statusWithMatcher.getValue());
 
-        unique_ptr<WorkingSet> ws = stdx::make_unique<WorkingSet>();
+        unique_ptr<WorkingSet> ws = std::make_unique<WorkingSet>();
         unique_ptr<IndexScan> ix =
-            stdx::make_unique<IndexScan>(&_opCtx, params, ws.get(), filterExpr.get());
+            std::make_unique<IndexScan>(&_opCtx, params, ws.get(), filterExpr.get());
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_opCtx, std::move(ws), std::move(ix), ctx.getCollection(), PlanExecutor::NO_YIELD);

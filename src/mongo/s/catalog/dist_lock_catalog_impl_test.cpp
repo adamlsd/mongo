@@ -72,17 +72,17 @@ const HostAndPort dummyHost("dummy", 123);
 class DistLockCatalogTest : public ShardServerTestFixture {
 protected:
     std::unique_ptr<DistLockCatalog> makeDistLockCatalog() override {
-        return stdx::make_unique<DistLockCatalogImpl>();
+        return std::make_unique<DistLockCatalogImpl>();
     }
 
     std::unique_ptr<DistLockManager> makeDistLockManager(
         std::unique_ptr<DistLockCatalog> distLockCatalog) override {
-        return stdx::make_unique<DistLockManagerMock>(std::move(distLockCatalog));
+        return std::make_unique<DistLockManagerMock>(std::move(distLockCatalog));
     }
 
     std::unique_ptr<ShardingCatalogClient> makeShardingCatalogClient(
         std::unique_ptr<DistLockManager> distLockManager) override {
-        return stdx::make_unique<ShardingCatalogClientMock>(std::move(distLockManager));
+        return std::make_unique<ShardingCatalogClientMock>(std::move(distLockManager));
     }
 
     std::shared_ptr<RemoteCommandTargeterMock> configTargeter() {

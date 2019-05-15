@@ -125,7 +125,7 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
     const auto& localAddr = session->local().sockAddr();
     invariant(remoteAddr && localAddr);
     auto restrictionEnvironment =
-        stdx::make_unique<RestrictionEnvironment>(*remoteAddr, *localAddr);
+        std::make_unique<RestrictionEnvironment>(*remoteAddr, *localAddr);
     RestrictionEnvironment::set(session, std::move(restrictionEnvironment));
 
     SSMListIterator ssmIt;

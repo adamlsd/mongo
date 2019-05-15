@@ -233,7 +233,7 @@ protected:
         const auto service = opCtx()->getServiceContext();
         OpObserverRegistry* opObserverRegistry =
             dynamic_cast<OpObserverRegistry*>(service->getOpObserver());
-        auto mockObserver = stdx::make_unique<OpObserverMock>();
+        auto mockObserver = std::make_unique<OpObserverMock>();
         _opObserver = mockObserver.get();
         opObserverRegistry->addObserver(std::move(mockObserver));
 
@@ -1421,7 +1421,7 @@ protected:
      * Set up and return a mock clock source.
      */
     ClockSourceMock* initMockPreciseClockSource() {
-        getServiceContext()->setPreciseClockSource(stdx::make_unique<ClockSourceMock>());
+        getServiceContext()->setPreciseClockSource(std::make_unique<ClockSourceMock>());
         return dynamic_cast<ClockSourceMock*>(getServiceContext()->getPreciseClockSource());
     }
 
@@ -1429,7 +1429,7 @@ protected:
      * Set up and return a mock tick source.
      */
     TickSourceMicrosecondMock* initMockTickSource() {
-        getServiceContext()->setTickSource(stdx::make_unique<TickSourceMicrosecondMock>());
+        getServiceContext()->setTickSource(std::make_unique<TickSourceMicrosecondMock>());
         auto tickSource =
             dynamic_cast<TickSourceMicrosecondMock*>(getServiceContext()->getTickSource());
         // Ensure that the tick source is not initialized to zero.

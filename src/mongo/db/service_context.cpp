@@ -90,9 +90,9 @@ bool supportsDocLocking() {
 }
 
 ServiceContext::ServiceContext()
-    : _tickSource(stdx::make_unique<SystemTickSource>()),
-      _fastClockSource(stdx::make_unique<SystemClockSource>()),
-      _preciseClockSource(stdx::make_unique<SystemClockSource>()) {}
+    : _tickSource(std::make_unique<SystemTickSource>()),
+      _fastClockSource(std::make_unique<SystemClockSource>()),
+      _preciseClockSource(std::make_unique<SystemClockSource>()) {}
 
 ServiceContext::~ServiceContext() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);

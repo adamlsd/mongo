@@ -58,7 +58,7 @@ TEST(ViewDefinitionTest, ViewDefinitionCreationCorrectlyBuildsNamespaceStrings) 
 
 TEST(ViewDefinitionTest, CopyConstructorProperlyClonesAllFields) {
     auto collator =
-        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
+        std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
     ViewDefinition originalView(
         viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, std::move(collator));
     ViewDefinition copiedView(originalView);
@@ -75,7 +75,7 @@ TEST(ViewDefinitionTest, CopyConstructorProperlyClonesAllFields) {
 
 TEST(ViewDefinitionTest, CopyAssignmentOperatorProperlyClonesAllFields) {
     auto collator =
-        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
+        std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
     ViewDefinition originalView(
         viewNss.db(), viewNss.coll(), backingNss.coll(), samplePipeline, std::move(collator));
     ViewDefinition copiedView = originalView;

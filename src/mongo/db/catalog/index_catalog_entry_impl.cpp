@@ -85,7 +85,7 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
       _collection(collection),
       _descriptor(std::move(descriptor)),
       _infoCache(infoCache),
-      _headManager(stdx::make_unique<HeadManagerImpl>(this)),
+      _headManager(std::make_unique<HeadManagerImpl>(this)),
       _ordering(Ordering::make(_descriptor->keyPattern())),
       _isReady(false),
       _prefix(collection->getIndexPrefix(opCtx, _descriptor->indexName())) {

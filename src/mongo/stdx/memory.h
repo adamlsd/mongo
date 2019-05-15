@@ -29,30 +29,10 @@
 
 #pragma once
 
-#include "mongo/config.h"
-
-#if defined(MONGO_CONFIG_HAVE_STD_MAKE_UNIQUE)
-
 #include <memory>
 
 namespace mongo {
 namespace stdx {
 
-using ::std::make_unique;  // NOLINT
-
 }  // namespace stdx
 }  // namespace mongo
-
-#else
-
-#include <boost/smart_ptr/make_unique.hpp>
-
-namespace mongo {
-namespace stdx {
-
-using boost::make_unique;  // NOLINT
-
-}  // namespace stdx
-}  // namespace mongo
-
-#endif

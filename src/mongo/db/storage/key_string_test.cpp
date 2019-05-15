@@ -1191,7 +1191,7 @@ TEST_F(KeyStringTest, NumberOrderLots) {
 
     std::vector<std::unique_ptr<KeyString>> keyStrings;
     for (size_t i = 0; i < numbers.size(); i++) {
-        keyStrings.push_back(stdx::make_unique<KeyString>(version, numbers[i], ordering));
+        keyStrings.push_back(std::make_unique<KeyString>(version, numbers[i], ordering));
     }
 
     for (size_t i = 0; i < numbers.size(); i++) {

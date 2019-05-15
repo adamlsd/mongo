@@ -91,7 +91,7 @@ private:
                                       false);
     }
 
-    const std::unique_ptr<ClockSource> _cs = stdx::make_unique<ClockSourceMock>();
+    const std::unique_ptr<ClockSource> _cs = std::make_unique<ClockSourceMock>();
     unittest::TempDir _dbpath;
     std::unique_ptr<WiredTigerKVEngine> _engine;
     bool _forRepair;
@@ -318,7 +318,7 @@ TEST_F(WiredTigerKVEngineTest, TestOplogTruncation) {
 }
 
 std::unique_ptr<KVHarnessHelper> makeHelper() {
-    return stdx::make_unique<WiredTigerKVHarnessHelper>();
+    return std::make_unique<WiredTigerKVHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {

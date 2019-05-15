@@ -41,7 +41,7 @@ namespace {
 
 ServiceContext::ConstructorActionRegisterer setWiredTigerCustomizationHooks{
     "SetWiredTigerCustomizationHooks", [](ServiceContext* service) {
-        auto customizationHooks = stdx::make_unique<WiredTigerCustomizationHooks>();
+        auto customizationHooks = std::make_unique<WiredTigerCustomizationHooks>();
         WiredTigerCustomizationHooks::set(service, std::move(customizationHooks));
     }};
 

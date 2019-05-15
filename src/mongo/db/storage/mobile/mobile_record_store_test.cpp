@@ -112,7 +112,7 @@ public:
     std::unique_ptr<RecordStore> newNonCappedRecordStore(const std::string& ns) override {
         ServiceContext::UniqueOperationContext opCtx(this->newOperationContext());
         MobileRecordStore::create(opCtx.get(), ns);
-        return stdx::make_unique<MobileRecordStore>(
+        return std::make_unique<MobileRecordStore>(
             opCtx.get(), ns, _fullPath, ns, CollectionOptions());
     }
 
@@ -131,11 +131,11 @@ public:
         options.capped = true;
         options.cappedSize = cappedMaxSize;
         options.cappedMaxDocs = cappedMaxDocs;
-        return stdx::make_unique<MobileRecordStore>(opCtx.get(), ns, _fullPath, ns, options);
+        return std::make_unique<MobileRecordStore>(opCtx.get(), ns, _fullPath, ns, options);
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
-        return stdx::make_unique<MobileRecoveryUnit>(_sessionPool.get());
+        return std::make_unique<MobileRecoveryUnit>(_sessionPool.get());
     }
 
     bool supportsDocLocking() final {
@@ -149,7 +149,7 @@ private:
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<MobileHarnessHelper>();
+    return std::make_unique<MobileHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {

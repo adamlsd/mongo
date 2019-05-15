@@ -212,7 +212,7 @@ CollectionImpl::CollectionImpl(OperationContext* opCtx,
           _parseValidationAction(_details->getCollectionOptions(opCtx).validationAction))),
       _validationLevel(uassertStatusOK(
           _parseValidationLevel(_details->getCollectionOptions(opCtx).validationLevel))),
-      _cappedNotifier(_recordStore->isCapped() ? stdx::make_unique<CappedInsertNotifier>()
+      _cappedNotifier(_recordStore->isCapped() ? std::make_unique<CappedInsertNotifier>()
                                                : nullptr) {
 
     _indexCatalog->init(opCtx).transitional_ignore();
@@ -1210,7 +1210,7 @@ void _reportValidationResults(OperationContext* opCtx,
 
     std::unique_ptr<BSONObjBuilder> indexDetails;
     if (level == kValidateFull) {
-        indexDetails = stdx::make_unique<BSONObjBuilder>();
+        indexDetails = std::make_unique<BSONObjBuilder>();
     }
 
     // Report index validation results.

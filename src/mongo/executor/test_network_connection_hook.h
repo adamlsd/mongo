@@ -80,7 +80,7 @@ template <typename Val, typename Req, typename Rep>
 std::unique_ptr<TestConnectionHook<Val, Req, Rep>> makeTestHook(Val&& validateFunc,
                                                                 Req&& requestFunc,
                                                                 Rep&& replyFunc) {
-    return stdx::make_unique<TestConnectionHook<Val, Req, Rep>>(std::forward<Val>(validateFunc),
+    return std::make_unique<TestConnectionHook<Val, Req, Rep>>(std::forward<Val>(validateFunc),
                                                                 std::forward<Req>(requestFunc),
                                                                 std::forward<Rep>(replyFunc));
 }

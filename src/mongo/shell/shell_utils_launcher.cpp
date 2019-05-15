@@ -587,7 +587,7 @@ void ProgramRunner::launchProcess(int child_stdout) {
     // Reserve space for the final NULL character which terminates the environment block
     environmentBlockSize += 1;
 
-    auto lpEnvironment = stdx::make_unique<wchar_t[]>(environmentBlockSize);
+    auto lpEnvironment = std::make_unique<wchar_t[]>(environmentBlockSize);
     size_t environmentOffset = 0;
     for (const std::wstring& envKeyValue : nativeEnvStrings) {
         // Ensure there is enough room to write the string, the string's NULL byte, and the block's

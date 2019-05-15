@@ -44,7 +44,7 @@ namespace mongo {
 
 void registerMongoSCollectors(FTDCController* controller) {
     // PoolStats
-    controller->addPeriodicCollector(stdx::make_unique<FTDCSimpleInternalCommandCollector>(
+    controller->addPeriodicCollector(std::make_unique<FTDCSimpleInternalCommandCollector>(
         "connPoolStats", "connPoolStats", "", BSON("connPoolStats" << 1)));
 }
 

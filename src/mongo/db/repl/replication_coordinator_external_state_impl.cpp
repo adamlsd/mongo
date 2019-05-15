@@ -152,16 +152,16 @@ auto makeThreadPool(const std::string& poolName) {
         Client::initThread(threadName.c_str());
         AuthorizationSession::get(cc())->grantInternalAuthorization(&cc());
     };
-    return stdx::make_unique<ThreadPool>(threadPoolOptions);
+    return std::make_unique<ThreadPool>(threadPoolOptions);
 }
 
 /**
  * Returns a new thread pool task executor.
  */
 auto makeTaskExecutor(ServiceContext* service, const std::string& poolName) {
-    auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
-    hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(service));
-    return stdx::make_unique<executor::ThreadPoolTaskExecutor>(
+    auto hookList = std::make_unique<rpc::EgressMetadataHookList>();
+    hookList->addHook(std::make_unique<rpc::LogicalTimeMetadataHook>(service));
+    return std::make_unique<executor::ThreadPoolTaskExecutor>(
         makeThreadPool(poolName),
         executor::makeNetworkInterface("RS", nullptr, std::move(hookList)));
 }
@@ -230,7 +230,7 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     // we apply (recovery); or track missing documents that are fetched from the sync source
     // (initial sync).
     _oplogApplier =
-        stdx::make_unique<OplogApplierImpl>(_oplogApplierTaskExecutor.get(),
+        std::make_unique<OplogApplierImpl>(_oplogApplierTaskExecutor.get(),
                                             _oplogBuffer.get(),
                                             &noopOplogApplierObserver,
                                             replCoord,
@@ -255,7 +255,7 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     // leave the unique pointer empty if the _syncSourceFeedbackThread's function starts
     // after _stopDataReplication_inlock's move.
     auto bgSyncPtr = _bgSync.get();
-    _syncSourceFeedbackThread = stdx::make_unique<stdx::thread>([this, bgSyncPtr, replCoord] {
+    _syncSourceFeedbackThread = std::make_unique<stdx::thread>([this, bgSyncPtr, replCoord] {
         _syncSourceFeedback.run(_taskExecutor.get(), bgSyncPtr, replCoord);
     });
 }
@@ -949,7 +949,7 @@ void ReplicationCoordinatorExternalStateImpl::stopNoopWriter() {
 void ReplicationCoordinatorExternalStateImpl::setupNoopWriter(Seconds waitTime) {
     invariant(!_noopWriter);
 
-    _noopWriter = stdx::make_unique<NoopWriter>(waitTime);
+    _noopWriter = std::make_unique<NoopWriter>(waitTime);
 }
 }  // namespace repl
 }  // namespace mongo

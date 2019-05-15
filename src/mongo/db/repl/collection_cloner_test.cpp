@@ -528,7 +528,7 @@ TEST_F(CollectionClonerTest,
             return request.cmdObj.firstElementFieldNameStringData() == "listIndexes";
         });
 
-    collectionCloner = stdx::make_unique<CollectionCloner>(&_executorProxy,
+    collectionCloner = std::make_unique<CollectionCloner>(&_executorProxy,
                                                            dbWorkThreadPool.get(),
                                                            target,
                                                            nss,
@@ -1135,7 +1135,7 @@ TEST_F(CollectionClonerTest, CollectionClonerResetsOnCompletionCallbackFunctionA
 
     Status result = getDetectableErrorStatus();
     collectionCloner =
-        stdx::make_unique<CollectionCloner>(&getExecutor(),
+        std::make_unique<CollectionCloner>(&getExecutor(),
                                             dbWorkThreadPool.get(),
                                             target,
                                             nss,

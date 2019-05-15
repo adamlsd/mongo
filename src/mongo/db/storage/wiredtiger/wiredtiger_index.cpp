@@ -832,7 +832,7 @@ public:
         // end after the key if inclusive and before if exclusive.
         const auto discriminator =
             _forward == inclusive ? KeyString::kExclusiveAfter : KeyString::kExclusiveBefore;
-        _endPosition = stdx::make_unique<KeyString>(_idx.keyStringVersion());
+        _endPosition = std::make_unique<KeyString>(_idx.keyStringVersion());
         _endPosition->resetToKey(stripFieldNames(key), _idx.ordering(), discriminator);
     }
 
@@ -1250,7 +1250,7 @@ WiredTigerIndexUnique::WiredTigerIndexUnique(OperationContext* ctx,
 
 std::unique_ptr<SortedDataInterface::Cursor> WiredTigerIndexUnique::newCursor(
     OperationContext* opCtx, bool forward) const {
-    return stdx::make_unique<WiredTigerIndexUniqueCursor>(*this, opCtx, forward, _prefix);
+    return std::make_unique<WiredTigerIndexUniqueCursor>(*this, opCtx, forward, _prefix);
 }
 
 SortedDataBuilderInterface* WiredTigerIndexUnique::getBulkBuilder(OperationContext* opCtx,
@@ -1666,7 +1666,7 @@ WiredTigerIndexStandard::WiredTigerIndexStandard(OperationContext* ctx,
 
 std::unique_ptr<SortedDataInterface::Cursor> WiredTigerIndexStandard::newCursor(
     OperationContext* opCtx, bool forward) const {
-    return stdx::make_unique<WiredTigerIndexStandardCursor>(*this, opCtx, forward, _prefix);
+    return std::make_unique<WiredTigerIndexStandardCursor>(*this, opCtx, forward, _prefix);
 }
 
 SortedDataBuilderInterface* WiredTigerIndexStandard::getBulkBuilder(OperationContext* opCtx,

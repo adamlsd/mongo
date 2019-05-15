@@ -172,7 +172,7 @@ const S2Polygon& BigSimplePolygon::GetPolygonBorder() const {
 
     std::vector<S2Loop*> loops;
     loops.push_back(cloned.release());
-    _borderPoly = stdx::make_unique<S2Polygon>(&loops);
+    _borderPoly = std::make_unique<S2Polygon>(&loops);
     return *_borderPoly;
 }
 

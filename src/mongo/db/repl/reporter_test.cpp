@@ -146,9 +146,9 @@ ReporterTest::ReporterTest() {}
 void ReporterTest::setUp() {
     executor::ThreadPoolExecutorTest::setUp();
 
-    _executorProxy = stdx::make_unique<unittest::TaskExecutorProxy>(&getExecutor());
+    _executorProxy = std::make_unique<unittest::TaskExecutorProxy>(&getExecutor());
 
-    posUpdater = stdx::make_unique<MockProgressManager>();
+    posUpdater = std::make_unique<MockProgressManager>();
     posUpdater->updateMap(0, OpTime({3, 0}, 1), OpTime({3, 0}, 1));
 
     prepareReplSetUpdatePositionCommandFn = [updater = posUpdater.get()] {
@@ -156,7 +156,7 @@ void ReporterTest::setUp() {
     };
 
     reporter =
-        stdx::make_unique<Reporter>(_executorProxy.get(),
+        std::make_unique<Reporter>(_executorProxy.get(),
                                     [this]() { return prepareReplSetUpdatePositionCommandFn(); },
                                     HostAndPort("h1"),
                                     Milliseconds(1000),

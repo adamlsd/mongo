@@ -45,7 +45,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 // static
 const char* IDHackStage::kStageType = "IDHACK";
@@ -173,8 +172,8 @@ bool IDHackStage::supportsQuery(Collection* collection, const CanonicalQuery& qu
 
 unique_ptr<PlanStageStats> IDHackStage::getStats() {
     _commonStats.isEOF = isEOF();
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_IDHACK);
-    ret->specific = make_unique<IDHackStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_IDHACK);
+    ret->specific = std::make_unique<IDHackStats>(_specificStats);
     return ret;
 }
 

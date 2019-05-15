@@ -202,7 +202,7 @@ private:
         ServiceContextMongoDTest::setUp();
         _createOpCtx();
         auto service = getServiceContext();
-        auto replCoord = stdx::make_unique<ReplicationCoordinatorMock>(service);
+        auto replCoord = std::make_unique<ReplicationCoordinatorMock>(service);
         _replicationCoordinatorMock = replCoord.get();
         ReplicationCoordinator::set(service, std::move(replCoord));
     }
@@ -217,8 +217,8 @@ private:
     void _createOpCtx() {
         _opCtx = cc().makeOperationContext();
         // We are not replicating nor validating these writes.
-        _uwb = stdx::make_unique<UnreplicatedWritesBlock>(_opCtx.get());
-        _ddv = stdx::make_unique<DisableDocumentValidation>(_opCtx.get());
+        _uwb = std::make_unique<UnreplicatedWritesBlock>(_opCtx.get());
+        _ddv = std::make_unique<DisableDocumentValidation>(_opCtx.get());
     }
 
     ServiceContext::UniqueOperationContext _opCtx;

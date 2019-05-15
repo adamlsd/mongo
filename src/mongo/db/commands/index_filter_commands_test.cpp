@@ -108,7 +108,7 @@ std::unique_ptr<PlanRankingDecision> createDecision(size_t numPlans) {
     unique_ptr<PlanRankingDecision> why(new PlanRankingDecision());
     for (size_t i = 0; i < numPlans; ++i) {
         CommonStats common("COLLSCAN");
-        auto stats = stdx::make_unique<PlanStageStats>(common, STAGE_COLLSCAN);
+        auto stats = std::make_unique<PlanStageStats>(common, STAGE_COLLSCAN);
         stats->specific.reset(new CollectionScanStats());
         why->stats.push_back(std::move(stats));
         why->scores.push_back(0U);
@@ -127,7 +127,7 @@ void addQueryShapeToPlanCache(OperationContext* opCtx,
                               const char* projectionStr,
                               const char* collationStr) {
     // Create canonical query.
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     qr->setFilter(fromjson(queryStr));
     qr->setSort(fromjson(sortStr));
     qr->setProj(fromjson(projectionStr));
@@ -158,7 +158,7 @@ bool planCacheContains(OperationContext* opCtx,
                        const char* collationStr) {
 
     // Create canonical query.
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     qr->setFilter(fromjson(queryStr));
     qr->setSort(fromjson(sortStr));
     qr->setProj(fromjson(projectionStr));
@@ -176,7 +176,7 @@ bool planCacheContains(OperationContext* opCtx,
         // Canonicalizing query shape in cache entry to get cache key.
         // Alternatively, we could add key to PlanCacheEntry but that would be used in one place
         // only.
-        auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto qr = std::make_unique<QueryRequest>(nss);
         qr->setFilter(entry->query);
         qr->setSort(entry->sort);
         qr->setProj(entry->projection);

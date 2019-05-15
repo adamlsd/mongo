@@ -84,14 +84,14 @@ void DatabaseTest::setUp() {
     auto service = getServiceContext();
     _opCtx = cc().makeOperationContext();
 
-    repl::StorageInterface::set(service, stdx::make_unique<repl::StorageInterfaceMock>());
+    repl::StorageInterface::set(service, std::make_unique<repl::StorageInterfaceMock>());
     repl::DropPendingCollectionReaper::set(
         service,
-        stdx::make_unique<repl::DropPendingCollectionReaper>(repl::StorageInterface::get(service)));
+        std::make_unique<repl::DropPendingCollectionReaper>(repl::StorageInterface::get(service)));
 
     // Set up ReplicationCoordinator and create oplog.
     repl::ReplicationCoordinator::set(service,
-                                      stdx::make_unique<repl::ReplicationCoordinatorMock>(service));
+                                      std::make_unique<repl::ReplicationCoordinatorMock>(service));
     repl::setOplogCollectionName(service);
     repl::createOplog(_opCtx.get());
 
@@ -103,7 +103,7 @@ void DatabaseTest::setUp() {
     // repl::logOp(). repl::logOp() will also store the oplog entry's optime in ReplClientInfo.
     OpObserverRegistry* opObserverRegistry =
         dynamic_cast<OpObserverRegistry*>(service->getOpObserver());
-    opObserverRegistry->addObserver(stdx::make_unique<OpObserverShardingImpl>());
+    opObserverRegistry->addObserver(std::make_unique<OpObserverShardingImpl>());
 
     _nss = NamespaceString("test.foo");
 }

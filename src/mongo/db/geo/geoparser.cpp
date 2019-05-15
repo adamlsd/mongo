@@ -210,7 +210,7 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
                 "Loop must have at least 3 different vertices: " << coordinateElt.toString(false));
         }
 
-        loops.push_back(stdx::make_unique<S2Loop>(points));
+        loops.push_back(std::make_unique<S2Loop>(points));
         S2Loop* loop = loops.back().get();
 
         // Check whether this loop is valid.

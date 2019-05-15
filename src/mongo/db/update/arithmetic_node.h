@@ -47,7 +47,7 @@ public:
     Status init(BSONElement modExpr, const boost::intrusive_ptr<ExpressionContext>& expCtx) final;
 
     std::unique_ptr<UpdateNode> clone() const final {
-        return stdx::make_unique<ArithmeticNode>(*this);
+        return std::make_unique<ArithmeticNode>(*this);
     }
 
     void setCollator(const CollatorInterface* collator) final {}

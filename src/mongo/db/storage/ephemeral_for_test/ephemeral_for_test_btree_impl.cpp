@@ -481,7 +481,7 @@ public:
 
     virtual std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
                                                                    bool isForward) const {
-        return stdx::make_unique<Cursor>(opCtx, *_data, isForward, _isUnique);
+        return std::make_unique<Cursor>(opCtx, *_data, isForward, _isUnique);
     }
 
     virtual Status initAsEmpty(OperationContext* opCtx) {

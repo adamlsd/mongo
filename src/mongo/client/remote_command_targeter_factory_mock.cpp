@@ -80,10 +80,10 @@ std::unique_ptr<RemoteCommandTargeter> RemoteCommandTargeterFactoryMock::create(
     const ConnectionString& connStr) {
     auto it = _mockTargeters.find(connStr);
     if (it != _mockTargeters.end()) {
-        return stdx::make_unique<TargeterProxy>(it->second);
+        return std::make_unique<TargeterProxy>(it->second);
     }
 
-    return stdx::make_unique<RemoteCommandTargeterMock>();
+    return std::make_unique<RemoteCommandTargeterMock>();
 }
 
 void RemoteCommandTargeterFactoryMock::addTargeterToReturn(

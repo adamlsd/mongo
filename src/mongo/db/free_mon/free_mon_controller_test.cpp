@@ -420,7 +420,7 @@ void FreeMonControllerTest::setUp() {
 
     _opCtx = cc().makeOperationContext();
 
-    //_storage = stdx::make_unique<repl::StorageInterfaceImpl>();
+    //_storage = std::make_unique<repl::StorageInterfaceImpl>();
     repl::StorageInterface::set(service, std::make_unique<repl::StorageInterfaceImpl>());
 
     // Transition to PRIMARY so that the server can accept writes.
@@ -889,8 +889,8 @@ struct ControllerHolder {
     ControllerHolder(executor::ThreadPoolTaskExecutor* pool,
                      FreeMonNetworkInterfaceMock::Options opts,
                      bool useCrankForTest = true) {
-        auto registerCollectorUnique = stdx::make_unique<FreeMonMetricsCollectorMock>();
-        auto metricsCollectorUnique = stdx::make_unique<FreeMonMetricsCollectorMock>();
+        auto registerCollectorUnique = std::make_unique<FreeMonMetricsCollectorMock>();
+        auto metricsCollectorUnique = std::make_unique<FreeMonMetricsCollectorMock>();
 
         // If we want to manually turn the crank the queue, we must process the messages
         // synchronously

@@ -47,9 +47,9 @@ class NetworkInterfaceThreadPoolWithASIO : public ThreadPoolInterface {
 public:
     NetworkInterfaceThreadPoolWithASIO() {
         executor::NetworkInterfaceASIO::Options options;
-        options.timerFactory = stdx::make_unique<executor::AsyncTimerFactoryMock>();
-        _asio = stdx::make_unique<executor::NetworkInterfaceASIO>(std::move(options));
-        _pool = stdx::make_unique<executor::NetworkInterfaceThreadPool>(_asio.get());
+        options.timerFactory = std::make_unique<executor::AsyncTimerFactoryMock>();
+        _asio = std::make_unique<executor::NetworkInterfaceASIO>(std::move(options));
+        _pool = std::make_unique<executor::NetworkInterfaceThreadPool>(_asio.get());
         _asio->startup();
     }
 
@@ -80,7 +80,7 @@ private:
 
 MONGO_INITIALIZER(ThreadPoolCommonTests)(InitializerContext*) {
     addTestsForThreadPool("ThreadPoolCommon",
-                          []() { return stdx::make_unique<NetworkInterfaceThreadPoolWithASIO>(); });
+                          []() { return std::make_unique<NetworkInterfaceThreadPoolWithASIO>(); });
     return Status::OK();
 }
 

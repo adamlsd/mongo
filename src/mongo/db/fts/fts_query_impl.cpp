@@ -136,7 +136,7 @@ Status FTSQueryImpl::parse(TextIndexVersion textIndexVersion) {
 }
 
 std::unique_ptr<FTSQuery> FTSQueryImpl::clone() const {
-    auto clonedQuery = stdx::make_unique<FTSQueryImpl>();
+    auto clonedQuery = std::make_unique<FTSQueryImpl>();
     clonedQuery->setQuery(getQuery());
     clonedQuery->setLanguage(getLanguage());
     clonedQuery->setCaseSensitive(getCaseSensitive());

@@ -53,14 +53,14 @@ void LogicalClockTestFixture::setUp() {
 
     auto service = getServiceContext();
 
-    auto logicalClock = stdx::make_unique<LogicalClock>(service);
+    auto logicalClock = std::make_unique<LogicalClock>(service);
     LogicalClock::set(service, std::move(logicalClock));
     _clock = LogicalClock::get(service);
 
-    service->setFastClockSource(stdx::make_unique<SharedClockSourceAdapter>(_mockClockSource));
-    service->setPreciseClockSource(stdx::make_unique<SharedClockSourceAdapter>(_mockClockSource));
+    service->setFastClockSource(std::make_unique<SharedClockSourceAdapter>(_mockClockSource));
+    service->setPreciseClockSource(std::make_unique<SharedClockSourceAdapter>(_mockClockSource));
 
-    _dbDirectClient = stdx::make_unique<DBDirectClient>(operationContext());
+    _dbDirectClient = std::make_unique<DBDirectClient>(operationContext());
 
     ASSERT_OK(replicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY));
 }
@@ -72,7 +72,7 @@ void LogicalClockTestFixture::tearDown() {
 
 LogicalClock* LogicalClockTestFixture::resetClock() {
     auto service = getServiceContext();
-    auto logicalClock = stdx::make_unique<LogicalClock>(service);
+    auto logicalClock = std::make_unique<LogicalClock>(service);
 
     LogicalClock::set(service, std::move(logicalClock));
     _clock = LogicalClock::get(service);

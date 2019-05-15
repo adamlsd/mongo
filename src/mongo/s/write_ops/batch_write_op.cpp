@@ -633,7 +633,7 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
             int batchIndex = targetedBatch.getWrites()[childBatchIndex]->writeOpRef.first;
 
             // Push the upserted id with the correct index into the batch upserted ids
-            auto upsertedId = stdx::make_unique<BatchedUpsertDetail>();
+            auto upsertedId = std::make_unique<BatchedUpsertDetail>();
             upsertedId->setIndex(batchIndex);
             upsertedId->setUpsertedID(childUpsertedId->getUpsertedID());
             _upsertedIds.push_back(std::move(upsertedId));
@@ -652,7 +652,7 @@ void BatchWriteOp::noteBatchError(const TargetedWriteBatch& targetedBatch,
         _clientRequest.getWriteCommandBase().getOrdered() ? 1 : targetedBatch.getWrites().size();
 
     for (int i = 0; i < numErrors; i++) {
-        auto errorClone(stdx::make_unique<WriteErrorDetail>());
+        auto errorClone(std::make_unique<WriteErrorDetail>());
         error.cloneTo(errorClone.get());
         errorClone->setIndex(i);
         emulatedResponse.addToErrDetails(errorClone.release());

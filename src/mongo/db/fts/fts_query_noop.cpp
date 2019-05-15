@@ -37,7 +37,7 @@ namespace mongo {
 namespace fts {
 
 std::unique_ptr<FTSQuery> FTSQueryNoop::clone() const {
-    auto clonedQuery = stdx::make_unique<FTSQueryNoop>();
+    auto clonedQuery = std::make_unique<FTSQueryNoop>();
     clonedQuery->setQuery(getQuery());
     clonedQuery->setLanguage(getLanguage());
     clonedQuery->setCaseSensitive(getCaseSensitive());

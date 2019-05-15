@@ -64,7 +64,7 @@ void RollbackCheckerTest::setUp() {
     executor::ThreadPoolExecutorTest::setUp();
     launchExecutorThread();
     getNet()->enterNetwork();
-    _rollbackChecker = stdx::make_unique<RollbackChecker>(&getExecutor(), HostAndPort());
+    _rollbackChecker = std::make_unique<RollbackChecker>(&getExecutor(), HostAndPort());
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     _hasRolledBackResult = {ErrorCodes::NotYetInitialized, ""};
     _hasCalledCallback = false;

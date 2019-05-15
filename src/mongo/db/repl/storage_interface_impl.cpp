@@ -234,7 +234,7 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
             wunit.commit();
         }
 
-        autoColl = stdx::make_unique<AutoGetCollection>(
+        autoColl = std::make_unique<AutoGetCollection>(
             opCtx.get(), nss, fixLockModeForSystemDotViewsChanges(nss, MODE_IX));
 
         // Build empty capped indexes.  Capped indexes cannot be built by the MultiIndexBlock
@@ -270,7 +270,7 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
 
     // Move locks into loader, so it now controls their lifetime.
     auto loader =
-        stdx::make_unique<CollectionBulkLoaderImpl>(Client::releaseCurrent(),
+        std::make_unique<CollectionBulkLoaderImpl>(Client::releaseCurrent(),
                                                     std::move(opCtx),
                                                     std::move(autoColl),
                                                     options.capped ? BSONObj() : idIndexSpec);

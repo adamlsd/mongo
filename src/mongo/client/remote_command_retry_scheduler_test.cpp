@@ -498,7 +498,7 @@ public:
 TEST_F(RemoteCommandRetrySchedulerTest,
        SchedulerReturnsCallbackCanceledIfShutdownBeforeSendingRetryCommand) {
     CallbackResponseSaver callback;
-    auto policy = stdx::make_unique<ShutdownSchedulerRetryPolicy>();
+    auto policy = std::make_unique<ShutdownSchedulerRetryPolicy>();
     auto policyPtr = policy.get();
     TaskExecutorWithFailureInScheduleRemoteCommand badExecutor(&getExecutor());
     RemoteCommandRetryScheduler scheduler(

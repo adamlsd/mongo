@@ -63,8 +63,8 @@ private:
             const std::string kExecName("CollectionRangeDeleter-TaskExecutor");
 
             auto net = executor::makeNetworkInterface(kExecName);
-            auto pool = stdx::make_unique<executor::NetworkInterfaceThreadPool>(net.get());
-            auto taskExecutor = stdx::make_unique<executor::ThreadPoolTaskExecutor>(std::move(pool),
+            auto pool = std::make_unique<executor::NetworkInterfaceThreadPool>(net.get());
+            auto taskExecutor = std::make_unique<executor::ThreadPoolTaskExecutor>(std::move(pool),
                                                                                     std::move(net));
             taskExecutor->startup();
 

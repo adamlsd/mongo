@@ -145,9 +145,9 @@ protected:
 };
 
 void OplogBufferProxyTest::setUp() {
-    auto mock = stdx::make_unique<OplogBufferMock>();
+    auto mock = std::make_unique<OplogBufferMock>();
     _mock = mock.get();
-    _proxy = stdx::make_unique<OplogBufferProxy>(std::move(mock));
+    _proxy = std::make_unique<OplogBufferProxy>(std::move(mock));
 }
 
 void OplogBufferProxyTest::tearDown() {

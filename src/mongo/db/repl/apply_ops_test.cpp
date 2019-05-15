@@ -91,7 +91,7 @@ void ApplyOpsTest::setUp() {
     auto opCtx = cc().makeOperationContext();
 
     // Set up ReplicationCoordinator and create oplog.
-    ReplicationCoordinator::set(service, stdx::make_unique<ReplicationCoordinatorMock>(service));
+    ReplicationCoordinator::set(service, std::make_unique<ReplicationCoordinatorMock>(service));
     setOplogCollectionName(service);
     createOplog(opCtx.get());
 
@@ -100,13 +100,13 @@ void ApplyOpsTest::setUp() {
     ASSERT_OK(replCoord->setFollowerMode(MemberState::RS_PRIMARY));
 
     // Use OpObserverMock to track notifications for applyOps().
-    auto opObserver = stdx::make_unique<OpObserverMock>();
+    auto opObserver = std::make_unique<OpObserverMock>();
     _opObserver = opObserver.get();
     service->setOpObserver(std::move(opObserver));
 
     // This test uses StorageInterface to create collections and inspect documents inside
     // collections.
-    _storage = stdx::make_unique<StorageInterfaceImpl>();
+    _storage = std::make_unique<StorageInterfaceImpl>();
 }
 
 void ApplyOpsTest::tearDown() {

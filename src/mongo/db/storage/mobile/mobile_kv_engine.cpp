@@ -219,7 +219,7 @@ std::unique_ptr<RecordStore> MobileKVEngine::getRecordStore(OperationContext* op
                                                             StringData ns,
                                                             StringData ident,
                                                             const CollectionOptions& options) {
-    return stdx::make_unique<MobileRecordStore>(opCtx, ns, _path, ident.toString(), options);
+    return std::make_unique<MobileRecordStore>(opCtx, ns, _path, ident.toString(), options);
 }
 
 std::unique_ptr<RecordStore> MobileKVEngine::makeTemporaryRecordStore(OperationContext* opCtx,

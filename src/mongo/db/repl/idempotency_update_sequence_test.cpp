@@ -170,7 +170,7 @@ TEST(UpdateGenTest, UpdatesAreNotAmbiguous) {
     std::vector<std::unique_ptr<FieldRef>> argPathsRefVec;
     FieldRefSet pathRefSet;
     for (auto path : argPathsSet) {
-        argPathsRefVec.push_back(stdx::make_unique<FieldRef>(path));
+        argPathsRefVec.push_back(std::make_unique<FieldRef>(path));
         const FieldRef* conflict;
         if (!pathRefSet.insert(argPathsRefVec.back().get(), &conflict)) {
             StringBuilder sb;

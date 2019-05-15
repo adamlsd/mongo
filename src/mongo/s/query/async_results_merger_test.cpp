@@ -1362,7 +1362,7 @@ DEATH_TEST_F(AsyncResultsMergerTest,
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
     ASSERT_FALSE(arm->ready());
@@ -1394,7 +1394,7 @@ DEATH_TEST_F(AsyncResultsMergerTest,
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
     ASSERT_TRUE(arm->ready());
@@ -1429,7 +1429,7 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorNotReadyIfRemoteHasLowerPostB
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
 
@@ -1465,7 +1465,7 @@ DEATH_TEST_F(AsyncResultsMergerTest,
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
     ASSERT_TRUE(arm->ready());
@@ -1505,7 +1505,7 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorIgnoresOplogTimestamp) {
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
 
@@ -1531,7 +1531,7 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorNewShardOrderedAfterExisting)
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
 
@@ -1613,7 +1613,7 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorNewShardOrderedBeforeExisting
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     auto readyEvent = unittest::assertGet(arm->nextEvent());
 
@@ -1708,7 +1708,7 @@ TEST_F(AsyncResultsMergerTest, SortedTailableCursorReturnsHighWaterMarkSortKey) 
     params.setTailableMode(TailableModeEnum::kTailableAndAwaitData);
     params.setSort(change_stream_constants::kSortSpec);
     auto arm =
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params));
 
     // We have no results to return, so the ARM is not ready.
     auto readyEvent = unittest::assertGet(arm->nextEvent());
@@ -1943,7 +1943,7 @@ DEATH_TEST_F(AsyncResultsMergerTest,
 
     // This should trigger an invariant.
     ASSERT_FALSE(
-        stdx::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params)));
+        std::make_unique<AsyncResultsMerger>(operationContext(), executor(), std::move(params)));
 }
 
 DEATH_TEST_F(AsyncResultsMergerTest,

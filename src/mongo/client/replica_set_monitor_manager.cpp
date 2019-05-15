@@ -79,7 +79,7 @@ shared_ptr<ReplicaSetMonitor> ReplicaSetMonitorManager::getMonitor(StringData se
 }
 
 void ReplicaSetMonitorManager::_setupTaskExecutorInLock(const std::string& name) {
-    auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
+    auto hookList = std::make_unique<rpc::EgressMetadataHookList>();
 
     // do not restart taskExecutor if is in shutdown
     if (!_taskExecutor && !_isShutdown) {
@@ -87,8 +87,8 @@ void ReplicaSetMonitorManager::_setupTaskExecutorInLock(const std::string& name)
         auto net = executor::makeNetworkInterface(
             "ReplicaSetMonitor-TaskExecutor", nullptr, std::move(hookList));
         auto netPtr = net.get();
-        _taskExecutor = stdx::make_unique<ThreadPoolTaskExecutor>(
-            stdx::make_unique<NetworkInterfaceThreadPool>(netPtr), std::move(net));
+        _taskExecutor = std::make_unique<ThreadPoolTaskExecutor>(
+            std::make_unique<NetworkInterfaceThreadPool>(netPtr), std::move(net));
         LOG(1) << "Starting up task executor for monitoring replica sets in response to request to "
                   "monitor set: "
                << redact(name);

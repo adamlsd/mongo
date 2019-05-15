@@ -63,7 +63,7 @@ public:
         : _opCtx(opCtx), _forward(forward) {
 
         MobileSession* session = MobileRecoveryUnit::get(_opCtx)->getSession(_opCtx);
-        _stmt = stdx::make_unique<SqliteStatement>(*session,
+        _stmt = std::make_unique<SqliteStatement>(*session,
                                                    "SELECT rec_id, data from \"",
                                                    ident,
                                                    "\" ",
@@ -387,7 +387,7 @@ StatusWith<RecordData> MobileRecordStore::updateWithDamages(
 
 std::unique_ptr<SeekableRecordCursor> MobileRecordStore::getCursor(OperationContext* opCtx,
                                                                    bool forward) const {
-    return stdx::make_unique<Cursor>(opCtx, *this, _path, _ident, forward);
+    return std::make_unique<Cursor>(opCtx, *this, _path, _ident, forward);
 }
 
 /**

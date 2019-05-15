@@ -58,7 +58,7 @@ namespace {
 std::unique_ptr<CanonicalQuery> canonicalQueryFromFilterObj(OperationContext* opCtx,
                                                             const NamespaceString& nss,
                                                             BSONObj filter) {
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     qr->setFilter(filter);
     auto statusWithCQ = CanonicalQuery::canonicalize(opCtx, std::move(qr));
     uassertStatusOK(statusWithCQ.getStatus());
@@ -150,7 +150,7 @@ public:
         const size_t decisionWorks = 10;
         const size_t mockWorks =
             1U + static_cast<size_t>(internalQueryCacheEvictionRatio * decisionWorks);
-        auto mockChild = stdx::make_unique<QueuedDataStage>(&_opCtx, &_ws);
+        auto mockChild = std::make_unique<QueuedDataStage>(&_opCtx, &_ws);
         for (size_t i = 0; i < mockWorks; i++) {
             mockChild->pushBack(PlanStage::NEED_TIME);
         }
@@ -181,7 +181,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanFailure) {
     ASSERT(collection);
 
     // Query can be answered by either index on "a" or index on "b".
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     qr->setFilter(fromjson("{a: {$gte: 8}, b: 1}"));
     auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(qr));
     ASSERT_OK(statusWithCQ.getStatus());
@@ -197,7 +197,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanFailure) {
     fillOutPlannerParams(&_opCtx, collection, cq.get(), &plannerParams);
 
     // Queued data stage will return a failure during the cached plan trial period.
-    auto mockChild = stdx::make_unique<QueuedDataStage>(&_opCtx, &_ws);
+    auto mockChild = std::make_unique<QueuedDataStage>(&_opCtx, &_ws);
     mockChild->pushBack(PlanStage::FAILURE);
 
     // High enough so that we shouldn't trigger a replan based on works.
@@ -227,7 +227,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanHitMaxWorks) {
     ASSERT(collection);
 
     // Query can be answered by either index on "a" or index on "b".
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     qr->setFilter(fromjson("{a: {$gte: 8}, b: 1}"));
     auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(qr));
     ASSERT_OK(statusWithCQ.getStatus());
@@ -247,7 +247,7 @@ TEST_F(QueryStageCachedPlan, QueryStageCachedPlanHitMaxWorks) {
     const size_t decisionWorks = 10;
     const size_t mockWorks =
         1U + static_cast<size_t>(internalQueryCacheEvictionRatio * decisionWorks);
-    auto mockChild = stdx::make_unique<QueuedDataStage>(&_opCtx, &_ws);
+    auto mockChild = std::make_unique<QueuedDataStage>(&_opCtx, &_ws);
     for (size_t i = 0; i < mockWorks; i++) {
         mockChild->pushBack(PlanStage::NEED_TIME);
     }
@@ -437,7 +437,7 @@ TEST_F(QueryStageCachedPlan, ThrowsOnYieldRecoveryWhenIndexIsDroppedBeforePlanSe
     ASSERT(collection);
 
     // Query can be answered by either index on "a" or index on "b".
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(qr));
     ASSERT_OK(statusWithCQ.getStatus());
     const std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
@@ -479,7 +479,7 @@ TEST_F(QueryStageCachedPlan, DoesNotThrowOnYieldRecoveryWhenIndexIsDroppedAferPl
     ASSERT(collection);
 
     // Query can be answered by either index on "a" or index on "b".
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     auto statusWithCQ = CanonicalQuery::canonicalize(opCtx(), std::move(qr));
     ASSERT_OK(statusWithCQ.getStatus());
     const std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());

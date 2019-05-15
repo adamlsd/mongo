@@ -105,7 +105,7 @@ public:
     };                                                                          \
     const CetRegistrationAgent CET_##TEST_NAME::_agent(                         \
         #TEST_NAME, [](ExecutorFactory makeExecutor) {                          \
-            return stdx::make_unique<CET_##TEST_NAME>(std::move(makeExecutor)); \
+            return std::make_unique<CET_##TEST_NAME>(std::move(makeExecutor)); \
         });                                                                     \
     void CET_##TEST_NAME::_doTest()
 
@@ -336,7 +336,7 @@ COMMON_EXECUTOR_TEST(EventWaitingWithTimeoutTest) {
 
     auto serviceContext = ServiceContext::make();
 
-    serviceContext->setFastClockSource(stdx::make_unique<ClockSourceMock>());
+    serviceContext->setFastClockSource(std::make_unique<ClockSourceMock>());
     auto mockClock = static_cast<ClockSourceMock*>(serviceContext->getFastClockSource());
 
     auto client = serviceContext->makeClient("for testing");
@@ -358,7 +358,7 @@ COMMON_EXECUTOR_TEST(EventSignalWithTimeoutTest) {
 
     auto serviceContext = ServiceContext::make();
 
-    serviceContext->setFastClockSource(stdx::make_unique<ClockSourceMock>());
+    serviceContext->setFastClockSource(std::make_unique<ClockSourceMock>());
     auto mockClock = static_cast<ClockSourceMock*>(serviceContext->getFastClockSource());
 
     auto client = serviceContext->makeClient("for testing");

@@ -122,7 +122,7 @@ public:
     }
 
     explicit RestrictionSetAll(const T& restriction) {
-        _restrictions.push_back(stdx::make_unique<T>(restriction));
+        _restrictions.push_back(std::make_unique<T>(restriction));
     }
 
     Status validate(const RestrictionEnvironment& environment) const final {

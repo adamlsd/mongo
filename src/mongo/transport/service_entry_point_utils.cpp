@@ -91,7 +91,7 @@ Status launchServiceWorkerThread(std::function<void()> task) {
         }
 
         pthread_t thread;
-        auto ctx = stdx::make_unique<std::function<void()>>(std::move(task));
+        auto ctx = std::make_unique<std::function<void()>>(std::move(task));
         int failed = pthread_create(&thread, &attrs, runFunc, ctx.get());
 
         pthread_attr_destroy(&attrs);

@@ -42,7 +42,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 // static
 const char* DistinctScan::kStageType = "DISTINCT_SCAN";
@@ -160,8 +159,8 @@ unique_ptr<PlanStageStats> DistinctScan::getStats() {
         _specificStats.indexBounds = _bounds.toBSON();
     }
 
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_DISTINCT_SCAN);
-    ret->specific = make_unique<DistinctScanStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_DISTINCT_SCAN);
+    ret->specific = std::make_unique<DistinctScanStats>(_specificStats);
     return ret;
 }
 

@@ -39,7 +39,7 @@ namespace mongo {
 
 QueryTestServiceContext::QueryTestServiceContext()
     : _service(ServiceContext::make()), _client(_service->makeClient("query_test")) {
-    CollatorFactoryInterface::set(getServiceContext(), stdx::make_unique<CollatorFactoryMock>());
+    CollatorFactoryInterface::set(getServiceContext(), std::make_unique<CollatorFactoryMock>());
 }
 
 QueryTestServiceContext::~QueryTestServiceContext() = default;

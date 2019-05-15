@@ -134,7 +134,7 @@ public:
         }
 
         MongoDSessionCatalog::onStepUp(operationContext());
-        LogicalSessionCache::set(getServiceContext(), stdx::make_unique<LogicalSessionCacheNoop>());
+        LogicalSessionCache::set(getServiceContext(), std::make_unique<LogicalSessionCacheNoop>());
     }
 
     void returnOplog(const std::vector<OplogEntry>& oplogList) {
@@ -285,7 +285,7 @@ private:
             }
         };
 
-        return stdx::make_unique<StaticCatalogClient>();
+        return std::make_unique<StaticCatalogClient>();
     }
 
     void _checkOplogExceptO2(const repl::OplogEntry& originalOplog,

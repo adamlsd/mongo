@@ -117,7 +117,7 @@ std::unique_ptr<ReadPreferenceSetting> _extractReadPref(const BSONObj& query, in
         // The readPreference is embedded in the $queryOptions field.
         readPrefContainingObj = elem.Obj();
     }
-    return stdx::make_unique<ReadPreferenceSetting>(uassertStatusOK(
+    return std::make_unique<ReadPreferenceSetting>(uassertStatusOK(
         ReadPreferenceSetting::fromContainingBSON(readPrefContainingObj, defaultReadPref)));
 }
 

@@ -276,8 +276,8 @@ std::unique_ptr<PlanStageStats> IndexScan::getStats() {
     }
 
     std::unique_ptr<PlanStageStats> ret =
-        stdx::make_unique<PlanStageStats>(_commonStats, STAGE_IXSCAN);
-    ret->specific = stdx::make_unique<IndexScanStats>(_specificStats);
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_IXSCAN);
+    ret->specific = std::make_unique<IndexScanStats>(_specificStats);
     return ret;
 }
 

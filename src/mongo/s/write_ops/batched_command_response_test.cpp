@@ -88,7 +88,7 @@ TEST(BatchedCommandResponse, TooManySmallErrors) {
     const auto bigstr = std::string(1024, 'x');
 
     for (int i = 0; i < 100'000; i++) {
-        auto errDetail = stdx::make_unique<WriteErrorDetail>();
+        auto errDetail = std::make_unique<WriteErrorDetail>();
         errDetail->setIndex(i);
         errDetail->setStatus({ErrorCodes::BadValue, bigstr});
         response.addToErrDetails(errDetail.release());
@@ -120,7 +120,7 @@ TEST(BatchedCommandResponse, TooManyBigErrors) {
     const auto smallstr = std::string(10, 'x');
 
     for (int i = 0; i < 100'000; i++) {
-        auto errDetail = stdx::make_unique<WriteErrorDetail>();
+        auto errDetail = std::make_unique<WriteErrorDetail>();
         errDetail->setIndex(i);
         errDetail->setStatus({ErrorCodes::BadValue,          //
                               i < 10 ? bigstr : smallstr});  // Don't waste too much RAM.

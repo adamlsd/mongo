@@ -39,7 +39,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 const char* MultiIteratorStage::kStageType = "MULTI_ITERATOR";
 
@@ -110,8 +109,8 @@ void MultiIteratorStage::doReattachToOperationContext() {
 
 unique_ptr<PlanStageStats> MultiIteratorStage::getStats() {
     unique_ptr<PlanStageStats> ret =
-        make_unique<PlanStageStats>(_commonStats, STAGE_MULTI_ITERATOR);
-    ret->specific = make_unique<CollectionScanStats>();
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_MULTI_ITERATOR);
+    ret->specific = std::make_unique<CollectionScanStats>();
     return ret;
 }
 

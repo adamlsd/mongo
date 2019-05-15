@@ -87,7 +87,7 @@ ReplSetDistLockManager::~ReplSetDistLockManager() = default;
 
 void ReplSetDistLockManager::startUp() {
     if (!_execThread) {
-        _execThread = stdx::make_unique<stdx::thread>(&ReplSetDistLockManager::doTask, this);
+        _execThread = std::make_unique<stdx::thread>(&ReplSetDistLockManager::doTask, this);
     }
 }
 

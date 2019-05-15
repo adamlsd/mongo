@@ -604,7 +604,7 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
         oplogLink.prevOpTime = txnParticipant.getLastWriteOpTime();
     }
 
-    auto timestamps = stdx::make_unique<Timestamp[]>(count);
+    auto timestamps = std::make_unique<Timestamp[]>(count);
     std::vector<OpTime> opTimes;
     for (size_t i = 0; i < count; i++) {
         // Make a mutable copy.

@@ -55,7 +55,7 @@ public:
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
-        return stdx::make_unique<EphemeralForTestRecoveryUnit>();
+        return std::make_unique<EphemeralForTestRecoveryUnit>();
     }
 
 private:
@@ -64,7 +64,7 @@ private:
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<EphemeralForBtreeImplTestHarnessHelper>();
+    return std::make_unique<EphemeralForBtreeImplTestHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {

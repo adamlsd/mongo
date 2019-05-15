@@ -106,7 +106,7 @@ class HangingHook : public executor::NetworkConnectionHook {
 
 // Test that we time out a command if the connection hook hangs.
 TEST_F(NetworkInterfaceIntegrationFixture, HookHangs) {
-    startNet(stdx::make_unique<HangingHook>());
+    startNet(std::make_unique<HangingHook>());
 
     /**
      *  Since mongos's have no ping command, we effectively skip this test by returning

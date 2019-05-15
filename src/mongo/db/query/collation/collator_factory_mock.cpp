@@ -46,7 +46,7 @@ StatusWith<std::unique_ptr<CollatorInterface>> CollatorFactoryMock::makeFromBSON
         return {nullptr};
     }
     auto collator =
-        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
+        std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kReverseString);
     return {std::move(collator)};
 }
 

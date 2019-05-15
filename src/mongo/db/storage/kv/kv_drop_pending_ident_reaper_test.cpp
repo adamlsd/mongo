@@ -169,7 +169,7 @@ void KVDropPendingIdentReaperTest::setUp() {
     ServiceContextTest::setUp();
     auto service = getServiceContext();
     service->registerClientObserver(std::make_unique<ReaperTestClientObserver>());
-    _engineMock = stdx::make_unique<KVEngineMock>();
+    _engineMock = std::make_unique<KVEngineMock>();
 }
 void KVDropPendingIdentReaperTest::tearDown() {
     _engineMock = {};

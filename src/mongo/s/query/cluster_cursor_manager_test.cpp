@@ -52,7 +52,7 @@ const NamespaceString nss("test.collection");
 class ClusterCursorManagerTest : public ServiceContextTest {
 protected:
     ClusterCursorManagerTest() : _opCtx(makeOperationContext()), _manager(&_clockSourceMock) {
-        LogicalSessionCache::set(getServiceContext(), stdx::make_unique<LogicalSessionCacheNoop>());
+        LogicalSessionCache::set(getServiceContext(), std::make_unique<LogicalSessionCacheNoop>());
     }
 
     ~ClusterCursorManagerTest() {
@@ -97,7 +97,7 @@ protected:
         // (std::list<>::push_back() does not invalidate references, and our list outlives the
         // manager).
         bool& killedFlag = _cursorKilledFlags.back();
-        return stdx::make_unique<ClusterClientCursorMock>(
+        return std::make_unique<ClusterClientCursorMock>(
             std::move(lsid), std::move(txnNumber), [&killedFlag]() { killedFlag = true; });
     }
 

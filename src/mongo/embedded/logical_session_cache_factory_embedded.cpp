@@ -46,7 +46,7 @@ std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheEmbedded() {
 
     auto sessionsColl = std::make_shared<SessionsCollectionStandalone>();
 
-    return stdx::make_unique<LogicalSessionCacheImpl>(
+    return std::make_unique<LogicalSessionCacheImpl>(
         std::move(liaison),
         std::move(sessionsColl),
         [](OperationContext*, SessionsCollection&, Date_t) {

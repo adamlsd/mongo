@@ -49,9 +49,7 @@ namespace mongo {
 using std::string;
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
-using stdx::make_unique;
 
 using fts::FTSIndexFormat;
 using fts::MAX_WEIGHT;
@@ -85,8 +83,8 @@ PlanStage::StageState TextStage::doWork(WorkingSetID* out) {
 unique_ptr<PlanStageStats> TextStage::getStats() {
     _commonStats.isEOF = isEOF();
 
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_TEXT);
-    ret->specific = make_unique<TextStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_TEXT);
+    ret->specific = std::make_unique<TextStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
     return ret;
 }
@@ -114,7 +112,7 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* opCtx,
         ixparams.direction = -1;
         ixparams.shouldDedup = _params.index->isMultikey(opCtx);
 
-        indexScanList.push_back(stdx::make_unique<IndexScan>(opCtx, ixparams, ws, nullptr));
+        indexScanList.push_back(std::make_unique<IndexScan>(opCtx, ixparams, ws, nullptr));
     }
 
     // Build the union of the index scans as a TEXT_OR or an OR stage, depending on whether the
@@ -123,16 +121,16 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* opCtx,
     if (wantTextScore) {
         // We use a TEXT_OR stage to get the union of the results from the index scans and then
         // compute their text scores. This is a blocking operation.
-        auto textScorer = make_unique<TextOrStage>(opCtx, _params.spec, ws, filter, collection);
+        auto textScorer = std::make_unique<TextOrStage>(opCtx, _params.spec, ws, filter, collection);
 
         textScorer->addChildren(std::move(indexScanList));
 
-        textMatchStage = make_unique<TextMatchStage>(
+        textMatchStage = std::make_unique<TextMatchStage>(
             opCtx, std::move(textScorer), _params.query, _params.spec, ws);
     } else {
         // Because we don't need the text score, we can use a non-blocking OR stage to get the union
         // of the index scans.
-        auto textSearcher = make_unique<OrStage>(opCtx, ws, true, filter);
+        auto textSearcher = std::make_unique<OrStage>(opCtx, ws, true, filter);
 
         textSearcher->addChildren(std::move(indexScanList));
 
@@ -141,9 +139,9 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* opCtx,
         // WorkingSetMember inputs have fetched data.
         const MatchExpression* emptyFilter = nullptr;
         auto fetchStage =
-            make_unique<FetchStage>(opCtx, ws, textSearcher.release(), emptyFilter, collection);
+            std::make_unique<FetchStage>(opCtx, ws, textSearcher.release(), emptyFilter, collection);
 
-        textMatchStage = make_unique<TextMatchStage>(
+        textMatchStage = std::make_unique<TextMatchStage>(
             opCtx, std::move(fetchStage), _params.query, _params.spec, ws);
     }
 

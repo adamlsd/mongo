@@ -67,7 +67,7 @@ namespace QueryStageUpdate {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
+using std::make_unique;
 
 static const NamespaceString nss("unittests.QueryStageUpdate");
 
@@ -97,7 +97,7 @@ public:
     }
 
     unique_ptr<CanonicalQuery> canonicalize(const BSONObj& query) {
-        auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto qr = std::make_unique<QueryRequest>(nss);
         qr->setFilter(query);
         auto statusWithCQ = CanonicalQuery::canonicalize(&_opCtx, std::move(qr));
         ASSERT_OK(statusWithCQ.getStatus());

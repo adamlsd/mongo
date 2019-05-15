@@ -61,7 +61,7 @@ RemoteCommandRequest TaskExecutorTest::assertRemoteCommandNameEquals(
 TaskExecutorTest::~TaskExecutorTest() = default;
 
 void TaskExecutorTest::setUp() {
-    auto net = stdx::make_unique<NetworkInterfaceMock>();
+    auto net = std::make_unique<NetworkInterfaceMock>();
     _net = net.get();
     _executor = makeTaskExecutor(std::move(net));
 }

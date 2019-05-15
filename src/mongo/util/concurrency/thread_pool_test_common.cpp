@@ -97,7 +97,7 @@ public:
             fassertFailed(34356);
         }
         entry = [makeTest](ThreadPoolFactory makeThreadPool) {
-            return stdx::make_unique<::mongo::unittest::DeathTest<T>>(std::move(makeThreadPool));
+            return std::make_unique<::mongo::unittest::DeathTest<T>>(std::move(makeThreadPool));
         };
     }
 };
@@ -114,7 +114,7 @@ public:
     };                                                                            \
     const TptRegistrationAgent TPT_##TEST_NAME::_agent(                           \
         #TEST_NAME, [](ThreadPoolFactory makeThreadPool) {                        \
-            return stdx::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
+            return std::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
         });                                                                       \
     void TPT_##TEST_NAME::_doTest()
 
@@ -130,7 +130,7 @@ public:
     };                                                                            \
     const TptDeathRegistrationAgent<TPT_##TEST_NAME> TPT_##TEST_NAME::_agent(     \
         #TEST_NAME, [](ThreadPoolFactory makeThreadPool) {                        \
-            return stdx::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
+            return std::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
         });                                                                       \
     std::string getDeathTestPattern(TPT_##TEST_NAME*) {                           \
         return MATCH_EXPR;                                                        \

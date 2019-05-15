@@ -101,7 +101,7 @@ TextMatchExpression::TextMatchExpression(OperationContext* opCtx,
 }
 
 std::unique_ptr<MatchExpression> TextMatchExpression::shallowClone() const {
-    auto expr = stdx::make_unique<TextMatchExpression>(_ftsQuery);
+    auto expr = std::make_unique<TextMatchExpression>(_ftsQuery);
     // We use the query-only constructor here directly rather than using the full constructor, to
     // avoid needing to examine
     // the index catalog.

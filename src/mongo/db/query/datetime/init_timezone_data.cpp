@@ -53,10 +53,10 @@ ServiceContext::ConstructorActionRegisterer loadTimeZoneDB{
                                         << "\"");
             }
             TimeZoneDatabase::set(service,
-                                  stdx::make_unique<TimeZoneDatabase>(std::move(timeZoneDatabase)));
+                                  std::make_unique<TimeZoneDatabase>(std::move(timeZoneDatabase)));
         } else {
             // No 'zoneInfo' specified on the command line, fall back to the built-in rules.
-            TimeZoneDatabase::set(service, stdx::make_unique<TimeZoneDatabase>());
+            TimeZoneDatabase::set(service, std::make_unique<TimeZoneDatabase>());
         }
     }};
 }  // namespace

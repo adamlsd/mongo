@@ -47,7 +47,7 @@ public:
     Status init(BSONElement modExpr, const boost::intrusive_ptr<ExpressionContext>& expCtx) final;
 
     std::unique_ptr<UpdateNode> clone() const final {
-        return stdx::make_unique<PullNode>(*this);
+        return std::make_unique<PullNode>(*this);
     }
 
     void acceptVisitor(UpdateNodeVisitor* visitor) final {

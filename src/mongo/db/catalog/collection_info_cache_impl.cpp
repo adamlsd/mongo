@@ -55,8 +55,8 @@ CollectionInfoCacheImpl::CollectionInfoCacheImpl(Collection* collection, const N
     : _collection(collection),
       _ns(ns),
       _keysComputed(false),
-      _planCache(stdx::make_unique<PlanCache>(ns.ns())),
-      _querySettings(stdx::make_unique<QuerySettings>()),
+      _planCache(std::make_unique<PlanCache>(ns.ns())),
+      _querySettings(std::make_unique<QuerySettings>()),
       _indexUsageTracker(getGlobalServiceContext()->getPreciseClockSource()) {}
 
 CollectionInfoCacheImpl::~CollectionInfoCacheImpl() {

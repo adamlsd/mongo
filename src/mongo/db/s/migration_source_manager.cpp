@@ -246,7 +246,7 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
         // that a chunk on that collection is being migrated. With an active migration, write
         // operations require the cloner to be present in order to track changes to the chunk which
         // needs to be transmitted to the recipient.
-        _cloneDriver = stdx::make_unique<MigrationChunkClonerSourceLegacy>(
+        _cloneDriver = std::make_unique<MigrationChunkClonerSourceLegacy>(
             _args, metadata->getKeyPattern(), _donorConnStr, _recipientHost);
 
         boost::optional<AutoGetCollection> autoColl;

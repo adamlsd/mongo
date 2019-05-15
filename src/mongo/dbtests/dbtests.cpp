@@ -180,10 +180,10 @@ int dbtestsMain(int argc, char** argv, char** envp) {
     const auto service = getGlobalServiceContext();
     service->setServiceEntryPoint(std::make_unique<ServiceEntryPointMongod>(service));
 
-    auto logicalClock = stdx::make_unique<LogicalClock>(service);
+    auto logicalClock = std::make_unique<LogicalClock>(service);
     LogicalClock::set(service, std::move(logicalClock));
 
-    auto fastClock = stdx::make_unique<ClockSourceMock>();
+    auto fastClock = std::make_unique<ClockSourceMock>();
     // Timestamps are split into two 32-bit integers, seconds and "increments". Currently (but
     // maybe not for eternity), a Timestamp with a value of `0` seconds is always considered
     // "null" by `Timestamp::isNull`, regardless of its increment value. Ticking the
@@ -192,7 +192,7 @@ int dbtestsMain(int argc, char** argv, char** envp) {
     fastClock->advance(Seconds(1));
     service->setFastClockSource(std::move(fastClock));
 
-    auto preciseClock = stdx::make_unique<ClockSourceMock>();
+    auto preciseClock = std::make_unique<ClockSourceMock>();
     // See above.
     preciseClock->advance(Seconds(1));
     service->setPreciseClockSource(std::move(preciseClock));
@@ -208,9 +208,9 @@ int dbtestsMain(int argc, char** argv, char** envp) {
         ->setFollowerMode(repl::MemberState::RS_PRIMARY)
         .ignore();
 
-    auto storageMock = stdx::make_unique<repl::StorageInterfaceMock>();
+    auto storageMock = std::make_unique<repl::StorageInterfaceMock>();
     repl::DropPendingCollectionReaper::set(
-        service, stdx::make_unique<repl::DropPendingCollectionReaper>(storageMock.get()));
+        service, std::make_unique<repl::DropPendingCollectionReaper>(storageMock.get()));
 
     AuthorizationManager::get(service)->setAuthEnabled(false);
     ScriptEngine::setup();

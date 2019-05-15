@@ -80,7 +80,7 @@ public:
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<SortedDataInterfaceTestHarnessHelper>();
+    return std::make_unique<SortedDataInterfaceTestHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {

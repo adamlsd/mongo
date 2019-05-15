@@ -54,18 +54,18 @@ public:
 
 private:
     void setUp() override {
-        auto targeterFactory = stdx::make_unique<RemoteCommandTargeterFactoryMock>();
+        auto targeterFactory = std::make_unique<RemoteCommandTargeterFactoryMock>();
         auto targeterFactoryPtr = targeterFactory.get();
 
         ShardFactory::BuilderCallable setBuilder =
             [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-                return stdx::make_unique<ShardRemote>(
+                return std::make_unique<ShardRemote>(
                     shardId, connStr, targeterFactoryPtr->create(connStr));
             };
 
         ShardFactory::BuilderCallable masterBuilder =
             [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-                return stdx::make_unique<ShardRemote>(
+                return std::make_unique<ShardRemote>(
                     shardId, connStr, targeterFactoryPtr->create(connStr));
             };
 
@@ -75,7 +75,7 @@ private:
         };
 
         _shardFactory =
-            stdx::make_unique<ShardFactory>(std::move(buildersMap), std::move(targeterFactory));
+            std::make_unique<ShardFactory>(std::move(buildersMap), std::move(targeterFactory));
     }
 
     void tearDown() override {}

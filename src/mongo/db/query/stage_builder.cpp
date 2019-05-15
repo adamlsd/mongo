@@ -64,7 +64,6 @@
 namespace mongo {
 
 using std::unique_ptr;
-using stdx::make_unique;
 
 PlanStage* buildStages(OperationContext* opCtx,
                        const Collection* collection,
@@ -192,7 +191,7 @@ PlanStage* buildStages(OperationContext* opCtx,
         }
         case STAGE_AND_HASH: {
             const AndHashNode* ahn = static_cast<const AndHashNode*>(root);
-            auto ret = make_unique<AndHashStage>(opCtx, ws);
+            auto ret = std::make_unique<AndHashStage>(opCtx, ws);
             for (size_t i = 0; i < ahn->children.size(); ++i) {
                 PlanStage* childStage =
                     buildStages(opCtx, collection, cq, qsol, ahn->children[i], ws);
@@ -205,7 +204,7 @@ PlanStage* buildStages(OperationContext* opCtx,
         }
         case STAGE_OR: {
             const OrNode* orn = static_cast<const OrNode*>(root);
-            auto ret = make_unique<OrStage>(opCtx, ws, orn->dedup, orn->filter.get());
+            auto ret = std::make_unique<OrStage>(opCtx, ws, orn->dedup, orn->filter.get());
             for (size_t i = 0; i < orn->children.size(); ++i) {
                 PlanStage* childStage =
                     buildStages(opCtx, collection, cq, qsol, orn->children[i], ws);
@@ -218,7 +217,7 @@ PlanStage* buildStages(OperationContext* opCtx,
         }
         case STAGE_AND_SORTED: {
             const AndSortedNode* asn = static_cast<const AndSortedNode*>(root);
-            auto ret = make_unique<AndSortedStage>(opCtx, ws);
+            auto ret = std::make_unique<AndSortedStage>(opCtx, ws);
             for (size_t i = 0; i < asn->children.size(); ++i) {
                 PlanStage* childStage =
                     buildStages(opCtx, collection, cq, qsol, asn->children[i], ws);
@@ -235,7 +234,7 @@ PlanStage* buildStages(OperationContext* opCtx,
             params.dedup = msn->dedup;
             params.pattern = msn->sort;
             params.collator = cq.getCollator();
-            auto ret = make_unique<MergeSortStage>(opCtx, params, ws);
+            auto ret = std::make_unique<MergeSortStage>(opCtx, params, ws);
             for (size_t i = 0; i < msn->children.size(); ++i) {
                 PlanStage* childStage =
                     buildStages(opCtx, collection, cq, qsol, msn->children[i], ws);

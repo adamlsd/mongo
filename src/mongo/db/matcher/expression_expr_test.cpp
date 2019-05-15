@@ -547,7 +547,7 @@ TEST_F(ExprMatchTest,
 
 TEST_F(ExprMatchTest, InitialCollationUsedForComparisons) {
     auto collator =
-        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kToLowerString);
+        std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kToLowerString);
     setCollator(collator.get());
     createMatcher(fromjson("{$expr: {$eq: ['$x', 'abc']}}"));
 
@@ -562,7 +562,7 @@ TEST_F(ExprMatchTest, SetCollatorChangesCollationUsedForComparisons) {
     createMatcher(fromjson("{$expr: {$eq: ['$x', 'abc']}}"));
 
     auto collator =
-        stdx::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kToLowerString);
+        std::make_unique<CollatorInterfaceMock>(CollatorInterfaceMock::MockType::kToLowerString);
     setCollator(collator.get());
 
     ASSERT_TRUE(matches(BSON("x"
@@ -598,7 +598,7 @@ TEST(ExprMatchTest, IdenticalPostOptimizedExpressionsAreEquivalent) {
     // Create and optimize an ExprMatchExpression.
     const boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     std::unique_ptr<MatchExpression> matchExpr =
-        stdx::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
+        std::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
     matchExpr = MatchExpression::optimize(std::move(matchExpr));
 
     // We expect that the optimized 'matchExpr' is still an ExprMatchExpression.
@@ -627,7 +627,7 @@ TEST(ExprMatchTest, ExpressionOptimizeRewritesVariableDereferenceAsConstant) {
 
     // Create and optimize an ExprMatchExpression.
     std::unique_ptr<MatchExpression> matchExpr =
-        stdx::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
+        std::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
     matchExpr = MatchExpression::optimize(std::move(matchExpr));
 
     // We expect that the optimized 'matchExpr' is still an ExprMatchExpression.
@@ -647,7 +647,7 @@ TEST(ExprMatchTest, OptimizingIsANoopWhenAlreadyOptimized) {
 
     // Create and optimize an ExprMatchExpression.
     std::unique_ptr<MatchExpression> singlyOptimized =
-        stdx::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
+        std::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
     singlyOptimized = MatchExpression::optimize(std::move(singlyOptimized));
 
     // We expect that the optimized 'matchExpr' is now an $and.
@@ -655,7 +655,7 @@ TEST(ExprMatchTest, OptimizingIsANoopWhenAlreadyOptimized) {
 
     // We expect the twice-optimized match expression to be equivalent to the once-optimized one.
     std::unique_ptr<MatchExpression> doublyOptimized =
-        stdx::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
+        std::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
     for (size_t i = 0; i < 2u; ++i) {
         doublyOptimized = MatchExpression::optimize(std::move(doublyOptimized));
     }
@@ -668,7 +668,7 @@ TEST(ExprMatchTest, OptimizingAnAlreadyOptimizedCloneIsANoop) {
 
     // Create and optimize an ExprMatchExpression.
     std::unique_ptr<MatchExpression> singlyOptimized =
-        stdx::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
+        std::make_unique<ExprMatchExpression>(expression.firstElement(), expCtx);
     singlyOptimized = MatchExpression::optimize(std::move(singlyOptimized));
 
     // We expect that the optimized 'matchExpr' is now an $and.

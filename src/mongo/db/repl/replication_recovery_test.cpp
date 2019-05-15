@@ -168,15 +168,15 @@ private:
         ServiceContextMongoDTest::setUp();
 
         auto service = getServiceContext();
-        StorageInterface::set(service, stdx::make_unique<StorageInterfaceRecovery>());
+        StorageInterface::set(service, std::make_unique<StorageInterfaceRecovery>());
         _storageInterface = static_cast<StorageInterfaceRecovery*>(StorageInterface::get(service));
 
         _createOpCtx();
-        _consistencyMarkers = stdx::make_unique<ReplicationConsistencyMarkersMock>();
+        _consistencyMarkers = std::make_unique<ReplicationConsistencyMarkersMock>();
 
 
         ReplicationCoordinator::set(
-            service, stdx::make_unique<ReplicationCoordinatorMock>(service, getStorageInterface()));
+            service, std::make_unique<ReplicationCoordinatorMock>(service, getStorageInterface()));
 
         ASSERT_OK(
             ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
@@ -190,7 +190,7 @@ private:
         observerRegistry->addObserver(std::make_unique<ReplicationRecoveryTestObObserver>());
 
         repl::DropPendingCollectionReaper::set(
-            service, stdx::make_unique<repl::DropPendingCollectionReaper>(_storageInterface));
+            service, std::make_unique<repl::DropPendingCollectionReaper>(_storageInterface));
     }
 
     void tearDown() override {

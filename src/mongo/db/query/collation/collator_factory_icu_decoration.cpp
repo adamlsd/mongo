@@ -42,7 +42,7 @@ ServiceContext::ConstructorActionRegisterer registerIcuCollator{
     "CreateCollatorFactory",
     {"LoadICUData"},
     [](ServiceContext* service) {
-        CollatorFactoryInterface::set(service, stdx::make_unique<CollatorFactoryICU>());
+        CollatorFactoryInterface::set(service, std::make_unique<CollatorFactoryICU>());
     }};
 }  // namespace
 

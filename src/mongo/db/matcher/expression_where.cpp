@@ -48,7 +48,6 @@ namespace mongo {
 using std::unique_ptr;
 using std::string;
 using std::stringstream;
-using stdx::make_unique;
 
 WhereMatchExpression::WhereMatchExpression(OperationContext* opCtx,
                                            WhereParams params,
@@ -104,7 +103,7 @@ unique_ptr<MatchExpression> WhereMatchExpression::shallowClone() const {
     params.code = getCode();
     params.scope = getScope();
     unique_ptr<WhereMatchExpression> e =
-        make_unique<WhereMatchExpression>(_opCtx, std::move(params), _dbName);
+        std::make_unique<WhereMatchExpression>(_opCtx, std::move(params), _dbName);
     if (getTag()) {
         e->setTag(getTag()->clone());
     }

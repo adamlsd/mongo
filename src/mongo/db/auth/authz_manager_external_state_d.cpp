@@ -56,7 +56,7 @@ AuthzManagerExternalStateMongod::~AuthzManagerExternalStateMongod() = default;
 
 std::unique_ptr<AuthzSessionExternalState>
 AuthzManagerExternalStateMongod::makeAuthzSessionExternalState(AuthorizationManager* authzManager) {
-    return stdx::make_unique<AuthzSessionExternalStateMongod>(authzManager);
+    return std::make_unique<AuthzSessionExternalStateMongod>(authzManager);
 }
 
 class AuthzLock : public AuthzManagerExternalState::StateLock {

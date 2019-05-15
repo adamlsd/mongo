@@ -80,7 +80,7 @@ protected:
     std::unique_ptr<DistLockManager> makeDistLockManager(
         std::unique_ptr<DistLockCatalog> distLockCatalog) override {
         invariant(distLockCatalog);
-        return stdx::make_unique<ReplSetDistLockManager>(getServiceContext(),
+        return std::make_unique<ReplSetDistLockManager>(getServiceContext(),
                                                          _processID,
                                                          std::move(distLockCatalog),
                                                          kPingInterval,
@@ -89,11 +89,11 @@ protected:
 
     std::unique_ptr<ShardingCatalogClient> makeShardingCatalogClient(
         std::unique_ptr<DistLockManager> distLockManager) override {
-        return stdx::make_unique<ShardingCatalogClientMock>(std::move(distLockManager));
+        return std::make_unique<ShardingCatalogClientMock>(std::move(distLockManager));
     }
 
     std::unique_ptr<BalancerConfiguration> makeBalancerConfiguration() override {
-        return stdx::make_unique<BalancerConfiguration>();
+        return std::make_unique<BalancerConfiguration>();
     }
 
     /**
@@ -119,7 +119,7 @@ private:
 class RSDistLockMgrWithMockTickSource : public ReplSetDistLockManagerFixture {
 protected:
     RSDistLockMgrWithMockTickSource() {
-        getServiceContext()->setTickSource(stdx::make_unique<TickSourceMock<>>());
+        getServiceContext()->setTickSource(std::make_unique<TickSourceMock<>>());
     }
 
     /**

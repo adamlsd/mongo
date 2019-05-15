@@ -52,10 +52,10 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::collection
     PlanExecutor::YieldPolicy yieldPolicy,
     const Direction direction,
     const RecordId startLoc) {
-    std::unique_ptr<WorkingSet> ws = stdx::make_unique<WorkingSet>();
+    std::unique_ptr<WorkingSet> ws = std::make_unique<WorkingSet>();
 
     if (NULL == collection) {
-        auto eof = stdx::make_unique<EOFStage>(opCtx);
+        auto eof = std::make_unique<EOFStage>(opCtx);
         // Takes ownership of 'ws' and 'eof'.
         auto statusWithPlanExecutor = PlanExecutor::make(
             opCtx, std::move(ws), std::move(eof), NamespaceString(ns), yieldPolicy);
@@ -82,11 +82,11 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::deleteWith
     Direction direction,
     const RecordId& startLoc) {
     invariant(collection);
-    auto ws = stdx::make_unique<WorkingSet>();
+    auto ws = std::make_unique<WorkingSet>();
 
     auto root = _collectionScan(opCtx, ws.get(), collection, direction, startLoc);
 
-    root = stdx::make_unique<DeleteStage>(
+    root = std::make_unique<DeleteStage>(
         opCtx, std::move(params), ws.get(), collection, root.release());
 
     auto executor =
@@ -106,7 +106,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::indexScan(
     PlanExecutor::YieldPolicy yieldPolicy,
     Direction direction,
     int options) {
-    auto ws = stdx::make_unique<WorkingSet>();
+    auto ws = std::make_unique<WorkingSet>();
 
     std::unique_ptr<PlanStage> root = _indexScan(opCtx,
                                                  ws.get(),
@@ -135,7 +135,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::deleteWith
     PlanExecutor::YieldPolicy yieldPolicy,
     Direction direction) {
     invariant(collection);
-    auto ws = stdx::make_unique<WorkingSet>();
+    auto ws = std::make_unique<WorkingSet>();
 
     std::unique_ptr<PlanStage> root = _indexScan(opCtx,
                                                  ws.get(),
@@ -147,7 +147,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::deleteWith
                                                  direction,
                                                  InternalPlanner::IXSCAN_FETCH);
 
-    root = stdx::make_unique<DeleteStage>(
+    root = std::make_unique<DeleteStage>(
         opCtx, std::move(params), ws.get(), collection, root.release());
 
     auto executor =
@@ -164,11 +164,11 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::updateWith
     const BSONObj& key,
     PlanExecutor::YieldPolicy yieldPolicy) {
     invariant(collection);
-    auto ws = stdx::make_unique<WorkingSet>();
+    auto ws = std::make_unique<WorkingSet>();
 
-    auto idHackStage = stdx::make_unique<IDHackStage>(opCtx, key, ws.get(), descriptor);
+    auto idHackStage = std::make_unique<IDHackStage>(opCtx, key, ws.get(), descriptor);
     auto root =
-        stdx::make_unique<UpdateStage>(opCtx, params, ws.get(), collection, idHackStage.release());
+        std::make_unique<UpdateStage>(opCtx, params, ws.get(), collection, idHackStage.release());
 
     auto executor =
         PlanExecutor::make(opCtx, std::move(ws), std::move(root), collection, yieldPolicy);
@@ -193,7 +193,7 @@ std::unique_ptr<PlanStage> InternalPlanner::_collectionScan(OperationContext* op
         params.direction = CollectionScanParams::BACKWARD;
     }
 
-    return stdx::make_unique<CollectionScan>(opCtx, collection, params, ws, nullptr);
+    return std::make_unique<CollectionScan>(opCtx, collection, params, ws, nullptr);
 }
 
 std::unique_ptr<PlanStage> InternalPlanner::_indexScan(OperationContext* opCtx,
@@ -217,10 +217,10 @@ std::unique_ptr<PlanStage> InternalPlanner::_indexScan(OperationContext* opCtx,
     params.shouldDedup = descriptor->isMultikey(opCtx);
 
     std::unique_ptr<PlanStage> root =
-        stdx::make_unique<IndexScan>(opCtx, std::move(params), ws, nullptr);
+        std::make_unique<IndexScan>(opCtx, std::move(params), ws, nullptr);
 
     if (InternalPlanner::IXSCAN_FETCH & options) {
-        root = stdx::make_unique<FetchStage>(opCtx, ws, root.release(), nullptr, collection);
+        root = std::make_unique<FetchStage>(opCtx, ws, root.release(), nullptr, collection);
     }
 
     return root;

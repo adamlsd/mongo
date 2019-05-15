@@ -44,7 +44,7 @@ CollatorInterfaceICU::CollatorInterfaceICU(CollationSpec spec,
     : CollatorInterface(std::move(spec)), _collator(std::move(collator)) {}
 
 std::unique_ptr<CollatorInterface> CollatorInterfaceICU::clone() const {
-    auto clone = stdx::make_unique<CollatorInterfaceICU>(
+    auto clone = std::make_unique<CollatorInterfaceICU>(
         getSpec(), std::unique_ptr<icu::Collator>(_collator->clone()));
     return {std::move(clone)};
 }

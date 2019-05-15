@@ -105,7 +105,7 @@ bool DataReplicatorExternalStateMock::shouldStopFetching(
 
 std::unique_ptr<OplogBuffer> DataReplicatorExternalStateMock::makeInitialSyncOplogBuffer(
     OperationContext* opCtx) const {
-    return stdx::make_unique<OplogBufferBlockingQueue>();
+    return std::make_unique<OplogBufferBlockingQueue>();
 }
 
 std::unique_ptr<OplogApplier> DataReplicatorExternalStateMock::makeOplogApplier(

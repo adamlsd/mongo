@@ -50,7 +50,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 // static
 const char* CollectionScan::kStageType = "COLLSCAN";
@@ -71,7 +70,7 @@ CollectionScan::CollectionScan(OperationContext* opCtx,
 
     if (params.maxTs) {
         _endConditionBSON = BSON("$gte" << *(params.maxTs));
-        _endCondition = stdx::make_unique<GTEMatchExpression>(repl::OpTime::kTimestampFieldName,
+        _endCondition = std::make_unique<GTEMatchExpression>(repl::OpTime::kTimestampFieldName,
                                                               _endConditionBSON.firstElement());
     }
 }
@@ -246,8 +245,8 @@ unique_ptr<PlanStageStats> CollectionScan::getStats() {
         _commonStats.filter = bob.obj();
     }
 
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_COLLSCAN);
-    ret->specific = make_unique<CollectionScanStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_COLLSCAN);
+    ret->specific = std::make_unique<CollectionScanStats>(_specificStats);
     return ret;
 }
 

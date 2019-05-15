@@ -40,21 +40,21 @@ namespace mongo {
 namespace {
 
 TEST(SortKeyGeneratorTest, ExtractNumberKeyForNonCompoundSortNonNested) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1), nullptr);
     auto sortKey = sortKeyGen->getSortKey(fromjson("{_id: 0, a: 5}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
     ASSERT_BSONOBJ_EQ(sortKey.getValue(), BSON("" << 5));
 }
 
 TEST(SortKeyGeneratorTest, ExtractNumberKeyFromDocWithSeveralFields) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1), nullptr);
     auto sortKey = sortKeyGen->getSortKey(fromjson("{_id: 0, z: 10, a: 6, b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
     ASSERT_BSONOBJ_EQ(sortKey.getValue(), BSON("" << 6));
 }
 
 TEST(SortKeyGeneratorTest, ExtractStringKeyNonCompoundNonNested) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1), nullptr);
     auto sortKey =
         sortKeyGen->getSortKey(fromjson("{_id: 0, z: 'thing1', a: 'thing2', b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -64,7 +64,7 @@ TEST(SortKeyGeneratorTest, ExtractStringKeyNonCompoundNonNested) {
 }
 
 TEST(SortKeyGeneratorTest, CompoundSortPattern) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1 << "b" << 1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1 << "b" << 1), nullptr);
     auto sortKey =
         sortKeyGen->getSortKey(fromjson("{_id: 0, z: 'thing1', a: 99, c: {a: 4}, b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -72,7 +72,7 @@ TEST(SortKeyGeneratorTest, CompoundSortPattern) {
 }
 
 TEST(SortKeyGeneratorTest, CompoundSortPatternWithDottedPath) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("c.a" << 1 << "b" << 1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("c.a" << 1 << "b" << 1), nullptr);
     auto sortKey =
         sortKeyGen->getSortKey(fromjson("{_id: 0, z: 'thing1', a: 99, c: {a: 4}, b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -80,7 +80,7 @@ TEST(SortKeyGeneratorTest, CompoundSortPatternWithDottedPath) {
 }
 
 TEST(SortKeyGeneratorTest, CompoundPatternLeadingFieldIsArray) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("c" << 1 << "b" << 1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("c" << 1 << "b" << 1), nullptr);
     auto sortKey = sortKeyGen->getSortKey(
         fromjson("{_id: 0, z: 'thing1', a: 99, c: [2, 4, 1], b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -89,7 +89,7 @@ TEST(SortKeyGeneratorTest, CompoundPatternLeadingFieldIsArray) {
 
 TEST(SortKeyGeneratorTest, ExtractStringSortKeyWithCollatorUsesComparisonKey) {
     CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1), &collator);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1), &collator);
     auto sortKey =
         sortKeyGen->getSortKey(fromjson("{_id: 0, z: 'thing1', a: 'thing2', b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -100,14 +100,14 @@ TEST(SortKeyGeneratorTest, ExtractStringSortKeyWithCollatorUsesComparisonKey) {
 
 TEST(SortKeyGeneratorTest, CollatorHasNoEffectWhenExtractingNonStringSortKey) {
     CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1), &collator);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1), &collator);
     auto sortKey = sortKeyGen->getSortKey(fromjson("{_id: 0, z: 10, a: 6, b: 16}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
     ASSERT_BSONOBJ_EQ(sortKey.getValue(), BSON("" << 6));
 }
 
 TEST(SortKeyGeneratorTest, SortKeyGenerationForArraysChoosesCorrectKey) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << -1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << -1), nullptr);
     auto sortKey = sortKeyGen->getSortKey(fromjson("{_id: 0, a: [1, 2, 3, 4]}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
     ASSERT_BSONOBJ_EQ(sortKey.getValue(), BSON("" << 4));
@@ -115,7 +115,7 @@ TEST(SortKeyGeneratorTest, SortKeyGenerationForArraysChoosesCorrectKey) {
 
 TEST(SortKeyGeneratorTest, EnsureSortKeyGenerationForArraysRespectsCollation) {
     CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << 1), &collator);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << 1), &collator);
     auto sortKey =
         sortKeyGen->getSortKey(fromjson("{_id: 0, a: ['aaz', 'zza', 'yya', 'zzb']}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -125,7 +125,7 @@ TEST(SortKeyGeneratorTest, EnsureSortKeyGenerationForArraysRespectsCollation) {
 }
 
 TEST(SortKeyGeneratorTest, SortKeyGenerationForArraysRespectsCompoundOrdering) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a.b" << 1 << "a.c" << -1), nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a.b" << 1 << "a.c" << -1), nullptr);
     auto sortKey = sortKeyGen->getSortKey(
         fromjson("{_id: 0, a: [{b: 1, c: 0}, {b: 0, c: 3}, {b: 0, c: 1}]}"), nullptr);
     ASSERT_OK(sortKey.getStatus());
@@ -136,7 +136,7 @@ DEATH_TEST(SortKeyGeneratorTest,
            SortPatternComponentWithStringIsFatal,
            "Invariant failure elt.type() == BSONType::Object") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
-        stdx::make_unique<SortKeyGenerator>(BSON("a"
+        std::make_unique<SortKeyGenerator>(BSON("a"
                                                  << "foo"),
                                             nullptr);
 }
@@ -145,7 +145,7 @@ DEATH_TEST(SortKeyGeneratorTest,
            SortPatternComponentWhoseObjectHasMultipleKeysIsFatal,
            "Invariant failure elt.embeddedObject().nFields() == 1") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
-        stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
+        std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
                                                              << "textScore"
                                                              << "extra"
                                                              << 1)),
@@ -156,7 +156,7 @@ DEATH_TEST(SortKeyGeneratorTest,
            SortPatternComponentWithNonMetaObjectSortIsFatal,
            "Invariant failure metaElem.fieldNameStringData() == \"$meta\"_sd") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
-        stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$unknown"
+        std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$unknown"
                                                              << "textScore")),
                                             nullptr);
 }
@@ -165,7 +165,7 @@ DEATH_TEST(SortKeyGeneratorTest,
            SortPatternComponentWithUnknownMetaKeywordIsFatal,
            "Invariant failure metaElem.valueStringData() == \"randVal\"_sd") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
-        stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
+        std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
                                                              << "unknown")),
                                             nullptr);
 }
@@ -173,7 +173,7 @@ DEATH_TEST(SortKeyGeneratorTest,
 DEATH_TEST(SortKeyGeneratorTest,
            NoMetadataWhenPatternHasMetaTextScoreIsFatal,
            "Invariant failure metadata") {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
                                                                            << "textScore")),
                                                           nullptr);
     uassertStatusOK(sortKeyGen->getSortKey(BSONObj{}, nullptr).getStatus());
@@ -182,14 +182,14 @@ DEATH_TEST(SortKeyGeneratorTest,
 DEATH_TEST(SortKeyGeneratorTest,
            NoMetadataWhenPatternHasMetaRandValIsFatal,
            "Invariant failure metadata") {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
                                                                            << "randVal")),
                                                           nullptr);
     uassertStatusOK(sortKeyGen->getSortKey(BSONObj{}, nullptr).getStatus());
 }
 
 TEST(SortKeyGeneratorTest, CanGenerateKeysForTextScoreMetaSort) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
                                                                            << "textScore")),
                                                           nullptr);
     SortKeyGenerator::Metadata metadata;
@@ -200,7 +200,7 @@ TEST(SortKeyGeneratorTest, CanGenerateKeysForTextScoreMetaSort) {
 }
 
 TEST(SortKeyGeneratorTest, CanGenerateKeysForRandValMetaSort) {
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
                                                                            << "randVal")),
                                                           nullptr);
     SortKeyGenerator::Metadata metadata;
@@ -213,7 +213,7 @@ TEST(SortKeyGeneratorTest, CanGenerateKeysForRandValMetaSort) {
 TEST(SortKeyGeneratorTest, CanGenerateKeysForCompoundMetaSort) {
     BSONObj pattern = fromjson(
         "{a: 1, b: {$meta: 'randVal'}, c: {$meta: 'textScore'}, d: -1, e: {$meta: 'textScore'}}");
-    auto sortKeyGen = stdx::make_unique<SortKeyGenerator>(pattern, nullptr);
+    auto sortKeyGen = std::make_unique<SortKeyGenerator>(pattern, nullptr);
     SortKeyGenerator::Metadata metadata;
     metadata.randVal = 0.3;
     metadata.textScore = 1.5;

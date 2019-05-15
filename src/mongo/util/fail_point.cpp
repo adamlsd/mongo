@@ -60,7 +60,7 @@ public:
 
     static FailPointPRNG* current() {
         if (!_failPointPrng)
-            _failPointPrng = stdx::make_unique<FailPointPRNG>();
+            _failPointPrng = std::make_unique<FailPointPRNG>();
         return _failPointPrng.get();
     }
 

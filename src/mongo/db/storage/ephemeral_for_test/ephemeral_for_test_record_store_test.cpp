@@ -49,7 +49,7 @@ public:
     }
 
     virtual std::unique_ptr<RecordStore> newNonCappedRecordStore(const std::string& ns) {
-        return stdx::make_unique<EphemeralForTestRecordStore>(ns, &data);
+        return std::make_unique<EphemeralForTestRecordStore>(ns, &data);
     }
 
     virtual std::unique_ptr<RecordStore> newCappedRecordStore(int64_t cappedSizeBytes,
@@ -60,12 +60,12 @@ public:
     virtual std::unique_ptr<RecordStore> newCappedRecordStore(const std::string& ns,
                                                               int64_t cappedSizeBytes,
                                                               int64_t cappedMaxDocs) final {
-        return stdx::make_unique<EphemeralForTestRecordStore>(
+        return std::make_unique<EphemeralForTestRecordStore>(
             ns, &data, true, cappedSizeBytes, cappedMaxDocs);
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
-        return stdx::make_unique<EphemeralForTestRecoveryUnit>();
+        return std::make_unique<EphemeralForTestRecoveryUnit>();
     }
 
     bool supportsDocLocking() final {
@@ -76,7 +76,7 @@ public:
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<EphemeralForTestHarnessHelper>();
+    return std::make_unique<EphemeralForTestHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {

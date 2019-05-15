@@ -51,7 +51,6 @@ namespace QueryStageDelete {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 static const NamespaceString nss("unittests.QueryStageDelete");
 
@@ -103,7 +102,7 @@ public:
     }
 
     unique_ptr<CanonicalQuery> canonicalize(const BSONObj& query) {
-        auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto qr = std::make_unique<QueryRequest>(nss);
         qr->setFilter(query);
         auto statusWithCQ = CanonicalQuery::canonicalize(&_opCtx, std::move(qr));
         ASSERT_OK(statusWithCQ.getStatus());
@@ -193,7 +192,7 @@ public:
         ASSERT(coll);
         const int targetDocIndex = 0;
         const BSONObj query = BSON("foo" << BSON("$gte" << targetDocIndex));
-        const auto ws = make_unique<WorkingSet>();
+        const auto ws = std::make_unique<WorkingSet>();
         const unique_ptr<CanonicalQuery> cq(canonicalize(query));
 
         // Get the RecordIds that would be returned by an in-order scan.
@@ -202,7 +201,7 @@ public:
 
         // Configure a QueuedDataStage to pass the first object in the collection back in a
         // RID_AND_OBJ state.
-        auto qds = make_unique<QueuedDataStage>(&_opCtx, ws.get());
+        auto qds = std::make_unique<QueuedDataStage>(&_opCtx, ws.get());
         WorkingSetID id = ws->allocate();
         WorkingSetMember* member = ws->get(id);
         member->recordId = recordIds[targetDocIndex];
@@ -216,7 +215,7 @@ public:
         deleteParams->returnDeleted = true;
         deleteParams->canonicalQuery = cq.get();
 
-        const auto deleteStage = make_unique<DeleteStage>(
+        const auto deleteStage = std::make_unique<DeleteStage>(
             &_opCtx, std::move(deleteParams), ws.get(), coll, qds.release());
 
         const DeleteStats* stats = static_cast<const DeleteStats*>(deleteStage->getSpecificStats());

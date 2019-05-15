@@ -89,10 +89,10 @@ public:
 void RollbackTest::setUp() {
     _storageInterface = new StorageInterfaceRollback();
     auto serviceContext = getServiceContext();
-    auto consistencyMarkers = stdx::make_unique<ReplicationConsistencyMarkersMock>();
+    auto consistencyMarkers = std::make_unique<ReplicationConsistencyMarkersMock>();
     auto recovery =
-        stdx::make_unique<ReplicationRecoveryImpl>(_storageInterface, consistencyMarkers.get());
-    _replicationProcess = stdx::make_unique<ReplicationProcess>(
+        std::make_unique<ReplicationRecoveryImpl>(_storageInterface, consistencyMarkers.get());
+    _replicationProcess = std::make_unique<ReplicationProcess>(
         _storageInterface, std::move(consistencyMarkers), std::move(recovery));
     _dropPendingCollectionReaper = new DropPendingCollectionReaper(_storageInterface);
     DropPendingCollectionReaper::set(

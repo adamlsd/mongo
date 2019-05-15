@@ -124,7 +124,7 @@ public:
         params.cappedCallback = nullptr;
         params.sizeStorer = nullptr;
 
-        auto ret = stdx::make_unique<StandardWiredTigerRecordStore>(&_engine, &opCtx, params);
+        auto ret = std::make_unique<StandardWiredTigerRecordStore>(&_engine, &opCtx, params);
         ret->postConstructorInit(&opCtx);
         return std::move(ret);
     }
@@ -170,7 +170,7 @@ public:
         params.cappedCallback = nullptr;
         params.sizeStorer = nullptr;
 
-        auto ret = stdx::make_unique<StandardWiredTigerRecordStore>(&_engine, &opCtx, params);
+        auto ret = std::make_unique<StandardWiredTigerRecordStore>(&_engine, &opCtx, params);
         ret->postConstructorInit(&opCtx);
         return std::move(ret);
     }
@@ -195,7 +195,7 @@ private:
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<WiredTigerHarnessHelper>();
+    return std::make_unique<WiredTigerHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {

@@ -92,11 +92,11 @@ protected:
             repl::ReadConcernArgs(repl::ReadConcernLevel::kSnapshotReadConcern);
 
         // Set up a logical clock with an initial time.
-        auto logicalClock = stdx::make_unique<LogicalClock>(getServiceContext());
+        auto logicalClock = std::make_unique<LogicalClock>(getServiceContext());
         logicalClock->setClusterTimeFromTrustedSource(kInMemoryLogicalTime);
         LogicalClock::set(getServiceContext(), std::move(logicalClock));
 
-        _staleVersionAndSnapshotRetriesBlock = stdx::make_unique<FailPointEnableBlock>(
+        _staleVersionAndSnapshotRetriesBlock = std::make_unique<FailPointEnableBlock>(
             "enableStaleVersionAndSnapshotRetriesWithinTransactions");
     }
 

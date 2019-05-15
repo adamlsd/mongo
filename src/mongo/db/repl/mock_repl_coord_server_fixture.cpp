@@ -62,10 +62,10 @@ void MockReplCoordServerFixture::setUp() {
     ASSERT_TRUE(_storageInterface == repl::StorageInterface::get(service));
 
     repl::ReplicationProcess::set(service,
-                                  stdx::make_unique<repl::ReplicationProcess>(
+                                  std::make_unique<repl::ReplicationProcess>(
                                       _storageInterface,
-                                      stdx::make_unique<repl::ReplicationConsistencyMarkersMock>(),
-                                      stdx::make_unique<repl::ReplicationRecoveryMock>()));
+                                      std::make_unique<repl::ReplicationConsistencyMarkersMock>(),
+                                      std::make_unique<repl::ReplicationRecoveryMock>()));
 
     ASSERT_OK(repl::ReplicationProcess::get(service)->initializeRollbackID(opCtx()));
 
@@ -75,7 +75,7 @@ void MockReplCoordServerFixture::setUp() {
         ConnectionString::forReplicaSet("sessionTxnStateTest", {HostAndPort("a:1")}).toString());
 
     repl::ReplicationCoordinator::set(
-        service, stdx::make_unique<repl::ReplicationCoordinatorMock>(service, replSettings));
+        service, std::make_unique<repl::ReplicationCoordinatorMock>(service, replSettings));
     ASSERT_OK(
         repl::ReplicationCoordinator::get(service)->setFollowerMode(repl::MemberState::RS_PRIMARY));
 
@@ -89,7 +89,7 @@ void MockReplCoordServerFixture::setUp() {
 
     repl::DropPendingCollectionReaper::set(
         service,
-        stdx::make_unique<repl::DropPendingCollectionReaper>(repl::StorageInterface::get(service)));
+        std::make_unique<repl::DropPendingCollectionReaper>(repl::StorageInterface::get(service)));
 }
 
 void MockReplCoordServerFixture::insertOplogEntry(const repl::OplogEntry& entry) {

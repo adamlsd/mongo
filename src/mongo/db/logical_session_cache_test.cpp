@@ -76,9 +76,9 @@ public:
         Client::releaseCurrent();
         Client::initThread(getThreadName());
         _opCtx = makeOperationContext();
-        auto mockService = stdx::make_unique<MockServiceLiaison>(_service);
-        auto mockSessions = stdx::make_unique<MockSessionsCollection>(_sessions);
-        _cache = stdx::make_unique<LogicalSessionCacheImpl>(
+        auto mockService = std::make_unique<MockServiceLiaison>(_service);
+        auto mockSessions = std::make_unique<MockSessionsCollection>(_sessions);
+        _cache = std::make_unique<LogicalSessionCacheImpl>(
             std::move(mockService),
             std::move(mockSessions),
             [](OperationContext*, SessionsCollection&, Date_t) {

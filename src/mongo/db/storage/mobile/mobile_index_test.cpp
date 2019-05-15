@@ -61,14 +61,14 @@ public:
         fassert(37052, status);
 
         if (isUnique) {
-            return stdx::make_unique<MobileIndexUnique>(
+            return std::make_unique<MobileIndexUnique>(
                 _ordering, ident, "test.mobile", "indexName");
         }
-        return stdx::make_unique<MobileIndexStandard>(_ordering, ident, "test.mobile", "indexName");
+        return std::make_unique<MobileIndexStandard>(_ordering, ident, "test.mobile", "indexName");
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() {
-        return stdx::make_unique<MobileRecoveryUnit>(_sessionPool.get());
+        return std::make_unique<MobileRecoveryUnit>(_sessionPool.get());
     }
 
 private:
@@ -79,7 +79,7 @@ private:
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<MobileIndexTestHarnessHelper>();
+    return std::make_unique<MobileIndexTestHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {

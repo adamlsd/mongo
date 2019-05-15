@@ -65,14 +65,14 @@ std::unique_ptr<RecordStore> EphemeralForTestEngine::getRecordStore(
     OperationContext* opCtx, StringData ns, StringData ident, const CollectionOptions& options) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     if (options.capped) {
-        return stdx::make_unique<EphemeralForTestRecordStore>(
+        return std::make_unique<EphemeralForTestRecordStore>(
             ns,
             &_dataMap[ident],
             true,
             options.cappedSize ? options.cappedSize : kDefaultCappedSizeBytes,
             options.cappedMaxDocs ? options.cappedMaxDocs : -1);
     } else {
-        return stdx::make_unique<EphemeralForTestRecordStore>(ns, &_dataMap[ident]);
+        return std::make_unique<EphemeralForTestRecordStore>(ns, &_dataMap[ident]);
     }
 }
 
@@ -80,7 +80,7 @@ std::unique_ptr<RecordStore> EphemeralForTestEngine::makeTemporaryRecordStore(
     OperationContext* opCtx, StringData ident) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     _dataMap[ident] = {};
-    return stdx::make_unique<EphemeralForTestRecordStore>(ident, &_dataMap[ident]);
+    return std::make_unique<EphemeralForTestRecordStore>(ident, &_dataMap[ident]);
 }
 
 Status EphemeralForTestEngine::createSortedDataInterface(OperationContext* opCtx,

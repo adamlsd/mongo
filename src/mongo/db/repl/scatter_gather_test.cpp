@@ -121,7 +121,7 @@ public:
     }
 
     void run() {
-        _thread = stdx::make_unique<stdx::thread>([this] { _run(_executor); });
+        _thread = std::make_unique<stdx::thread>([this] { _run(_executor); });
     }
 
 private:

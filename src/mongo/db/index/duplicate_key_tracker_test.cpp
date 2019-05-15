@@ -52,7 +52,7 @@ public:
         : ServiceContextMongoDTest("ephemeralForTest"), _opCtx(cc().makeOperationContext()) {
         repl::ReplicationCoordinator::set(
             getServiceContext(),
-            stdx::make_unique<repl::ReplicationCoordinatorMock>(getServiceContext()));
+            std::make_unique<repl::ReplicationCoordinatorMock>(getServiceContext()));
     }
 
     std::unique_ptr<DuplicateKeyTracker> makeTracker(OperationContext* opCtx,

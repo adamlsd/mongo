@@ -40,8 +40,8 @@ namespace executor {
 std::unique_ptr<ThreadPoolTaskExecutor> makeThreadPoolTestExecutor(
     std::unique_ptr<NetworkInterfaceMock> net, ThreadPoolMock::Options options) {
     auto netPtr = net.get();
-    return stdx::make_unique<ThreadPoolTaskExecutor>(
-        stdx::make_unique<ThreadPoolMock>(netPtr, 1, std::move(options)), std::move(net));
+    return std::make_unique<ThreadPoolTaskExecutor>(
+        std::make_unique<ThreadPoolMock>(netPtr, 1, std::move(options)), std::move(net));
 }
 
 ThreadPoolExecutorTest::ThreadPoolExecutorTest() {}

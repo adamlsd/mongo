@@ -165,7 +165,7 @@ StatusWith<HostAndPort> SyncSourceResolver::_chooseNewSyncSource() {
 
 std::unique_ptr<Fetcher> SyncSourceResolver::_makeFirstOplogEntryFetcher(
     HostAndPort candidate, OpTime earliestOpTimeSeen) {
-    return stdx::make_unique<Fetcher>(
+    return std::make_unique<Fetcher>(
         _taskExecutor,
         candidate,
         kLocalOplogNss.db().toString(),
@@ -189,7 +189,7 @@ std::unique_ptr<Fetcher> SyncSourceResolver::_makeRequiredOpTimeFetcher(HostAndP
                                                                         int rbid) {
     // This query is structured so that it is executed on the sync source using the oplog
     // start hack (oplogReplay=true and $gt/$gte predicate over "ts").
-    return stdx::make_unique<Fetcher>(
+    return std::make_unique<Fetcher>(
         _taskExecutor,
         candidate,
         kLocalOplogNss.db().toString(),

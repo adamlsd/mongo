@@ -66,7 +66,7 @@ bool SortKeyGeneratorStage::isEOF() {
 
 PlanStage::StageState SortKeyGeneratorStage::doWork(WorkingSetID* out) {
     if (!_sortKeyGen) {
-        _sortKeyGen = stdx::make_unique<SortKeyGenerator>(_sortSpec, _collator);
+        _sortKeyGen = std::make_unique<SortKeyGenerator>(_sortSpec, _collator);
         return PlanStage::NEED_TIME;
     }
 
@@ -106,7 +106,7 @@ PlanStage::StageState SortKeyGeneratorStage::doWork(WorkingSetID* out) {
 }
 
 std::unique_ptr<PlanStageStats> SortKeyGeneratorStage::getStats() {
-    auto ret = stdx::make_unique<PlanStageStats>(_commonStats, STAGE_SORT_KEY_GENERATOR);
+    auto ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_SORT_KEY_GENERATOR);
     ret->children.emplace_back(child()->getStats());
     return ret;
 }

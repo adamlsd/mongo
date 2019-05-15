@@ -113,7 +113,7 @@ void ConfigServerTestFixture::setUp() {
 
     {
         // The catalog manager requires a special executor used for operations during addShard.
-        auto specialNet(stdx::make_unique<executor::NetworkInterfaceMock>());
+        auto specialNet(std::make_unique<executor::NetworkInterfaceMock>());
         _mockNetworkForAddShard = specialNet.get();
 
         auto specialExec(makeThreadPoolTestExecutor(std::move(specialNet)));
@@ -123,10 +123,10 @@ void ConfigServerTestFixture::setUp() {
     }
 
     _addShardNetworkTestEnv =
-        stdx::make_unique<NetworkTestEnv>(_executorForAddShard, _mockNetworkForAddShard);
+        std::make_unique<NetworkTestEnv>(_executorForAddShard, _mockNetworkForAddShard);
 
     CatalogCacheLoader::set(getServiceContext(),
-                            stdx::make_unique<ConfigServerCatalogCacheLoader>());
+                            std::make_unique<ConfigServerCatalogCacheLoader>());
 
     uassertStatusOK(initializeGlobalShardingStateForMongodForTest(ConnectionString::forLocal()));
 }
@@ -144,13 +144,13 @@ void ConfigServerTestFixture::tearDown() {
 }
 
 std::unique_ptr<DistLockCatalog> ConfigServerTestFixture::makeDistLockCatalog() {
-    return stdx::make_unique<DistLockCatalogImpl>();
+    return std::make_unique<DistLockCatalogImpl>();
 }
 
 std::unique_ptr<DistLockManager> ConfigServerTestFixture::makeDistLockManager(
     std::unique_ptr<DistLockCatalog> distLockCatalog) {
     invariant(distLockCatalog);
-    return stdx::make_unique<ReplSetDistLockManager>(
+    return std::make_unique<ReplSetDistLockManager>(
         getServiceContext(),
         "distLockProcessId",
         std::move(distLockCatalog),
@@ -161,15 +161,15 @@ std::unique_ptr<DistLockManager> ConfigServerTestFixture::makeDistLockManager(
 std::unique_ptr<ShardingCatalogClient> ConfigServerTestFixture::makeShardingCatalogClient(
     std::unique_ptr<DistLockManager> distLockManager) {
     invariant(distLockManager);
-    return stdx::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
+    return std::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
 }
 
 std::unique_ptr<BalancerConfiguration> ConfigServerTestFixture::makeBalancerConfiguration() {
-    return stdx::make_unique<BalancerConfiguration>();
+    return std::make_unique<BalancerConfiguration>();
 }
 
 std::unique_ptr<ClusterCursorManager> ConfigServerTestFixture::makeClusterCursorManager() {
-    return stdx::make_unique<ClusterCursorManager>(getServiceContext()->getPreciseClockSource());
+    return std::make_unique<ClusterCursorManager>(getServiceContext()->getPreciseClockSource());
 }
 
 executor::NetworkInterfaceMock* ConfigServerTestFixture::networkForAddShard() const {

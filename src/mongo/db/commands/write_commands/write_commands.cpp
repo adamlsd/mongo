@@ -311,7 +311,7 @@ private:
 
     std::unique_ptr<CommandInvocation> parse(OperationContext*,
                                              const OpMsgRequest& request) override {
-        return stdx::make_unique<Invocation>(this, request);
+        return std::make_unique<Invocation>(this, request);
     }
 
     void snipForLogging(mutablebson::Document* cmdObj) const final {
@@ -387,7 +387,7 @@ private:
     };
 
     std::unique_ptr<CommandInvocation> parse(OperationContext*, const OpMsgRequest& request) {
-        return stdx::make_unique<Invocation>(this, request);
+        return std::make_unique<Invocation>(this, request);
     }
 
     void snipForLogging(mutablebson::Document* cmdObj) const final {
@@ -462,7 +462,7 @@ private:
 
     std::unique_ptr<CommandInvocation> parse(OperationContext*,
                                              const OpMsgRequest& request) override {
-        return stdx::make_unique<Invocation>(this, request);
+        return std::make_unique<Invocation>(this, request);
     }
 
     void snipForLogging(mutablebson::Document* cmdObj) const final {

@@ -46,11 +46,11 @@ public:
     void setUpClocks(Milliseconds granularity) {
         auto csMock = std::make_unique<ClockSourceMock>();
         _csMock = csMock.get();
-        _btcs = stdx::make_unique<BackgroundThreadClockSource>(std::move(csMock), granularity);
+        _btcs = std::make_unique<BackgroundThreadClockSource>(std::move(csMock), granularity);
     }
 
     void setUpRealClocks(Milliseconds granularity) {
-        _btcs = stdx::make_unique<BackgroundThreadClockSource>(
+        _btcs = std::make_unique<BackgroundThreadClockSource>(
             std::make_unique<SystemClockSource>(), granularity);
     }
 

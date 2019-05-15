@@ -58,7 +58,7 @@ void CatalogCacheTestFixture::setUp() {
     setRemote(HostAndPort("FakeRemoteClient:34567"));
     configTargeter()->setFindHostReturnValue(kConfigHostAndPort);
 
-    CollatorFactoryInterface::set(getServiceContext(), stdx::make_unique<CollatorFactoryMock>());
+    CollatorFactoryInterface::set(getServiceContext(), std::make_unique<CollatorFactoryMock>());
 }
 
 executor::NetworkTestEnv::FutureHandle<boost::optional<CachedCollectionRoutingInfo>>
@@ -87,7 +87,7 @@ void CatalogCacheTestFixture::setupNShards(int numShards) {
             shards.emplace_back(std::move(shard));
 
             std::unique_ptr<RemoteCommandTargeterMock> targeter(
-                stdx::make_unique<RemoteCommandTargeterMock>());
+                std::make_unique<RemoteCommandTargeterMock>());
             targeter->setConnectionStringReturnValue(ConnectionString(host));
             targeter->setFindHostReturnValue(host);
             targeterFactory()->addTargeterToReturn(ConnectionString(host), std::move(targeter));

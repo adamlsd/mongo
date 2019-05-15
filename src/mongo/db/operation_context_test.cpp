@@ -267,9 +267,9 @@ class OperationDeadlineTests : public unittest::Test {
 public:
     void setUp() {
         service = ServiceContext::make();
-        service->setFastClockSource(stdx::make_unique<SharedClockSourceAdapter>(mockClock));
-        service->setPreciseClockSource(stdx::make_unique<SharedClockSourceAdapter>(mockClock));
-        service->setTickSource(stdx::make_unique<TickSourceMock<>>());
+        service->setFastClockSource(std::make_unique<SharedClockSourceAdapter>(mockClock));
+        service->setPreciseClockSource(std::make_unique<SharedClockSourceAdapter>(mockClock));
+        service->setTickSource(std::make_unique<TickSourceMock<>>());
         client = service->makeClient("OperationDeadlineTest");
     }
 

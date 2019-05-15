@@ -143,7 +143,7 @@ public:
 
     std::unique_ptr<SeekableRecordCursor> getCursor(OperationContext* opCtx,
                                                     bool forward) const final {
-        return stdx::make_unique<EmptyRecordCursor>();
+        return std::make_unique<EmptyRecordCursor>();
     }
 
     virtual Status truncate(OperationContext* opCtx) {
@@ -245,14 +245,14 @@ std::unique_ptr<RecordStore> DevNullKVEngine::getRecordStore(OperationContext* o
                                                              StringData ident,
                                                              const CollectionOptions& options) {
     if (ident == "_mdb_catalog") {
-        return stdx::make_unique<EphemeralForTestRecordStore>(ns, &_catalogInfo);
+        return std::make_unique<EphemeralForTestRecordStore>(ns, &_catalogInfo);
     }
-    return stdx::make_unique<DevNullRecordStore>(ns, options);
+    return std::make_unique<DevNullRecordStore>(ns, options);
 }
 
 std::unique_ptr<RecordStore> DevNullKVEngine::makeTemporaryRecordStore(OperationContext* opCtx,
                                                                        StringData ident) {
-    return stdx::make_unique<DevNullRecordStore>("", CollectionOptions());
+    return std::make_unique<DevNullRecordStore>("", CollectionOptions());
 }
 
 SortedDataInterface* DevNullKVEngine::getSortedDataInterface(OperationContext* opCtx,

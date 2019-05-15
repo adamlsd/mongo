@@ -38,7 +38,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 // static
 const char* EOFStage::kStageType = "EOF";
@@ -57,7 +56,7 @@ PlanStage::StageState EOFStage::doWork(WorkingSetID* out) {
 
 unique_ptr<PlanStageStats> EOFStage::getStats() {
     _commonStats.isEOF = isEOF();
-    return make_unique<PlanStageStats>(_commonStats, STAGE_EOF);
+    return std::make_unique<PlanStageStats>(_commonStats, STAGE_EOF);
 }
 
 const SpecificStats* EOFStage::getSpecificStats() const {

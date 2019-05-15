@@ -308,7 +308,7 @@ void AbstractOplogFetcher::_finishCallback(Status status) {
 std::unique_ptr<Fetcher> AbstractOplogFetcher::_makeFetcher(const BSONObj& findCommandObj,
                                                             const BSONObj& metadataObj,
                                                             Milliseconds findMaxTime) {
-    return stdx::make_unique<Fetcher>(
+    return std::make_unique<Fetcher>(
         _getExecutor(),
         _source,
         _nss.db().toString(),

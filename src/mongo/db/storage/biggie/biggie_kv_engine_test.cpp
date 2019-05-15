@@ -61,7 +61,7 @@ private:
 };
 
 std::unique_ptr<KVHarnessHelper> makeHelper() {
-    return stdx::make_unique<BiggieKVHarnessHelper>();
+    return std::make_unique<BiggieKVHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {

@@ -287,8 +287,8 @@ std::unique_ptr<PlanStageStats> CachedPlanStage::getStats() {
     _commonStats.isEOF = isEOF();
 
     std::unique_ptr<PlanStageStats> ret =
-        stdx::make_unique<PlanStageStats>(_commonStats, STAGE_CACHED_PLAN);
-    ret->specific = stdx::make_unique<CachedPlanStats>(_specificStats);
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_CACHED_PLAN);
+    ret->specific = std::make_unique<CachedPlanStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
 
     return ret;

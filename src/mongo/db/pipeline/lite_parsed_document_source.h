@@ -153,7 +153,7 @@ public:
      */
     static std::unique_ptr<LiteParsedDocumentSourceDefault> parse(const AggregationRequest& request,
                                                                   const BSONElement& spec) {
-        return stdx::make_unique<LiteParsedDocumentSourceDefault>();
+        return std::make_unique<LiteParsedDocumentSourceDefault>();
     }
 
     LiteParsedDocumentSourceDefault() = default;

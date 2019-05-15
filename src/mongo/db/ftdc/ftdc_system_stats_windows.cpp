@@ -150,7 +150,7 @@ void installSystemMetricsCollector(FTDCController* controller) {
     }
 
     controller->addPeriodicCollector(
-        stdx::make_unique<WindowsSystemMetricsCollector>(std::move(swCollector.getValue())));
+        std::make_unique<WindowsSystemMetricsCollector>(std::move(swCollector.getValue())));
 }
 
 }  // namespace mongo

@@ -298,7 +298,7 @@ StatusWithFTSLanguage FTSLanguage::make(StringData langName, TextIndexVersion te
 }
 
 std::unique_ptr<FTSTokenizer> BasicFTSLanguage::createTokenizer() const {
-    return stdx::make_unique<BasicFTSTokenizer>(this);
+    return std::make_unique<BasicFTSTokenizer>(this);
 }
 
 const FTSPhraseMatcher& BasicFTSLanguage::getPhraseMatcher() const {
@@ -306,7 +306,7 @@ const FTSPhraseMatcher& BasicFTSLanguage::getPhraseMatcher() const {
 }
 
 std::unique_ptr<FTSTokenizer> UnicodeFTSLanguage::createTokenizer() const {
-    return stdx::make_unique<UnicodeFTSTokenizer>(this);
+    return std::make_unique<UnicodeFTSTokenizer>(this);
 }
 
 const FTSPhraseMatcher& UnicodeFTSLanguage::getPhraseMatcher() const {

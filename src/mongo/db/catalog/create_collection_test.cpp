@@ -64,11 +64,11 @@ void CreateCollectionTest::setUp() {
     auto service = getServiceContext();
 
     // Set up ReplicationCoordinator and ensure that we are primary.
-    auto replCoord = stdx::make_unique<repl::ReplicationCoordinatorMock>(service);
+    auto replCoord = std::make_unique<repl::ReplicationCoordinatorMock>(service);
     ASSERT_OK(replCoord->setFollowerMode(repl::MemberState::RS_PRIMARY));
     repl::ReplicationCoordinator::set(service, std::move(replCoord));
 
-    _storage = stdx::make_unique<repl::StorageInterfaceImpl>();
+    _storage = std::make_unique<repl::StorageInterfaceImpl>();
 }
 
 void CreateCollectionTest::tearDown() {

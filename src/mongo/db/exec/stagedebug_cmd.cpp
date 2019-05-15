@@ -68,7 +68,6 @@ namespace mongo {
 using std::unique_ptr;
 using std::string;
 using std::vector;
-using stdx::make_unique;
 
 namespace {
 
@@ -189,7 +188,7 @@ public:
         // Add a fetch at the top for the user so we can get obj back for sure.
         // TODO: Do we want to do this for the user?  I think so.
         unique_ptr<PlanStage> rootFetch =
-            make_unique<FetchStage>(opCtx, ws.get(), userRoot, nullptr, collection);
+            std::make_unique<FetchStage>(opCtx, ws.get(), userRoot, nullptr, collection);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             opCtx, std::move(ws), std::move(rootFetch), collection, PlanExecutor::YIELD_AUTO);
@@ -314,7 +313,7 @@ public:
             uassert(
                 16921, "Nodes argument must be provided to AND", nodeArgs["nodes"].isABSONObj());
 
-            auto andStage = make_unique<AndHashStage>(opCtx, workingSet);
+            auto andStage = std::make_unique<AndHashStage>(opCtx, workingSet);
 
             int nodesAdded = 0;
             BSONObjIterator it(nodeArgs["nodes"].Obj());
@@ -337,7 +336,7 @@ public:
             uassert(
                 16924, "Nodes argument must be provided to AND", nodeArgs["nodes"].isABSONObj());
 
-            auto andStage = make_unique<AndSortedStage>(opCtx, workingSet);
+            auto andStage = std::make_unique<AndSortedStage>(opCtx, workingSet);
 
             int nodesAdded = 0;
             BSONObjIterator it(nodeArgs["nodes"].Obj());
@@ -362,7 +361,7 @@ public:
             uassert(16935, "Dedup argument must be provided to OR", !nodeArgs["dedup"].eoo());
             BSONObjIterator it(nodeArgs["nodes"].Obj());
             auto orStage =
-                make_unique<OrStage>(opCtx, workingSet, nodeArgs["dedup"].Bool(), matcher);
+                std::make_unique<OrStage>(opCtx, workingSet, nodeArgs["dedup"].Bool(), matcher);
             while (it.more()) {
                 BSONElement e = it.next();
                 if (!e.isABSONObj()) {
@@ -433,7 +432,7 @@ public:
             params.pattern = nodeArgs["pattern"].Obj();
             // Dedup is true by default.
 
-            auto mergeStage = make_unique<MergeSortStage>(opCtx, params, workingSet);
+            auto mergeStage = std::make_unique<MergeSortStage>(opCtx, params, workingSet);
 
             BSONObjIterator it(nodeArgs["nodes"].Obj());
             while (it.more()) {

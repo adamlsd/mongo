@@ -114,7 +114,7 @@ void OplogFetcherTest::setUp() {
     staleWallTime = Date_t::min() + Seconds(staleOpTime.getSecs());
     rbid = 2;
 
-    dataReplicatorExternalState = stdx::make_unique<DataReplicatorExternalStateMock>();
+    dataReplicatorExternalState = std::make_unique<DataReplicatorExternalStateMock>();
     dataReplicatorExternalState->currentTerm = lastFetched.getTerm();
     dataReplicatorExternalState->lastCommittedOpTime = {{9999, 0}, lastFetched.getTerm()};
 
@@ -164,7 +164,7 @@ ReplSetConfig _createConfig() {
 
 std::unique_ptr<ShutdownState> OplogFetcherTest::processSingleBatch(RemoteCommandResponse response,
                                                                     bool requireFresherSyncSource) {
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
 
     OplogFetcher oplogFetcher(&getExecutor(),
                               lastFetched,
@@ -208,7 +208,7 @@ void _checkDefaultCommandObjectFields(BSONObj cmdObj) {
 }
 
 std::unique_ptr<OplogFetcher> OplogFetcherTest::makeOplogFetcher(ReplSetConfig config) {
-    return stdx::make_unique<OplogFetcher>(&getExecutor(),
+    return std::make_unique<OplogFetcher>(&getExecutor(),
                                            lastFetched,
                                            source,
                                            nss,
@@ -579,7 +579,7 @@ TEST_F(OplogFetcherTest,
         return Status::OK();
     };
 
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     OplogFetcher oplogFetcher(&getExecutor(),
                               lastFetched,
                               source,
@@ -655,7 +655,7 @@ TEST_F(OplogFetcherTest,
         return Status::OK();
     };
 
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     OplogFetcher oplogFetcher(&getExecutor(),
                               lastFetched,
                               source,

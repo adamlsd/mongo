@@ -112,9 +112,9 @@ private:
     void setUp() override {
         ServiceContextMongoDTest::setUp();
         _createOpCtx();
-        auto replCoord = stdx::make_unique<ReplicationCoordinatorMock>(getServiceContext());
+        auto replCoord = std::make_unique<ReplicationCoordinatorMock>(getServiceContext());
         ReplicationCoordinator::set(getServiceContext(), std::move(replCoord));
-        _storageInterface = stdx::make_unique<StorageInterfaceImpl>();
+        _storageInterface = std::make_unique<StorageInterfaceImpl>();
     }
 
     void tearDown() override {

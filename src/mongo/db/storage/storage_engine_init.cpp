@@ -347,7 +347,7 @@ public:
         if (!storageEngine) {
             return;
         }
-        opCtx->setLockState(stdx::make_unique<LockerImpl>());
+        opCtx->setLockState(std::make_unique<LockerImpl>());
         opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(storageEngine->newRecoveryUnit()),
                                WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
     }

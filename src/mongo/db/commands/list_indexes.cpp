@@ -56,7 +56,6 @@ using std::string;
 using std::stringstream;
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 namespace {
 
@@ -168,8 +167,8 @@ public:
                 cce->getAllIndexes(opCtx, &indexNames);
             });
 
-            auto ws = make_unique<WorkingSet>();
-            auto root = make_unique<QueuedDataStage>(opCtx, ws.get());
+            auto ws = std::make_unique<WorkingSet>();
+            auto root = std::make_unique<QueuedDataStage>(opCtx, ws.get());
 
             for (size_t i = 0; i < indexNames.size(); i++) {
                 auto indexSpec = writeConflictRetry(opCtx, "listIndexes", nss.ns(), [&] {

@@ -1673,7 +1673,7 @@ extern SSLManagerInterface* theSSLManager;
 
 std::unique_ptr<SSLManagerInterface> SSLManagerInterface::create(const SSLParams& params,
                                                                  bool isServer) {
-    return stdx::make_unique<SSLManagerApple>(params, isServer);
+    return std::make_unique<SSLManagerApple>(params, isServer);
 }
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(SSLManager, ("EndStartupOptionHandling"))

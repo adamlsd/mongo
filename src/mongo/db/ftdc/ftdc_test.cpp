@@ -141,9 +141,9 @@ void createDirectoryClean(const boost::filesystem::path& dir) {
 
 FTDCTest::FTDCTest() {
     auto service = getServiceContext();
-    service->setFastClockSource(stdx::make_unique<ClockSourceMock>());
-    service->setPreciseClockSource(stdx::make_unique<ClockSourceMock>());
-    service->setTickSource(stdx::make_unique<TickSourceMock<>>());
+    service->setFastClockSource(std::make_unique<ClockSourceMock>());
+    service->setPreciseClockSource(std::make_unique<ClockSourceMock>());
+    service->setTickSource(std::make_unique<TickSourceMock<>>());
 }
 
 }  // namespace mongo

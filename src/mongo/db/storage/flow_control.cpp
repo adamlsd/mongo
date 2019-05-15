@@ -118,7 +118,7 @@ FlowControl::FlowControl(ServiceContext* service, repl::ReplicationCoordinator* 
     : ServerStatusSection("flowControl"),
       _replCoord(replCoord),
       _lastTimeSustainerAdvanced(Date_t::now()) {
-    FlowControlTicketholder::set(service, stdx::make_unique<FlowControlTicketholder>(1000));
+    FlowControlTicketholder::set(service, std::make_unique<FlowControlTicketholder>(1000));
 
     service->getPeriodicRunner()->scheduleJob(
         {"FlowControlRefresher",

@@ -275,13 +275,13 @@ void RenameCollectionTest::setUp() {
     auto service = getServiceContext();
     _opCtx = cc().makeOperationContext();
 
-    repl::StorageInterface::set(service, stdx::make_unique<repl::StorageInterfaceMock>());
+    repl::StorageInterface::set(service, std::make_unique<repl::StorageInterfaceMock>());
     repl::DropPendingCollectionReaper::set(
         service,
-        stdx::make_unique<repl::DropPendingCollectionReaper>(repl::StorageInterface::get(service)));
+        std::make_unique<repl::DropPendingCollectionReaper>(repl::StorageInterface::get(service)));
 
     // Set up ReplicationCoordinator and create oplog.
-    auto replCoord = stdx::make_unique<repl::ReplicationCoordinatorMock>(service);
+    auto replCoord = std::make_unique<repl::ReplicationCoordinatorMock>(service);
     _replCoord = replCoord.get();
     repl::ReplicationCoordinator::set(service, std::move(replCoord));
     repl::setOplogCollectionName(service);
@@ -291,8 +291,8 @@ void RenameCollectionTest::setUp() {
     ASSERT_OK(_replCoord->setFollowerMode(repl::MemberState::RS_PRIMARY));
 
     // Use OpObserverMock to track notifications for collection and database drops.
-    auto opObserver = stdx::make_unique<OpObserverRegistry>();
-    auto mockObserver = stdx::make_unique<OpObserverMock>();
+    auto opObserver = std::make_unique<OpObserverRegistry>();
+    auto mockObserver = std::make_unique<OpObserverMock>();
     _opObserver = mockObserver.get();
     opObserver->addObserver(std::move(mockObserver));
     service->setOpObserver(std::move(opObserver));

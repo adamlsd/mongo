@@ -46,7 +46,7 @@ namespace mongo {
 namespace {
 TEST(MessageCompressorRegistry, RegularTest) {
     MessageCompressorRegistry registry;
-    auto compressor = stdx::make_unique<NoopMessageCompressor>();
+    auto compressor = std::make_unique<NoopMessageCompressor>();
     auto compressorPtr = compressor.get();
 
     std::vector<std::string> compressorList = {compressorPtr->getName()};
@@ -73,7 +73,7 @@ TEST(MessageCompressorRegistry, NothingRegistered) {
 
 TEST(MessageCompressorRegistry, SetSupported) {
     MessageCompressorRegistry registry;
-    auto compressor = stdx::make_unique<NoopMessageCompressor>();
+    auto compressor = std::make_unique<NoopMessageCompressor>();
     auto compressorId = compressor->getId();
     auto compressorName = compressor->getName();
 

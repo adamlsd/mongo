@@ -151,7 +151,7 @@ std::unique_ptr<DocumentSourceLookUp::LiteParsed> DocumentSourceLookUp::LitePars
 
     foreignNssSet.insert(fromNss);
 
-    return stdx::make_unique<DocumentSourceLookUp::LiteParsed>(
+    return std::make_unique<DocumentSourceLookUp::LiteParsed>(
         std::move(fromNss), std::move(foreignNssSet), std::move(liteParsedPipeline));
 }
 

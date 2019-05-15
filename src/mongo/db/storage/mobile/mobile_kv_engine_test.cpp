@@ -56,7 +56,7 @@ public:
         storeMobileStorageOptionDefinitions(optionenvironment::startupOptionsParsed).ignore();
 
         embedded::mobileGlobalOptions.disableVacuumJob = true;
-        _engine = stdx::make_unique<MobileKVEngine>(
+        _engine = std::make_unique<MobileKVEngine>(
             _dbPath.path(), embedded::mobileGlobalOptions, nullptr);
     }
 
@@ -77,7 +77,7 @@ private:
 };
 
 std::unique_ptr<KVHarnessHelper> makeHelper() {
-    return stdx::make_unique<MobileKVHarnessHelper>();
+    return std::make_unique<MobileKVHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {

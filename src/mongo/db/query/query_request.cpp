@@ -417,10 +417,10 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::makeFromFindCommand(Namespace
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
         auto uuid = uassertStatusOK(UUID::parse(first));
-        auto qr = stdx::make_unique<QueryRequest>(NamespaceStringOrUUID(nss.db().toString(), uuid));
+        auto qr = std::make_unique<QueryRequest>(NamespaceStringOrUUID(nss.db().toString(), uuid));
         return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
     } else {
-        auto qr = stdx::make_unique<QueryRequest>(nss);
+        auto qr = std::make_unique<QueryRequest>(nss);
         return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
     }
 }
@@ -750,7 +750,7 @@ bool QueryRequest::isValidSortOrder(const BSONObj& sortObj) {
 
 // static
 StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQueryMessage(const QueryMessage& qm) {
-    auto qr = stdx::make_unique<QueryRequest>(NamespaceString(qm.ns));
+    auto qr = std::make_unique<QueryRequest>(NamespaceString(qm.ns));
 
     Status status = qr->init(qm.ntoskip, qm.ntoreturn, qm.queryOptions, qm.query, qm.fields, true);
     if (!status.isOK()) {
@@ -766,7 +766,7 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::fromLegacyQuery(NamespaceStri
                                                                    int ntoskip,
                                                                    int ntoreturn,
                                                                    int queryOptions) {
-    auto qr = stdx::make_unique<QueryRequest>(nsOrUuid);
+    auto qr = std::make_unique<QueryRequest>(nsOrUuid);
 
     Status status = qr->init(ntoskip, ntoreturn, queryOptions, queryObj, proj, true);
     if (!status.isOK()) {

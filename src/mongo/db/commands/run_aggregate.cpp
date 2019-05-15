@@ -84,7 +84,6 @@ using std::shared_ptr;
 using std::string;
 using std::stringstream;
 using std::unique_ptr;
-using stdx::make_unique;
 
 namespace {
 /**
@@ -475,10 +474,10 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> createOuterPipelineProxyExe
     std::unique_ptr<Pipeline, PipelineDeleter> pipeline,
     bool hasChangeStream) {
     // Transfer ownership of the Pipeline to the PipelineProxyStage.
-    auto ws = make_unique<WorkingSet>();
+    auto ws = std::make_unique<WorkingSet>();
     auto proxy = hasChangeStream
-        ? make_unique<ChangeStreamProxyStage>(opCtx, std::move(pipeline), ws.get())
-        : make_unique<PipelineProxyStage>(opCtx, std::move(pipeline), ws.get());
+        ? std::make_unique<ChangeStreamProxyStage>(opCtx, std::move(pipeline), ws.get())
+        : std::make_unique<PipelineProxyStage>(opCtx, std::move(pipeline), ws.get());
 
     // This PlanExecutor will simply forward requests to the Pipeline, so does not need
     // to yield or to be registered with any collection's CursorManager to receive

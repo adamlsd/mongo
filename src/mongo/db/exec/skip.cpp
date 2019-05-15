@@ -37,7 +37,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 // static
 const char* SkipStage::kStageType = "SKIP";
@@ -85,8 +84,8 @@ PlanStage::StageState SkipStage::doWork(WorkingSetID* out) {
 unique_ptr<PlanStageStats> SkipStage::getStats() {
     _commonStats.isEOF = isEOF();
     _specificStats.skip = _toSkip;
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_SKIP);
-    ret->specific = make_unique<SkipStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_SKIP);
+    ret->specific = std::make_unique<SkipStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
     return ret;
 }

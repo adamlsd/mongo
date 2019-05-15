@@ -288,7 +288,7 @@ TEST_F(InsertRetryTest, DuplicateKeyErrorAfterWriteConcernFailureMatch) {
         response.setStatus(Status::OK());
         response.setN(1);
 
-        auto wcError = stdx::make_unique<WriteConcernErrorDetail>();
+        auto wcError = std::make_unique<WriteConcernErrorDetail>();
 
         WriteConcernResult wcRes;
         wcRes.err = "timeout";
@@ -486,7 +486,7 @@ TEST_F(UpdateRetryTest, OperationInterruptedDueToPrimaryStepDown) {
         BatchedCommandResponse response;
         response.setStatus(Status::OK());
 
-        auto writeErrDetail = stdx::make_unique<WriteErrorDetail>();
+        auto writeErrDetail = std::make_unique<WriteErrorDetail>();
         writeErrDetail->setIndex(0);
         writeErrDetail->setStatus({ErrorCodes::InterruptedDueToStepDown, "Operation interrupted"});
         response.addToErrDetails(writeErrDetail.release());
@@ -537,7 +537,7 @@ TEST_F(UpdateRetryTest, WriteConcernFailure) {
         response.setStatus(Status::OK());
         response.setNModified(1);
 
-        auto wcError = stdx::make_unique<WriteConcernErrorDetail>();
+        auto wcError = std::make_unique<WriteConcernErrorDetail>();
 
         WriteConcernResult wcRes;
         wcRes.err = "timeout";

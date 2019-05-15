@@ -178,7 +178,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
     const AggregationRequest* aggRequest,
     const size_t plannerOpts,
     const MatchExpressionParser::AllowedFeatureSet& matcherFeatures) {
-    auto qr = stdx::make_unique<QueryRequest>(nss);
+    auto qr = std::make_unique<QueryRequest>(nss);
     qr->setTailableMode(pExpCtx->tailableMode);
     qr->setOplogReplay(oplogReplay);
     qr->setFilter(queryObj);

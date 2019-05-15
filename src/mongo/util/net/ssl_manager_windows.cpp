@@ -383,7 +383,7 @@ bool isSSLServer = false;
 
 std::unique_ptr<SSLManagerInterface> SSLManagerInterface::create(const SSLParams& params,
                                                                  bool isServer) {
-    return stdx::make_unique<SSLManagerWindows>(params, isServer);
+    return std::make_unique<SSLManagerWindows>(params, isServer);
 }
 
 namespace {
@@ -1335,7 +1335,7 @@ Status SSLManagerWindows::initSSLContext(SCHANNEL_CRED* cred,
 
 SSLConnectionInterface* SSLManagerWindows::connect(Socket* socket) {
     std::unique_ptr<SSLConnectionWindows> sslConn =
-        stdx::make_unique<SSLConnectionWindows>(&_clientCred, socket, nullptr, 0);
+        std::make_unique<SSLConnectionWindows>(&_clientCred, socket, nullptr, 0);
 
     _handshake(sslConn.get(), true);
     return sslConn.release();
@@ -1345,7 +1345,7 @@ SSLConnectionInterface* SSLManagerWindows::accept(Socket* socket,
                                                   const char* initialBytes,
                                                   int len) {
     std::unique_ptr<SSLConnectionWindows> sslConn =
-        stdx::make_unique<SSLConnectionWindows>(&_serverCred, socket, initialBytes, len);
+        std::make_unique<SSLConnectionWindows>(&_serverCred, socket, initialBytes, len);
 
     _handshake(sslConn.get(), false);
 

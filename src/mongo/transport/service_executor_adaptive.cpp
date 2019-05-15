@@ -126,7 +126,7 @@ thread_local ServiceExecutorAdaptive::ThreadState* ServiceExecutorAdaptive::_loc
 
 ServiceExecutorAdaptive::ServiceExecutorAdaptive(ServiceContext* ctx, ReactorHandle reactor)
     : ServiceExecutorAdaptive(
-          ctx, std::move(reactor), stdx::make_unique<ServerParameterOptions>()) {}
+          ctx, std::move(reactor), std::make_unique<ServerParameterOptions>()) {}
 
 ServiceExecutorAdaptive::ServiceExecutorAdaptive(ServiceContext* ctx,
                                                  ReactorHandle reactor,

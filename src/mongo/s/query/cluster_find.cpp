@@ -156,7 +156,7 @@ StatusWith<std::unique_ptr<QueryRequest>> transformQueryForShards(
         newProjection = projectionBuilder.obj();
     }
 
-    auto newQR = stdx::make_unique<QueryRequest>(qr);
+    auto newQR = std::make_unique<QueryRequest>(qr);
     newQR->setProj(newProjection);
     newQR->setSkip(boost::none);
     newQR->setLimit(newLimit);

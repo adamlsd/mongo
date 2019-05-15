@@ -268,10 +268,10 @@ class AuthorizationManagerWithExplicitUserPrivilegesTest : public ::mongo::unitt
 public:
     virtual void setUp() {
         auto localExternalState =
-            stdx::make_unique<AuthzManagerExternalStateMockWithExplicitUserPrivileges>();
+            std::make_unique<AuthzManagerExternalStateMockWithExplicitUserPrivileges>();
         externalState = localExternalState.get();
         externalState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
-        authzManager = stdx::make_unique<AuthorizationManagerImpl>(
+        authzManager = std::make_unique<AuthorizationManagerImpl>(
             std::move(localExternalState),
             AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{});
         externalState->setAuthorizationManager(authzManager.get());

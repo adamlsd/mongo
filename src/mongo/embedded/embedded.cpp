@@ -109,7 +109,7 @@ ServiceContext::ConstructorActionRegisterer replicationManagerInitializer(
     [](ServiceContext* serviceContext) {
         repl::StorageInterface::set(serviceContext, std::make_unique<repl::StorageInterfaceImpl>());
 
-        auto logicalClock = stdx::make_unique<LogicalClock>(serviceContext);
+        auto logicalClock = std::make_unique<LogicalClock>(serviceContext);
         LogicalClock::set(serviceContext, std::move(logicalClock));
 
         auto replCoord = std::make_unique<ReplicationCoordinatorEmbedded>(serviceContext);

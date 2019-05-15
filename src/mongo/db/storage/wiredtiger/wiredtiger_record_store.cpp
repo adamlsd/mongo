@@ -2033,12 +2033,12 @@ std::unique_ptr<SeekableRecordCursor> StandardWiredTigerRecordStore::getCursor(
         wru->setIsOplogReader();
     }
 
-    return stdx::make_unique<WiredTigerRecordStoreStandardCursor>(opCtx, *this, forward);
+    return std::make_unique<WiredTigerRecordStoreStandardCursor>(opCtx, *this, forward);
 }
 
 std::unique_ptr<RecordCursor> StandardWiredTigerRecordStore::getRandomCursorWithOptions(
     OperationContext* opCtx, StringData extraConfig) const {
-    return stdx::make_unique<RandomCursor>(opCtx, *this, extraConfig);
+    return std::make_unique<RandomCursor>(opCtx, *this, extraConfig);
 }
 
 WiredTigerRecordStoreStandardCursor::WiredTigerRecordStoreStandardCursor(
@@ -2084,7 +2084,7 @@ std::unique_ptr<SeekableRecordCursor> PrefixedWiredTigerRecordStore::getCursor(
         wru->setIsOplogReader();
     }
 
-    return stdx::make_unique<WiredTigerRecordStorePrefixedCursor>(opCtx, *this, _prefix, forward);
+    return std::make_unique<WiredTigerRecordStorePrefixedCursor>(opCtx, *this, _prefix, forward);
 }
 
 std::unique_ptr<RecordCursor> PrefixedWiredTigerRecordStore::getRandomCursorWithOptions(

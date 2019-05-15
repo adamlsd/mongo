@@ -128,7 +128,7 @@ std::unique_ptr<DocumentSourceFacet::LiteParsed> DocumentSourceFacet::LiteParsed
                                                   pipeline.requiredPrivileges(unusedIsMongosFlag));
     }
 
-    return stdx::make_unique<DocumentSourceFacet::LiteParsed>(std::move(liteParsedPipelines),
+    return std::make_unique<DocumentSourceFacet::LiteParsed>(std::move(liteParsedPipelines),
                                                               std::move(requiredPrivileges));
 }
 

@@ -51,9 +51,9 @@ protected:
     void setUp() override {
         ConfigServerTestFixture::setUp();
 
-        auto clockSource = stdx::make_unique<ClockSourceMock>();
+        auto clockSource = std::make_unique<ClockSourceMock>();
         operationContext()->getServiceContext()->setFastClockSource(std::move(clockSource));
-        _catalogClient = stdx::make_unique<KeysCollectionClientSharded>(
+        _catalogClient = std::make_unique<KeysCollectionClientSharded>(
             Grid::get(operationContext())->catalogClient());
     }
 
@@ -67,7 +67,7 @@ protected:
      */
     std::unique_ptr<DistLockManager> makeDistLockManager(
         std::unique_ptr<DistLockCatalog> distLockCatalog) override {
-        return stdx::make_unique<DistLockManagerMock>(std::move(distLockCatalog));
+        return std::make_unique<DistLockManagerMock>(std::move(distLockCatalog));
     }
 
 private:

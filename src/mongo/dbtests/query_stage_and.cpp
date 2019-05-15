@@ -59,7 +59,6 @@ namespace QueryStageAnd {
 using std::set;
 using std::shared_ptr;
 using std::unique_ptr;
-using stdx::make_unique;
 
 class QueryStageAndBase {
 public:
@@ -199,7 +198,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20.
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -286,7 +285,7 @@ public:
         addIndex(BSON("baz" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20 (descending).
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -366,7 +365,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -415,7 +414,7 @@ public:
         // before hashed AND is done reading the first child (stage has to
         // hold 21 keys in buffer for Foo <= 20).
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws, 20 * big.size());
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws, 20 * big.size());
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1 << "big" << 1), coll));
@@ -462,7 +461,7 @@ public:
         // keys in last child's index are not buffered. There are 6 keys
         // that satisfy the criteria Foo <= 20 and Bar >= 10 and 5 <= baz <= 15.
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws, 5 * big.size());
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws, 5 * big.size());
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -504,7 +503,7 @@ public:
         addIndex(BSON("baz" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -562,7 +561,7 @@ public:
         // before hashed AND is done reading the second child (stage has to
         // hold 11 keys in buffer for Foo <= 20 and Bar >= 10).
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws, 10 * big.size());
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws, 10 * big.size());
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -607,7 +606,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -664,7 +663,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo >= 100
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -711,7 +710,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -763,7 +762,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Foo <= 20
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -811,9 +810,9 @@ public:
         //     Child2:  NEED_TIME, FAILURE
         {
             WorkingSet ws;
-            const auto andHashStage = make_unique<AndHashStage>(&_opCtx, &ws);
+            const auto andHashStage = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
-            auto childStage1 = make_unique<QueuedDataStage>(&_opCtx, &ws);
+            auto childStage1 = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
             {
                 WorkingSetID id = ws.allocate();
                 WorkingSetMember* wsm = ws.get(id);
@@ -823,7 +822,7 @@ public:
                 childStage1->pushBack(id);
             }
 
-            auto childStage2 = make_unique<QueuedDataStage>(&_opCtx, &ws);
+            auto childStage2 = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
             childStage2->pushBack(PlanStage::NEED_TIME);
             childStage2->pushBack(PlanStage::FAILURE);
 
@@ -844,9 +843,9 @@ public:
         //     Child2:  Data
         {
             WorkingSet ws;
-            const auto andHashStage = make_unique<AndHashStage>(&_opCtx, &ws);
+            const auto andHashStage = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
-            auto childStage1 = make_unique<QueuedDataStage>(&_opCtx, &ws);
+            auto childStage1 = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
 
             {
                 WorkingSetID id = ws.allocate();
@@ -858,7 +857,7 @@ public:
             }
             childStage1->pushBack(PlanStage::FAILURE);
 
-            auto childStage2 = make_unique<QueuedDataStage>(&_opCtx, &ws);
+            auto childStage2 = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
             {
                 WorkingSetID id = ws.allocate();
                 WorkingSetMember* wsm = ws.get(id);
@@ -885,9 +884,9 @@ public:
         //     Child2:  Data, FAILURE
         {
             WorkingSet ws;
-            const auto andHashStage = make_unique<AndHashStage>(&_opCtx, &ws);
+            const auto andHashStage = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
-            auto childStage1 = make_unique<QueuedDataStage>(&_opCtx, &ws);
+            auto childStage1 = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
             {
                 WorkingSetID id = ws.allocate();
                 WorkingSetMember* wsm = ws.get(id);
@@ -897,7 +896,7 @@ public:
                 childStage1->pushBack(id);
             }
 
-            auto childStage2 = make_unique<QueuedDataStage>(&_opCtx, &ws);
+            auto childStage2 = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
             {
                 WorkingSetID id = ws.allocate();
                 WorkingSetMember* wsm = ws.get(id);
@@ -949,7 +948,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndSortedStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndSortedStage>(&_opCtx, &ws);
 
         // Scan over foo == 1.
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -1066,7 +1065,7 @@ public:
         addIndex(BSON("baz" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndSortedStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndSortedStage>(&_opCtx, &ws);
 
         // Scan over foo == 1
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -1111,7 +1110,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndSortedStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndSortedStage>(&_opCtx, &ws);
 
         // Foo == 7.  Should be EOF.
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -1154,7 +1153,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndSortedStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndSortedStage>(&_opCtx, &ws);
 
         // foo == 7.
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -1193,7 +1192,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        auto ah = make_unique<AndHashStage>(&_opCtx, &ws);
+        auto ah = std::make_unique<AndHashStage>(&_opCtx, &ws);
 
         // Scan over foo == 1
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -1255,7 +1254,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        unique_ptr<AndSortedStage> as = make_unique<AndSortedStage>(&_opCtx, &ws);
+        unique_ptr<AndSortedStage> as = std::make_unique<AndSortedStage>(&_opCtx, &ws);
 
         // Scan over foo == 1
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));
@@ -1307,7 +1306,7 @@ public:
         addIndex(BSON("bar" << 1));
 
         WorkingSet ws;
-        unique_ptr<AndSortedStage> as = make_unique<AndSortedStage>(&_opCtx, &ws);
+        unique_ptr<AndSortedStage> as = std::make_unique<AndSortedStage>(&_opCtx, &ws);
 
         // Scan over foo == 1
         auto params = makeIndexScanParams(&_opCtx, getIndex(BSON("foo" << 1), coll));

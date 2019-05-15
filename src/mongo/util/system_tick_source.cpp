@@ -154,7 +154,7 @@ TickSource::Tick SystemTickSource::getTicksPerSecond() {
 }
 
 SystemTickSource* SystemTickSource::get() {
-    static const auto globalSystemTickSource = stdx::make_unique<SystemTickSource>();
+    static const auto globalSystemTickSource = std::make_unique<SystemTickSource>();
     return globalSystemTickSource.get();
 }
 

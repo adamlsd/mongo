@@ -122,7 +122,7 @@ private:
 }  // namespace
 
 void installSystemMetricsCollector(FTDCController* controller) {
-    controller->addPeriodicCollector(stdx::make_unique<LinuxSystemMetricsCollector>());
+    controller->addPeriodicCollector(std::make_unique<LinuxSystemMetricsCollector>());
 }
 
 }  // namespace mongo

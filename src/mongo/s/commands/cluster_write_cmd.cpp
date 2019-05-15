@@ -75,7 +75,7 @@ void batchErrorToLastError(const BatchedCommandRequest& request,
 
     if (!response.getOk()) {
         // Command-level error, all writes failed
-        commandError = stdx::make_unique<WriteErrorDetail>();
+        commandError = std::make_unique<WriteErrorDetail>();
         commandError->setStatus(response.getTopLevelStatus());
         lastBatchError = commandError.get();
     } else if (response.isErrDetailsSet()) {
@@ -277,7 +277,7 @@ bool handleWouldChangeOwningShardError(OperationContext* opCtx,
                     "document being updated would move shards and that transaction failed");
             }
             if (!response->isErrDetailsSet() || !response->getErrDetails().back()) {
-                auto error = stdx::make_unique<WriteErrorDetail>();
+                auto error = std::make_unique<WriteErrorDetail>();
                 error->setIndex(0);
                 response->addToErrDetails(error.release());
             }
@@ -592,7 +592,7 @@ private:
 
     std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
                                              const OpMsgRequest& request) final {
-        return stdx::make_unique<Invocation>(
+        return std::make_unique<Invocation>(
             this,
             request,
             BatchedCommandRequest::cloneInsertWithIds(BatchedCommandRequest::parseInsert(request)));
@@ -625,7 +625,7 @@ private:
 
     std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
                                              const OpMsgRequest& request) final {
-        return stdx::make_unique<Invocation>(
+        return std::make_unique<Invocation>(
             this, request, BatchedCommandRequest::parseUpdate(request));
     }
 
@@ -656,7 +656,7 @@ private:
 
     std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
                                              const OpMsgRequest& request) final {
-        return stdx::make_unique<Invocation>(
+        return std::make_unique<Invocation>(
             this, request, BatchedCommandRequest::parseDelete(request));
     }
 

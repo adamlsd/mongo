@@ -55,7 +55,7 @@ public:
     }
 
     std::unique_ptr<UpdateNode> clone() const final {
-        return stdx::make_unique<ConflictPlaceholderNode>(*this);
+        return std::make_unique<ConflictPlaceholderNode>(*this);
     }
 
     void setCollator(const CollatorInterface* collator) final {}

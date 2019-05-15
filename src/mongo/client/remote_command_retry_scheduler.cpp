@@ -127,7 +127,7 @@ RemoteCommandRetryScheduler::makeRetryPolicy(
     Milliseconds maxResponseElapsedTotal,
     const std::initializer_list<ErrorCodes::Error>& retryableErrors) {
     std::unique_ptr<RetryPolicy> policy =
-        stdx::make_unique<RetryPolicyImpl>(maxAttempts, maxResponseElapsedTotal, retryableErrors);
+        std::make_unique<RetryPolicyImpl>(maxAttempts, maxResponseElapsedTotal, retryableErrors);
     return policy;
 }
 

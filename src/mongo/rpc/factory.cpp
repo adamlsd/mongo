@@ -58,9 +58,9 @@ Message messageFromOpMsgRequest(Protocol proto, const OpMsgRequest& request) {
 std::unique_ptr<ReplyInterface> makeReply(const Message* unownedMessage) {
     switch (unownedMessage->operation()) {
         case mongo::dbMsg:
-            return stdx::make_unique<OpMsgReply>(OpMsg::parseOwned(*unownedMessage));
+            return std::make_unique<OpMsgReply>(OpMsg::parseOwned(*unownedMessage));
         case mongo::opReply:
-            return stdx::make_unique<LegacyReply>(unownedMessage);
+            return std::make_unique<LegacyReply>(unownedMessage);
         default:
             uasserted(ErrorCodes::UnsupportedFormat,
                       str::stream() << "Received a reply message with unexpected opcode: "
@@ -84,9 +84,9 @@ OpMsgRequest opMsgRequestFromAnyProtocol(const Message& unownedMessage) {
 std::unique_ptr<ReplyBuilderInterface> makeReplyBuilder(Protocol protocol) {
     switch (protocol) {
         case Protocol::kOpMsg:
-            return stdx::make_unique<OpMsgReplyBuilder>();
+            return std::make_unique<OpMsgReplyBuilder>();
         case Protocol::kOpQuery:
-            return stdx::make_unique<LegacyReplyBuilder>();
+            return std::make_unique<LegacyReplyBuilder>();
     }
     MONGO_UNREACHABLE;
 }

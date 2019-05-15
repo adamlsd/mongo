@@ -71,8 +71,8 @@ void ShardServerTestFixture::setUp() {
     ShardingState::get(getServiceContext())->setInitialized(_myShardName, _clusterId);
 
     CatalogCacheLoader::set(getServiceContext(),
-                            stdx::make_unique<ShardServerCatalogCacheLoader>(
-                                stdx::make_unique<ConfigServerCatalogCacheLoader>()));
+                            std::make_unique<ShardServerCatalogCacheLoader>(
+                                std::make_unique<ConfigServerCatalogCacheLoader>()));
 
     uassertStatusOK(
         initializeGlobalShardingStateForMongodForTest(ConnectionString(kConfigHostAndPort)));
@@ -89,19 +89,19 @@ void ShardServerTestFixture::tearDown() {
 }
 
 std::unique_ptr<DistLockCatalog> ShardServerTestFixture::makeDistLockCatalog() {
-    return stdx::make_unique<DistLockCatalogMock>();
+    return std::make_unique<DistLockCatalogMock>();
 }
 
 std::unique_ptr<DistLockManager> ShardServerTestFixture::makeDistLockManager(
     std::unique_ptr<DistLockCatalog> distLockCatalog) {
     invariant(distLockCatalog);
-    return stdx::make_unique<DistLockManagerMock>(std::move(distLockCatalog));
+    return std::make_unique<DistLockManagerMock>(std::move(distLockCatalog));
 }
 
 std::unique_ptr<ShardingCatalogClient> ShardServerTestFixture::makeShardingCatalogClient(
     std::unique_ptr<DistLockManager> distLockManager) {
     invariant(distLockManager);
-    return stdx::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
+    return std::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
 }
 
 }  // namespace mongo

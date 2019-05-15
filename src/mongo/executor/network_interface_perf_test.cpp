@@ -101,8 +101,8 @@ int timeNetworkTestMillis(std::size_t operations, NetworkInterface* net) {
 
 TEST(NetworkInterfaceASIO, SerialPerf) {
     NetworkInterfaceASIO::Options options{};
-    options.streamFactory = stdx::make_unique<AsyncStreamFactory>();
-    options.timerFactory = stdx::make_unique<AsyncTimerFactoryASIO>();
+    options.streamFactory = std::make_unique<AsyncStreamFactory>();
+    options.timerFactory = std::make_unique<AsyncTimerFactoryASIO>();
     NetworkInterfaceASIO netAsio{std::move(options)};
 
     int duration = timeNetworkTestMillis(numOperations, &netAsio);

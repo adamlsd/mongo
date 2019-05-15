@@ -62,7 +62,7 @@ CollatorInterfaceMock::CollatorInterfaceMock(MockType mockType)
       _mockType(mockType) {}
 
 std::unique_ptr<CollatorInterface> CollatorInterfaceMock::clone() const {
-    auto clone = stdx::make_unique<CollatorInterfaceMock>(_mockType);
+    auto clone = std::make_unique<CollatorInterfaceMock>(_mockType);
     return {std::move(clone)};
 }
 

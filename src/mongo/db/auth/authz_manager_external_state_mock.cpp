@@ -110,7 +110,7 @@ void AuthzManagerExternalStateMock::setAuthzVersion(int version) {
 
 std::unique_ptr<AuthzSessionExternalState>
 AuthzManagerExternalStateMock::makeAuthzSessionExternalState(AuthorizationManager* authzManager) {
-    return stdx::make_unique<AuthzSessionExternalStateMock>(authzManager);
+    return std::make_unique<AuthzSessionExternalStateMock>(authzManager);
 }
 
 Status AuthzManagerExternalStateMock::findOne(OperationContext* opCtx,

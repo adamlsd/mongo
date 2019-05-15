@@ -41,7 +41,7 @@ Date_t SystemClockSource::now() {
 }
 
 SystemClockSource* SystemClockSource::get() {
-    static const auto globalSystemClockSource = stdx::make_unique<SystemClockSource>();
+    static const auto globalSystemClockSource = std::make_unique<SystemClockSource>();
     return globalSystemClockSource.get();
 }
 

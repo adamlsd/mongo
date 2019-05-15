@@ -50,7 +50,7 @@ BasicFTSTokenizer::BasicFTSTokenizer(const FTSLanguage* language)
 void BasicFTSTokenizer::reset(StringData document, Options options) {
     _options = options;
     _document = document.toString();
-    _tokenizer = stdx::make_unique<Tokenizer>(_language, _document);
+    _tokenizer = std::make_unique<Tokenizer>(_language, _document);
 }
 
 bool BasicFTSTokenizer::moveNext() {

@@ -74,9 +74,9 @@ void OplogBufferCollectionTest::setUp() {
 
     // AutoGetCollectionForReadCommand requires a valid replication coordinator in order to check
     // the shard version.
-    ReplicationCoordinator::set(service, stdx::make_unique<ReplicationCoordinatorMock>(service));
+    ReplicationCoordinator::set(service, std::make_unique<ReplicationCoordinatorMock>(service));
 
-    auto storageInterface = stdx::make_unique<StorageInterfaceImpl>();
+    auto storageInterface = std::make_unique<StorageInterfaceImpl>();
     _storageInterface = storageInterface.get();
     StorageInterface::set(service, std::move(storageInterface));
 

@@ -120,7 +120,7 @@ public:
     explicit ChangeStreamStageTest(NamespaceString nsString)
         : ChangeStreamStageTestNoSetup(nsString) {
         repl::ReplicationCoordinator::set(getExpCtx()->opCtx->getServiceContext(),
-                                          stdx::make_unique<repl::ReplicationCoordinatorMock>(
+                                          std::make_unique<repl::ReplicationCoordinatorMock>(
                                               getExpCtx()->opCtx->getServiceContext()));
     }
 
@@ -134,7 +134,7 @@ public:
         auto closeCursor = stages.back();
 
         getExpCtx()->mongoProcessInterface =
-            stdx::make_unique<MockMongoInterface>(docKeyFields, preparedTransaction);
+            std::make_unique<MockMongoInterface>(docKeyFields, preparedTransaction);
 
         auto next = closeCursor->getNext();
         // Match stage should pass the doc down if expectedDoc is given.
@@ -161,7 +161,7 @@ public:
             DSChangeStream::createFromBson(spec.firstElement(), getExpCtx());
         vector<intrusive_ptr<DocumentSource>> stages(std::begin(result), std::end(result));
         getExpCtx()->mongoProcessInterface =
-            stdx::make_unique<MockMongoInterface>(std::vector<FieldPath>{});
+            std::make_unique<MockMongoInterface>(std::vector<FieldPath>{});
 
         // This match stage is a DocumentSourceOplogMatch, which we explicitly disallow from
         // executing as a safety mechanism, since it needs to use the collection-default collation,

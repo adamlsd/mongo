@@ -55,7 +55,7 @@ private:
 };
 
 std::unique_ptr<KVHarnessHelper> makeHelper() {
-    return stdx::make_unique<EphemeralForTestKVHarnessHelper>();
+    return std::make_unique<EphemeralForTestKVHarnessHelper>();
 }
 
 MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {

@@ -171,8 +171,8 @@ TEST_F(FTDCControllerTest, TestFull) {
 
     FTDCController c(dir, config);
 
-    auto c1 = stdx::make_unique<FTDCMetricsCollectorMock2>();
-    auto c2 = stdx::make_unique<FTDCMetricsCollectorMockRotate>();
+    auto c1 = std::make_unique<FTDCMetricsCollectorMock2>();
+    auto c2 = std::make_unique<FTDCMetricsCollectorMockRotate>();
 
     auto c1Ptr = c1.get();
     auto c2Ptr = c2.get();
@@ -243,7 +243,7 @@ TEST_F(FTDCControllerTest, TestStartAsDisabled) {
     config.maxFileSizeBytes = FTDCConfig::kMaxFileSizeBytesDefault;
     config.maxDirectorySizeBytes = FTDCConfig::kMaxDirectorySizeBytesDefault;
 
-    auto c1 = stdx::make_unique<FTDCMetricsCollectorMock2>();
+    auto c1 = std::make_unique<FTDCMetricsCollectorMock2>();
 
     auto c1Ptr = c1.get();
 

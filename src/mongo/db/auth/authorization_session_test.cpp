@@ -102,9 +102,9 @@ public:
         session = transportLayer.createSession();
         client = serviceContext->makeClient("testClient", session);
         RestrictionEnvironment::set(
-            session, stdx::make_unique<RestrictionEnvironment>(SockAddr(), SockAddr()));
+            session, std::make_unique<RestrictionEnvironment>(SockAddr(), SockAddr()));
         _opCtx = client->makeOperationContext();
-        auto localManagerState = stdx::make_unique<FailureCapableAuthzManagerExternalStateMock>();
+        auto localManagerState = std::make_unique<FailureCapableAuthzManagerExternalStateMock>();
         managerState = localManagerState.get();
         managerState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
         auto uniqueAuthzManager = std::make_unique<AuthorizationManagerImpl>(
@@ -583,7 +583,7 @@ TEST_F(AuthorizationSessionTest, AcquireUserObtainsAndValidatesAuthenticationRes
     auto assertWorks = [this](StringData clientSource, StringData serverAddress) {
         RestrictionEnvironment::set(
             session,
-            stdx::make_unique<RestrictionEnvironment>(SockAddr(clientSource, 5555, AF_UNSPEC),
+            std::make_unique<RestrictionEnvironment>(SockAddr(clientSource, 5555, AF_UNSPEC),
                                                       SockAddr(serverAddress, 27017, AF_UNSPEC)));
         ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
     };
@@ -591,7 +591,7 @@ TEST_F(AuthorizationSessionTest, AcquireUserObtainsAndValidatesAuthenticationRes
     auto assertFails = [this](StringData clientSource, StringData serverAddress) {
         RestrictionEnvironment::set(
             session,
-            stdx::make_unique<RestrictionEnvironment>(SockAddr(clientSource, 5555, AF_UNSPEC),
+            std::make_unique<RestrictionEnvironment>(SockAddr(clientSource, 5555, AF_UNSPEC),
                                                       SockAddr(serverAddress, 27017, AF_UNSPEC)));
         ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
     };

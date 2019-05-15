@@ -61,9 +61,9 @@ protected:
 
 void ReplicationProcessTest::setUp() {
     ServiceContextMongoDTest::setUp();
-    _storageInterface = stdx::make_unique<StorageInterfaceImpl>();
+    _storageInterface = std::make_unique<StorageInterfaceImpl>();
     auto service = getServiceContext();
-    ReplicationCoordinator::set(service, stdx::make_unique<ReplicationCoordinatorMock>(service));
+    ReplicationCoordinator::set(service, std::make_unique<ReplicationCoordinatorMock>(service));
 }
 
 void ReplicationProcessTest::tearDown() {
@@ -80,8 +80,8 @@ TEST_F(ReplicationProcessTest, ServiceContextDecorator) {
     ASSERT_FALSE(ReplicationProcess::get(serviceContext));
     ReplicationProcess* replicationProcess = new ReplicationProcess(
         _storageInterface.get(),
-        stdx::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
-        stdx::make_unique<ReplicationRecoveryMock>());
+        std::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
+        std::make_unique<ReplicationRecoveryMock>());
     ReplicationProcess::set(serviceContext,
                             std::unique_ptr<ReplicationProcess>(replicationProcess));
     ASSERT_TRUE(replicationProcess == ReplicationProcess::get(serviceContext));
@@ -93,8 +93,8 @@ TEST_F(ReplicationProcessTest, RollbackIDIncrementsBy1) {
     auto opCtx = makeOpCtx();
     ReplicationProcess replicationProcess(
         _storageInterface.get(),
-        stdx::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
-        stdx::make_unique<ReplicationRecoveryMock>());
+        std::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
+        std::make_unique<ReplicationRecoveryMock>());
 
     // We make no assumptions about the initial value of the rollback ID.
     ASSERT_OK(replicationProcess.initializeRollbackID(opCtx.get()));
@@ -110,8 +110,8 @@ TEST_F(ReplicationProcessTest, RefreshRollbackIDResetsCachedValueFromStorage) {
     auto opCtx = makeOpCtx();
     ReplicationProcess replicationProcess(
         _storageInterface.get(),
-        stdx::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
-        stdx::make_unique<ReplicationRecoveryMock>());
+        std::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
+        std::make_unique<ReplicationRecoveryMock>());
 
     // RefreshRollbackID returns NamespaceNotFound if there is no rollback.id collection.
     ASSERT_EQUALS(ErrorCodes::NamespaceNotFound, replicationProcess.refreshRollbackID(opCtx.get()));

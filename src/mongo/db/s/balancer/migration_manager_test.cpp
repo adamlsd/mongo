@@ -160,7 +160,7 @@ private:
 
 void MigrationManagerTest::setUp() {
     ConfigServerTestFixture::setUp();
-    _migrationManager = stdx::make_unique<MigrationManager>(getServiceContext());
+    _migrationManager = std::make_unique<MigrationManager>(getServiceContext());
     _migrationManager->startRecoveryAndAcquireDistLocks(operationContext());
     _migrationManager->finishRecovery(operationContext(), 0, kDefaultSecondaryThrottle);
 }

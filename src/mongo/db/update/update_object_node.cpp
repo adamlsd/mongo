@@ -303,9 +303,9 @@ StatusWith<bool> UpdateObjectNode::parseAndMerge(
         } else {
             std::unique_ptr<UpdateInternalNode> ownedChild;
             if (childShouldBeArrayNode) {
-                ownedChild = stdx::make_unique<UpdateArrayNode>(arrayFilters);
+                ownedChild = std::make_unique<UpdateArrayNode>(arrayFilters);
             } else {
-                ownedChild = stdx::make_unique<UpdateObjectNode>();
+                ownedChild = std::make_unique<UpdateObjectNode>();
             }
             child = ownedChild.get();
             current->setChild(std::move(childName), std::move(ownedChild));
@@ -347,7 +347,7 @@ StatusWith<bool> UpdateObjectNode::parseAndMerge(
 // static
 std::unique_ptr<UpdateNode> UpdateObjectNode::createUpdateNodeByMerging(
     const UpdateObjectNode& leftNode, const UpdateObjectNode& rightNode, FieldRef* pathTaken) {
-    auto mergedNode = stdx::make_unique<UpdateObjectNode>();
+    auto mergedNode = std::make_unique<UpdateObjectNode>();
 
     mergedNode->_children =
         createUpdateNodeMapByMerging(leftNode._children, rightNode._children, pathTaken);

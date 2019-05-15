@@ -67,7 +67,7 @@ const auto serviceCursorManager =
 
 ServiceContext::ConstructorActionRegisterer cursorManagerRegisterer{
     "CursorManagerRegisterer", [](ServiceContext* svcCtx) {
-        auto cursorManager = stdx::make_unique<CursorManager>();
+        auto cursorManager = std::make_unique<CursorManager>();
         CursorManager::set(svcCtx, std::move(cursorManager));
     }};
 }  // namespace
@@ -100,8 +100,8 @@ std::pair<Status, int> CursorManager::killCursorsWithMatchingSessions(
 }
 
 CursorManager::CursorManager()
-    : _random(stdx::make_unique<PseudoRandom>(SecureRandom::create()->nextInt64())),
-      _cursorMap(stdx::make_unique<Partitioned<stdx::unordered_map<CursorId, ClientCursor*>>>()) {}
+    : _random(std::make_unique<PseudoRandom>(SecureRandom::create()->nextInt64())),
+      _cursorMap(std::make_unique<Partitioned<stdx::unordered_map<CursorId, ClientCursor*>>>()) {}
 
 CursorManager::~CursorManager() {
     auto allPartitions = _cursorMap->lockAllPartitions();

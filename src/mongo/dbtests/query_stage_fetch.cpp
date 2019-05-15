@@ -52,7 +52,6 @@ namespace QueryStageFetch {
 using std::set;
 using std::shared_ptr;
 using std::unique_ptr;
-using stdx::make_unique;
 
 class QueryStageFetchBase {
 public:
@@ -115,7 +114,7 @@ public:
         ASSERT_EQUALS(size_t(1), recordIds.size());
 
         // Create a mock stage that returns the WSM.
-        auto mockStage = make_unique<QueuedDataStage>(&_opCtx, &ws);
+        auto mockStage = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
 
         // Mock data.
         {
@@ -180,7 +179,7 @@ public:
         ASSERT_EQUALS(size_t(1), recordIds.size());
 
         // Create a mock stage that returns the WSM.
-        auto mockStage = make_unique<QueuedDataStage>(&_opCtx, &ws);
+        auto mockStage = std::make_unique<QueuedDataStage>(&_opCtx, &ws);
 
         // Mock data.
         {

@@ -82,7 +82,7 @@ public:
     UpdateObjectNode() : UpdateInternalNode(Type::Object) {}
 
     std::unique_ptr<UpdateNode> clone() const final {
-        return stdx::make_unique<UpdateObjectNode>(*this);
+        return std::make_unique<UpdateObjectNode>(*this);
     }
 
     void setCollator(const CollatorInterface* collator) final {

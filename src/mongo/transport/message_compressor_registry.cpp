@@ -133,7 +133,7 @@ MONGO_INITIALIZER_GENERAL(NoopMessageCompressorInit,
                           ("AllCompressorsRegistered"))
 (InitializerContext* context) {
     auto& compressorRegistry = MessageCompressorRegistry::get();
-    compressorRegistry.registerImplementation(stdx::make_unique<NoopMessageCompressor>());
+    compressorRegistry.registerImplementation(std::make_unique<NoopMessageCompressor>());
     return Status::OK();
 }
 

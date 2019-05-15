@@ -94,7 +94,7 @@ protected:
 void DatabaseClonerTest::setUp() {
     BaseClonerTest::setUp();
     _databaseCloner =
-        stdx::make_unique<DatabaseCloner>(&getExecutor(),
+        std::make_unique<DatabaseCloner>(&getExecutor(),
                                           dbWorkThreadPool.get(),
                                           target,
                                           dbname,
@@ -107,7 +107,7 @@ void DatabaseClonerTest::setUp() {
         return getExecutor().scheduleWork(std::move(work));
     });
 
-    _mockServer = stdx::make_unique<MockRemoteDBServer>(target.toString());
+    _mockServer = std::make_unique<MockRemoteDBServer>(target.toString());
     _mockServer->assignCollectionUuid("db.a", *_options1.uuid);
     _mockServer->assignCollectionUuid("db.b", *_options2.uuid);
     _mockServer->assignCollectionUuid("db.c", *_options3.uuid);
@@ -294,7 +294,7 @@ TEST_F(DatabaseClonerTest, FirstRemoteCommandWithFilter) {
     const BSONObj listCollectionsFilter = BSON("name"
                                                << "coll");
     _databaseCloner =
-        stdx::make_unique<DatabaseCloner>(&getExecutor(),
+        std::make_unique<DatabaseCloner>(&getExecutor(),
                                           dbWorkThreadPool.get(),
                                           target,
                                           dbname,
@@ -375,7 +375,7 @@ TEST_F(DatabaseClonerTest, ListCollectionsPredicate) {
     DatabaseCloner::ListCollectionsPredicateFn pred = [](const BSONObj& info) {
         return info["name"].String() != "b";
     };
-    _databaseCloner = stdx::make_unique<DatabaseCloner>(&getExecutor(),
+    _databaseCloner = std::make_unique<DatabaseCloner>(&getExecutor(),
                                                         dbWorkThreadPool.get(),
                                                         target,
                                                         dbname,

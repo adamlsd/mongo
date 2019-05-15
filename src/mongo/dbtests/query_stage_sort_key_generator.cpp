@@ -70,7 +70,7 @@ BSONObj extractSortKey(const char* sortSpec, const char* doc, const CollatorInte
 
     WorkingSet workingSet;
 
-    auto mockStage = stdx::make_unique<QueuedDataStage>(opCtx.get(), &workingSet);
+    auto mockStage = std::make_unique<QueuedDataStage>(opCtx.get(), &workingSet);
     auto wsid = workingSet.allocate();
     auto wsm = workingSet.get(wsid);
     wsm->obj = Snapshotted<BSONObj>(SnapshotId(), fromjson(doc));
@@ -98,7 +98,7 @@ BSONObj extractSortKeyCovered(const char* sortSpec,
 
     WorkingSet workingSet;
 
-    auto mockStage = stdx::make_unique<QueuedDataStage>(opCtx.get(), &workingSet);
+    auto mockStage = std::make_unique<QueuedDataStage>(opCtx.get(), &workingSet);
     auto wsid = workingSet.allocate();
     auto wsm = workingSet.get(wsid);
     wsm->keyData.push_back(ikd);

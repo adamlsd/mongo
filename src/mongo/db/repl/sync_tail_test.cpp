@@ -2129,7 +2129,7 @@ TEST_F(SyncTailTest, LogSlowOpApplicationWhenSuccessful) {
     // This duration is greater than "slowMS", so the op would be considered slow.
     auto applyDuration = serverGlobalParams.slowMS * 10;
     getServiceContext()->setFastClockSource(
-        stdx::make_unique<AutoAdvancingClockSourceMock>(Milliseconds(applyDuration)));
+        std::make_unique<AutoAdvancingClockSourceMock>(Milliseconds(applyDuration)));
 
     // We are inserting into an existing collection.
     const NamespaceString nss("test.t");
@@ -2152,7 +2152,7 @@ TEST_F(SyncTailTest, DoNotLogSlowOpApplicationWhenFailed) {
     // This duration is greater than "slowMS", so the op would be considered slow.
     auto applyDuration = serverGlobalParams.slowMS * 10;
     getServiceContext()->setFastClockSource(
-        stdx::make_unique<AutoAdvancingClockSourceMock>(Milliseconds(applyDuration)));
+        std::make_unique<AutoAdvancingClockSourceMock>(Milliseconds(applyDuration)));
 
     // We are trying to insert into a non-existing database.
     NamespaceString nss("test.t");
@@ -2177,7 +2177,7 @@ TEST_F(SyncTailTest, DoNotLogNonSlowOpApplicationWhenSuccessful) {
     // This duration is below "slowMS", so the op would *not* be considered slow.
     auto applyDuration = serverGlobalParams.slowMS / 10;
     getServiceContext()->setFastClockSource(
-        stdx::make_unique<AutoAdvancingClockSourceMock>(Milliseconds(applyDuration)));
+        std::make_unique<AutoAdvancingClockSourceMock>(Milliseconds(applyDuration)));
 
     // We are inserting into an existing collection.
     const NamespaceString nss("test.t");

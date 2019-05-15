@@ -44,7 +44,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 // static
 const char* FetchStage::kStageType = "FETCH";
@@ -192,8 +191,8 @@ unique_ptr<PlanStageStats> FetchStage::getStats() {
         _commonStats.filter = bob.obj();
     }
 
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_FETCH);
-    ret->specific = make_unique<FetchStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_FETCH);
+    ret->specific = std::make_unique<FetchStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
     return ret;
 }

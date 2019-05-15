@@ -38,7 +38,7 @@
 namespace mongo {
 
 MockServiceLiaisonImpl::MockServiceLiaisonImpl() {
-    _timerFactory = stdx::make_unique<executor::AsyncTimerFactoryMock>();
+    _timerFactory = std::make_unique<executor::AsyncTimerFactoryMock>();
     _runner = makePeriodicRunner(getGlobalServiceContext());
     _runner->startup();
 }

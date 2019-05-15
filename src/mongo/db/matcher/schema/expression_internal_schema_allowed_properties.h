@@ -94,7 +94,7 @@ public:
      */
     struct Pattern {
         explicit Pattern(StringData pattern)
-            : rawRegex(pattern), regex(stdx::make_unique<pcrecpp::RE>(pattern.toString())) {}
+            : rawRegex(pattern), regex(std::make_unique<pcrecpp::RE>(pattern.toString())) {}
 
         StringData rawRegex;
         std::unique_ptr<pcrecpp::RE> regex;

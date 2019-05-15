@@ -111,7 +111,7 @@ public:
 
         // Create the pointer, parse the stage, and return.
         std::unique_ptr<ReplaceRootTransformation> parsedReplaceRoot =
-            stdx::make_unique<ReplaceRootTransformation>(expCtx);
+            std::make_unique<ReplaceRootTransformation>(expCtx);
         parsedReplaceRoot->parse(expCtx, spec);
         return parsedReplaceRoot;
     }

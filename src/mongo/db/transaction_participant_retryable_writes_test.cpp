@@ -173,7 +173,7 @@ protected:
         const auto service = opCtx()->getServiceContext();
 
         const auto opObserverRegistry = dynamic_cast<OpObserverRegistry*>(service->getOpObserver());
-        opObserverRegistry->addObserver(stdx::make_unique<OpObserverMock>());
+        opObserverRegistry->addObserver(std::make_unique<OpObserverMock>());
 
         opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
         _opContextSession.emplace(opCtx());

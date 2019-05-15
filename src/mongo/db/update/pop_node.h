@@ -49,7 +49,7 @@ public:
                         ModifyResult modifyResult) const final;
 
     std::unique_ptr<UpdateNode> clone() const final {
-        return stdx::make_unique<PopNode>(*this);
+        return std::make_unique<PopNode>(*this);
     }
 
     void setCollator(const CollatorInterface* collator) final {}

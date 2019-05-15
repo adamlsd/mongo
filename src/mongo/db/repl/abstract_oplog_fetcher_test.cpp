@@ -255,7 +255,7 @@ TEST_F(AbstractOplogFetcherTest,
        OplogFetcherCreatesNewFetcherOnCallbackErrorDuringGetMoreNumberOne) {
     auto ops = _generateOplogEntries(5U);
     std::size_t maxFetcherRestarts = 1U;
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     MockOplogFetcher oplogFetcher(&getExecutor(),
                                   _getOpTime(ops[0]),
                                   source,
@@ -287,7 +287,7 @@ TEST_F(AbstractOplogFetcherTest,
 TEST_F(AbstractOplogFetcherTest, OplogFetcherStopsRestartingFetcherIfRestartLimitIsReached) {
     auto ops = _generateOplogEntries(3U);
     std::size_t maxFetcherRestarts = 2U;
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     MockOplogFetcher oplogFetcher(&getExecutor(),
                                   _getOpTime(ops[0]),
                                   source,
@@ -323,7 +323,7 @@ TEST_F(AbstractOplogFetcherTest, OplogFetcherStopsRestartingFetcherIfRestartLimi
 TEST_F(AbstractOplogFetcherTest, OplogFetcherResetsRestartCounterOnSuccessfulFetcherResponse) {
     auto ops = _generateOplogEntries(5U);
     std::size_t maxFetcherRestarts = 2U;
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     MockOplogFetcher oplogFetcher(&getExecutor(),
                                   _getOpTime(ops[0]),
                                   source,
@@ -388,7 +388,7 @@ TEST_F(AbstractOplogFetcherTest,
        OplogFetcherAbortsWithOriginalResponseErrorOnFailureToScheduleNewFetcher) {
     auto ops = _generateOplogEntries(3U);
     std::size_t maxFetcherRestarts = 2U;
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     bool shouldFailSchedule = false;
     TaskExecutorWithFailureInScheduleRemoteCommand _executorProxy(
         &getExecutor(), [&shouldFailSchedule](const executor::RemoteCommandRequest& request) {
@@ -424,7 +424,7 @@ TEST_F(AbstractOplogFetcherTest,
 TEST_F(AbstractOplogFetcherTest, OplogFetcherTimesOutCorrectlyOnInitialFindRequests) {
     auto ops = _generateOplogEntries(2U);
     std::size_t maxFetcherRestarts = 0U;
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     MockOplogFetcher oplogFetcher(&getExecutor(),
                                   _getOpTime(ops[0]),
                                   source,
@@ -462,7 +462,7 @@ TEST_F(AbstractOplogFetcherTest, OplogFetcherTimesOutCorrectlyOnInitialFindReque
 TEST_F(AbstractOplogFetcherTest, OplogFetcherTimesOutCorrectlyOnRetriedFindRequests) {
     auto ops = _generateOplogEntries(2U);
     std::size_t maxFetcherRestarts = 1U;
-    auto shutdownState = stdx::make_unique<ShutdownState>();
+    auto shutdownState = std::make_unique<ShutdownState>();
     MockOplogFetcher oplogFetcher(&getExecutor(),
                                   _getOpTime(ops[0]),
                                   source,

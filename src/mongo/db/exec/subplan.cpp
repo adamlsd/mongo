@@ -56,7 +56,6 @@ namespace mongo {
 using std::endl;
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 const char* SubplanStage::kStageType = "SUBPLAN";
 
@@ -117,7 +116,7 @@ Status SubplanStage::planSubqueries() {
 
     for (size_t i = 0; i < _orExpression->numChildren(); ++i) {
         // We need a place to shove the results from planning this branch.
-        _branchResults.push_back(stdx::make_unique<BranchPlanningResult>());
+        _branchResults.push_back(std::make_unique<BranchPlanningResult>());
         BranchPlanningResult* branchResult = _branchResults.back().get();
 
         MatchExpression* orChild = _orExpression->getChild(i);
@@ -260,7 +259,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
             // messages that can be generated if pickBestPlan yields.
             invariant(_children.empty());
             _children.emplace_back(
-                stdx::make_unique<MultiPlanStage>(getOpCtx(),
+                std::make_unique<MultiPlanStage>(getOpCtx(),
                                                   collection(),
                                                   branchResult->canonicalQuery.get(),
                                                   MultiPlanStage::CachingMode::SometimesCache));
@@ -483,7 +482,7 @@ PlanStage::StageState SubplanStage::doWork(WorkingSetID* out) {
 
 unique_ptr<PlanStageStats> SubplanStage::getStats() {
     _commonStats.isEOF = isEOF();
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_SUBPLAN);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_SUBPLAN);
     ret->children.emplace_back(child()->getStats());
     return ret;
 }

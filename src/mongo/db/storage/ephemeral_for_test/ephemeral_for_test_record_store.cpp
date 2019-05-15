@@ -545,8 +545,8 @@ StatusWith<RecordData> EphemeralForTestRecordStore::updateWithDamages(
 std::unique_ptr<SeekableRecordCursor> EphemeralForTestRecordStore::getCursor(
     OperationContext* opCtx, bool forward) const {
     if (forward)
-        return stdx::make_unique<Cursor>(opCtx, *this);
-    return stdx::make_unique<ReverseCursor>(opCtx, *this);
+        return std::make_unique<Cursor>(opCtx, *this);
+    return std::make_unique<ReverseCursor>(opCtx, *this);
 }
 
 Status EphemeralForTestRecordStore::truncate(OperationContext* opCtx) {

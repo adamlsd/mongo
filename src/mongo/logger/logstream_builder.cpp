@@ -120,7 +120,7 @@ void LogstreamBuilder::makeStream() {
         if (_shouldCache && isThreadOstreamCacheInitialized && threadOstreamCache) {
             _os = std::move(threadOstreamCache);
         } else {
-            _os = stdx::make_unique<std::ostringstream>();
+            _os = std::make_unique<std::ostringstream>();
         }
     }
 }

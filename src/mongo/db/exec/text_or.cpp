@@ -48,7 +48,6 @@ namespace mongo {
 using std::unique_ptr;
 using std::vector;
 using std::string;
-using stdx::make_unique;
 
 using fts::FTSSpec;
 
@@ -111,8 +110,8 @@ std::unique_ptr<PlanStageStats> TextOrStage::getStats() {
         _commonStats.filter = bob.obj();
     }
 
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_TEXT_OR);
-    ret->specific = make_unique<TextOrStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_TEXT_OR);
+    ret->specific = std::make_unique<TextOrStats>(_specificStats);
 
     for (auto&& child : _children) {
         ret->children.emplace_back(child->getStats());

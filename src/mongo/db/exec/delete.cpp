@@ -51,7 +51,6 @@ namespace mongo {
 
 using std::unique_ptr;
 using std::vector;
-using stdx::make_unique;
 
 namespace {
 
@@ -270,8 +269,8 @@ void DeleteStage::doRestoreStateRequiresCollection() {
 
 unique_ptr<PlanStageStats> DeleteStage::getStats() {
     _commonStats.isEOF = isEOF();
-    unique_ptr<PlanStageStats> ret = make_unique<PlanStageStats>(_commonStats, STAGE_DELETE);
-    ret->specific = make_unique<DeleteStats>(_specificStats);
+    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_DELETE);
+    ret->specific = std::make_unique<DeleteStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
     return ret;
 }

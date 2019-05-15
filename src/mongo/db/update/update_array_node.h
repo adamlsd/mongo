@@ -66,7 +66,7 @@ public:
         : UpdateInternalNode(Type::Array), _arrayFilters(arrayFilters) {}
 
     std::unique_ptr<UpdateNode> clone() const final {
-        return stdx::make_unique<UpdateArrayNode>(*this);
+        return std::make_unique<UpdateArrayNode>(*this);
     }
 
     void setCollator(const CollatorInterface* collator) final {

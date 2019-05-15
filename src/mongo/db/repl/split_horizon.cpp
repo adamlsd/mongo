@@ -129,10 +129,9 @@ SplitHorizon::ForwardMapping computeForwardMappings(
                               "\" is reserved for internal mongodb usage");
             } else if (horizonName == "") {
                 uasserted(ErrorCodes::BadValue, "Horizons cannot have empty names");
-            } else if (horizonName.find("__") == 0) {
-                log() << "Warning: Horizon name \"" << horizonName
-                      << "\" is reserved, and may acquire special semantics in future versions."
-                      << std::endl;
+            } else if (horizonName.startsWith("__")) {
+                warning() << "Warning: Horizon name \"" << horizonName
+                      << "\" is reserved, and may acquire special semantics in future versions.";
             }
 
             return {horizonName.toString(), HostAndPort{horizonObj.valueStringData()}};
@@ -191,7 +190,7 @@ SplitHorizon::ForwardMapping computeForwardMappings(
 
 void SplitHorizon::setParameters(Client* const client, boost::optional<std::string> sniName) {
     stdx::lock_guard<Client> lk(*client);
-    getSplitHorizonParameters(*client) = {std::move(sniName)};
+    getSplitHorizonParameters(*client) = Parameters{std::move(sniName)};
 }
 
 auto SplitHorizon::getParameters(const Client* const client) -> Parameters {

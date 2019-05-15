@@ -65,6 +65,7 @@ public:
         boost::optional<std::string> sniName;
 
         Parameters() = default;
+		explicit
         Parameters(boost::optional<std::string> initialSniName)
             : sniName(std::move(initialSniName)) {}
     };

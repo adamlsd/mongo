@@ -414,7 +414,6 @@ TEST(SplitHorizonTesting, toBSON) {
             rv.erase("__default");
             return rv;
         }();
-        std::cerr << "Test number " << testNumber << std::endl;
 
         const SplitHorizon horizon(input.forwardMapping);
 
@@ -424,8 +423,6 @@ TEST(SplitHorizonTesting, toBSON) {
             return outputBuilder.obj();
         }();
 
-        std::cout << "output: " << output << std::endl;
-
         if (expectedKeys.empty()) {
             ASSERT_TRUE(output["horizons"].eoo());
             continue;
@@ -434,7 +431,8 @@ TEST(SplitHorizonTesting, toBSON) {
         ASSERT_FALSE(output["horizons"].eoo());
 
         for (const auto& horizons : output) {
-            ASSERT_TRUE(horizons.fieldNameStringData() == "horizons");
+            ASSERT_TRUE(horizons.fieldNameStringData() == "horizons")
+                << "Test #" << testNumber << " Failing finding a horizons element";
         }
 
         const auto& horizonsElement = output["horizons"];
@@ -444,8 +442,15 @@ TEST(SplitHorizonTesting, toBSON) {
         std::vector<std::string> visitedHorizons;
 
         for (const auto& element : horizons) {
-            std::cerr << "Checking field: " << element.fieldNameStringData() << std::endl;
-            ASSERT_TRUE(expectedKeys.count(element.fieldNameStringData().toString()));
+            ASSERT_TRUE(expectedKeys.count(element.fieldNameStringData().toString()))
+                << "Test #" << testNumber << " Failing because we found a horizon with the name "
+                << element.fieldNameStringData() << " which shouldn't exist.";
+
+            ASSERT_TRUE(
+                expectedKeys.find(element.fieldNameStringData().toString())->second.toString() ==
+                element.valueStringData())
+                << "Test #" << testNumber << " failing because horizon "
+                << element.fieldNameStringData() << " had an incorrect HostAndPort";
             visitedHorizons.push_back(element.fieldNameStringData().toString());
         }
 
@@ -480,7 +485,6 @@ TEST(SplitHorizonTesting, BSONRoundTrip) {
     };
     for (const auto& input : tests) {
         const auto testNumber = &input - tests;
-        std::cerr << "Test number " << testNumber << std::endl;
 
         const SplitHorizon horizon(input.forwardMapping);
 
@@ -492,8 +496,10 @@ TEST(SplitHorizonTesting, BSONRoundTrip) {
 
         const SplitHorizon witness(HostAndPort(defaultHostAndPort), bson["horizons"]);
 
-        ASSERT_TRUE(horizon.getForwardMappings() == witness.getForwardMappings());
-        ASSERT_TRUE(horizon.getReverseHostMappings() == witness.getReverseHostMappings());
+        ASSERT_TRUE(horizon.getForwardMappings() == witness.getForwardMappings())
+            << "Test #" << testNumber << " Failed on bson round trip with forward map";
+        ASSERT_TRUE(horizon.getReverseHostMappings() == witness.getReverseHostMappings())
+            << "Test #" << testNumber << " Failed on bson round trip with reverse map";
     }
 }
 

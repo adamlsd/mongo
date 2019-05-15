@@ -321,6 +321,7 @@ TEST(SplitHorizonTesting, BSONConstruction) {
     };
 
     for (const auto& test : tests) {
+        const auto testNumber = &test - tests;
         const BSONObj bson = BSON("horizons" << test.bsonContents);
         const auto& expectedErrorCode = test.expectedErrorCode;
 
@@ -334,7 +335,7 @@ TEST(SplitHorizonTesting, BSONConstruction) {
                     << "Failing on test case # " << (&test - tests)
                     << " with unexpected failure: " << ex.toStatus().reason();
                 ASSERT_EQUALS(ex.toStatus().code(), expectedErrorCode)
-                    << "Failing status code comparison on test case " << (&test - tests)
+                    << "Failing status code comparison on test case " << testNumber
                     << " reason: " << ex.toStatus().reason();
                 for (const auto& fragment : test.expectedErrorMessageFragments) {
                     ASSERT_NOT_EQUALS(ex.toStatus().reason().find(fragment), std::string::npos)
@@ -365,9 +366,9 @@ TEST(SplitHorizonTesting, BSONConstruction) {
                 const auto found =
                     horizon.getReverseHostMappings().find(HostAndPort(element.second).host());
                 ASSERT_TRUE(found != end(horizon.getReverseHostMappings()))
-                    << "Failed test # " << (&test - tests)
+                    << "Failed test # " << testNumber
                     << " because we didn't find a reverse mapping for the host " << element.first;
-                ASSERT_EQUALS(element.first, found->second);
+                ASSERT_EQUALS(element.first, found->second) << "on test " << testNumber;
             }
         }
 
@@ -377,9 +378,125 @@ TEST(SplitHorizonTesting, BSONConstruction) {
 }
 
 TEST(SplitHorizonTesting, toBSON) {
-    // TODO: Exhaustive bson conversion testing.  For the moment only the `ReplSetConfig` class has
-    // testing of this functionality.
+    struct Input {
+        SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
+        using MappingType = std::map<std::string, std::string>;
+
+
+        Input(const MappingType& mapping) {
+            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
+
+            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
+            using ElementType = MappingType::value_type;
+            auto createForwardMapping = [](const ElementType& element) {
+                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
+            };
+            std::transform(begin(mapping),
+                           end(mapping),
+                           inserter(forwardMapping, end(forwardMapping)),
+                           createForwardMapping);
+        }
+    };
+
+    const Input tests[] = {
+        {{}},
+        {{{"horizon1", "horizon1.example.com:42"}}},
+        {{{"horizon1", "horizon1.example.com:42"}, {"horizon2", "horizon2.example.com:42"}}},
+        {{{"horizon1", "horizon1.example.com:42"},
+          {"horizon2", "horizon2.example.com:42"},
+          {"horizon3", "horizon3.example.com:99"}}},
+    };
+    for (const auto& test : tests) {
+        const auto testNumber = &test - tests;
+        const auto& input = test;
+        const auto& expectedKeys = [&] {
+            auto rv = input.forwardMapping;
+            rv.erase("__default");
+            return rv;
+        }();
+        std::cerr << "Test number " << testNumber << std::endl;
+
+        const SplitHorizon horizon(input.forwardMapping);
+
+        const BSONObj output = [&] {
+            BSONObjBuilder outputBuilder;
+            horizon.toBSON(outputBuilder);
+            return outputBuilder.obj();
+        }();
+
+        std::cout << "output: " << output << std::endl;
+
+        if (expectedKeys.empty()) {
+            ASSERT_TRUE(output["horizons"].eoo());
+            continue;
+        }
+
+        ASSERT_FALSE(output["horizons"].eoo());
+
+        for (const auto& horizons : output) {
+            ASSERT_TRUE(horizons.fieldNameStringData() == "horizons");
+        }
+
+        const auto& horizonsElement = output["horizons"];
+        ASSERT_EQUALS(horizonsElement.type(), Object);
+        const auto& horizons = horizonsElement.Obj();
+
+        std::vector<std::string> visitedHorizons;
+
+        for (const auto& element : horizons) {
+            std::cerr << "Checking field: " << element.fieldNameStringData() << std::endl;
+            ASSERT_TRUE(expectedKeys.count(element.fieldNameStringData().toString()));
+            visitedHorizons.push_back(element.fieldNameStringData().toString());
+        }
+
+        ASSERT_EQUALS(visitedHorizons.size(), expectedKeys.size());
+    }
 }
+
+TEST(SplitHorizonTesting, BSONRoundTrip) {
+    struct Input {
+        SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
+        using MappingType = std::map<std::string, std::string>;
+
+
+        Input(const MappingType& mapping) {
+            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
+
+            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
+            using ElementType = MappingType::value_type;
+            auto createForwardMapping = [](const ElementType& element) {
+                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
+            };
+            std::transform(begin(mapping),
+                           end(mapping),
+                           inserter(forwardMapping, end(forwardMapping)),
+                           createForwardMapping);
+        }
+    };
+
+    const Input tests[] = {
+        {{{"horizon1", "horizon1.example.com:42"}}},
+        {{{"horizon1", "horizon1.example.com:42"}, {"horizon2", "horizon2.example.com:42"}}},
+    };
+    for (const auto& input : tests) {
+        const auto testNumber = &input - tests;
+        std::cerr << "Test number " << testNumber << std::endl;
+
+        const SplitHorizon horizon(input.forwardMapping);
+
+        const BSONObj bson = [&] {
+            BSONObjBuilder outputBuilder;
+            horizon.toBSON(outputBuilder);
+            return outputBuilder.obj();
+        }();
+
+        const SplitHorizon witness(HostAndPort(defaultHostAndPort), bson["horizons"]);
+
+        ASSERT_TRUE(horizon.getForwardMappings() == witness.getForwardMappings());
+        ASSERT_TRUE(horizon.getReverseHostMappings() == witness.getReverseHostMappings());
+    }
+}
+
 }  // namespace
 }  // namespace repl
 }  // namespace mongo

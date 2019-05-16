@@ -129,10 +129,6 @@ SplitHorizon::ForwardMapping computeForwardMappings(
                               "\" is reserved for internal mongodb usage");
             } else if (horizonName == "") {
                 uasserted(ErrorCodes::BadValue, "Horizons cannot have empty names");
-            } else if (horizonName.startsWith("__")) {
-                warning()
-                    << "Warning: Horizon name \"" << horizonName
-                    << "\" is reserved, and may acquire special semantics in future versions.";
             }
 
             return {horizonName.toString(), HostAndPort{horizonObj.valueStringData()}};

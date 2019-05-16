@@ -65,8 +65,7 @@ public:
         boost::optional<std::string> sniName;
 
         Parameters() = default;
-		explicit
-        Parameters(boost::optional<std::string> initialSniName)
+        explicit Parameters(boost::optional<std::string> initialSniName)
             : sniName(std::move(initialSniName)) {}
     };
 
@@ -84,7 +83,7 @@ public:
     explicit SplitHorizon(const HostAndPort& host,
                           const boost::optional<BSONElement>& horizonsElement);
 
-	// This constructor is for testing only
+    // This constructor is for testing only
     explicit SplitHorizon(ForwardMapping forward);
 
     /**

@@ -1834,8 +1834,7 @@ StatusWith<SSLPeerInfo> SSLManagerWindows::parseAndValidatePeerCertificate(
             return swPeerCertificateRoles.getStatus();
         }
 
-        return SSLPeerInfo(
-            peerSubjectName, sniName, std::move(swPeerCertificateRoles.getValue()));
+        return SSLPeerInfo(peerSubjectName, sniName, std::move(swPeerCertificateRoles.getValue()));
     } else {
         return SSLPeerInfo(peerSubjectName);
     }

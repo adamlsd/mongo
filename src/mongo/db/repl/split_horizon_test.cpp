@@ -172,6 +172,14 @@ TEST(SplitHorizonTesting, basicConstruction) {
          {},
          {}},
 
+        // Three horizons with no conflicts
+        {{{{"extraHorizon", "example.com:42"},
+           {"extraHorizon2", "extra.example.com:42"},
+           {"extraHorizon3", "extra3.example.com" + altPort}}},
+         ErrorCodes::OK,
+         {},
+         {}},
+
         // Two horizons, with the same host and port
         {{{{"horizon1", "same.example.com:42"}, {"horizon2", "same.example.com:42"}}},
          ErrorCodes::BadValue,

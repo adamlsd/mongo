@@ -143,9 +143,21 @@ boost::optional<std::vector<OplogEntry>> SessionUpdateTracker::updateSession(
     if (!isTransactionEntry(entry)) {
         return _updateOrFlush(entry);
     }
-    auto txnTableUpdate = _createTransactionTableUpdateFromTransactionOp(entry);
-    return (txnTableUpdate) ? boost::optional<std::vector<OplogEntry>>({*txnTableUpdate})
-                            : boost::none;
+
+    // If we generate an update from a multi-statement transaction operation, we must clear (then
+    // replace) a possibly queued transaction table update for a retryable write on this session.
+    // It is okay to clear the transaction table update because retryable writes only care about
+    // the final state of the transaction table entry for a given session, not the full history
+    // of updates for the session. By contrast, we care about each transaction table update for
+    // multi-statement transactions -- we must maintain the timestamps and transaction states for
+    // each entry originating from a multi-statement transaction. For this reason, we cannot defer
+    // entries originating from multi-statement transactions.
+    if (auto txnTableUpdate = _createTransactionTableUpdateFromTransactionOp(entry)) {
+        _sessionsToUpdate.erase(*entry.getOperationSessionInfo().getSessionId());
+        return boost::optional<std::vector<OplogEntry>>({*txnTableUpdate});
+    }
+
+    return boost::none;
 }
 
 void SessionUpdateTracker::_updateSessionInfo(const OplogEntry& entry) {
@@ -249,7 +261,7 @@ boost::optional<OplogEntry> SessionUpdateTracker::_createTransactionTableUpdateF
     const repl::OplogEntry& entry) {
     auto sessionInfo = entry.getOperationSessionInfo();
 
-    // We only update the transaction table on the first inTxn operation.
+    // We only update the transaction table on the first partialTxn operation.
     if (entry.isPartialTransaction() && !entry.getPrevWriteOpTimeInTransaction()->isNull()) {
         return boost::none;
     }
@@ -277,9 +289,24 @@ boost::optional<OplogEntry> SessionUpdateTracker::_createTransactionTableUpdateF
         }
         switch (entry.getCommandType()) {
             case repl::OplogEntry::CommandType::kApplyOps:
-                if (entry.shouldPrepare()) {
+                // The single applyOps transaction oplog format will have a 'prepare' boolean
+                // flag at the root level of the oplog entry. The multi-oplog-entry format
+                // only has the flag in the applyOps object.
+                // TODO (SERVER-39809): Remove this check once we remove the old applyOps
+                // format.
+                if (entry.getPrepare() && *entry.getPrepare()) {
                     newTxnRecord.setState(DurableTxnStateEnum::kPrepared);
                     newTxnRecord.setStartOpTime(entry.getOpTime());
+                } else if (entry.shouldPrepare()) {
+                    newTxnRecord.setState(DurableTxnStateEnum::kPrepared);
+                    if (entry.getPrevWriteOpTimeInTransaction()->isNull()) {
+                        // The prepare oplog entry is the first operation of the transaction.
+                        newTxnRecord.setStartOpTime(entry.getOpTime());
+                    } else {
+                        // Update the transaction record using $set to avoid overwriting the
+                        // startOpTime.
+                        return BSON("$set" << newTxnRecord.toBSON());
+                    }
                 } else {
                     newTxnRecord.setState(DurableTxnStateEnum::kCommitted);
                 }

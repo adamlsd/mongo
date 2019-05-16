@@ -12,7 +12,7 @@ from mock import patch, mock_open, call, Mock, MagicMock
 
 from buildscripts import evergreen_generate_resmoke_tasks as grt
 from buildscripts.evergreen_generate_resmoke_tasks import render_suite, render_misc_suite, \
-    prepare_directory_for_suite
+    prepare_directory_for_suite, remove_gen_suffix
 
 # pylint: disable=missing-docstring,invalid-name,unused-argument,no-self-use,protected-access
 
@@ -24,6 +24,17 @@ NS = "buildscripts.evergreen_generate_resmoke_tasks"
 def ns(relative_name):  # pylint: disable-invalid-name
     """Return a full name from a name relative to the test module"s name space."""
     return NS + "." + relative_name
+
+
+class TestHelperMethods(unittest.TestCase):
+    def test_removes_gen_suffix(self):
+        input_task_name = "sharding_auth_auditg_gen"
+        self.assertEqual("sharding_auth_auditg", remove_gen_suffix(input_task_name))
+
+    def test_doesnt_remove_non_gen_suffix(self):
+        input_task_name = "sharded_multi_stmt_txn_jscore_passthroug"
+        self.assertEqual("sharded_multi_stmt_txn_jscore_passthroug",
+                         remove_gen_suffix(input_task_name))
 
 
 class TestTestStats(unittest.TestCase):
@@ -54,6 +65,17 @@ class TestTestStats(unittest.TestCase):
             ("dir/test3.js", 42.5),
             ("dir/test2.js", 30),
             ("dir/test1.js", 20),
+        ]
+        self.assertEqual(expected_runtimes, test_stats.get_tests_runtimes())
+
+    def test_zero_runs(self):
+        evg_results = [
+            self._make_evg_result("dir/test1.js", 0, 0),
+            self._make_evg_result("dir/test1.js", 0, 0),
+        ]
+        test_stats = grt.TestStats(evg_results)
+        expected_runtimes = [
+            ("dir/test1.js", 0),
         ]
         self.assertEqual(expected_runtimes, test_stats.get_tests_runtimes())
 

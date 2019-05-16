@@ -58,8 +58,6 @@
 #include "mongo/db/retryable_writes_stats.h"
 #include "mongo/db/server_recovery.h"
 #include "mongo/db/server_transactions_metrics.h"
-#include "mongo/db/session.h"
-#include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/transaction_history_iterator.h"
 #include "mongo/db/transaction_participant_gen.h"
@@ -291,6 +289,9 @@ MONGO_FAIL_POINT_DEFINE(onPrimaryTransactionalWrite);
 
 const BSONObj TransactionParticipant::kDeadEndSentinel(BSON("$incompleteOplogHistory" << 1));
 
+TransactionParticipant::TransactionParticipant() = default;
+
+TransactionParticipant::~TransactionParticipant() = default;
 
 TransactionParticipant::Observer::Observer(const ObservableSession& osession)
     : Observer(&getTransactionParticipant(osession.get())) {}
@@ -307,8 +308,7 @@ TransactionParticipant::Participant::Participant(const SessionToKill& session)
     : Observer(&getTransactionParticipant(session.get())) {}
 
 void TransactionParticipant::performNoopWrite(OperationContext* opCtx, StringData msg) {
-    repl::ReplicationCoordinator* replCoord =
-        repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+    const auto replCoord = repl::ReplicationCoordinator::get(opCtx);
 
     // The locker must not have a max lock timeout when this noop write is performed, since if it
     // threw LockTimeout, this would be treated as a TransientTransactionError, which would indicate
@@ -1062,9 +1062,10 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
                 ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
             oplogSlotReserver.emplace(opCtx);
         } else {
+            // Even if the prepared transaction contained no statements, we always reserve at least
+            // 1 oplog slot for the prepare oplog entry.
             const auto numSlotsToReserve = retrieveCompletedTransactionOperations(opCtx).size();
-            // Reserve an extra slot here for the prepare oplog entry.
-            oplogSlotReserver.emplace(opCtx, numSlotsToReserve + 1);
+            oplogSlotReserver.emplace(opCtx, std::max(1, static_cast<int>(numSlotsToReserve)));
             invariant(oplogSlotReserver->getSlots().size() >= 1);
         }
         prepareOplogSlot = oplogSlotReserver->getLastSlot();
@@ -1180,6 +1181,21 @@ void TransactionParticipant::Participant::commitUnpreparedTransaction(OperationC
     auto txnOps = retrieveCompletedTransactionOperations(opCtx);
     auto opObserver = opCtx->getServiceContext()->getOpObserver();
     invariant(opObserver);
+
+    auto abortGuard = makeGuard([&] {
+        if (gUseMultipleOplogEntryFormatForTransactions &&
+            serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
+            // We should already be holding the RSTL if we have performed a read or write
+            // as part of this unprepared transaction.
+            invariant(opCtx->lockState()->isRSTLLocked());
+            opCtx->runWithoutInterruptionExceptAtGlobalShutdown([&] {
+                _abortActiveTransaction(
+                    opCtx, TransactionState::kInProgress, true /* writeOplog */);
+            });
+        }
+    });
+
     opObserver->onUnpreparedTransactionCommit(opCtx, txnOps);
 
     auto wc = opCtx->getWriteConcern();
@@ -1193,6 +1209,8 @@ void TransactionParticipant::Participant::commitUnpreparedTransaction(OperationC
         // before this point in the function, entry point will abort the transaction.
         o(lk).txnState.transitionTo(TransactionState::kCommittingWithoutPrepare);
     }
+
+    abortGuard.dismiss();
 
     try {
         // Once entering "committing without prepare" we cannot throw an exception.
@@ -1383,7 +1401,9 @@ void TransactionParticipant::Participant::abortActiveTransaction(OperationContex
                 replCoord->canAcceptWritesForDatabase(opCtx, "admin"));
     }
 
-    _abortActiveTransaction(opCtx, TransactionState::kInProgress | TransactionState::kPrepared);
+    _abortActiveTransaction(opCtx,
+                            TransactionState::kInProgress | TransactionState::kPrepared,
+                            o().txnState.isPrepared());
 }
 
 void TransactionParticipant::Participant::abortActiveUnpreparedOrStashPreparedTransaction(
@@ -1400,7 +1420,7 @@ void TransactionParticipant::Participant::abortActiveUnpreparedOrStashPreparedTr
         return;
     }
 
-    _abortActiveTransaction(opCtx, TransactionState::kInProgress);
+    _abortActiveTransaction(opCtx, TransactionState::kInProgress, false /* writeOplog */);
 } catch (...) {
     // It is illegal for this to throw so we catch and log this here for diagnosability.
     severe() << "Caught exception during transaction " << opCtx->getTxnNumber()
@@ -1409,8 +1429,12 @@ void TransactionParticipant::Participant::abortActiveUnpreparedOrStashPreparedTr
     std::terminate();
 }
 
+void TransactionParticipant::Participant::abortTransactionForStepUp(OperationContext* opCtx) {
+    _abortActiveTransaction(opCtx, TransactionState::kInProgress, true);
+}
+
 void TransactionParticipant::Participant::_abortActiveTransaction(
-    OperationContext* opCtx, TransactionState::StateSet expectedStates) {
+    OperationContext* opCtx, TransactionState::StateSet expectedStates, bool writeOplog) {
     invariant(!o().txnResourceStash);
     invariant(!o().txnState.isCommittingWithPrepare());
 
@@ -1419,14 +1443,13 @@ void TransactionParticipant::Participant::_abortActiveTransaction(
         o(lk).transactionMetricsObserver.onTransactionOperation(
             opCtx, CurOp::get(opCtx)->debug().additiveMetrics, o().txnState.isPrepared());
     }
-
     // We reserve an oplog slot before aborting the transaction so that no writes that are causally
     // related to the transaction abort enter the oplog at a timestamp earlier than the abort oplog
     // entry. On secondaries, we generate a fake empty oplog slot, since it's not used by the
     // OpObserver.
     boost::optional<OplogSlotReserver> oplogSlotReserver;
     boost::optional<OplogSlot> abortOplogSlot;
-    if (o().txnState.isPrepared() && opCtx->writesAreReplicated()) {
+    if (opCtx->writesAreReplicated() && writeOplog) {
         oplogSlotReserver.emplace(opCtx);
         abortOplogSlot = oplogSlotReserver->getLastSlot();
     }
@@ -2077,18 +2100,7 @@ UpdateRequest TransactionParticipant::Participant::_makeUpdateRequest(
         newTxnRecord.setLastWriteOpTime(newLastWriteOpTime);
         newTxnRecord.setLastWriteDate(newLastWriteDate);
         newTxnRecord.setState(newState);
-        if (gUseMultipleOplogEntryFormatForTransactions &&
-            serverGlobalParams.featureCompatibility.getVersion() ==
-                ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42 &&
-            startOpTime) {
-            // The startOpTime should only be set when transitioning the txn to in-progress or
-            // prepared.
-            invariant(newState == DurableTxnStateEnum::kInProgress ||
-                      newState == DurableTxnStateEnum::kPrepared);
-            newTxnRecord.setStartOpTime(*startOpTime);
-        } else if (newState == DurableTxnStateEnum::kPrepared) {
-            newTxnRecord.setStartOpTime(o().prepareOpTime);
-        }
+        newTxnRecord.setStartOpTime(startOpTime);
         return newTxnRecord.toBSON();
     }();
     updateRequest.setUpdateModification(updateBSON);

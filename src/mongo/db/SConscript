@@ -559,6 +559,17 @@ env.Library(
     ],
 )
 
+env.Library(
+    target='prepare_conflict_tracker',
+    source=[
+        'prepare_conflict_tracker.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/service_context',
+    ],
+)
+
 env.CppUnitTest(
     target= 'thread_client_test',
     source= 'thread_client_test.cpp',
@@ -927,6 +938,7 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/base",
+        '$BUILD_DIR/mongo/db/service_context',
     ],
 )
 
@@ -2076,9 +2088,10 @@ env.CppUnitTest(
         'auth/authmocks',
         'dbdirectclient',
         'logical_session_id',
-        'op_observer',
+        'op_observer_impl',
         'query_exec',
         'repl/mock_repl_coord_server_fixture',
+        'repl/oplog_interface_local',
         'repl/repl_coordinator_interface',
         'service_liaison_mock',
         'sessions_collection_mock',

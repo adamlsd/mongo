@@ -389,6 +389,7 @@ variables:
   - enterprise-rhel-62-64-bit-inmem
   - enterprise-rhel-62-64-bit-flow-control-off
   - enterprise-rhel-62-64-bit-majority-read-concern-off
+  - enterprise-rhel-62-64-bit-multi-txn-oplog-entries
   - enterprise-rhel-62-64-bit-required-inmem
   - enterprise-rhel-62-64-bit-required-majority-read-concern-off
   - enterprise-rhel-67-s390x
@@ -815,7 +816,7 @@ functions:
         set -o verbose
         if [ "${use_wt_develop|}" = "true" ]; then
         cd src/third_party
-        for wtdir in api dist examples ext lang src test tools ; do
+        for wtdir in dist examples ext lang src test tools ; do
           rm -rf wiredtiger/$wtdir
           mv wtdevelop/$wtdir wiredtiger/
         done
@@ -880,20 +881,19 @@ functions:
             EMBEDDED_RELEASE_VERSION="${version}"
         fi
 
-
         cd src/src/mongo/embedded/mongo_embedded/java
 
         # TODO: Clean this up later where we can remove duplication
-        if [ ${package_type|embedded-android} = "embedded-jar" ]; then
+        if [ "${package_type|embedded-android}" = "embedded-jar" ]; then
             tar zxvf ../../../../../../embedded-sdk-java-linux-x86-64.tgz
             mkdir -p jniLibs/linux-x86-64
-            cp ./mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION/lib/libmongo_embedded.so jniLibs/linux-x86-64
-            rm -rf ./mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION
+            cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.so jniLibs/linux-x86-64
+            rm -rf ./mongo-embedded-sdk-${version}
 
             tar zxvf ../../../../../../embedded-sdk-java-darwin.tgz
             mkdir -p jniLibs/darwin
-            cp ./mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION/lib/libmongo_embedded.dylib jniLibs/darwin
-            rm -rf ./mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION
+            cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.dylib jniLibs/darwin
+            rm -rf ./mongo-embedded-sdk-${version}
 
             ./gradlew clean :embedded-jar:build :embedded-jar:publishMavenPublicationToLocalRepository
 
@@ -903,8 +903,8 @@ functions:
             for arch in arm64-v8a armeabi-v7a x86_64 ; do
                 tar zxvf ../../../../../../embedded-sdk-android-$arch.tgz
                 mkdir -p jniLibs/$arch
-                cp ./mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION/lib/libmongo_embedded.so jniLibs/$arch
-                rm -rf ./mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION
+                cp ./mongo-embedded-sdk-${version}/lib/libmongo_embedded.so jniLibs/$arch
+                rm -rf ./mongo-embedded-sdk-${version}
             done
 
             ./gradlew clean :embedded-android:build
@@ -1480,7 +1480,7 @@ functions:
     - command: generate.tasks
       params:
         files:
-          - src/generated_resmoke_config/${task}.json
+          - src/generated_resmoke_config/*.json
 
   "run generated tests":
   - *retrieve_generated_test_configuration
@@ -2073,7 +2073,7 @@ functions:
         set -o errexit
         set -o verbose
 
-        bash src/mongo/db/modules/enterprise/jstests/watchdog/charybdefs_setup.sh
+        bash jstests/watchdog/charybdefs_setup.sh
 
   "cleanup environment":
     command: shell.exec
@@ -3941,6 +3941,8 @@ tasks:
     - func: "get buildnumber"
     - func: "set up credentials"
     - func: "setup android toolchain" # noop if ${setup_android_toolchain} is not "true"
+    - func: "set task expansion macros"
+    - func: "set up virtualenv"
     - func: "generate compile expansions"
     - func: "apply compile expansions"
     - command: s3.get
@@ -3972,9 +3974,16 @@ tasks:
           set -o errexit
           set -o verbose
 
+          MINOR_VER=$(echo "${version}" | awk -F. '{print $(NF-1)}')
+          if [ $(($MINOR_VER % 2)) != 0 ]; then
+            EMBEDDED_RELEASE_VERSION="${version}-SNAPSHOT"
+          else
+            EMBEDDED_RELEASE_VERSION="${version}"
+          fi
+
           if [ "${setup_android_toolchain|}" = "true" ]; then
             cd src/build
-            tar zcvf mongo-embedded-sdk-${version}.tgz mongo-embedded-sdk-${version}
+            tar zcvf mongo-embedded-sdk-${version}.tgz mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION
           fi
     - command: s3.put
       params:
@@ -4050,9 +4059,16 @@ tasks:
           set -o errexit
           set -o verbose
 
+          MINOR_VER=$(echo "${version}" | awk -F. '{print $(NF-1)}')
+          if [ $(($MINOR_VER % 2)) != 0 ]; then
+            EMBEDDED_RELEASE_VERSION="${version}-SNAPSHOT"
+          else
+            EMBEDDED_RELEASE_VERSION="${version}"
+          fi
+
           if [ "${setup_android_toolchain|}" = "true" ]; then
             cd src/build
-            tar zcvf mongo-embedded-sdk-${version}.tgz mongo-embedded-sdk-${version}
+            tar zcvf mongo-embedded-sdk-${version}.tgz mongo-embedded-sdk-$EMBEDDED_RELEASE_VERSION
           fi
     - command: s3.put
       params:
@@ -5370,7 +5386,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: auth
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 4
 
@@ -5378,7 +5393,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: auth_audit
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 4
 
@@ -5812,7 +5826,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharded_causally_consistent_jscore_txns_passthrough
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
 
@@ -5820,7 +5833,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharded_causally_consistent_jscore_txns_passthrough_without_snapshot
       suite: sharded_causally_consistent_jscore_txns_passthrough
       resmoke_args: --storageEngine=wiredTiger --excludeWithAnyTags=uses_snapshot_read_concern
       fallback_num_sub_suites: 1
@@ -5849,7 +5861,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: replica_sets_jscore_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -5881,7 +5892,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -5989,7 +5999,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: noPassthrough
       suite: no_passthrough
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 11
@@ -5998,7 +6007,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: noPassthroughWithMongod
       suite: no_passthrough_with_mongod
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 5
@@ -6015,7 +6023,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: slow1
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 4
       resmoke_jobs_max: 1
@@ -6065,7 +6072,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_jscore_passthrough_wire_ops
       suite: sharding_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger --shellReadMode=legacy --shellWriteMode=compatibility --excludeWithAnyTags=requires_find_command
@@ -6087,7 +6093,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: multi_shard_multi_stmt_txn_jscore_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6100,7 +6105,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 4
@@ -6111,7 +6115,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: multi_stmt_txn_jscore_passthrough_with_migration
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6123,7 +6126,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: multi_shard_multi_stmt_txn_kill_primary_jscore_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6135,7 +6137,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6147,7 +6148,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: parallel
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -6267,7 +6267,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: concurrency_sharded_causal_consistency
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 3
       use_large_distro: "true"
@@ -6379,7 +6378,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: read_concern_majority_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6401,7 +6399,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: secondary_reads_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6419,7 +6416,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: replica_sets_ese
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6428,7 +6424,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: replica_sets_ese_gcm
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6437,7 +6432,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: replica_sets_auth
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6446,7 +6440,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: replica_sets_multi_oplog_txns
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
 
@@ -6462,7 +6455,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 15
@@ -6471,7 +6463,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_csrs_continuous_config_stepdown
       suite: sharding_continuous_config_stepdown
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6481,7 +6472,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_ese
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 21
@@ -6490,7 +6480,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_ese_gcm
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 21
@@ -6499,7 +6488,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_op_query
       suite: sharding
       use_large_distro: "true"
       resmoke_args: --shellReadMode=legacy --storageEngine=wiredTiger --excludeWithAnyTags=requires_find_command
@@ -6509,7 +6497,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_auth
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 20
@@ -6520,7 +6507,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_auth_audit
       depends_on: sharding_auth
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6530,7 +6516,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharding_last_stable_mongos_and_mixed_shards
       use_large_distro: "true"
       use_multiversion: /data/multiversion
       resmoke_args: ""
@@ -6550,7 +6535,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: ssl
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 5
 
@@ -6558,7 +6542,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sslSpecial
       suite: ssl_special
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 3
@@ -6611,7 +6594,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: causally_consistent_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 6
@@ -6622,7 +6604,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: causally_consistent_jscore_passthrough_auth
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6633,7 +6614,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: sharded_causally_consistent_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 6
@@ -6644,7 +6624,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: retryable_writes_jscore_passthrough
       depends_on: jsCore
       use_large_distro: "true"
       resmoke_args: --storageEngine=wiredTiger
@@ -6656,7 +6635,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_replication_default_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6667,7 +6645,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_replication_100ms_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 8
@@ -6678,7 +6655,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_replication_1sec_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6689,7 +6665,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_replication_10sec_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 7
@@ -6700,7 +6675,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_sharding_default_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -6711,7 +6685,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_sharding_100ms_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -6722,7 +6695,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_sharding_1sec_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 3
@@ -6733,7 +6705,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_sharding_10sec_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -6744,7 +6715,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_standalone_default_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -6755,7 +6725,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_standalone_100ms_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -6766,7 +6735,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_standalone_1sec_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 3
@@ -6777,7 +6745,6 @@ tasks:
   commands:
   - func: "generate resmoke tasks"
     vars:
-      task: logical_session_cache_standalone_10sec_refresh_jscore_passthrough
       depends_on: jsCore
       resmoke_args: --storageEngine=wiredTiger
       fallback_num_sub_suites: 1
@@ -8138,6 +8105,7 @@ buildvariants:
   - name: stitch_support_lib_build_and_test
   - name: stitch_support_lib_build_and_archive
   - name: tool
+  - name: watchdog_wiredtiger
   - name: package
     distros:
     - ubuntu1604-packer
@@ -8316,6 +8284,7 @@ buildvariants:
   - name: ssl_gen
   - name: sslSpecial_gen
   - name: tool
+  - name: watchdog_wiredtiger
   - name: package
     distros:
     - ubuntu1604-packer
@@ -10897,6 +10866,106 @@ buildvariants:
   - name: publish_packages
   - name: push
 
+- name: enterprise-rhel-62-64-bit-multi-txn-oplog-entries
+  display_name: "Enterprise RHEL 6.2 (Multiple oplog entries transaction format)"
+  modules:
+  - enterprise
+  run_on:
+  - rhel62-small
+  expansions:
+    compile_flags: >-
+      --ssl
+      MONGO_DISTMOD=rhel62
+      -j$(grep -c ^processor /proc/cpuinfo)
+      --release
+      --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
+    multiversion_platform: rhel62
+    multiversion_edition: enterprise
+    repo_edition: enterprise
+    scons_cache_scope: shared
+    tooltags: "ssl sasl gssapi"
+    build_mongoreplay: true
+    large_distro_name: rhel62-large
+    test_flags: >-
+        --mongodSetParameters="{useMultipleOplogEntryFormatForTransactions: true, maxNumberOfTransactionOperationsInSingleOplogEntry: 2}"
+        --excludeWithAnyTags=exclude_from_large_txns,exclude_from_large_txns_due_to_stmtids,exclude_from_large_txns_due_to_change_streams,exclude_from_large_txns_due_to_fast_count 
+  tasks:
+  - name: compile_TG
+    distros:
+    - rhel62-large
+  - name: auth_gen
+  - name: auth_audit_gen
+  - name: causally_consistent_jscore_txns_passthrough
+  - name: change_streams
+  - name: change_streams_whole_db_passthrough
+  - name: change_streams_whole_cluster_passthrough
+  - name: concurrency_replication
+  - name: concurrency_replication_multi_stmt_txn
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
+  - name: concurrency_sharded_local_read_write_multi_stmt_txn
+  - name: concurrency_sharded_local_read_write_multi_stmt_txn_with_balancer
+  - name: concurrency_sharded_multi_stmt_txn
+  - name: concurrency_sharded_multi_stmt_txn_with_balancer
+  - name: concurrency_sharded_multi_stmt_txn_with_stepdowns
+  - name: concurrency_sharded_with_stepdowns
+  - name: concurrency_sharded_with_stepdowns_and_balancer
+  - name: jsCore
+  - name: jsCore_txns
+  - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough_gen
+  - name: logical_session_cache_replication_default_refresh_jscore_passthrough_gen
+  - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_kill_primary_jscore_passthrough_gen
+  - name: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough_gen
+  - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
+  - name: multiversion_auth
+  - name: multiversion
+  - name: noPassthrough_gen
+  - name: replica_sets
+    distros:
+    - rhel62-large
+  - name: replica_sets_auth_gen
+  - name: replica_sets_ese_gen
+  - name: replica_sets_ese_gcm_gen
+  - name: replica_sets_jscore_passthrough
+  - name: replica_sets_initsync_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_initsync_static_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_kill_secondaries_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
+    distros:
+    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
+    distros:
+    - rhel62-large
+  - name: sharding_gen
+  - name: sharding_auth_gen
+  - name: sharding_auth_audit_gen
+  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
+  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
+  - name: sharding_ese_gen
+  - name: sharding_ese_gcm_gen
+  - name: sharding_csrs_continuous_config_stepdown_gen
+  - name: sharded_jscore_txns
+  - name: sharded_jscore_txns_sharded_collections
+  - name: sharded_multi_stmt_txn_jscore_passthrough
+    distros:
+    - rhel62-large
+
 - name: enterprise-rhel-62-64-bit-majority-read-concern-off
   display_name: "Enterprise RHEL 6.2 (majority read concern off)"
   modules:
@@ -11109,6 +11178,7 @@ buildvariants:
   expansions: &enterprise-rhel-62-64-bit-flow-control-off
     test_flags: >-
       --flowControl=off
+      --excludeWithAnyTags=requires_flow_control
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
       --ssl
@@ -14005,6 +14075,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: jsCore_txns_multi_oplog_entries
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough_gen
@@ -14039,6 +14110,8 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: replica_sets_initsync_jscore_passthrough
   - name: replica_sets_initsync_static_jscore_passthrough
+  - name: replica_sets_multi_oplog_txns_gen
+  - name: replica_sets_multi_oplog_txns_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
   - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
@@ -14078,6 +14151,8 @@ buildvariants:
   - name: tool
   - name: update_fuzzer_gen
   - name: update_fuzzer_replication_gen
+  - name: watchdog_inmemory
+  - name: watchdog_wiredtiger
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough_gen
 
@@ -14222,6 +14297,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: jsCore_txns_multi_oplog_entries
   - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
@@ -14247,6 +14323,8 @@ buildvariants:
   - name: replica_sets_jscore_passthrough
   - name: replica_sets_initsync_jscore_passthrough
   - name: replica_sets_initsync_static_jscore_passthrough
+  - name: replica_sets_multi_oplog_txns_gen
+  - name: replica_sets_multi_oplog_txns_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_jscore_passthrough
   - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
   - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
@@ -14392,6 +14470,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: jsCore_txns_multi_oplog_entries
   - name: causally_consistent_jscore_txns_passthrough
   - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
   - name: logical_session_cache_sharding_1sec_refresh_jscore_passthrough_gen
@@ -14416,6 +14495,7 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
   - name: replica_sets_multi_oplog_txns_gen
+  - name: replica_sets_multi_oplog_txns_jscore_passthrough
   - name: sasl
   - name: sharded_causally_consistent_jscore_txns_passthrough_gen
   - name: sharded_collections_causally_consistent_jscore_txns_passthrough

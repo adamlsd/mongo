@@ -30,7 +30,6 @@
 #pragma once
 
 #include <boost/optional.hpp>
-#include <map>
 
 #include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/logical_session_id.h"
@@ -90,7 +89,7 @@ public:
         ReadOnly readOnly{ReadOnly::kUnset};
 
         // The highest statement id of the request during which this participant was created.
-        const StmtId stmtIdCreatedAt{kUninitializedStmtId};
+        const StmtId stmtIdCreatedAt;
 
         // Returns the shared transaction options this participant was created with
         const SharedTransactionOptions sharedOptions;
@@ -127,11 +126,15 @@ public:
         bool canChange(StmtId currentStmtId) const;
 
     private:
-        StmtId _stmtIdSelectedAt = kUninitializedStmtId;
+        boost::optional<StmtId> _stmtIdSelectedAt;
         LogicalTime _atClusterTime;
     };
 
     TransactionRouter();
+    TransactionRouter(const TransactionRouter&) = delete;
+    TransactionRouter& operator=(const TransactionRouter&) = delete;
+    TransactionRouter(TransactionRouter&&) = delete;
+    TransactionRouter& operator=(TransactionRouter&&) = delete;
     ~TransactionRouter();
 
     /**
@@ -235,17 +238,23 @@ public:
     const boost::optional<ShardId>& getRecoveryShardId() const;
 
     /**
-     * Commits the transaction. For transactions that performed writes to multiple shards, this will
-     * hand off the participant list to the coordinator to do two-phase commit.
+     * Commits the transaction.
+     *
+     * For transactions that only did reads or only wrote to one shard, sends commit directly to the
+     * participants and returns the first error response or the last (success) response.
+     *
+     * For transactions that performed writes to multiple shards, hands off the participant list to
+     * the coordinator to do two-phase commit, and returns the coordinator's response.
      */
     BSONObj commitTransaction(OperationContext* opCtx,
                               const boost::optional<TxnRecoveryToken>& recoveryToken);
 
     /**
-     * Sends abort to all participants and returns the responses from all shards.
+     * Sends abort to all participants.
+     *
+     * Returns the first error response or the last (success) response.
      */
-    std::vector<AsyncRequestsSender::Response> abortTransaction(OperationContext* opCtx,
-                                                                bool isImplicit = false);
+    BSONObj abortTransaction(OperationContext* opCtx);
 
     /**
      * Sends abort to all shards in the current participant list. Will retry on retryable errors,
@@ -289,6 +298,13 @@ private:
 
     // Shortcut to obtain the id of the session under which this transaction router runs
     const LogicalSessionId& _sessionId() const;
+
+    /**
+     * Resets the router's state. Used when the router sees a new transaction for the first time.
+     * This is required because we don't create a new router object for each transaction, but
+     * instead reuse the same object across different transactions.
+     */
+    void _resetRouterState(const TxnNumber& txnNumber);
 
     /**
      * Retrieves the transaction's outcome from the shard specified in the recovery token.
@@ -375,11 +391,11 @@ private:
     // The statement id of the latest received command for this transaction. For batch writes, this
     // will be the highest stmtId contained in the batch. Incremented by one if new commands do not
     // contain statement ids.
-    StmtId _latestStmtId = kUninitializedStmtId;
+    StmtId _latestStmtId{kDefaultFirstStmtId};
 
     // The statement id of the command that began this transaction. Defaults to zero if no statement
     // id was included in the first command.
-    StmtId _firstStmtId = kUninitializedStmtId;
+    StmtId _firstStmtId{kDefaultFirstStmtId};
 };
 
 }  // namespace mongo

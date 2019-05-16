@@ -83,7 +83,7 @@ public:
     explicit SplitHorizon(const HostAndPort& host,
                           const boost::optional<BSONElement>& horizonsElement);
 
-    // This constructor is for testing only
+    // This constructor is for testing and internal use only
     explicit SplitHorizon(ForwardMapping forward);
 
     /**

@@ -58,27 +58,32 @@ static const std::string nonmatchingHostAndPort = nonmatchingHost + ":" + nonmat
 
 static const std::string altPort = ":666";
 
+using MappingType = std::map<std::string, std::string>;
+
+SplitHorizon::ForwardMapping populateForwardMap(const MappingType& mapping) {
+    SplitHorizon::ForwardMapping forwardMapping;
+    forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
+
+    using ForwardMappingValueType = decltype(forwardMapping)::value_type;
+    using ElementType = MappingType::value_type;
+    auto createForwardMapping = [](const ElementType& element) {
+        return ForwardMappingValueType{element.first, HostAndPort(element.second)};
+    };
+    std::transform(begin(mapping),
+                   end(mapping),
+                   inserter(forwardMapping, end(forwardMapping)),
+                   createForwardMapping);
+
+    return forwardMapping;
+}
+
 TEST(SplitHorizonTesting, determineHorizon) {
     struct Input {
         SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
         SplitHorizon::Parameters horizonParameters;
-        using MappingType = std::map<std::string, std::string>;
-
 
         Input(const MappingType& mapping, boost::optional<std::string> sniName)
-            : horizonParameters(std::move(sniName)) {
-            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
-
-            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
-            using ElementType = MappingType::value_type;
-            auto createForwardMapping = [](const ElementType& element) {
-                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
-            };
-            std::transform(begin(mapping),
-                           end(mapping),
-                           inserter(forwardMapping, end(forwardMapping)),
-                           createForwardMapping);
-        }
+            : forwardMapping(populateForwardMap(mapping)), horizonParameters(std::move(sniName)) {}
     };
 
     struct {
@@ -127,22 +132,8 @@ TEST(SplitHorizonTesting, determineHorizon) {
 TEST(SplitHorizonTesting, basicConstruction) {
     struct Input {
         SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
-        using MappingType = std::map<std::string, std::string>;
 
-
-        Input(const MappingType& mapping) {
-            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
-
-            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
-            using ElementType = MappingType::value_type;
-            auto createForwardMapping = [](const ElementType& element) {
-                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
-            };
-            std::transform(begin(mapping),
-                           end(mapping),
-                           inserter(forwardMapping, end(forwardMapping)),
-                           createForwardMapping);
-        }
+        Input(const MappingType& mapping) : forwardMapping(populateForwardMap(mapping)) {}
     };
 
     const struct {
@@ -379,22 +370,8 @@ TEST(SplitHorizonTesting, BSONConstruction) {
 TEST(SplitHorizonTesting, toBSON) {
     struct Input {
         SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
-        using MappingType = std::map<std::string, std::string>;
 
-
-        Input(const MappingType& mapping) {
-            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
-
-            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
-            using ElementType = MappingType::value_type;
-            auto createForwardMapping = [](const ElementType& element) {
-                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
-            };
-            std::transform(begin(mapping),
-                           end(mapping),
-                           inserter(forwardMapping, end(forwardMapping)),
-                           createForwardMapping);
-        }
+        Input(const MappingType& mapping) : forwardMapping(populateForwardMap(mapping)) {}
     };
 
     const Input tests[] = {
@@ -460,22 +437,8 @@ TEST(SplitHorizonTesting, toBSON) {
 TEST(SplitHorizonTesting, BSONRoundTrip) {
     struct Input {
         SplitHorizon::ForwardMapping forwardMapping;  // Will get "__default" added to it.
-        using MappingType = std::map<std::string, std::string>;
 
-
-        Input(const MappingType& mapping) {
-            forwardMapping.emplace(SplitHorizon::kDefaultHorizon, defaultHostAndPort);
-
-            using ForwardMappingValueType = decltype(forwardMapping)::value_type;
-            using ElementType = MappingType::value_type;
-            auto createForwardMapping = [](const ElementType& element) {
-                return ForwardMappingValueType{element.first, HostAndPort(element.second)};
-            };
-            std::transform(begin(mapping),
-                           end(mapping),
-                           inserter(forwardMapping, end(forwardMapping)),
-                           createForwardMapping);
-        }
+        Input(const MappingType& mapping) : forwardMapping(populateForwardMap(mapping)) {}
     };
 
     const Input tests[] = {
@@ -501,7 +464,6 @@ TEST(SplitHorizonTesting, BSONRoundTrip) {
             << "Test #" << testNumber << " Failed on bson round trip with reverse map";
     }
 }
-
 }  // namespace
 }  // namespace repl
 }  // namespace mongo

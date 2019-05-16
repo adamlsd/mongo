@@ -109,15 +109,6 @@ TEST(SplitHorizonTesting, determineHorizon) {
         ASSERT_EQUALS(witness, expected);
     }
 
-    const Input failingCases[] = {};
-
-    for (const auto& input : failingCases) {
-        SplitHorizon horizon(input.forwardMapping);
-
-        ASSERT_THROWS(horizon.determineHorizon(input.horizonParameters),
-                      ExceptionFor<ErrorCodes::HostNotFound>);
-    }
-
     const Input failingCtorCases[] = {
         // Matching SNI, different port, collision -> fails
         {{{"targetHorizon", matchingHost + altPort}, {"badHorizon", matchingHostAndPort}},

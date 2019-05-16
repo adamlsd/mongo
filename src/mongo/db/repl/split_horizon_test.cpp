@@ -119,7 +119,7 @@ TEST(SplitHorizonTesting, determineHorizon) {
          defaultHost},
     };
 
-    for (const auto& input : failingCases) {
+    for (const auto& input : failingCtorCases) {
         ASSERT_THROWS(SplitHorizon(input.forwardMapping), ExceptionFor<ErrorCodes::BadValue>);
     }
 }
@@ -410,7 +410,7 @@ TEST(SplitHorizonTesting, toBSON) {
         const auto& input = test;
         const auto& expectedKeys = [&] {
             auto rv = input.forwardMapping;
-            rv.erase("__default");
+            rv.erase(SplitHorizon::kDefaultHorizon);
             return rv;
         }();
 

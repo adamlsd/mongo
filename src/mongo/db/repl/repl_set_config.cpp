@@ -441,15 +441,18 @@ Status ReplSetConfig::validate() const {
     size_t voterCount = 0;
     size_t arbiterCount = 0;
     size_t electableCount = 0;
-    const auto expectedHorizonNameMapping = [&] {
+
+    auto extractHorizonMembers = [](const auto& replMember) {
         std::vector<std::string> rv;
-        std::transform(begin(_members[0].getHorizonMappings()),
-                       end(_members[0].getHorizonMappings()),
+        std::transform(begin(replMember.getHorizonMappings()),
+                       end(replMember.getHorizonMappings()),
                        back_inserter(rv),
                        [](auto&& mapping) { return mapping.first; });
         std::sort(begin(rv), end(rv));
         return rv;
-    }();
+    };
+
+    const auto expectedHorizonNameMapping = extractHorizonMembers(_members[0]);
 
     stdx::unordered_set<std::string> nonUniversalHorizons;
     std::map<HostAndPort, int> horizonHostNameCounts;
@@ -463,15 +466,7 @@ Status ReplSetConfig::validate() const {
         //   * Check that all members have the same set of horizon names
         //   * Check that no hostname:port appears more than once for any member
         //   * Check that all hostname:port endpoints are unique for all members
-        const auto seenHorizonNameMapping = [&]() {
-            std::vector<std::string> rv;
-            std::transform(begin(memberI.getHorizonMappings()),
-                           end(memberI.getHorizonMappings()),
-                           back_inserter(rv),
-                           [](auto&& mapping) { return mapping.first; });
-            std::sort(begin(rv), end(rv));
-            return rv;
-        }();
+        const auto seenHorizonNameMapping = extractHorizonMembers(memberI);
 
         if (expectedHorizonNameMapping != seenHorizonNameMapping) {
             // Collect a list of horizons only seen on one side of the pair of horizon maps

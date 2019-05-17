@@ -1999,8 +1999,7 @@ TEST(ReplSetConfig, HorizonConsistency) {
                                                                         << "d.host4:44")))
                                     << "writeConcernMajorityJournalDefault"
                                     << false));
-    std::cerr << status.reason();
-    ASSERT_OK(status);
+    ASSERT_OK(status) << " failing status was: " << status.reason();
 
     status = config.validate();
     ASSERT_NOT_OK(status);

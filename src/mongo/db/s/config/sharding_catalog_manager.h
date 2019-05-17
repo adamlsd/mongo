@@ -346,7 +346,7 @@ public:
     /**
      * Runs the setFeatureCompatibilityVersion command on all shards.
      */
-    Status setFeatureCompatibilityVersionOnShards(OperationContext* opCtx, const BSONObj& cmdObj);
+    void setFeatureCompatibilityVersionOnShards(OperationContext* opCtx, const BSONObj& cmdObj);
 
     //
     // For Diagnostics

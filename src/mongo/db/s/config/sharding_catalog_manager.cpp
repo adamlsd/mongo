@@ -257,7 +257,7 @@ void ShardingCatalogManager::_initConfigIndexes(OperationContext* opCtx) {
         "couldn't create ns_1_tag_1 index on config db");
 }
 
-Status ShardingCatalogManager::setFeatureCompatibilityVersionOnShards(OperationContext* opCtx,
+void ShardingCatalogManager::setFeatureCompatibilityVersionOnShards(OperationContext* opCtx,
                                                                       const BSONObj& cmdObj) {
 
     // No shards should be added until we have forwarded featureCompatibilityVersion to all shards.
@@ -277,24 +277,15 @@ Status ShardingCatalogManager::setFeatureCompatibilityVersionOnShards(OperationC
         }
         const auto shard = shardStatus.getValue();
 
-        auto response = shard->runCommandWithFixedRetryAttempts(
+        auto response = uassertStatusOK(shard->runCommandWithFixedRetryAttempts(
             opCtx,
             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
             "admin",
             cmdObj,
-            Shard::RetryPolicy::kIdempotent);
-        if (!response.isOK()) {
-            return response.getStatus();
-        }
-        if (!response.getValue().commandStatus.isOK()) {
-            return response.getValue().commandStatus;
-        }
-        if (!response.getValue().writeConcernStatus.isOK()) {
-            return response.getValue().writeConcernStatus;
-        }
+            Shard::RetryPolicy::kIdempotent));
+        uassertStatusOK( response.commandStatus );
+        uassertStatusOK( response.writeConcernStatus );
     }
-
-    return Status::OK();
 }
 
 Lock::ExclusiveLock ShardingCatalogManager::lockZoneMutex(OperationContext* opCtx) {

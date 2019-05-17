@@ -472,7 +472,7 @@ StatusWith<ShardType> ShardingCatalogManager::_validateHostAsShard(
     return shard;
 }
 
-Status ShardingCatalogManager::_dropSessionsCollection(
+void ShardingCatalogManager::_dropSessionsCollection(
     OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter) {
 
     BSONObjBuilder builder;
@@ -482,18 +482,13 @@ Status ShardingCatalogManager::_dropSessionsCollection(
         wcBuilder.append("w", "majority");
     }
 
-    auto swCommandResponse = _runCommandForAddShard(
-        opCtx, targeter.get(), NamespaceString::kLogicalSessionsNamespace.db(), builder.done());
-    if (!swCommandResponse.isOK()) {
-        return swCommandResponse.getStatus();
-    }
+    auto commandResponse = uassertStatusOK(_runCommandForAddShard(
+        opCtx, targeter.get(), NamespaceString::kLogicalSessionsNamespace.db(), builder.done()));
 
-    auto cmdStatus = std::move(swCommandResponse.getValue().commandStatus);
-    if (!cmdStatus.isOK() && cmdStatus.code() != ErrorCodes::NamespaceNotFound) {
-        return cmdStatus;
+    try {
+        uassertStatusOK(commandResponse.commandStatus);
+    } catch (const ExceptionFor<ErrorCodes::NamespaceNotFound>&) {
     }
-
-    return Status::OK();
 }
 
 StatusWith<std::vector<std::string>> ShardingCatalogManager::_getDBNamesListFromShard(
@@ -624,10 +619,10 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     }
 
     // Check that the shard candidate does not have a local config.system.sessions collection
-    auto res = _dropSessionsCollection(opCtx, targeter);
-
-    if (!res.isOK()) {
-        return res.withContext(
+    try {
+        _dropSessionsCollection(opCtx, targeter);
+    } catch (const DBException& ex) {
+        return ex.toStatus().withContext(
             "can't add shard with a local copy of config.system.sessions, please drop this "
             "collection from the shard manually and try again.");
     }

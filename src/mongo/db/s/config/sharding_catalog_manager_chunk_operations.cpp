@@ -272,7 +272,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
                                                 const OID& requestEpoch,
                                                 const ChunkRange& range,
                                                 const std::vector<BSONObj>& splitPoints,
-                                                const std::string& shardName) {
+                                                const std::string& shardName) try {
     // Take _kChunkOpLock in exclusive mode to prevent concurrent chunk splits, merges, and
     // migrations
     // TODO(SERVER-25359): Replace with a collection-specific lock map to allow splits/merges/
@@ -317,9 +317,6 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
 
     // Find the chunk history.
     const auto origChunk = _findChunkOnConfig(opCtx, nss, range.getMin());
-    if (!origChunk.isOK()) {
-        return origChunk.getStatus();
-    }
 
     std::vector<ChunkType> newChunks;
 
@@ -390,7 +387,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
         n.append(ChunkType::max(), endKey);
         n.append(ChunkType::shard(), shardName);
 
-        origChunk.getValue().addHistoryToBSON(n);
+        origChunk.addHistoryToBSON(n);
 
         n.done();
 
@@ -476,6 +473,8 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
     }
 
     return Status::OK();
+} catch (const DBException& ex) {
+    return ex.toStatus();
 }
 
 Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
@@ -589,14 +588,13 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
     return Status::OK();
 }
 
-StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
-    OperationContext* opCtx,
-    const NamespaceString& nss,
-    const ChunkType& migratedChunk,
-    const OID& collectionEpoch,
-    const ShardId& fromShard,
-    const ShardId& toShard,
-    const boost::optional<Timestamp>& validAfter) {
+BSONObj ShardingCatalogManager::commitChunkMigration(OperationContext* opCtx,
+                                                     const NamespaceString& nss,
+                                                     const ChunkType& migratedChunk,
+                                                     const OID& collectionEpoch,
+                                                     const ShardId& fromShard,
+                                                     const ShardId& toShard,
+                                                     const boost::optional<Timestamp>& validAfter) {
 
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
@@ -613,21 +611,18 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     Lock::ExclusiveLock lk(opCtx->lockState(), _kChunkOpLock);
 
     if (!validAfter) {
-        return {ErrorCodes::IllegalOperation, "chunk operation requires validAfter timestamp"};
+        uasserted(ErrorCodes::IllegalOperation, "chunk operation requires validAfter timestamp");
     }
 
     // Must use local read concern because we will perform subsequent writes.
-    auto findResponse =
+    auto findResponse = uassertStatusOK(
         configShard->exhaustiveFindOnConfig(opCtx,
                                             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                                             repl::ReadConcernLevel::kLocalReadConcern,
                                             ChunkType::ConfigNS,
                                             BSON("ns" << nss.ns()),
                                             BSON(ChunkType::lastmod << -1),
-                                            1);
-    if (!findResponse.isOK()) {
-        return findResponse.getStatus();
-    }
+                                            1));
 
     if (MONGO_FAIL_POINT(migrationCommitVersionError)) {
         uassert(ErrorCodes::StaleEpoch,
@@ -635,51 +630,42 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
                 false);
     }
 
-    const auto chunksVector = std::move(findResponse.getValue().docs);
+    const auto chunksVector = std::move(findResponse.docs);
     if (chunksVector.empty()) {
-        return {ErrorCodes::IncompatibleShardingMetadata,
-                str::stream() << "Tried to find max chunk version for collection '" << nss.ns()
-                              << ", but found no chunks"};
+        uasserted(ErrorCodes::IncompatibleShardingMetadata,
+                  str::stream() << "Tried to find max chunk version for collection '" << nss.ns()
+                                << ", but found no chunks");
     }
 
-    const auto swChunk = ChunkType::fromConfigBSON(chunksVector.front());
-    if (!swChunk.isOK()) {
-        return swChunk.getStatus();
-    }
+    const auto chunk = uassertStatusOK(ChunkType::fromConfigBSON(chunksVector.front()));
 
-    const auto currentCollectionVersion = swChunk.getValue().getVersion();
+    const auto currentCollectionVersion = chunk.getVersion();
 
     // It is possible for a migration to end up running partly without the protection of the
     // distributed lock if the config primary stepped down since the start of the migration and
     // failed to recover the migration. Check that the collection has not been dropped and recreated
     // since the migration began, unbeknown to the shard when the command was sent.
     if (currentCollectionVersion.epoch() != collectionEpoch) {
-        return {ErrorCodes::StaleEpoch,
-                str::stream() << "The collection '" << nss.ns()
-                              << "' has been dropped and recreated since the migration began."
-                                 " The config server's collection version epoch is now '"
-                              << currentCollectionVersion.epoch().toString()
-                              << "', but the shard's is "
-                              << collectionEpoch.toString()
-                              << "'. Aborting migration commit for chunk ("
-                              << migratedChunk.getRange().toString()
-                              << ")."};
+        uasserted(ErrorCodes::StaleEpoch,
+                  str::stream() << "The collection '" << nss.ns()
+                                << "' has been dropped and recreated since the migration began."
+                                   " The config server's collection version epoch is now '"
+                                << currentCollectionVersion.epoch().toString()
+                                << "', but the shard's is "
+                                << collectionEpoch.toString()
+                                << "'. Aborting migration commit for chunk ("
+                                << migratedChunk.getRange().toString()
+                                << ").");
     }
 
     // Check that migratedChunk is where it should be, on fromShard.
-    auto migratedOnShard =
-        checkChunkIsOnShard(opCtx, nss, migratedChunk.getMin(), migratedChunk.getMax(), fromShard);
-    if (!migratedOnShard.isOK()) {
-        return migratedOnShard;
-    }
+     uassertStatusOK(
+        checkChunkIsOnShard(opCtx, nss, migratedChunk.getMin(), migratedChunk.getMax(), fromShard));
 
     auto controlChunk = getControlChunkForMigrate(opCtx, nss, migratedChunk, fromShard);
 
     // Find the chunk history.
     const auto origChunk = _findChunkOnConfig(opCtx, nss, migratedChunk.getMin());
-    if (!origChunk.isOK()) {
-        return origChunk.getStatus();
-    }
 
     // Generate the new versions of migratedChunk and controlChunk. Migrating chunk's minor version
     // will be 0.
@@ -689,7 +675,7 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
         currentCollectionVersion.majorVersion() + 1, 0, currentCollectionVersion.epoch()));
 
     // Copy the complete history.
-    auto newHistory = origChunk.getValue().getHistory();
+    auto newHistory = origChunk.getHistory();
     const int kHistorySecs = 10;
 
     invariant(validAfter);
@@ -704,13 +690,13 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     }
 
     if (!newHistory.empty() && newHistory.front().getValidAfter() >= validAfter.get()) {
-        return {ErrorCodes::IncompatibleShardingMetadata,
-                str::stream() << "The chunk history for '"
-                              << ChunkType::genID(nss, migratedChunk.getMin())
-                              << " is corrupted. The last validAfter "
-                              << newHistory.back().getValidAfter().toString()
-                              << " is greater or equal to the new validAfter "
-                              << validAfter.get().toString()};
+        uasserted(ErrorCodes::IncompatibleShardingMetadata,
+                  str::stream() << "The chunk history for '"
+                                << ChunkType::genID(nss, migratedChunk.getMin())
+                                << " is corrupted. The last validAfter "
+                                << newHistory.back().getValidAfter().toString()
+                                << " is greater or equal to the new validAfter "
+                                << validAfter.get().toString());
     }
     newHistory.emplace(newHistory.begin(), ChunkHistory(validAfter.get(), toShard));
     newMigratedChunk.setHistory(std::move(newHistory));
@@ -720,11 +706,8 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     if (controlChunk) {
         // Find the chunk history.
         const auto origControlChunk = _findChunkOnConfig(opCtx, nss, controlChunk->getMin());
-        if (!origControlChunk.isOK()) {
-            return origControlChunk.getStatus();
-        }
 
-        newControlChunk = origControlChunk.getValue();
+        newControlChunk = origControlChunk;
         newControlChunk->setVersion(ChunkVersion(
             currentCollectionVersion.majorVersion() + 1, 1, currentCollectionVersion.epoch()));
     }
@@ -732,21 +715,16 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     auto command = makeCommitChunkTransactionCommand(
         nss, newMigratedChunk, newControlChunk, fromShard.toString(), toShard.toString());
 
-    StatusWith<Shard::CommandResponse> applyOpsCommandResponse =
-        configShard->runCommandWithFixedRetryAttempts(
+    Shard::CommandResponse applyOpsCommandResponse =
+        uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
             opCtx,
             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
             nss.db().toString(),
             command,
-            Shard::RetryPolicy::kIdempotent);
+            Shard::RetryPolicy::kIdempotent));
 
-    if (!applyOpsCommandResponse.isOK()) {
-        return applyOpsCommandResponse.getStatus();
-    }
 
-    if (!applyOpsCommandResponse.getValue().commandStatus.isOK()) {
-        return applyOpsCommandResponse.getValue().commandStatus;
-    }
+    uassertStatusOK(applyOpsCommandResponse.commandStatus);
 
     BSONObjBuilder result;
     newMigratedChunk.getVersion().appendWithField(&result, "migratedChunkVersion");
@@ -757,32 +735,28 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     return result.obj();
 }
 
-StatusWith<ChunkType> ShardingCatalogManager::_findChunkOnConfig(OperationContext* opCtx,
-                                                                 const NamespaceString& nss,
-                                                                 const BSONObj& key) {
+ChunkType ShardingCatalogManager::_findChunkOnConfig(OperationContext* opCtx,
+                                                     const NamespaceString& nss,
+                                                     const BSONObj& key) {
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
-    auto findResponse =
+    auto findResponse = uassertStatusOK(
         configShard->exhaustiveFindOnConfig(opCtx,
                                             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                                             repl::ReadConcernLevel::kLocalReadConcern,
                                             ChunkType::ConfigNS,
                                             BSON(ChunkType::name << ChunkType::genID(nss, key)),
                                             BSONObj(),
-                                            1);
+                                            1));
 
-    if (!findResponse.isOK()) {
-        return findResponse.getStatus();
-    }
-
-    const auto origChunks = std::move(findResponse.getValue().docs);
+    const auto origChunks = std::move(findResponse.docs);
     if (origChunks.size() != 1) {
-        return {ErrorCodes::IncompatibleShardingMetadata,
-                str::stream() << "Tried to find the chunk for '" << ChunkType::genID(nss, key)
-                              << ", but found no chunks"};
+        uasserted(ErrorCodes::IncompatibleShardingMetadata,
+                  str::stream() << "Tried to find the chunk for '" << ChunkType::genID(nss, key)
+                                << ", but found no chunks");
     }
 
-    return ChunkType::fromConfigBSON(origChunks.front());
+    return uassertStatusOK(ChunkType::fromConfigBSON(origChunks.front()));
 }
 
 ChunkVersion ShardingCatalogManager::_findCollectionVersion(OperationContext* opCtx,
@@ -815,14 +789,14 @@ ChunkVersion ShardingCatalogManager::_findCollectionVersion(OperationContext* op
     // failed to recover the migration. Check that the collection has not been dropped and recreated
     // since the migration began, unbeknown to the shard when the command was sent.
     if (currentCollectionVersion.epoch() != collectionEpoch) {
-        uasserted (ErrorCodes::StaleEpoch,
-                str::stream() << "The collection '" << nss.ns()
-                              << "' has been dropped and recreated since the migration began."
-                                 " The config server's collection version epoch is now '"
-                              << currentCollectionVersion.epoch().toString()
-                              << "', but the shard's is "
-                              << collectionEpoch.toString()
-                              << "'.");
+        uasserted(ErrorCodes::StaleEpoch,
+                  str::stream() << "The collection '" << nss.ns()
+                                << "' has been dropped and recreated since the migration began."
+                                   " The config server's collection version epoch is now '"
+                                << currentCollectionVersion.epoch().toString()
+                                << "', but the shard's is "
+                                << collectionEpoch.toString()
+                                << "'.");
     }
 
     return currentCollectionVersion;

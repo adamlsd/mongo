@@ -108,7 +108,7 @@ public:
      * the catalog collections and their indexes. Also generates and persists the cluster's
      * identity.
      */
-    Status initializeConfigDatabaseIfNeeded(OperationContext* opCtx);
+    void initializeConfigDatabaseIfNeeded(OperationContext* opCtx);
 
     /**
      * Invoked on cluster identity metadata rollback after replication step down. Throws out any
@@ -189,13 +189,13 @@ public:
      * If 'validAfter' is not set, this means the commit request came from an older server version,
      * which is not history-aware.
      */
-    StatusWith<BSONObj> commitChunkMigration(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const ChunkType& migratedChunk,
-                                             const OID& collectionEpoch,
-                                             const ShardId& fromShard,
-                                             const ShardId& toShard,
-                                             const boost::optional<Timestamp>& validAfter);
+    BSONObj commitChunkMigration(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const ChunkType& migratedChunk,
+                                 const OID& collectionEpoch,
+                                 const ShardId& fromShard,
+                                 const ShardId& toShard,
+                                 const boost::optional<Timestamp>& validAfter);
 
     //
     // Database Operations
@@ -370,12 +370,12 @@ private:
      * Performs the necessary checks for version compatibility and creates a new config.version
      * document if the current cluster config is empty.
      */
-    Status _initConfigVersion(OperationContext* opCtx);
+    void _initConfigVersion(OperationContext* opCtx);
 
     /**
      * Builds all the expected indexes on the config server.
      */
-    Status _initConfigIndexes(OperationContext* opCtx);
+    void _initConfigIndexes(OperationContext* opCtx);
 
     /**
      * Used during addShard to determine if there is already an existing shard that matches the
@@ -417,8 +417,8 @@ private:
     /**
      * Drops the sessions collection on the specified host.
      */
-    Status _dropSessionsCollection(OperationContext* opCtx,
-                                   std::shared_ptr<RemoteCommandTargeter> targeter);
+    void _dropSessionsCollection(OperationContext* opCtx,
+                                 std::shared_ptr<RemoteCommandTargeter> targeter);
 
     /**
      * Runs the listDatabases command on the specified host and returns the names of all databases
@@ -460,16 +460,16 @@ private:
     /**
      * Retrieve the full chunk description from the config.
      */
-    StatusWith<ChunkType> _findChunkOnConfig(OperationContext* opCtx,
-                                             const NamespaceString& nss,
-                                             const BSONObj& key);
+    ChunkType _findChunkOnConfig(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const BSONObj& key);
 
     /**
      * Retrieve the the latest collection version from the config.
      */
     ChunkVersion _findCollectionVersion(OperationContext* opCtx,
-                                                    const NamespaceString& nss,
-                                                    const OID& collectionEpoch);
+                                        const NamespaceString& nss,
+                                        const OID& collectionEpoch);
 
     // The owning service context
     ServiceContext* const _serviceContext;

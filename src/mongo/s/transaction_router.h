@@ -35,6 +35,7 @@
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/s/async_requests_sender.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/shard_id.h"
@@ -95,7 +96,39 @@ public:
         const SharedTransactionOptions sharedOptions;
     };
 
+    // Container for timing stats for the current transaction. Includes helpers for calculating some
+    // metrics like transaction duration.
+    struct TimingStats {
+        /**
+         * Returns the duration of the transaction. The transaction start time must have been set
+         * before this can be called.
+         */
+        Microseconds getDuration(TickSource* tickSource, TickSource::Tick curTicks) const;
+
+        /**
+         * Returns the duration of commit. The commit start time must have been set before this can
+         * be called.
+         */
+        Microseconds getCommitDuration(TickSource* tickSource, TickSource::Tick curTicks) const;
+
+        // The start time of the transaction. Note that tick values should only ever be used to
+        // measure distance from other tick values, not for reporting absolute wall clock time.
+        TickSource::Tick startTime{0};
+
+        // When commit was started.
+        TickSource::Tick commitStartTime{0};
+
+        // The end time of the transaction.
+        TickSource::Tick endTime{0};
+    };
+
     enum class TransactionActions { kStart, kContinue, kCommit };
+
+    // Reason a transaction terminated.
+    enum class TerminationCause {
+        kCommitted,
+        kAborted,
+    };
 
     /**
      * Encapsulates the logic around selecting a global read timestamp for a sharded transaction at
@@ -142,6 +175,7 @@ public:
      * attached.
      */
     static TransactionRouter* get(OperationContext* opCtx);
+    static TransactionRouter* get(const ObservableSession& osession);
 
     /**
      * Starts a fresh transaction in this session or continue an existing one. Also cleans up the
@@ -287,14 +321,56 @@ public:
         return _latestStmtId;
     }
 
+    /**
+     * Returns a copy of the timing stats of the transaction router's active transaction.
+     */
+    TimingStats getTimingStats() const {
+        return _timingStats;
+    }
+
 private:
     // The type of commit initiated for this transaction.
     enum class CommitType {
         kNotInitiated,
-        kDirectCommit,
+        kNoShards,
+        kSingleShard,
+        kSingleWriteShard,
+        kReadOnly,
         kTwoPhaseCommit,
         kRecoverWithToken,
     };
+
+    // Helper to convert the CommitType enum into a human readable string for diagnostics.
+    std::string _commitTypeToString(CommitType state) const {
+        switch (state) {
+            case CommitType::kNotInitiated:
+                return "notInitiated";
+            case CommitType::kNoShards:
+                return "noShards";
+            case CommitType::kSingleShard:
+                return "singleShard";
+            case CommitType::kSingleWriteShard:
+                return "singleWriteShard";
+            case CommitType::kReadOnly:
+                return "readOnly";
+            case CommitType::kTwoPhaseCommit:
+                return "twoPhaseCommit";
+            case CommitType::kRecoverWithToken:
+                return "recoverWithToken";
+        }
+        MONGO_UNREACHABLE;
+    }
+
+    /**
+     * Prints slow transaction information to the log.
+     */
+    void _logSlowTransaction(OperationContext* opCtx, TerminationCause terminationCause) const;
+
+    /**
+     * Returns a string to be logged for slow transactions.
+     */
+    std::string _transactionInfoForLog(OperationContext* opCtx,
+                                       TerminationCause terminationCause) const;
 
     // Shortcut to obtain the id of the session under which this transaction router runs
     const LogicalSessionId& _sessionId() const;
@@ -305,6 +381,12 @@ private:
      * instead reuse the same object across different transactions.
      */
     void _resetRouterState(const TxnNumber& txnNumber);
+
+    /**
+     * Internal method for committing a transaction. Should only throw on failure to send commit.
+     */
+    BSONObj _commitTransaction(OperationContext* opCtx,
+                               const boost::optional<TxnRecoveryToken>& recoveryToken);
 
     /**
      * Retrieves the transaction's outcome from the shard specified in the recovery token.
@@ -353,12 +435,58 @@ private:
      */
     void _verifyParticipantAtClusterTime(const Participant& participant);
 
+    /**
+     * Updates relevant metrics when a new transaction is begun.
+     */
+    void _onNewTransaction(OperationContext* opCtx);
+
+    /**
+     * Updates relevant metrics when a router receives commit for a higher txnNumber than it has
+     * seen so far.
+     */
+    void _onBeginRecoveringDecision(OperationContext* opCtx);
+
+    /**
+     * Updates relevant metrics when the router receives an explicit abort from the client.
+     */
+    void _onExplicitAbort(OperationContext* opCtx);
+
+    /**
+     * Updates relevant metrics when the router begins an implicit abort after an error.
+     */
+    void _onImplicitAbort(OperationContext* opCtx, const Status& errorStatus);
+
+    /**
+     * Updates relevant metrics when a transaction is about to begin commit.
+     */
+    void _onStartCommit(OperationContext* opCtx);
+
+    /**
+     * Updates relevant metrics when a transaction receives a successful response for commit.
+     */
+    void _onSuccessfulCommit(OperationContext* opCtx);
+
+    /**
+     * Updates relevant metrics when commit receives a response with a non-retryable command error
+     * per the retryable writes specification.
+     */
+    void _onNonRetryableCommitError(OperationContext* opCtx, Status commitStatus);
+
+    /**
+     * The first time this method is called it marks the transaction as over in the router's
+     * diagnostics and will log transaction information if its duration is over the global slowMS
+     * threshold or the transaction log componenet verbosity >= 1. Only meant to be called when the
+     * router definitively knows the transaction's outcome, e.g. it should not be invoked after a
+     * network error on commit.
+     */
+    void _endTransactionTrackingIfNecessary(OperationContext* opCtx,
+                                            TerminationCause terminationCause);
+
     // The currently active transaction number on this router, if beginOrContinueTxn has been
     // called. Otherwise set to kUninitializedTxnNumber.
     TxnNumber _txnNumber{kUninitializedTxnNumber};
 
-    // Is updated at commit time to reflect whether the direct commit, two-phase commit, or recover
-    // commit path was taken.
+    // Is updated at commit time to reflect which commit path was taken.
     CommitType _commitType{CommitType::kNotInitiated};
 
     // Indicates whether this is trying to recover a commitTransaction on the current transaction.
@@ -396,6 +524,13 @@ private:
     // The statement id of the command that began this transaction. Defaults to zero if no statement
     // id was included in the first command.
     StmtId _firstStmtId{kDefaultFirstStmtId};
+
+    // String representing the reason a transaction aborted. Either the string name of the error
+    // code that led to an implicit abort or "abort" if the client sent abortTransaction.
+    std::string _abortCause;
+
+    // Stats used for calculating durations for the active transaction.
+    TimingStats _timingStats;
 };
 
 }  // namespace mongo

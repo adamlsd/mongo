@@ -10888,7 +10888,9 @@ buildvariants:
     large_distro_name: rhel62-large
     test_flags: >-
         --mongodSetParameters="{useMultipleOplogEntryFormatForTransactions: true, maxNumberOfTransactionOperationsInSingleOplogEntry: 2}"
-        --excludeWithAnyTags=exclude_from_large_txns,exclude_from_large_txns_due_to_stmtids,exclude_from_large_txns_due_to_change_streams,exclude_from_large_txns_due_to_fast_count 
+        --excludeWithAnyTags=exclude_from_large_txns
+        --excludeWithAnyTags=exclude_from_large_txns_due_to_stmtids
+        --excludeWithAnyTags=exclude_from_large_txns_due_to_change_streams
   tasks:
   - name: compile_TG
     distros:

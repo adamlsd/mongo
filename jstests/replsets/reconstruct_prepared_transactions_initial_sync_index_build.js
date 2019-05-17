@@ -112,7 +112,7 @@
 
     // Wait for the prepared transaction oplog entry to be majority committed before committing the
     // transaction.
-    replTest.awaitReplication();
+    PrepareHelpers.awaitMajorityCommitted(replTest, prepareTimestamp);
 
     jsTestLog("Committing the transaction");
 

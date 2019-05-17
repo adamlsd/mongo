@@ -448,9 +448,9 @@ private:
      * Helper method for running a count command against the config server with appropriate error
      * handling.
      */
-    StatusWith<long long> _runCountCommandOnConfig(OperationContext* opCtx,
-                                                   const NamespaceString& nss,
-                                                   BSONObj query);
+    long long _runCountCommandOnConfig(OperationContext* opCtx,
+                                       const NamespaceString& nss,
+                                       BSONObj query);
 
     /**
      * Appends a read committed read concern to the request object.

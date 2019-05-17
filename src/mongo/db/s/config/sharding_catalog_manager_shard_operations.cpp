@@ -491,24 +491,18 @@ void ShardingCatalogManager::_dropSessionsCollection(
     }
 }
 
-StatusWith<std::vector<std::string>> ShardingCatalogManager::_getDBNamesListFromShard(
+std::vector<std::string> ShardingCatalogManager::_getDBNamesListFromShard(
     OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter) {
 
-    auto swCommandResponse =
-        _runCommandForAddShard(opCtx,
-                               targeter.get(),
-                               NamespaceString::kAdminDb,
-                               BSON("listDatabases" << 1 << "nameOnly" << true));
-    if (!swCommandResponse.isOK()) {
-        return swCommandResponse.getStatus();
-    }
+    auto commandResponse =
+        uassertStatusOK(_runCommandForAddShard(opCtx,
+                                               targeter.get(),
+                                               NamespaceString::kAdminDb,
+                                               BSON("listDatabases" << 1 << "nameOnly" << true)));
 
-    auto cmdStatus = std::move(swCommandResponse.getValue().commandStatus);
-    if (!cmdStatus.isOK()) {
-        return cmdStatus;
-    }
+    uassertStatusOK(commandResponse.commandStatus);
 
-    auto cmdResult = std::move(swCommandResponse.getValue().response);
+    auto cmdResult = std::move(commandResponse.response);
 
     std::vector<std::string> dbNames;
 
@@ -594,12 +588,9 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     ShardType& shardType = shardStatus.getValue();
 
     // Check that none of the existing shard candidate's dbs exist already
-    auto dbNamesStatus = _getDBNamesListFromShard(opCtx, targeter);
-    if (!dbNamesStatus.isOK()) {
-        return dbNamesStatus.getStatus();
-    }
+    auto dbNames = _getDBNamesListFromShard(opCtx, targeter);
 
-    for (const auto& dbName : dbNamesStatus.getValue()) {
+    for (const auto& dbName : dbNames) {
         auto dbt = Grid::get(opCtx)->catalogClient()->getDatabase(
             opCtx, dbName, repl::ReadConcernLevel::kLocalReadConcern);
         if (dbt.isOK()) {
@@ -731,7 +722,7 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     }
 
     // Add all databases which were discovered on the new shard
-    for (const auto& dbName : dbNamesStatus.getValue()) {
+    for (const auto& dbName : dbNames) {
         DatabaseType dbt(dbName, shardType.getName(), false, databaseVersion::makeNew());
 
         {

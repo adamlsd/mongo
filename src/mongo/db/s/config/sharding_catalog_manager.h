@@ -425,7 +425,7 @@ private:
      * it returns excluding those named local, config and admin, since they serve administrative
      * purposes.
      */
-    StatusWith<std::vector<std::string>> _getDBNamesListFromShard(
+    std::vector<std::string> _getDBNamesListFromShard(
         OperationContext* opCtx, std::shared_ptr<RemoteCommandTargeter> targeter);
 
     /**

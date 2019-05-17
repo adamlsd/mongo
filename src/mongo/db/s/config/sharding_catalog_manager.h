@@ -467,7 +467,7 @@ private:
     /**
      * Retrieve the the latest collection version from the config.
      */
-    StatusWith<ChunkVersion> _findCollectionVersion(OperationContext* opCtx,
+    ChunkVersion _findCollectionVersion(OperationContext* opCtx,
                                                     const NamespaceString& nss,
                                                     const OID& collectionEpoch);
 

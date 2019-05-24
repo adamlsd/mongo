@@ -118,6 +118,10 @@ var _bulk_api_module = (function() {
         defineReadOnlyProperty(this, "nMatched", bulkResult.nMatched);
         defineReadOnlyProperty(this, "nModified", bulkResult.nModified);
         defineReadOnlyProperty(this, "nRemoved", bulkResult.nRemoved);
+        if (bulkResult.upserted.length > 0) {
+            defineReadOnlyProperty(
+                this, "_id", bulkResult.upserted[bulkResult.upserted.length - 1]._id);
+        }
 
         //
         // Define access methods
@@ -704,6 +708,10 @@ var _bulk_api_module = (function() {
             },
 
             replaceOne: function(updateDocument) {
+                // Cannot use pipeline-style updates in a replacement operation.
+                if (Array.isArray(updateDocument)) {
+                    throw new Error('Cannot use pipeline-style updates in a replacement operation');
+                }
                 findOperations.updateOne(updateDocument);
             },
 
@@ -880,8 +888,7 @@ var _bulk_api_module = (function() {
 
                 const session = collection.getDB().getSession();
                 if (serverSupportsRetryableWrites && session.getOptions().shouldRetryWrites() &&
-                    session._serverSession.canRetryWrites(cmd) &&
-                    !session._serverSession.isTxnActive()) {
+                    _ServerSession.canRetryWrites(cmd) && !session._serverSession.isTxnActive()) {
                     cmd = session._serverSession.assignTransactionNumber(cmd);
                 }
             }

@@ -34,6 +34,7 @@
 #include <map>
 
 #include "mongo/db/commands/txn_cmds_gen.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/multi_key_path_tracker.h"
@@ -53,7 +54,7 @@
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/concurrency/with_lock.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -91,9 +92,6 @@ enum class TerminationCause {
  * the comments below for more information.
  */
 class TransactionParticipant {
-    TransactionParticipant(const TransactionParticipant&) = delete;
-    TransactionParticipant& operator=(const TransactionParticipant&) = delete;
-
     struct PrivateState;
     struct ObservableState;
 
@@ -177,14 +175,26 @@ class TransactionParticipant {
 
         static std::string toString(StateFlag state);
 
+        // An optional promise that is non-none while the participant is in prepare. The promise is
+        // fulfilled and the optional is reset when the participant transitions out of prepare.
+        boost::optional<SharedPromise<void>> _exitPreparePromise;
+
     private:
         static bool _isLegalTransition(StateFlag oldState, StateFlag newState);
 
+        // Private because any modifications should go through transitionTo.
         StateFlag _state = kNone;
     };
 
 public:
     static inline MutableObeserverRegistry<int32_t> observeTransactionLifetimeLimitSeconds;
+
+    TransactionParticipant();
+
+    TransactionParticipant(const TransactionParticipant&) = delete;
+    TransactionParticipant& operator=(const TransactionParticipant&) = delete;
+
+    ~TransactionParticipant();
 
     /**
      * Holds state for a snapshot read or multi-statement transaction in between network
@@ -192,7 +202,7 @@ public:
      */
     class TxnResources {
     public:
-        enum class StashStyle { kPrimary, kSecondary, kSideTransaction };
+        enum class StashStyle { kPrimary, kSecondary };
 
         /**
          * Stashes transaction state from 'opCtx' in the newly constructed TxnResources.
@@ -236,8 +246,10 @@ public:
     };
 
     /**
-     *  An RAII object that stashes `TxnResouces` from the `opCtx` onto the stack. At destruction
-     *  it unstashes the `TxnResources` back onto the `opCtx`.
+     *  An RAII object that stashes the recovery unit from the `opCtx` onto the stack and keeps
+     *  using the same locker of `opCtx`. The locker opts out of two-phase locking of the
+     *  current WUOW. At destruction it unstashes the recovery unit back onto the `opCtx` and
+     *  restores the locker state relevant to the original WUOW.
      */
     class SideTransactionBlock {
     public:
@@ -245,7 +257,9 @@ public:
         ~SideTransactionBlock();
 
     private:
-        boost::optional<TxnResources> _txnResources;
+        Locker::WUOWLockSnapshot _WUOWLockSnapshot;
+        std::unique_ptr<RecoveryUnit> _recoveryUnit;
+        WriteUnitOfWork::RecoveryUnitState _ruState;
         OperationContext* _opCtx;
     };
 
@@ -350,10 +364,9 @@ public:
         TransactionParticipant* _tp;
     };  // class Observer
 
-
     /**
-     * Class used by a thread that has checked out the TransactionParticipant's session to
-     * observe and modify the transaction participant.
+     * Class used by a thread that has checked out the TransactionParticipant's session to observe
+     * and modify the transaction participant.
      */
     class Participant : public Observer {
     public:
@@ -395,11 +408,15 @@ public:
          * the caller has performed the necessary customer input validations.
          *
          * Exceptions of note, which can be thrown are:
-         *   - TransactionTooOld - if attempt is made to start a transaction older than the
+         *   - TransactionTooOld - if an attempt is made to start a transaction older than the
          * currently active one or the last one which committed
          *   - PreparedTransactionInProgress - if the transaction is in the prepared state and a new
          * transaction or retryable write is attempted
          *   - NotMaster - if the node is not a primary when this method is called.
+         *   - IncompleteTransactionHistory - if an attempt is made to begin a retryable write for a
+         * TransactionParticipant that is not in retryable write mode. This is expected behavior if
+         * a retryable write has been upgraded to a transaction by the server, which can happen e.g.
+         * when updating the shard key.
          */
         void beginOrContinue(OperationContext* opCtx,
                              TxnNumber txnNumber,
@@ -415,10 +432,26 @@ public:
                                                        TxnNumber txnNumber);
 
         /**
+         * If the participant is in prepare, returns a future whose promise is fulfilled when the
+         * participant transitions out of prepare.
+         *
+         * If the participant is not in prepare, returns an immediately ready future.
+         *
+         * The caller should not wait on the future with the session checked out, since that will
+         * prevent the promise from being able to be fulfilled, i.e., will cause a deadlock.
+         */
+        SharedSemiFuture<void> onExitPrepare() const;
+
+        /**
          * Transfers management of transaction resources from the currently checked-out
          * OperationContext to the Session.
          */
         void stashTransactionResources(OperationContext* opCtx);
+
+        /**
+         * Resets the retryable writes state.
+         */
+        void resetRetryableWriteState(OperationContext* opCtx);
 
         /**
          * Transfers management of transaction resources from the Session to the currently
@@ -471,6 +504,11 @@ public:
          * abortActiveTransaction.
          */
         void abortActiveUnpreparedOrStashPreparedTransaction(OperationContext* opCtx);
+
+        /**
+         * Abort the transaction and write an abort oplog entry unconditionally.
+         */
+        void abortTransactionForStepUp(OperationContext* opCtx);
 
         /**
          * Aborts the storage transaction of the prepared transaction on this participant by
@@ -629,10 +667,6 @@ public:
             return p().speculativeTransactionReadOpTime;
         }
 
-        boost::optional<repl::OpTime> getOldestOplogEntryOpTimeForTest() const {
-            return p().oldestOplogEntryOpTime;
-        }
-
         const Locker* getTxnResourceStashLockerForTest() const {
             invariant(o().txnResourceStash);
             return o().txnResourceStash->locker();
@@ -698,8 +732,10 @@ public:
 
         // Abort the transaction if it's in one of the expected states and clean up the transaction
         // states associated with the opCtx.
+        // If 'writeOplog' is true, logs an 'abortTransaction' oplog entry if writes are replicated.
         void _abortActiveTransaction(OperationContext* opCtx,
-                                     TransactionState::StateSet expectedStates);
+                                     TransactionState::StateSet expectedStates,
+                                     bool writeOplog);
 
         // Releases stashed transaction resources to abort the transaction on the session.
         void _abortTransactionOnSession(OperationContext* opCtx);
@@ -752,9 +788,6 @@ public:
         // invalidating a transaction, or starting a new transaction.
         void _resetTransactionState(WithLock wl, TransactionState::StateFlag state);
 
-        // Helper that updates ServerTransactionsMetrics once a transaction commits.
-        void _updateTxnMetricsOnCommit(OperationContext* opCtx, bool isCommittingWithPrepare);
-
         // Releases the resources held in *o().txnResources to the operation context.
         // o().txnResources must be engaged prior to calling this.
         void _releaseTransactionResourcesToOpCtx(OperationContext* opCtx);
@@ -783,7 +816,6 @@ public:
         return Observer(osession);
     }
 
-
     /**
      * Returns the timestamp of the oldest oplog entry written across all open transactions, at the
      * time of the stable timestamp. Returns boost::none if there are no active transactions, or an
@@ -797,9 +829,6 @@ public:
      * want to await a write concern.
      */
     static void performNoopWrite(OperationContext* opCtx, StringData msg);
-
-    TransactionParticipant() = default;
-    ~TransactionParticipant() = default;
 
 private:
     /**
@@ -817,28 +846,32 @@ private:
          */
         OplogSlot getLastSlot() {
             invariant(!_oplogSlots.empty());
-            invariant(!_oplogSlots.back().opTime.isNull());
+            invariant(!_oplogSlots.back().isNull());
             return getSlots().back();
         }
 
         std::vector<OplogSlot>& getSlots() {
             invariant(!_oplogSlots.empty());
-            invariant(!_oplogSlots.back().opTime.isNull());
+            invariant(!_oplogSlots.back().isNull());
             return _oplogSlots;
         }
 
     private:
         OperationContext* _opCtx;
-        std::unique_ptr<Locker> _locker;
+        // We must hold a global lock in IX mode for the lifetime of the recovery unit.
+        // The global lock is also used to protect oplog writes. The lock acquisition must be
+        // before reserving oplogSlots to avoid deadlocks involving the callers of
+        // waitForAllEarlierOplogWritesToBeVisible().
+        Lock::GlobalLock _globalLock;
         std::unique_ptr<RecoveryUnit> _recoveryUnit;
         std::vector<OplogSlot> _oplogSlots;
     };
 
-    friend std::ostream& operator<<(std::ostream& s, TransactionState txnState) {
+    friend std::ostream& operator<<(std::ostream& s, const TransactionState& txnState) {
         return (s << txnState.toString());
     }
 
-    friend StringBuilder& operator<<(StringBuilder& s, TransactionState txnState) {
+    friend StringBuilder& operator<<(StringBuilder& s, const TransactionState& txnState) {
         return (s << txnState.toString());
     }
 
@@ -879,22 +912,25 @@ private:
 
     /**
      * State in this struct may be read and written by methods of the Participant, only. It may
-     * access the struct via the private p() accessor. No further locking is required in methods
-     * of the Participant.
+     * access the struct via the private p() accessor. No further locking is required in methods of
+     * the Participant.
      */
     struct PrivateState {
+        // Specifies whether the session information needs to be refreshed from storage
+        bool isValid{false};
+
         // Only set if the server is shutting down and it has been ensured that no new requests will
         // be accepted. Ensures that any transaction resources will not be stashed from the
         // operation context onto the transaction participant when the session is checked-in so that
         // locks can automatically get freed.
-        bool inShutdown = false;
+        bool inShutdown{false};
 
         // Holds oplog data for operations which have been applied in the current multi-document
         // transaction.
         std::vector<repl::ReplOperation> transactionOperations;
 
         // Total size in bytes of all operations within the _transactionOperations vector.
-        size_t transactionOperationBytes = 0;
+        size_t transactionOperationBytes{0};
 
         // The autocommit setting of this transaction. Should always be false for multi-statement
         // transaction. Currently only needed for diagnostics reporting.
@@ -909,15 +945,9 @@ private:
         // commits
         std::vector<MultikeyPathInfo> multikeyPathInfo;
 
-        // Tracks the OpTime of the first oplog entry written by this TransactionParticipant.
-        boost::optional<repl::OpTime> oldestOplogEntryOpTime;
-
         //
         // Retryable writes state
         //
-
-        // Specifies whether the session information needs to be refreshed from storage
-        bool isValid{false};
 
         // Set to true if incomplete history is detected. For example, when the oplog to a write was
         // truncated because it was too old.

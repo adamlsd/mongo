@@ -1,8 +1,5 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Bypass compile and fetch binaries."""
-
-from __future__ import absolute_import
-from __future__ import print_function
 
 import argparse
 import json
@@ -10,11 +7,13 @@ import os
 import re
 import sys
 import tarfile
+import urllib.error
+import urllib.parse
+import urllib.request
 
-import urllib
 # pylint: disable=ungrouped-imports
 try:
-    from urlparse import urlparse
+    from urllib.parse import urlparse
 except ImportError:
     from urllib.parse import urlparse  # type: ignore
 # pylint: enable=ungrouped-imports
@@ -259,8 +258,8 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
                 print("Retrieving archive {}".format(filename))
                 # This is the artifacts.tgz as referenced in evergreen.yml.
                 try:
-                    urllib.urlretrieve(artifact["url"], filename)
-                except urllib.ContentTooShortError:
+                    urllib.request.urlretrieve(artifact["url"], filename)
+                except urllib.error.ContentTooShortError:
                     print("The artifact {} could not be completely downloaded. Default"
                           " compile bypass to false.".format(filename))
                     return
@@ -287,8 +286,8 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
                 print("Retrieving mongo source {}".format(filename))
                 # This is the distsrc.[tgz|zip] as referenced in evergreen.yml.
                 try:
-                    urllib.urlretrieve(artifact["url"], filename)
-                except urllib.ContentTooShortError:
+                    urllib.request.urlretrieve(artifact["url"], filename)
+                except urllib.error.ContentTooShortError:
                     print("The artifact {} could not be completely downloaded. Default"
                           " compile bypass to false.".format(filename))
                     return
@@ -310,9 +309,9 @@ def main():  # pylint: disable=too-many-locals,too-many-statements
         # SERVER-21492 related issue where without running scons the jstests/libs/key1
         # and key2 files are not chmod to 0600. Need to change permissions here since we
         # bypass SCons.
-        os.chmod("jstests/libs/key1", 0600)
-        os.chmod("jstests/libs/key2", 0600)
-        os.chmod("jstests/libs/keyForRollover", 0600)
+        os.chmod("jstests/libs/key1", 0o600)
+        os.chmod("jstests/libs/key2", 0o600)
+        os.chmod("jstests/libs/keyForRollover", 0o600)
 
         # This is the artifacts.json file.
         write_out_artifacts(args.jsonArtifact, artifacts)

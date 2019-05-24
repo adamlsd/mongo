@@ -27,7 +27,7 @@ import mongo.platform as mongo_platform
 import mongo.toolchain as mongo_toolchain
 import mongo.generators as mongo_generators
 
-EnsurePythonVersion(2, 7)
+EnsurePythonVersion(3, 5)
 EnsureSConsVersion(3, 0, 4)
 
 from buildscripts import utils
@@ -35,6 +35,9 @@ from buildscripts import moduleconfig
 
 import libdeps
 import psutil
+
+scons_invocation = '{} {}'.format(sys.executable, ' '.join(sys.argv))
+print('scons: running with args {}'.format(scons_invocation))
 
 atexit.register(mongo.print_build_failures)
 
@@ -313,6 +316,11 @@ add_option('use-system-tcmalloc',
     nargs=0,
 )
 
+add_option('use-system-fmt',
+    help='use system version of fmt library',
+    nargs=0,
+)
+
 add_option('use-system-pcre',
     help='use system version of pcre library',
     nargs=0,
@@ -461,7 +469,7 @@ win_version_min_choices = {
 }
 
 add_option('win-version-min',
-    choices=win_version_min_choices.keys(),
+    choices=list(win_version_min_choices.keys()),
     default=None,
     help='minimum Windows version to support',
     type='choice',
@@ -576,7 +584,7 @@ try:
 except IOError as e:
     # If the file error wasn't because the file is missing, error out
     if e.errno != errno.ENOENT:
-        print("Error opening version.json: {0}".format(e.strerror))
+        print(("Error opening version.json: {0}".format(e.strerror)))
         Exit(1)
 
     version_data = {
@@ -585,14 +593,14 @@ except IOError as e:
     }
 
 except ValueError as e:
-    print("Error decoding version.json: {0}".format(e))
+    print(("Error decoding version.json: {0}".format(e)))
     Exit(1)
 
 # Setup the command-line variables
 def variable_shlex_converter(val):
     # If the argument is something other than a string, propogate
     # it literally.
-    if not isinstance(val, basestring):
+    if not isinstance(val, str):
         return val
     parse_mode = get_option('variable-parse-mode')
     if parse_mode == 'auto':
@@ -656,7 +664,7 @@ def variable_distsrc_converter(val):
 
 variables_files = variable_shlex_converter(get_option('variables-files'))
 for file in variables_files:
-    print("Using variable customization file %s" % file)
+    print(("Using variable customization file %s" % file))
 
 env_vars = Variables(
     files=variables_files,
@@ -665,7 +673,7 @@ env_vars = Variables(
 
 sconsflags = os.environ.get('SCONSFLAGS', None)
 if sconsflags:
-    print("Using SCONSFLAGS environment variable arguments: %s" % sconsflags)
+    print(("Using SCONSFLAGS environment variable arguments: %s" % sconsflags))
 
 env_vars.Add('ABIDW',
     help="Configures the path to the 'abidw' (a libabigail) utility")
@@ -749,6 +757,12 @@ env_vars.Add('ICECC_CREATE_ENV',
 env_vars.Add('ICECC_SCHEDULER',
     help='Tell ICECC where the sceduler daemon is running')
 
+env_vars.Add('ICECC_VERSION',
+    help='Tell ICECC where the compiler package is')
+
+env_vars.Add('ICECC_VERSION_ARCH',
+    help='Tell ICECC the target archicture for the compiler package, if non-native')
+
 env_vars.Add('LIBPATH',
     help='Adds paths to the linker search path',
     converter=variable_shlex_converter)
@@ -795,7 +809,7 @@ env_vars.Add('MONGO_DISTNAME',
 def validate_mongo_version(key, val, env):
     regex = r'^(\d+)\.(\d+)\.(\d+)-?((?:(rc)(\d+))?.*)?'
     if not re.match(regex, val):
-        print("Invalid MONGO_VERSION '{}', or could not derive from version.json or git metadata. Please add a conforming MONGO_VERSION=x.y.z[-extra] as an argument to SCons".format(val))
+        print(("Invalid MONGO_VERSION '{}', or could not derive from version.json or git metadata. Please add a conforming MONGO_VERSION=x.y.z[-extra] as an argument to SCons".format(val)))
         Exit(1)
 
 env_vars.Add('MONGO_VERSION',
@@ -930,12 +944,12 @@ if installDir[0] not in ['$', '#']:
         Exit(1)
 
 sconsDataDir = Dir(buildDir).Dir('scons')
-SConsignFile(str(sconsDataDir.File('sconsign')))
+SConsignFile(str(sconsDataDir.File('sconsign.py3')))
 
 def printLocalInfo():
     import sys, SCons
-    print( "scons version: " + SCons.__version__ )
-    print( "python version: " + " ".join( [ `i` for i in sys.version_info ] ) )
+    print(( "scons version: " + SCons.__version__ ))
+    print(( "python version: " + " ".join( [ repr(i) for i in sys.version_info ] ) ))
 
 printLocalInfo()
 
@@ -1011,16 +1025,33 @@ envDict = dict(BUILD_ROOT=buildDir,
 env = Environment(variables=env_vars, **envDict)
 del envDict
 
+for var in ['CC', 'CXX']:
+    if var not in env:
+        continue
+    path = env[var]
+    print('{} is {}'.format(var, path))
+    if not os.path.isabs(path):
+        which = shutil.which(path)
+        if which is None:
+            print('{} was not found in $PATH'.format(path))
+        else:
+            print('{} found in $PATH at {}'.format(path, which))
+            path = which
+
+    realpath = os.path.realpath(path)
+    if realpath != path:
+        print('{} resolves to {}'.format(path, realpath))
+
 env.AddMethod(mongo_platform.env_os_is_wrapper, 'TargetOSIs')
 env.AddMethod(mongo_platform.env_get_os_name_wrapper, 'GetTargetOSName')
 
 def fatal_error(env, msg, *args):
-    print(msg.format(*args))
+    print((msg.format(*args)))
     Exit(1)
 
 def conf_error(env, msg, *args):
-    print(msg.format(*args))
-    print("See {0} for details".format(env.File('$CONFIGURELOG').abspath))
+    print((msg.format(*args)))
+    print(("See {0} for details".format(env.File('$CONFIGURELOG').abspath)))
     Exit(1)
 
 env.AddMethod(fatal_error, 'FatalError')
@@ -1039,12 +1070,12 @@ else:
 env.AddMethod(lambda env: env['VERBOSE'], 'Verbose')
 
 if has_option('variables-help'):
-    print(env_vars.GenerateHelpText(env))
+    print((env_vars.GenerateHelpText(env)))
     Exit(0)
 
 unknown_vars = env_vars.UnknownVariables()
 if unknown_vars:
-    env.FatalError("Unknown variables specified: {0}", ", ".join(unknown_vars.keys()))
+    env.FatalError("Unknown variables specified: {0}", ", ".join(list(unknown_vars.keys())))
 
 def set_config_header_define(env, varname, varval = 1):
     env['CONFIG_HEADER_DEFINES'][varname] = varval
@@ -1130,7 +1161,7 @@ def CheckForProcessor(context, which_arch):
         context.Result(ret)
         return ret;
 
-    for k in processor_macros.keys():
+    for k in list(processor_macros.keys()):
         ret = run_compile_check(k)
         if ret:
             context.Result('Detected a %s processor' % k)
@@ -1253,7 +1284,7 @@ else:
     env['TARGET_ARCH'] = detected_processor
 
 if env['TARGET_OS'] not in os_macros:
-    print("No special config for [{0}] which probably means it won't work".format(env['TARGET_OS']))
+    print(("No special config for [{0}] which probably means it won't work".format(env['TARGET_OS'])))
 elif not detectConf.CheckForOS(env['TARGET_OS']):
     env.ConfError("TARGET_OS ({0}) is not supported by compiler", env['TARGET_OS'])
 
@@ -1388,8 +1419,8 @@ if link_model.startswith("dynamic"):
 
     if env.TargetOSIs('darwin'):
         if link_model.startswith('dynamic'):
-            print("WARNING: Building MongoDB server with dynamic linking " +
-                  "on macOS is not supported. Static linking is recommended.")
+            print(("WARNING: Building MongoDB server with dynamic linking " +
+                  "on macOS is not supported. Static linking is recommended."))
 
         if link_model == "dynamic-strict":
             # Darwin is strict by default
@@ -1764,14 +1795,22 @@ elif env.TargetOSIs('windows'):
     # file contains invalid UTF-8.
     env.Append( CCFLAGS=["/utf-8" ])
 
-    # Enforce type conversion rules for rvalue reference types as a result of a cast operation.
-    env.Append( CCFLAGS=["/Zc:rvalueCast"] )
+    # Specify standards conformance mode to the compiler.
+    env.Append( CCFLAGS=["/permissive-"] )
 
-    # Disable string literal type conversion, instead const_cast must be explicitly specified.
-    env.Append( CCFLAGS=["/Zc:strictStrings"] )
+    # Enables the __cplusplus preprocessor macro to report an updated value for recent C++ language
+    # standards support.
+    env.Append( CCFLAGS=["/Zc:__cplusplus"] )
+
+    # Tells the compiler to preferentially call global operator delete or operator delete[]
+    # functions that have a second parameter of type size_t when the size of the object is available.
+    env.Append( CCFLAGS=["/Zc:sizedDealloc"] )
 
     # Treat volatile according to the ISO standard and do not guarantee acquire/release semantics.
     env.Append( CCFLAGS=["/volatile:iso"] )
+
+    # Tell CL to produce more useful error messages.
+    env.Append( CCFLAGS=["/diagnostics:caret"] )
 
     # This gives 32-bit programs 4 GB of user address space in WOW64, ignored in 64-bit builds.
     env.Append( LINKFLAGS=["/LARGEADDRESSAWARE"] )
@@ -2146,7 +2185,7 @@ def doConfigure(myenv):
             # form -Wno-xxx (but not -Wno-error=xxx), we also add -Wxxx to the flags. GCC does
             # warn on unknown -Wxxx style flags, so this lets us probe for availablity of
             # -Wno-xxx.
-            for kw in test_mutation.keys():
+            for kw in list(test_mutation.keys()):
                 test_flags = test_mutation[kw]
                 for test_flag in test_flags:
                     if test_flag.startswith("-Wno-") and not test_flag.startswith("-Wno-error="):
@@ -2160,7 +2199,7 @@ def doConfigure(myenv):
         # to make them real errors.
         cloned.Append(CCFLAGS=['-Werror'])
         conf = Configure(cloned, help=False, custom_tests = {
-                'CheckFlag' : lambda(ctx) : CheckFlagTest(ctx, tool, extension, flag)
+                'CheckFlag' : lambda ctx : CheckFlagTest(ctx, tool, extension, flag)
         })
         available = conf.CheckFlag()
         conf.Finish()
@@ -2268,6 +2307,8 @@ def doConfigure(myenv):
         # exceptionToStatus(). See https://bugs.llvm.org/show_bug.cgi?id=34804
         AddToCCFLAGSIfSupported(myenv, "-Wno-exceptions")
 
+        # Enable sized deallocation support.
+        AddToCXXFLAGSIfSupported(myenv, '-fsized-deallocation')
 
         # Check if we can set "-Wnon-virtual-dtor" when "-Werror" is set. The only time we can't set it is on
         # clang 3.4, where a class with virtual function(s) and a non-virtual destructor throws a warning when
@@ -2395,7 +2436,6 @@ def doConfigure(myenv):
         conf.Finish()
 
     if myenv.ToolchainIs('msvc'):
-        myenv.AppendUnique(CCFLAGS=['/Zc:__cplusplus', '/permissive-'])
         if get_option('cxx-std') == "17":
             myenv.AppendUnique(CCFLAGS=['/std:c++17'])
     else:
@@ -2640,7 +2680,7 @@ def doConfigure(myenv):
         # Select those unique black files that are associated with the
         # currently enabled sanitizers, but filter out those that are
         # zero length.
-        blackfiles = {v for (k, v) in blackfiles_map.iteritems() if k in sanitizer_list}
+        blackfiles = {v for (k, v) in blackfiles_map.items() if k in sanitizer_list}
         blackfiles = [f for f in blackfiles if os.stat(f.path).st_size != 0]
 
         # Filter out any blacklist options that the toolchain doesn't support.
@@ -2671,7 +2711,7 @@ def doConfigure(myenv):
         llvm_symbolizer = get_option('llvm-symbolizer')
         if os.path.isabs(llvm_symbolizer):
             if not myenv.File(llvm_symbolizer).exists():
-                print("WARNING: Specified symbolizer '%s' not found" % llvm_symbolizer)
+                print(("WARNING: Specified symbolizer '%s' not found" % llvm_symbolizer))
                 llvm_symbolizer = None
         else:
             llvm_symbolizer = myenv.WhereIs(llvm_symbolizer)
@@ -2992,7 +3032,7 @@ def doConfigure(myenv):
                         # TODO: If we could programmatically extract the paths from the info output
                         # we could give a better message here, but brew info's machine readable output
                         # doesn't seem to include the whole 'caveats' section.
-                        message = subprocess.check_output([brew, "info", "openssl"])
+                        message = subprocess.check_output([brew, "info", "openssl"]).decode('utf-8')
                         advice = textwrap.dedent(
                             """\
                             NOTE: HomeBrew installed to {0} appears to have OpenSSL installed.
@@ -3154,13 +3194,12 @@ def doConfigure(myenv):
         # Either crypto engine is native,
         # or it's OpenSSL and has been checked to be working.
         conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL")
-        print("Using SSL Provider: {0}".format(ssl_provider))
+        print(("Using SSL Provider: {0}".format(ssl_provider)))
     else:
         ssl_provider = "none"
 
-    # The Windows build needs the openssl binaries if it targets openssl or includes the tools
-    # since the tools link against openssl
-    if conf.env.TargetOSIs('windows') and (ssl_provider == "openssl" or has_option("use-new-tools")):
+    # The Windows build needs the openssl binaries if it targets openssl
+    if conf.env.TargetOSIs('windows') and ssl_provider == "openssl":
         # Add the SSL binaries to the zip file distribution
         def addOpenSslLibraryToDistArchive(file_name):
             openssl_bin_path = os.path.normpath(env['WINDOWS_OPENSSL_BIN'].lower())
@@ -3177,7 +3216,7 @@ def doConfigure(myenv):
         files = ['ssleay32.dll', 'libeay32.dll']
         for extra_file in files:
             if not addOpenSslLibraryToDistArchive(extra_file):
-                print("WARNING: Cannot find SSL library '%s'" % extra_file)
+                print(("WARNING: Cannot find SSL library '%s'" % extra_file))
 
     def checkHTTPLib(required=False):
         # WinHTTP available on Windows
@@ -3217,6 +3256,9 @@ def doConfigure(myenv):
 
     if use_system_version_of_library("yaml"):
         conf.FindSysLibDep("yaml", ["yaml-cpp"])
+
+    if use_system_version_of_library("fmt"):
+        conf.FindSysLibDep("fmt", ["fmt"])
 
     if use_system_version_of_library("intel_decimal128"):
         conf.FindSysLibDep("intel_decimal128", ["bid"])
@@ -3550,7 +3592,7 @@ def doConfigure(myenv):
 
         outputIndex = next((idx for idx in [0,1] if conf.CheckAltivecVbpermqOutput(idx)), None)
         if outputIndex is not None:
-	    conf.env.SetConfigHeaderDefine("MONGO_CONFIG_ALTIVEC_VEC_VBPERMQ_OUTPUT_INDEX", outputIndex)
+            conf.env.SetConfigHeaderDefine("MONGO_CONFIG_ALTIVEC_VEC_VBPERMQ_OUTPUT_INDEX", outputIndex)
         else:
             myenv.ConfError("Running on ppc64le, but can't find a correct vec_vbpermq output index.  Compiler or platform not supported")
 
@@ -3650,11 +3692,13 @@ def doLint( env , target , source ):
     import buildscripts.pylinters
     buildscripts.pylinters.lint_all(None, {}, [])
 
-    import buildscripts.lint
-    if not buildscripts.lint.run_lint( [ "src/mongo/" ] ):
-        raise Exception( "lint errors" )
+run_lint = env.Command(
+    target="#run_lint",
+    source=["buildscripts/lint.py", "src/mongo"],
+    action="$PYTHON ${SOURCES[0]} ${SOURCES[1]}",
+)
 
-env.Alias( "lint" , [] , [ doLint ] )
+env.Alias( "lint" , [ run_lint ] , [ doLint ] )
 env.AlwaysBuild( "lint" )
 
 
@@ -3777,10 +3821,19 @@ env.Alias("distsrc", "distsrc-tgz")
 # reports the number of CPUs for the host system. Perhaps in a future version of
 # psutil it will instead report the correct number when in a container.
 #
+# The presence of the variable ICECC means the icecream tool is
+# enabled and so the default j value should scale accordingly. In this
+# scenario multiply the cpu count by 8 to set a reasonable default since the
+# cluster can handle many more jobs than your local machine but is
+# still throttled by your cpu count in the sense that you can only
+# handle so many python threads sending out jobs.
+#
 # psutil.cpu_count returns None when it can't determine the number. This always
 # fails on BSD's for example.
-if psutil.cpu_count() is not None:
+if psutil.cpu_count() is not None and 'ICECC' not in env:
     env.SetOption('num_jobs', psutil.cpu_count())
+elif psutil.cpu_count() and 'ICECC' in env:
+    env.SetOption('num_jobs', 8 * psutil.cpu_count())
 
 
 # Do this as close to last as possible before reading SConscripts, so

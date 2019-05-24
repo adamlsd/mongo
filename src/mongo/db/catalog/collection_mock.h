@@ -35,7 +35,7 @@
 namespace mongo {
 
 /**
- * This class comprises a mock Collection for use by UUIDCatalog unit tests.
+ * This class comprises a mock Collection for use by CollectionCatalog unit tests.
  */
 class CollectionMock : public Collection {
 public:
@@ -171,7 +171,6 @@ public:
     Status validate(OperationContext* opCtx,
                     ValidateCmdLevel level,
                     bool background,
-                    std::unique_ptr<Lock::CollectionLock> collLk,
                     ValidateResults* results,
                     BSONObjBuilder* output) {
         std::abort();
@@ -222,6 +221,10 @@ public:
         std::abort();
     }
 
+    bool isTemporary(OperationContext* opCtx) const {
+        std::abort();
+    }
+
     bool isCapped() const {
         std::abort();
     }
@@ -246,7 +249,7 @@ public:
         std::abort();
     }
 
-    uint64_t getIndexSize(OperationContext* opCtx, BSONObjBuilder* details, int scale) {
+    uint64_t getIndexSize(OperationContext* opCtx, BSONObjBuilder* details, int scale) const {
         std::abort();
     }
 
@@ -275,10 +278,6 @@ public:
     }
 
     void establishOplogCollectionForLogging(OperationContext* opCtx) {
-        std::abort();
-    }
-
-    DatabaseCatalogEntry* dbce() const {
         std::abort();
     }
 

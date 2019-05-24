@@ -33,6 +33,7 @@
 
 #include "stitch_support/stitch_support.h"
 
+#include "mongo/base/initializer.h"
 #include "mongo/bson/json.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/quick_exit.h"
@@ -473,6 +474,10 @@ TEST_F(StitchSupportTest, TestReplacementStyleUpdateReportsNoModifiedPaths) {
     ASSERT_EQ("[]", getModifiedPaths());
 }
 
+TEST_F(StitchSupportTest, TestReplacementStyleUpdatePreservesId) {
+    ASSERT_EQ("{ \"_id\" : 123, \"b\" : 789 }", checkUpdate("{b: 789}", "{_id: 123, a: 456}"));
+}
+
 TEST_F(StitchSupportTest, TestUpdateArrayElement) {
     ASSERT_EQ("{ \"a\" : [ 2, 2 ] }", checkUpdate("{$set: {'a.0': 2}}", "{a: [1, 2]}"));
     ASSERT_EQ("[a.0]", getModifiedPaths());
@@ -541,7 +546,10 @@ TEST_F(StitchSupportTest, TestUpdateWithSetOnInsert) {
 }
 
 TEST_F(StitchSupportTest, TestUpdateProducesProperStatus) {
-    ASSERT_EQ("Unknown modifier: $bogus", checkUpdateStatus("{$bogus: {a: 2}}", "{a: 1}"));
+    ASSERT_EQ(
+        "Unknown modifier: $bogus. Expected a valid update modifier or pipeline-style update "
+        "specified as an array",
+        checkUpdateStatus("{$bogus: {a: 2}}", "{a: 1}"));
     ASSERT_EQ("Updating the path 'a' would create a conflict at 'a'",
               checkUpdateStatus("{$set: {a: 2, a: 3}}", "{a: 1}"));
     ASSERT_EQ("No array filter found for identifier 'i' in path 'a.$[i]'",
@@ -576,6 +584,14 @@ TEST_F(StitchSupportTest, TestUpsertEmptyMatcher) {
     ASSERT_EQ("{ \"a\" : [ { \"b\" : 2 }, false ] }", checkUpsert("{a: [{b: 2}, false]}", "{}"));
 }
 
+TEST_F(StitchSupportTest, TestUpsertWithReplacementUpdate) {
+    ASSERT_EQ("{ \"_id\" : 1, \"a\" : 2 }", checkUpsert("{a: 2}", "{_id: 1}"));
+    ASSERT_EQ("{ \"_id\" : 1, \"a\" : 2 }", checkUpsert("{a: 2}", "{$and: [{_id: 1}]}"));
+
+    // Upsert with replacement update ues the '_id' field from the query but not any other fields.
+    ASSERT_EQ("{ \"_id\" : 1, \"b\" : 4 }", checkUpsert("{b: 4}", "{_id: 1, a: 2, b: 3}"));
+}
+
 TEST_F(StitchSupportTest, TestUpsertProducesProperStatus) {
     ASSERT_EQ("Cannot apply array updates to non-array element a: 1",
               checkUpsertStatus("{$set: {'a.$[].b': 1}}", "{a: 1}"));
@@ -589,6 +605,20 @@ TEST_F(StitchSupportTest, TestUpsertProducesProperStatus) {
 // calling runGlobalInitializers(), which is called both from the regular unit test main() and from
 // the Stitch Support Library intializer function that gets tested here.
 int main(const int argc, const char* const* const argv) {
+    // See comment by the same code block in mongo_embedded_test.cpp
+    const char* null_argv[1] = {nullptr};
+    auto ret = mongo::runGlobalInitializers(0, null_argv, nullptr);
+    if (!ret.isOK()) {
+        std::cerr << "Global initilization failed";
+        return EXIT_FAILURE;
+    }
+
+    ret = mongo::runGlobalDeinitializers();
+    if (!ret.isOK()) {
+        std::cerr << "Global deinitilization failed";
+        return EXIT_FAILURE;
+    }
+
     const auto result = ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
     // This is the standard exit path for Mongo processes. See the mongo::quickExit() declaration

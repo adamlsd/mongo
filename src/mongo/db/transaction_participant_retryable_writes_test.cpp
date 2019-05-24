@@ -81,7 +81,8 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
         stmtId,                        // statement id
         prevWriteOpTimeInTransaction,  // optime of previous write within same transaction
         boost::none,                   // pre-image optime
-        boost::none);                  // post-image optime
+        boost::none,                   // post-image optime
+        boost::none);                  // prepare
 }
 
 class OpObserverMock : public OpObserverNoop {
@@ -219,7 +220,6 @@ protected:
                            stmtId,
                            link,
                            false /* prepare */,
-                           false /* inTxn */,
                            OplogSlot());
     }
 
@@ -588,7 +588,6 @@ TEST_F(TransactionParticipantRetryableWritesTest, ErrorOnlyWhenStmtIdBeingChecke
                                   1,
                                   {},
                                   false /* prepare */,
-                                  false /* inTxn */,
                                   OplogSlot());
         txnParticipant.onWriteOpCompletedOnPrimary(
             opCtx(), txnNum, {1}, opTime, wallClockTime, boost::none, boost::none);
@@ -618,7 +617,6 @@ TEST_F(TransactionParticipantRetryableWritesTest, ErrorOnlyWhenStmtIdBeingChecke
                                   kIncompleteHistoryStmtId,
                                   link,
                                   false /* prepare */,
-                                  false /* inTxn */,
                                   OplogSlot());
 
         txnParticipant.onWriteOpCompletedOnPrimary(opCtx(),

@@ -57,10 +57,12 @@
 #include "mongo/util/concurrency/value.h"
 #include "mongo/util/errno_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/sockaddr.h"
 #include "mongo/util/quick_exit.h"
+#include "mongo/util/str.h"
 #include "mongo/util/winutil.h"
+
+#include <string>
 
 namespace mongo {
 
@@ -175,7 +177,7 @@ void setSocketKeepAliveParams(int sock,
 }
 
 std::string makeUnixSockPath(int port) {
-    return mongoutils::str::stream() << serverGlobalParams.socket << "/mongodb-" << port << ".sock";
+    return str::stream() << serverGlobalParams.socket << "/mongodb-" << port << ".sock";
 }
 
 // If an ip address is passed in, just return that.  If a hostname is passed
@@ -199,6 +201,12 @@ std::string getHostName() {
         log() << "can't get this server's hostname " << errnoWithDescription();
         return "";
     }
+
+    for (char* c = buf; *c; c++) {
+        // See https://en.cppreference.com/w/cpp/string/byte/tolower
+        *c = static_cast<char>(::tolower(static_cast<unsigned char>(*c)));
+    }
+
     return buf;
 }
 

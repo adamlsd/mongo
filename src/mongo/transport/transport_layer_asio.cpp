@@ -183,11 +183,11 @@ public:
     }
 
     void schedule(Task task) override {
-        asio::post(_ioContext, std::move(task));
+        asio::post(_ioContext, [task = std::move(task)] { task(Status::OK()); });
     }
 
     void dispatch(Task task) override {
-        asio::dispatch(_ioContext, std::move(task));
+        asio::dispatch(_ioContext, [task = std::move(task)] { task(Status::OK()); });
     }
 
     bool onReactorThread() const override {
@@ -343,7 +343,7 @@ public:
 private:
     boost::optional<EndpointVector> _checkForUnixSocket(const HostAndPort& peer) {
 #ifndef _WIN32
-        if (mongoutils::str::contains(peer.host(), '/')) {
+        if (str::contains(peer.host(), '/')) {
             asio::local::stream_protocol::endpoint ep(peer.host());
             return EndpointVector{WrappedEndpoint(ep)};
         }

@@ -3,7 +3,7 @@
  * replaying the commitTransaction oplog entry. We hold back the snapshot so that we make sure that
  * the operations from the transaction are not reflected in the data when recovery starts.
  *
- * @tags: [uses_transactions, uses_prepare_transaction]
+ * @tags: [requires_persistence, uses_transactions, uses_prepare_transaction]
  */
 
 (function() {
@@ -28,18 +28,16 @@
     let sessionDB = session.getDatabase(dbName);
     const sessionColl = sessionDB.getCollection(collName);
 
-    jsTestLog("Disable snapshotting on all nodes");
-
-    // Disable snapshotting so that future operations do not enter the majority snapshot.
-    assert.commandWorked(
-        primary.adminCommand({configureFailPoint: "disableSnapshotting", mode: "alwaysOn"}));
-
     session.startTransaction();
     assert.commandWorked(sessionColl.insert({_id: 1}));
     let prepareTimestamp = PrepareHelpers.prepareTransaction(session);
 
-    jsTestLog("Committing the transaction");
+    jsTestLog("Disable snapshotting on all nodes");
+    // Disable snapshotting so that future operations do not enter the majority snapshot.
+    assert.commandWorked(
+        primary.adminCommand({configureFailPoint: "disableSnapshotting", mode: "alwaysOn"}));
 
+    jsTestLog("Committing the transaction");
     // Since the commitTimestamp is after the last snapshot, this oplog entry will be replayed
     // during replication recovery during restart.
     assert.commandWorked(PrepareHelpers.commitTransaction(session, prepareTimestamp));

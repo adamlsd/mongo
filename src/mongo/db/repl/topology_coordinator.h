@@ -35,6 +35,7 @@
 #include "mongo/db/repl/last_vote.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/split_horizon.h"
 #include "mongo/db/repl/update_position_args.h"
 #include "mongo/db/server_options.h"
 #include "mongo/stdx/functional.h"
@@ -230,7 +231,7 @@ public:
      * the config getWriteConcernMajorityShouldJournal is set.
      * Returns true if the _lastCommittedOpTime was changed.
      */
-    bool updateLastCommittedOpTime();
+    bool updateLastCommittedOpTimeAndWallTime();
 
     /**
      * Updates _lastCommittedOpTime to be 'committedOpTime' if it is more recent than the current
@@ -239,12 +240,15 @@ public:
      * 'fromSyncSource'=true, which guarantees we are on the same branch of history as
      * 'committedOpTime', so we update our commit point to min(committedOpTime, lastApplied).
      */
-    bool advanceLastCommittedOpTime(OpTime committedOpTime, bool fromSyncSource);
+    bool advanceLastCommittedOpTimeAndWallTime(OpTimeAndWallTime committedOpTimeAndWallTime,
+                                               bool fromSyncSource);
 
     /**
      * Returns the OpTime of the latest majority-committed op known to this server.
      */
     OpTime getLastCommittedOpTime() const;
+
+    OpTimeAndWallTime getLastCommittedOpTimeAndWallTime() const;
 
     /**
      * Returns true if it's safe to transition to LeaderMode::kMaster.
@@ -289,7 +293,7 @@ public:
     struct ReplSetStatusArgs {
         const Date_t now;
         const unsigned selfUptime;
-        const OpTime readConcernMajorityOpTime;
+        const OpTimeAndWallTime readConcernMajorityOpTime;
         const BSONObj initialSyncStatus;
 
         // boost::none if the storage engine does not support RTT, or if it does but does not
@@ -318,7 +322,8 @@ public:
     // Produce a reply to an ismaster request.  It is only valid to call this if we are a
     // replset.  Drivers interpret the isMaster fields according to the Server Discovery and
     // Monitoring Spec, see the "Parsing an isMaster response" section.
-    void fillIsMasterForReplSet(IsMasterResponse* response);
+    void fillIsMasterForReplSet(IsMasterResponse* response,
+                                const SplitHorizon::Parameters& horizonParams);
 
     // Produce member data for the serverStatus command and diagnostic logging.
     void fillMemberData(BSONObjBuilder* result);
@@ -935,7 +940,7 @@ private:
     Date_t _electionSleepUntil;
 
     // OpTime of the latest committed operation.
-    OpTime _lastCommittedOpTime;
+    OpTimeAndWallTime _lastCommittedOpTimeAndWallTime;
 
     // OpTime representing our transition to PRIMARY and the start of our term.
     // _lastCommittedOpTime cannot be set to an earlier OpTime.

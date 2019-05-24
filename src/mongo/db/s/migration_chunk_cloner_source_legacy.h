@@ -81,7 +81,8 @@ public:
                     const repl::OpTime& opTime) override;
 
     void onUpdateOp(OperationContext* opCtx,
-                    const BSONObj& updatedDoc,
+                    boost::optional<BSONObj> preImageDoc,
+                    const BSONObj& postImageDoc,
                     const repl::OpTime& opTime,
                     const repl::OpTime& prePostImageOpTime) override;
 
@@ -89,6 +90,10 @@ public:
                     const BSONObj& deletedDocId,
                     const repl::OpTime& opTime,
                     const repl::OpTime& preImageOpTime) override;
+
+    void onTransactionPrepareOrUnpreparedCommit(OperationContext* opCtx,
+                                                const repl::OpTime& opTime) override;
+
 
     // Legacy cloner specific functionality
 
@@ -120,7 +125,8 @@ public:
 
     /**
      * Called by the recipient shard. Populates the passed BSONArrayBuilder with a set of documents,
-     * which are part of the initial clone sequence.
+     * which are part of the initial clone sequence. Assumes that there is only one active caller
+     * to this method at a time (otherwise, it can cause corruption/crash).
      *
      * Returns OK status on success. If there were documents returned in the result argument, this
      * method should be called more times until the result is empty. If it returns failure, it is
@@ -177,6 +183,7 @@ public:
 
 private:
     friend class LogOpForShardingHandler;
+    friend class LogPrepareOrCommitOpForShardingHandler;
 
     // Represents the states in which the cloner can be
     enum State { kNew, kCloning, kDone };
@@ -202,20 +209,12 @@ private:
     Status _storeCurrentLocs(OperationContext* opCtx);
 
     /**
-     * Insert items from docIdList to a new array with the given fieldName in the given builder. If
-     * explode is true, the inserted object will be the full version of the document. Note that
-     * whenever an item from the docList is inserted to the array, it will also be removed from
-     * docList.
-     *
-     * Should be holding the collection lock for ns if explode is true.
+     * Adds the OpTime to the list of OpTimes for oplog entries that we should consider migrating as
+     * part of session migration.
      */
-    void _xfer(OperationContext* opCtx,
-               Database* db,
-               std::list<BSONObj>* docIdList,
-               BSONObjBuilder* builder,
-               const char* fieldName,
-               long long* sizeAccumulator,
-               bool explode);
+    void _addToSessionMigrationOptimeQueue(
+        const repl::OpTime& opTime,
+        SessionCatalogMigrationSource::EntryAtOpTimeType entryAtOpTimeType);
 
     /*
      * Consumes the operation track request and appends the relevant document changes to
@@ -265,6 +264,26 @@ private:
      * around this class's mutex.
      */
     void _drainAllOutstandingOperationTrackRequests(stdx::unique_lock<stdx::mutex>& lk);
+
+    /**
+     * Appends to the builder the list of _id of documents that were deleted during migration.
+     * Entries appended to the builder are removed from the list.
+     * Returns the total size of the documents that were appended + initialSize.
+     */
+    long long _xferDeletes(BSONObjBuilder* builder,
+                           std::list<BSONObj>* removeList,
+                           long long initialSize);
+
+    /**
+     * Appends to the builder the list of full documents that were modified/inserted during the
+     * migration. Entries appended to the builder are removed from the list.
+     * Returns the total size of the documents that were appended + initialSize.
+     */
+    long long _xferUpdates(OperationContext* opCtx,
+                           Database* db,
+                           BSONObjBuilder* builder,
+                           std::list<BSONObj>* updateList,
+                           long long initialSize);
 
     // The original move chunk request
     const MoveChunkRequest _args;

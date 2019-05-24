@@ -36,6 +36,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/rpc/write_concern_error_detail.h"
 #include "mongo/s/async_requests_sender.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/commands/strategy.h"
@@ -51,6 +52,11 @@ void appendWriteConcernErrorToCmdResponse(const ShardId& shardID,
                                           BSONObjBuilder& responseBuilder);
 
 /**
+ * Creates and returns a WriteConcernErrorDetail object from a BSONObj.
+ */
+std::unique_ptr<WriteConcernErrorDetail> getWriteConcernErrorDetailFromBSONObj(const BSONObj& obj);
+
+/**
  * Dispatches all the specified requests in parallel and waits until all complete, returning a
  * vector of the same size and positions as that of 'requests'.
  *
@@ -61,7 +67,8 @@ std::vector<AsyncRequestsSender::Response> gatherResponses(
     StringData dbName,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
-    const std::vector<AsyncRequestsSender::Request>& requests);
+    const std::vector<AsyncRequestsSender::Request>& requests,
+    const std::set<ErrorCodes::Error>& ignorableErrors = {});
 
 /**
  * Returns a copy of 'cmdObj' with 'version' appended.
@@ -128,7 +135,8 @@ std::vector<AsyncRequestsSender::Response> scatterGatherOnlyVersionIfUnsharded(
     const NamespaceString& nss,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
-    Shard::RetryPolicy retryPolicy);
+    Shard::RetryPolicy retryPolicy,
+    const std::set<ErrorCodes::Error>& ignorableErrors = {});
 
 /**
  * Utility for dispatching commands against the primary of a database and attach the appropriate
@@ -157,7 +165,7 @@ AsyncRequestsSender::Response executeCommandAgainstDatabasePrimary(
 bool appendRawResponses(OperationContext* opCtx,
                         std::string* errmsg,
                         BSONObjBuilder* output,
-                        std::vector<AsyncRequestsSender::Response> shardResponses,
+                        const std::vector<AsyncRequestsSender::Response>& shardResponses,
                         std::set<ErrorCodes::Error> ignoredErrors = {});
 
 /**

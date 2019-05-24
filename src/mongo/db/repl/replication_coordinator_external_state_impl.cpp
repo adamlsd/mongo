@@ -102,9 +102,9 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -449,6 +449,7 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
 
 void ReplicationCoordinatorExternalStateImpl::onDrainComplete(OperationContext* opCtx) {
     invariant(!opCtx->lockState()->isLocked());
+    invariant(!opCtx->shouldParticipateInFlowControl());
 
     // If this is a config server node becoming a primary, ensure the balancer is ready to start.
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
@@ -460,6 +461,9 @@ void ReplicationCoordinatorExternalStateImpl::onDrainComplete(OperationContext* 
 
 OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationContext* opCtx) {
     invariant(opCtx->lockState()->isRSTLExclusive());
+    invariant(!opCtx->shouldParticipateInFlowControl());
+
+    MongoDSessionCatalog::onStepUp(opCtx);
 
     // Clear the appliedThrough marker so on startup we'll use the top of the oplog. This must be
     // done before we add anything to our oplog.
@@ -487,14 +491,9 @@ OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationC
     fassert(28665, loadLastOpTimeAndWallTimeResult);
     auto opTimeToReturn = loadLastOpTimeAndWallTimeResult.getValue().opTime;
 
-
     _shardingOnTransitionToPrimaryHook(opCtx);
 
-    // This has to go before reaquiring locks for prepared transactions, otherwise this can be
-    // blocked by prepared transactions.
     _dropAllTempCollections(opCtx);
-
-    MongoDSessionCatalog::onStepUp(opCtx);
 
     notifyFreeMonitoringOnTransitionToPrimary();
 
@@ -571,6 +570,10 @@ StatusWith<LastVote> ReplicationCoordinatorExternalStateImpl::loadLocalLastVoteD
 Status ReplicationCoordinatorExternalStateImpl::storeLocalLastVoteDocument(
     OperationContext* opCtx, const LastVote& lastVote) {
     BSONObj lastVoteObj = lastVote.toBSON();
+
+    // Writes that are part of elections should not be throttled.
+    invariant(!opCtx->shouldParticipateInFlowControl());
+
     try {
         Status status =
             writeConflictRetry(opCtx, "save replica set lastVote", lastVoteCollectionName, [&] {
@@ -779,12 +782,8 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
 
         const auto configsvrConnStr =
             Grid::get(opCtx)->shardRegistry()->getConfigShard()->getConnString();
-        status = ShardingInitializationMongoD::get(opCtx)->updateShardIdentityConfigString(
-            opCtx, configsvrConnStr);
-        if (!status.isOK()) {
-            warning() << "error encountered while trying to update config connection string to "
-                      << configsvrConnStr << causedBy(status);
-        }
+        ShardingInitializationMongoD::get(opCtx)->updateShardIdentityConfigString(opCtx,
+                                                                                  configsvrConnStr);
 
         CatalogCacheLoader::get(_service).onStepUp();
         ChunkSplitter::get(_service).onStepUp();
@@ -823,9 +822,8 @@ void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationC
     // GlobalLock in mode X.
     Lock::GlobalLock lk(opCtx, MODE_IS);
 
-    std::vector<std::string> dbNames;
     StorageEngine* storageEngine = _service->getStorageEngine();
-    storageEngine->listDatabases(&dbNames);
+    std::vector<std::string> dbNames = storageEngine->listDatabases();
 
     for (std::vector<std::string>::iterator it = dbNames.begin(); it != dbNames.end(); ++it) {
         // The local db is special because it isn't replicated. It is cleared at startup even on
@@ -833,7 +831,7 @@ void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationC
         if (*it == "local")
             continue;
         LOG(2) << "Removing temporary collections from " << *it;
-        AutoGetDb autoDb(opCtx, *it, MODE_X);
+        AutoGetDb autoDb(opCtx, *it, MODE_IX);
         invariant(autoDb.getDb(), str::stream() << "Unable to get reference to database " << *it);
         autoDb.getDb()->clearTmpCollections(opCtx);
     }

@@ -94,7 +94,6 @@ void TransactionMetricsObserver::onUnstash(ServerTransactionsMetrics* serverTran
 
 void TransactionMetricsObserver::onCommit(ServerTransactionsMetrics* serverTransactionsMetrics,
                                           TickSource* tickSource,
-                                          boost::optional<repl::OpTime> oldestOplogEntryOpTime,
                                           Top* top) {
     //
     // Per transaction metrics.
@@ -122,18 +121,10 @@ void TransactionMetricsObserver::onCommit(ServerTransactionsMetrics* serverTrans
     auto duration =
         durationCount<Microseconds>(_singleTransactionStats.getDuration(tickSource, curTick));
     top->incrementGlobalTransactionLatencyStats(static_cast<uint64_t>(duration));
-
-    // Remove this transaction's oldest oplog entry OpTime if one was written.
-    if (oldestOplogEntryOpTime) {
-        serverTransactionsMetrics->removeActiveOpTime(*oldestOplogEntryOpTime);
-    }
 }
 
 void TransactionMetricsObserver::_onAbortActive(
-    ServerTransactionsMetrics* serverTransactionsMetrics,
-    TickSource* tickSource,
-    boost::optional<repl::OpTime> oldestOplogEntryOpTime,
-    Top* top) {
+    ServerTransactionsMetrics* serverTransactionsMetrics, TickSource* tickSource, Top* top) {
 
     auto curTick = tickSource->getTicks();
     invariant(_singleTransactionStats.isActive());
@@ -152,18 +143,10 @@ void TransactionMetricsObserver::_onAbortActive(
         serverTransactionsMetrics->incrementTotalPreparedThenAborted();
         serverTransactionsMetrics->decrementCurrentPrepared();
     }
-
-    // Remove this transaction's oldest oplog entry OpTime if one was written.
-    if (oldestOplogEntryOpTime) {
-        serverTransactionsMetrics->removeActiveOpTime(*oldestOplogEntryOpTime);
-    }
 }
 
 void TransactionMetricsObserver::_onAbortInactive(
-    ServerTransactionsMetrics* serverTransactionsMetrics,
-    TickSource* tickSource,
-    boost::optional<repl::OpTime> oldestOplogEntryOpTime,
-    Top* top) {
+    ServerTransactionsMetrics* serverTransactionsMetrics, TickSource* tickSource, Top* top) {
     auto curTick = tickSource->getTicks();
     invariant(!_singleTransactionStats.isActive());
     invariant(!_singleTransactionStats.isPrepared());
@@ -173,21 +156,15 @@ void TransactionMetricsObserver::_onAbortInactive(
     // Server wide transactions metrics.
     //
     serverTransactionsMetrics->decrementCurrentInactive();
-
-    // Remove this transaction's oldest oplog entry OpTime if one was written.
-    if (oldestOplogEntryOpTime) {
-        serverTransactionsMetrics->removeActiveOpTime(*oldestOplogEntryOpTime);
-    }
 }
 
 void TransactionMetricsObserver::onAbort(ServerTransactionsMetrics* serverTransactionsMetrics,
                                          TickSource* tickSource,
-                                         boost::optional<repl::OpTime> oldestOplogEntryOpTime,
                                          Top* top) {
     if (_singleTransactionStats.isActive()) {
-        _onAbortActive(serverTransactionsMetrics, tickSource, oldestOplogEntryOpTime, top);
+        _onAbortActive(serverTransactionsMetrics, tickSource, top);
     } else {
-        _onAbortInactive(serverTransactionsMetrics, tickSource, oldestOplogEntryOpTime, top);
+        _onAbortInactive(serverTransactionsMetrics, tickSource, top);
     }
 }
 
@@ -242,17 +219,12 @@ void TransactionMetricsObserver::_onAbort(ServerTransactionsMetrics* serverTrans
 }
 
 void TransactionMetricsObserver::onPrepare(ServerTransactionsMetrics* serverTransactionsMetrics,
-                                           repl::OpTime prepareOpTime,
                                            TickSource::Tick curTick) {
     //
     // Per transaction metrics.
     //
     _singleTransactionStats.setPreparedStartTime(curTick);
 
-    // Since we currently only write an oplog entry for an in progress transaction when it is in
-    // the prepare state, the prepareOpTime is currently the oldest optime written to the
-    // oplog for this transaction.
-    serverTransactionsMetrics->addActiveOpTime(prepareOpTime);
     serverTransactionsMetrics->incrementCurrentPrepared();
     serverTransactionsMetrics->incrementTotalPrepared();
 }

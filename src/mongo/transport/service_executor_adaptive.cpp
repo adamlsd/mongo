@@ -44,7 +44,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/scopeguard.h"
-#include "mongo/util/stringutils.h"
+#include "mongo/util/str.h"
 
 #include <asio.hpp>
 
@@ -183,7 +183,8 @@ Status ServiceExecutorAdaptive::schedule(ServiceExecutorAdaptive::Task task,
     }
 
     auto wrappedTask =
-        [ this, task = std::move(task), scheduleTime, pendingCounterPtr, taskName, flags ] {
+        [ this, task = std::move(task), scheduleTime, pendingCounterPtr, taskName, flags ](
+            auto status) {
         pendingCounterPtr->subtractAndFetch(1);
         auto start = _tickSource->getTicks();
         _totalSpentQueued.addAndFetch(start - scheduleTime);

@@ -220,6 +220,13 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
         // possible, we return nullptr, and the caller is responsible for trying again without
         // passing a 'groupIdForDistinctScan' value.
         ParsedDistinct parsedDistinct(std::move(cq.getValue()), *groupIdForDistinctScan);
+
+        // Note that we request a "strict" distinct plan because:
+        // 1) We do not want to have to de-duplicate the results of the plan.
+        //
+        // 2) We not want a plan that will return separate values for each array element. For
+        // example, if we have a document {a: [1,2]} and group by "a" a DISTINCT_SCAN on an "a"
+        // index would produce one result for '1' and another for '2', which would be incorrect.
         auto distinctExecutor =
             getExecutorDistinct(opCtx,
                                 collection,
@@ -291,17 +298,18 @@ StringData extractGeoNearFieldFromIndexes(OperationContext* opCtx, Collection* c
 }
 }  // namespace
 
-void PipelineD::prepareCursorSource(Collection* collection,
-                                    const NamespaceString& nss,
-                                    const AggregationRequest* aggRequest,
-                                    Pipeline* pipeline) {
+std::pair<PipelineD::AttachExecutorCallback, std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>>
+PipelineD::buildInnerQueryExecutor(Collection* collection,
+                                   const NamespaceString& nss,
+                                   const AggregationRequest* aggRequest,
+                                   Pipeline* pipeline) {
     auto expCtx = pipeline->getContext();
 
     // We will be modifying the source vector as we go.
     Pipeline::SourceContainer& sources = pipeline->_sources;
 
     if (!sources.empty() && !sources.front()->constraints().requiresInputDocSource) {
-        return;
+        return {};
     }
 
     // We are going to generate an input cursor, so we need to be holding the collection lock.
@@ -339,10 +347,15 @@ void PipelineD::prepareCursorSource(Collection* collection,
                 // TODO SERVER-37453 this should no longer be necessary when we no don't need locks
                 // to destroy a PlanExecutor.
                 auto deps = pipeline->getDependencies(DepsTracker::MetadataAvailable::kNoMetadata);
-                addCursorSource(pipeline,
-                                DocumentSourceCursor::create(collection, std::move(exec), expCtx),
-                                std::move(deps));
-                return;
+                auto attachExecutorCallback =
+                    [deps](Collection* collection,
+                           std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec,
+                           Pipeline* pipeline) {
+                        auto cursor = DocumentSourceCursor::create(
+                            collection, std::move(exec), pipeline->getContext());
+                        addCursorSource(pipeline, std::move(cursor), std::move(deps));
+                    };
+                return std::make_pair(std::move(attachExecutorCallback), std::move(exec));
             }
         }
     }
@@ -352,10 +365,33 @@ void PipelineD::prepareCursorSource(Collection* collection,
     const auto geoNearStage =
         sources.empty() ? nullptr : dynamic_cast<DocumentSourceGeoNear*>(sources.front().get());
     if (geoNearStage) {
-        prepareGeoNearCursorSource(collection, nss, aggRequest, pipeline);
+        return buildInnerQueryExecutorGeoNear(collection, nss, aggRequest, pipeline);
     } else {
-        prepareGenericCursorSource(collection, nss, aggRequest, pipeline);
+        return buildInnerQueryExecutorGeneric(collection, nss, aggRequest, pipeline);
     }
+}
+
+void PipelineD::attachInnerQueryExecutorToPipeline(
+    Collection* collection,
+    PipelineD::AttachExecutorCallback attachExecutorCallback,
+    std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec,
+    Pipeline* pipeline) {
+    // If the pipeline doesn't need a $cursor stage, there will be no callback function and
+    // PlanExecutor provided in the 'attachExecutorCallback' object, so we don't need to do
+    // anything.
+    if (attachExecutorCallback && exec) {
+        attachExecutorCallback(collection, std::move(exec), pipeline);
+    }
+}
+
+void PipelineD::buildAndAttachInnerQueryExecutorToPipeline(Collection* collection,
+                                                           const NamespaceString& nss,
+                                                           const AggregationRequest* aggRequest,
+                                                           Pipeline* pipeline) {
+
+    auto callback = PipelineD::buildInnerQueryExecutor(collection, nss, aggRequest, pipeline);
+    PipelineD::attachInnerQueryExecutorToPipeline(
+        collection, callback.first, std::move(callback.second), pipeline);
 }
 
 namespace {
@@ -397,10 +433,11 @@ getSortAndGroupStagesFromPipeline(const Pipeline::SourceContainer& sources) {
 
 }  // namespace
 
-void PipelineD::prepareGenericCursorSource(Collection* collection,
-                                           const NamespaceString& nss,
-                                           const AggregationRequest* aggRequest,
-                                           Pipeline* pipeline) {
+std::pair<PipelineD::AttachExecutorCallback, std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>>
+PipelineD::buildInnerQueryExecutorGeneric(Collection* collection,
+                                          const NamespaceString& nss,
+                                          const AggregationRequest* aggRequest,
+                                          Pipeline* pipeline) {
     Pipeline::SourceContainer& sources = pipeline->_sources;
     auto expCtx = pipeline->getContext();
 
@@ -477,18 +514,23 @@ void PipelineD::prepareGenericCursorSource(Collection* collection,
     const bool trackOplogTS =
         (pipeline->peekFront() && pipeline->peekFront()->constraints().isChangeStreamStage());
 
-    addCursorSource(pipeline,
-                    DocumentSourceCursor::create(collection, std::move(exec), expCtx, trackOplogTS),
-                    deps,
-                    queryObj,
-                    sortObj,
-                    projForQuery);
+    auto attachExecutorCallback = [deps, queryObj, sortObj, projForQuery, trackOplogTS](
+        Collection* collection,
+        std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec,
+        Pipeline* pipeline) {
+        auto cursor = DocumentSourceCursor::create(
+            collection, std::move(exec), pipeline->getContext(), trackOplogTS);
+        addCursorSource(
+            pipeline, std::move(cursor), std::move(deps), queryObj, sortObj, projForQuery);
+    };
+    return std::make_pair(std::move(attachExecutorCallback), std::move(exec));
 }
 
-void PipelineD::prepareGeoNearCursorSource(Collection* collection,
-                                           const NamespaceString& nss,
-                                           const AggregationRequest* aggRequest,
-                                           Pipeline* pipeline) {
+std::pair<PipelineD::AttachExecutorCallback, std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>>
+PipelineD::buildInnerQueryExecutorGeoNear(Collection* collection,
+                                          const NamespaceString& nss,
+                                          const AggregationRequest* aggRequest,
+                                          Pipeline* pipeline) {
     uassert(ErrorCodes::NamespaceNotFound,
             str::stream() << "$geoNear requires a geo index to run, but " << nss.ns()
                           << " does not exist",
@@ -532,17 +574,26 @@ void PipelineD::prepareGeoNearCursorSource(Collection* collection,
               str::stream() << "Unexpectedly got the following sort from the query system: "
                             << sortFromQuerySystem.jsonString());
 
-    auto geoNearCursor =
-        DocumentSourceGeoNearCursor::create(collection,
-                                            std::move(exec),
-                                            expCtx,
-                                            geoNearStage->getDistanceField(),
-                                            geoNearStage->getLocationField(),
-                                            geoNearStage->getDistanceMultiplier().value_or(1.0));
-
+    auto attachExecutorCallback =
+        [
+          deps,
+          distanceField = geoNearStage->getDistanceField(),
+          locationField = geoNearStage->getLocationField(),
+          distanceMultiplier = geoNearStage->getDistanceMultiplier().value_or(1.0)
+        ](Collection * collection,
+          std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec,
+          Pipeline * pipeline) {
+        auto cursor = DocumentSourceGeoNearCursor::create(collection,
+                                                          std::move(exec),
+                                                          pipeline->getContext(),
+                                                          distanceField,
+                                                          locationField,
+                                                          distanceMultiplier);
+        addCursorSource(pipeline, std::move(cursor), std::move(deps));
+    };
     // Remove the initial $geoNear; it will be replaced by $geoNearCursor.
     sources.pop_front();
-    addCursorSource(pipeline, std::move(geoNearCursor), std::move(deps));
+    return std::make_pair(std::move(attachExecutorCallback), std::move(exec));
 }
 
 StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prepareExecutor(
@@ -755,7 +806,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
                     << swExecutorProj.getStatus().toString()};
     }
 
-    // The query system couldn't provide a covered projection.
+    // The query system couldn't provide a covered or simple uncovered projection.
     *projectionObj = BSONObj();
     // If this doesn't work, nothing will.
     return attemptToGetExecutor(opCtx,

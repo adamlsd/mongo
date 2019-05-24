@@ -47,6 +47,7 @@
 #include "mongo/db/exec/update_stage.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete_request.h"
@@ -110,7 +111,8 @@ void makeUpdateRequest(const OperationContext* opCtx,
                        UpdateRequest* requestOut) {
     requestOut->setQuery(args.getQuery());
     requestOut->setProj(args.getFields());
-    requestOut->setUpdates(args.getUpdateObj());
+    invariant(args.getUpdate());
+    requestOut->setUpdateModification(*args.getUpdate());
     requestOut->setSort(args.getSort());
     requestOut->setCollation(args.getCollation());
     requestOut->setArrayFilters(args.getArrayFilters());
@@ -262,13 +264,14 @@ public:
                 uassertStatusOK(getExecutorDelete(opCtx, opDebug, collection, &parsedDelete));
 
             auto bodyBuilder = result->getBodyBuilder();
-            Explain::explainStages(exec.get(), collection, verbosity, &bodyBuilder);
+            Explain::explainStages(exec.get(), collection, verbosity, BSONObj(), &bodyBuilder);
         } else {
             UpdateRequest request(nsString);
             const bool isExplain = true;
             makeUpdateRequest(opCtx, args, isExplain, &request);
 
-            ParsedUpdate parsedUpdate(opCtx, &request);
+            const ExtensionsCallbackReal extensionsCallback(opCtx, &request.getNamespaceString());
+            ParsedUpdate parsedUpdate(opCtx, &request, extensionsCallback);
             uassertStatusOK(parsedUpdate.parseRequest());
 
             // Explain calls of the findAndModify command are read-only, but we take write
@@ -286,7 +289,7 @@ public:
                 uassertStatusOK(getExecutorUpdate(opCtx, opDebug, collection, &parsedUpdate));
 
             auto bodyBuilder = result->getBodyBuilder();
-            Explain::explainStages(exec.get(), collection, verbosity, &bodyBuilder);
+            Explain::explainStages(exec.get(), collection, verbosity, BSONObj(), &bodyBuilder);
         }
 
         return Status::OK();
@@ -304,8 +307,9 @@ public:
         OpDebug* const opDebug = &curOp->debug();
 
         boost::optional<DisableDocumentValidation> maybeDisableValidation;
-        if (shouldBypassDocumentValidationForCommand(cmdObj))
+        if (shouldBypassDocumentValidationForCommand(cmdObj)) {
             maybeDisableValidation.emplace(opCtx);
+        }
 
         const auto txnParticipant = TransactionParticipant::get(opCtx);
         const auto inTransaction = txnParticipant && txnParticipant.inMultiDocumentTransaction();
@@ -409,7 +413,9 @@ public:
                     request.setStmtId(stmtId);
                 }
 
-                ParsedUpdate parsedUpdate(opCtx, &request);
+                const ExtensionsCallbackReal extensionsCallback(opCtx,
+                                                                &request.getNamespaceString());
+                ParsedUpdate parsedUpdate(opCtx, &request, extensionsCallback);
                 uassertStatusOK(parsedUpdate.parseRequest());
 
                 // These are boost::optional, because if the database or collection does not exist,

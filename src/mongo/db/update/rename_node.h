@@ -57,7 +57,8 @@ public:
 
     void setCollator(const CollatorInterface* collator) final {}
 
-    ApplyResult apply(ApplyParams applyParams) const final;
+    ApplyResult apply(ApplyParams applyParams,
+                      UpdateNodeApplyParams updateNodeApplyParams) const final;
 
     void produceSerializationMap(
         FieldRef* currentPath,
@@ -74,6 +75,10 @@ public:
 
     void acceptVisitor(UpdateNodeVisitor* visitor) final {
         visitor->visit(this);
+    }
+
+    BSONElement getValue() const {
+        return _val;
     }
 
 private:

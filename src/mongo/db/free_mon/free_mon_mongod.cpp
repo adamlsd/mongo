@@ -76,13 +76,13 @@ constexpr Seconds kDefaultMetricsGatherInterval(60);
 
 auto makeTaskExecutor(ServiceContext* /*serviceContext*/) {
     ThreadPool::Options tpOptions;
-    tpOptions.poolName = "freemon";
+    tpOptions.poolName = "FreeMonHTTP";
     tpOptions.maxThreads = 2;
     tpOptions.onCreateThread = [](const std::string& threadName) {
         Client::initThread(threadName.c_str());
     };
     return stdx::make_unique<executor::ThreadPoolTaskExecutor>(
-        std::make_unique<ThreadPool>(tpOptions), executor::makeNetworkInterface("FreeMon"));
+        std::make_unique<ThreadPool>(tpOptions), executor::makeNetworkInterface("FreeMonNet"));
 }
 
 class FreeMonNetworkHttp : public FreeMonNetworkInterface {
@@ -113,10 +113,7 @@ public:
             auto blobSize = blob.size();
             auto blobData = blob.release();
             ConstDataRange cdr(blobData.get(), blobSize);
-            auto swDoc = cdr.read<Validated<BSONObj>>();
-            uassertStatusOK(swDoc.getStatus());
-
-            BSONObj respObj(swDoc.getValue());
+            BSONObj respObj = cdr.read<Validated<BSONObj>>();
 
             auto resp =
                 FreeMonRegistrationResponse::parse(IDLParserErrorContext("response"), respObj);
@@ -140,10 +137,7 @@ public:
             auto blobData = blob.release();
             ConstDataRange cdr(blobData.get(), blobSize);
 
-            auto swDoc = cdr.read<Validated<BSONObj>>();
-            uassertStatusOK(swDoc.getStatus());
-
-            BSONObj respObj(swDoc.getValue());
+            BSONObj respObj = cdr.read<Validated<BSONObj>>();
 
             auto resp = FreeMonMetricsResponse::parse(IDLParserErrorContext("response"), respObj);
 
@@ -160,7 +154,7 @@ private:
         auto status = _executor->scheduleWork(
             [ promise = std::move(pf.promise), url = std::move(url), data = std::move(data), this ](
                 const executor::TaskExecutor::CallbackArgs& cbArgs) mutable {
-                ConstDataRange cdr(reinterpret_cast<char*>(data->data()), data->size());
+                ConstDataRange cdr(data->data(), data->size());
                 try {
                     auto result = this->_client->post(url, cdr);
                     promise.emplaceValue(std::move(result));

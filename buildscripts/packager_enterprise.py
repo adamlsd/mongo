@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Packager Enterprise module."""
 
 # This program makes Debian and RPM repositories for MongoDB, by
@@ -36,7 +36,9 @@ import sys
 import tempfile
 import time
 
-import packager  # pylint: disable=relative-import
+sys.path.append(os.getcwd())
+
+import packager  # pylint: disable=wrong-import-position
 
 # The MongoDB names for the architectures we support.
 ARCH_CHOICES = ["x86_64", "ppc64le", "s390x", "arm64"]
@@ -128,7 +130,7 @@ class EnterpriseDistro(packager.Distro):
             if self.dname == 'redhat':
                 return ["rhel67", "rhel72"]
             if self.dname == 'suse':
-                return ["suse11", "suse12"]
+                return ["suse11", "suse12", "suse15"]
             if self.dname == 'ubuntu':
                 return ["ubuntu1604", "ubuntu1804"]
             return []
@@ -161,7 +163,7 @@ def main():
     if prefix is None:
         prefix = tempfile.mkdtemp()
 
-    print "Working in directory %s" % prefix
+    print("Working in directory %s" % prefix)
 
     os.chdir(prefix)
     try:
@@ -222,7 +224,7 @@ def unpack_binaries_into(build_os, arch, spec, where):
             os.rename("%s/%s" % (release_dir, releasefile), releasefile)
         os.rmdir(release_dir)
     except Exception:
-        exc = sys.exc_value
+        exc = sys.exc_info()[1]
         os.chdir(rootdir)
         raise exc
     os.chdir(rootdir)
@@ -240,7 +242,7 @@ def make_package(distro, build_os, arch, spec, srcdir):
     # directory, so the debian directory is needed in all cases (and
     # innocuous in the debianoids' sdirs).
     for pkgdir in ["debian", "rpm"]:
-        print "Copying packaging files from %s to %s" % ("%s/%s" % (srcdir, pkgdir), sdir)
+        print("Copying packaging files from %s to %s" % ("%s/%s" % (srcdir, pkgdir), sdir))
         # FIXME: sh-dash-cee is bad. See if tarfile can do this.
         packager.sysassert([
             "sh", "-c",
@@ -275,13 +277,13 @@ def make_deb_repo(repo, distro, build_os):
     oldpwd = os.getcwd()
     os.chdir(repo + "../../../../../../")
     try:
-        dirs = set([
+        dirs = {
             os.path.dirname(deb)[2:]
-            for deb in packager.backtick(["find", ".", "-name", "*.deb"]).split()
-        ])
+            for deb in packager.backtick(["find", ".", "-name", "*.deb"]).decode('utf-8').split()
+        }
         for directory in dirs:
             st = packager.backtick(["dpkg-scanpackages", directory, "/dev/null"])
-            with open(directory + "/Packages", "w") as fh:
+            with open(directory + "/Packages", "wb") as fh:
                 fh.write(st)
             bt = packager.backtick(["gzip", "-9c", directory + "/Packages"])
             with open(directory + "/Packages.gz", "wb") as fh:
@@ -307,8 +309,8 @@ Description: MongoDB packages
     os.chdir(repo + "../../")
     s2 = packager.backtick(["apt-ftparchive", "release", "."])
     try:
-        with open("Release", 'w') as fh:
-            fh.write(s1)
+        with open("Release", 'wb') as fh:
+            fh.write(s1.encode('utf-8'))
             fh.write(s2)
     finally:
         os.chdir(oldpwd)
@@ -330,7 +332,7 @@ def move_repos_into_place(src, dst):  # pylint: disable=too-many-branches
             os.mkdir(dname)
             break
         except OSError:
-            exc = sys.exc_value
+            exc = sys.exc_info()[1]
             if exc.errno == errno.EEXIST:
                 pass
             else:
@@ -350,7 +352,7 @@ def move_repos_into_place(src, dst):  # pylint: disable=too-many-branches
             os.symlink(dname, tmpnam)
             break
         except OSError:  # as exc: # Python >2.5
-            exc = sys.exc_value
+            exc = sys.exc_info()[1]
             if exc.errno == errno.EEXIST:
                 pass
             else:
@@ -368,7 +370,7 @@ def move_repos_into_place(src, dst):  # pylint: disable=too-many-branches
                 os.symlink(os.readlink(dst), oldnam)
                 break
             except OSError:  # as exc: # Python >2.5
-                exc = sys.exc_value
+                exc = sys.exc_info()[1]
                 if exc.errno == errno.EEXIST:
                     pass
                 else:

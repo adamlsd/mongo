@@ -48,8 +48,8 @@
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/concurrency/thread_pool.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 
 namespace {
 using namespace mongo;
@@ -791,7 +791,7 @@ TEST_F(DBsClonerTest, FailingToScheduleSecondDatabaseClonerShouldCancelTheCloner
 
     TaskExecutorWithFailureInScheduleRemoteCommand _executorProxy(
         &getExecutor(), [](const executor::RemoteCommandRequest& request) {
-            return str::equals("listCollections", request.cmdObj.firstElementFieldName()) &&
+            return request.cmdObj.firstElementFieldNameStringData() == "listCollections" &&
                 request.dbname == "b";
         });
 

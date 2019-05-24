@@ -33,7 +33,7 @@
 
 #include "mongo/db/index_builds_coordinator_mongod.h"
 
-#include "mongo/db/catalog/uuid_catalog.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index_build_entry_helpers.h"
@@ -41,7 +41,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -154,7 +154,7 @@ IndexBuildsCoordinatorMongod::startIndexBuild(OperationContext* opCtx,
         opDesc = curOp->opDescription().getOwned();
     }
 
-    Status status = _threadPool.schedule([
+    _threadPool.schedule([
         this,
         buildUUID,
         deadline,
@@ -162,8 +162,23 @@ IndexBuildsCoordinatorMongod::startIndexBuild(OperationContext* opCtx,
         writesAreReplicated,
         shouldNotConflictWithSecondaryBatchApplication,
         logicalOp,
-        opDesc
-    ]() noexcept {
+        opDesc,
+        replState
+    ](auto status) noexcept {
+        // Clean up the index build if we failed to schedule it.
+        if (!status.isOK()) {
+            stdx::unique_lock<stdx::mutex> lk(_mutex);
+
+            // Unregister the index build before setting the promises,
+            // so callers do not see the build again.
+            _unregisterIndexBuild(lk, replState);
+
+            // Set the promise in case another thread already joined the index build.
+            replState->sharedPromise.setError(status);
+
+            return;
+        }
+
         auto opCtx = Client::getCurrent()->makeOperationContext();
 
         opCtx->setDeadlineByDate(deadline, timeoutError);
@@ -190,19 +205,6 @@ IndexBuildsCoordinatorMongod::startIndexBuild(OperationContext* opCtx,
         _runIndexBuild(opCtx.get(), buildUUID);
     });
 
-    // Clean up the index build if we failed to schedule it.
-    if (!status.isOK()) {
-        stdx::unique_lock<stdx::mutex> lk(_mutex);
-
-        // Unregister the index build before setting the promises, so callers do not see the build
-        // again.
-        _unregisterIndexBuild(lk, replState);
-
-        // Set the promise in case another thread already joined the index build.
-        replState->sharedPromise.setError(status);
-
-        return status;
-    }
 
     return replState->sharedPromise.getFuture();
 }
@@ -293,8 +295,12 @@ Status IndexBuildsCoordinatorMongod::setCommitQuorum(OperationContext* opCtx,
 
     // Persist the new commit quorum for the index build and write it to the collection.
     buildState->commitQuorum = newCommitQuorum;
-    const UUID buildUUID = buildState->buildUUID;
-    return indexbuildentryhelpers::setCommitQuorum(opCtx, buildUUID, newCommitQuorum);
+    // TODO (SERVER-40807): disabling the following code for the v4.2 release so it does not have
+    // downstream impact.
+    /*
+    return indexbuildentryhelpers::setCommitQuorum(opCtx, buildState->buildUUID, newCommitQuorum);
+    */
+    return Status::OK();
 }
 
 Status IndexBuildsCoordinatorMongod::_finishScanningPhase() {

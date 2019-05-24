@@ -104,6 +104,8 @@ selector:
   - jstests/core/bulk_legacy_enforce_gle.js
   - jstests/core/capped5.js
   - jstests/core/commands_with_uuid.js
+  - jstests/core/dbcase.js
+  - jstests/core/dbcase2.js
   - jstests/core/explain_execution_error.js
   - jstests/core/expr.js
   - jstests/core/find9.js
@@ -164,15 +166,6 @@ selector:
 
   # TODO: SERVER-38207 Cannot insert document with MaxKey shard key.
   - jstests/core/type8.js
-
-  # TODO: SERVER-38326 mapReduce cleanup doesn't obey writeConcern, rendering
-  # txn_passthrough_cmd_massage.js ineffective for preventing 2 phase drops
-  # from contesting db/coll locks.
-  - jstests/core/function_string_representations.js
-  - jstests/core/geo_mapreduce2.js
-  - jstests/core/mr*.js
-  - jstests/core/or4.js
-  - jstests/core/temp_cleanup.js
 
   # TODO: SERVER-38690 Mongos should throw write targeting errors in a transaction.
   - jstests/core/update_setOnInsert.js
@@ -334,6 +327,16 @@ selector:
   # op3 will still be using the snapshot from op1, and not see op2 at all.
   - jstests/core/cursora.js
   - jstests/core/bench_test1.js
+  - jstests/core/benchrun_pipeline_updates.js
+
+  # The tests below use applyOps, SERVER-1439.
+  - jstests/core/list_collections1.js
+  - jstests/core/list_collections_filter.js
+  - jstests/core/rename_stayTemp.js
+  - jstests/core/txns/prepare_transaction_fails_on_temp_collections.js
+
+  # Does not support tojson of command objects.
+  - jstests/core/SERVER-23626.js
 
   exclude_with_any_tags:
   # "Cowardly refusing to override read concern of command: ..."
@@ -348,6 +351,11 @@ selector:
   - cannot_create_unique_index_when_using_hashed_shard_key
 
 executor:
+  archive:
+    hooks:
+      - CheckReplDBHashInBackground
+      - CheckReplDBHash
+      - ValidateCollections
   config:
     shell_options:
       eval: >-
@@ -355,13 +363,15 @@ executor:
         load('jstests/libs/override_methods/implicitly_shard_accessed_collections.js');
         load('jstests/libs/override_methods/enable_sessions.js');
         load('jstests/libs/override_methods/txn_passthrough_cmd_massage.js');
-        load('jstests/libs/txns/txn_override.js');
+        load('jstests/libs/override_methods/network_error_and_txn_override.js');
       global_vars:
         TestData:
           defaultReadConcernLevel: "local"
           defaultTransactionReadConcernLevel: "local"
           defaultTransactionWriteConcernW: 1
           defaultWriteConcernW: 1
+          networkErrorAndTxnOverrideConfig:
+            wrapCRUDinTransactions: true
           sessionOptions:
             # Causal consistency is not required because tests in this suite only read from
             # primaries, only one node is electable in each shard, and they use transactions with
@@ -370,6 +380,7 @@ executor:
             causalConsistency: false
       readMode: commands
   hooks:
+  - class: CheckReplDBHashInBackground
   # The CheckReplDBHash hook waits until all operations have replicated to and have been applied
   # on the secondaries, so we run the ValidateCollections hook after it to ensure we're
   # validating the entire contents of the collection.
@@ -397,7 +408,5 @@ executor:
           transaction: 4
         enableTestCommands: 1
         numInitialSyncAttempts: 1
-        # TODO SERVER-38302: Disable the no-op writer.
-        writePeriodicNoops: true
     num_rs_nodes_per_shard: 2
     num_shards: 2

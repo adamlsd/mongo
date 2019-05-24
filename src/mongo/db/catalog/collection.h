@@ -58,7 +58,6 @@
 namespace mongo {
 class CappedCallback;
 class CollectionCatalogEntry;
-class DatabaseCatalogEntry;
 class ExtentManager;
 class IndexCatalog;
 class IndexCatalogEntry;
@@ -184,8 +183,8 @@ public:
      * Sets a new namespace on this Collection, in the case that the Collection is being renamed.
      * In general, reads and writes to Collection objects are synchronized using locks from the lock
      * manager. However, there is special synchronization for ns() and setNs() so that the
-     * UUIDCatalog can perform UUID to namespace lookup without holding a Collection lock. See
-     * UUIDCatalog::setCollectionNamespace().
+     * CollectionCatalog can perform UUID to namespace lookup without holding a Collection lock. See
+     * CollectionCatalog::setCollectionNamespace().
      */
     virtual void setNs(NamespaceString nss) = 0;
 
@@ -329,7 +328,6 @@ public:
     virtual Status validate(OperationContext* const opCtx,
                             const ValidateCmdLevel level,
                             bool background,
-                            std::unique_ptr<Lock::CollectionLock> collLk,
                             ValidateResults* const results,
                             BSONObjBuilder* const output) = 0;
 
@@ -387,7 +385,13 @@ public:
                                    StringData newLevel,
                                    StringData newAction) = 0;
 
-    // -----------
+    /**
+     * Returns true if this is a temporary collection.
+     *
+     * Calling this function is somewhat costly because it requires accessing the storage engine's
+     * cache of collection information.
+     */
+    virtual bool isTemporary(OperationContext* opCtx) const = 0;
 
     //
     // Stats
@@ -417,7 +421,7 @@ public:
 
     virtual uint64_t getIndexSize(OperationContext* const opCtx,
                                   BSONObjBuilder* const details = nullptr,
-                                  const int scale = 1) = 0;
+                                  const int scale = 1) const = 0;
 
     /**
      * If return value is not boost::none, reads with majority read concern using an older snapshot
@@ -462,8 +466,6 @@ public:
      * onto the global lock in exclusive mode.
      */
     virtual void establishOplogCollectionForLogging(OperationContext* opCtx) = 0;
-
-    virtual DatabaseCatalogEntry* dbce() const = 0;
 };
 
 }  // namespace mongo

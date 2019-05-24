@@ -50,14 +50,13 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/sasl_options.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database.h"
-#include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/catalog/health_log.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_key_validate.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
@@ -107,6 +106,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_external_state_impl.h"
 #include "mongo/db/repl/replication_coordinator_impl.h"
+#include "mongo/db/repl/replication_coordinator_impl_gen.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/replication_recovery.h"
 #include "mongo/db/repl/storage_interface_impl.h"
@@ -127,6 +127,8 @@
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/storage/backup_cursor_hooks.h"
 #include "mongo/db/storage/encryption_hooks.h"
+#include "mongo/db/storage/flow_control.h"
+#include "mongo/db/storage/flow_control_parameters_gen.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/storage/storage_engine_lock_file.h"
@@ -140,6 +142,7 @@
 #include "mongo/executor/network_interface_thread_pool.h"
 #include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/platform/process_id.h"
+#include "mongo/platform/random.h"
 #include "mongo/rpc/metadata/egress_metadata_hook_list.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
@@ -176,8 +179,7 @@
 #include "mongo/util/text.h"
 #include "mongo/util/time_support.h"
 #include "mongo/util/version.h"
-
-#include "mongo/db/storage/flow_control.h"
+#include "mongo/watchdog/watchdog_mongod.h"
 
 #ifdef MONGO_CONFIG_SSL
 #include "mongo/util/net/ssl_options.h"
@@ -269,7 +271,6 @@ ExitCode _initAndListen(int listenPort) {
     serviceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
     auto opObserverRegistry = stdx::make_unique<OpObserverRegistry>();
     opObserverRegistry->addObserver(stdx::make_unique<OpObserverShardingImpl>());
-    opObserverRegistry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
     opObserverRegistry->addObserver(stdx::make_unique<AuthOpObserver>());
 
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
@@ -402,6 +403,8 @@ ExitCode _initAndListen(int listenPort) {
 
     initializeSNMP();
 
+    startWatchdog();
+
     if (!storageGlobalParams.readOnly) {
         boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
     }
@@ -434,6 +437,10 @@ ExitCode _initAndListen(int listenPort) {
     // featureCompatibilityVersion parameter to still be uninitialized until after startup.
     if (canCallFCVSetIfCleanStartup && (!replSettings.usingReplSets() || nonLocalDatabases)) {
         invariant(serverGlobalParams.featureCompatibility.isVersionInitialized());
+    }
+
+    if (gFlowControlEnabled.load()) {
+        log() << "Flow Control is enabled on this deployment.";
     }
 
     if (storageGlobalParams.upgrade) {
@@ -506,7 +513,11 @@ ExitCode _initAndListen(int listenPort) {
     auto shardingInitialized = ShardingInitializationMongoD::get(startupOpCtx.get())
                                    ->initializeShardingAwarenessIfNeeded(startupOpCtx.get());
     if (shardingInitialized) {
-        waitForShardRegistryReload(startupOpCtx.get()).transitional_ignore();
+        auto status = waitForShardRegistryReload(startupOpCtx.get());
+        if (!status.isOK()) {
+            LOG(0) << "Failed to load the shard registry as part of startup"
+                   << causedBy(redact(status));
+        }
     }
 
     auto storageEngine = serviceContext->getStorageEngine();
@@ -617,8 +628,7 @@ ExitCode _initAndListen(int listenPort) {
         kind = LogicalSessionCacheServer::kReplicaSet;
     }
 
-    auto sessionCache = makeLogicalSessionCacheD(kind);
-    LogicalSessionCache::set(serviceContext, std::move(sessionCache));
+    LogicalSessionCache::set(serviceContext, makeLogicalSessionCacheD(kind));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the
     // operation context anymore
@@ -834,7 +844,7 @@ void setUpReplication(ServiceContext* serviceContext) {
         stdx::make_unique<repl::TopologyCoordinator>(topoCoordOptions),
         replicationProcess,
         storageInterface,
-        static_cast<int64_t>(curTimeMillis64()));
+        SecureRandom::create()->nextInt64());
     repl::ReplicationCoordinator::set(serviceContext, std::move(replCoord));
     repl::setOplogCollectionName(serviceContext);
 
@@ -879,7 +889,12 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         }
 
         try {
-            replCoord->stepDown(opCtx, false /* force */, Seconds(10), Seconds(120));
+            // For faster tests, we allow a short wait time with setParameter.
+            auto waitTime = repl::waitForStepDownOnNonCommandShutdown.load()
+                ? Milliseconds(Seconds(10))
+                : Milliseconds(100);
+
+            replCoord->stepDown(opCtx, false /* force */, waitTime, Seconds(120));
         } catch (const ExceptionFor<ErrorCodes::NotMaster>&) {
             // ignore not master errors
         } catch (const DBException& e) {
@@ -891,6 +906,11 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
     if (auto balancer = Balancer::get(serviceContext)) {
         balancer->interruptBalancer();
         balancer->waitForBalancerToStop();
+    }
+
+    // Join the logical session cache before the transport layer.
+    if (auto lsc = LogicalSessionCache::get(serviceContext)) {
+        lsc->joinOnShutDown();
     }
 
     // Shutdown the TransportLayer so that new connections aren't accepted
@@ -970,7 +990,7 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
 
     // Shutdown and wait for the service executor to exit
     if (auto svcExec = serviceContext->getServiceExecutor()) {
-        Status status = svcExec->shutdown(Seconds(5));
+        Status status = svcExec->shutdown(Seconds(10));
         if (!status.isOK()) {
             log(LogComponent::kNetwork) << "Service executor failed to shutdown within timelimit: "
                                         << status.reason();

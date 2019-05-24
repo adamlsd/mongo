@@ -108,10 +108,12 @@ public:
                       boost::optional<UUID> collUUID);
 
     /**
-     * Constructs an ExpressionContext to be used for MatchExpression parsing outside of the context
-     * of aggregation.
+     * Constructs an ExpressionContext suitable for use outside of the aggregation system, including
+     * for MatchExpression parsing and executing pipeline-style operations in the Update system.
      */
-    ExpressionContext(OperationContext* opCtx, const CollatorInterface* collator);
+    ExpressionContext(OperationContext* opCtx,
+                      const CollatorInterface* collator,
+                      const boost::optional<RuntimeConstants>& runtimeConstants = boost::none);
 
     /**
      * Used by a pipeline to check for interrupts so that killOp() works. Throws a UserAssertion if
@@ -188,12 +190,8 @@ public:
         return tailableMode == TailableModeEnum::kTailableAndAwaitData;
     }
 
-    /**
-     * Sets the resolved definition for an involved namespace.
-     */
-    void setResolvedNamespace_forTest(const NamespaceString& nss,
-                                      ResolvedNamespace resolvedNamespace) {
-        _resolvedNamespaces[nss.coll()] = std::move(resolvedNamespace);
+    void setResolvedNamespaces(StringMap<ResolvedNamespace> resolvedNamespaces) {
+        _resolvedNamespaces = std::move(resolvedNamespaces);
     }
 
     auto getRuntimeConstants() const {

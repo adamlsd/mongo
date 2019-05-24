@@ -219,7 +219,7 @@
         documents: [{_id: txnNumber + "_2"}],
         txnNumber: NumberLong(txnNumber),
     }),
-                                 ErrorCodes.InvalidOptions);
+                                 ErrorCodes.IncompleteTransactionHistory);
 
     // Committing the transaction should succeed.
     assert.commandWorked(sessionDb.adminCommand({
@@ -236,8 +236,7 @@
     jsTestLog("Run an operation with autocommit=false outside of a transaction.");
     txnNumber++;
 
-    assert.commandWorked(
-        sessionDb.runCommand({find: collName, filter: {}, txnNumber: NumberLong(txnNumber)}));
+    assert.commandWorked(sessionDb.runCommand({find: collName, filter: {}}));
 
     assert.commandFailedWithCode(
         sessionDb.runCommand(
@@ -267,7 +266,7 @@
         txnNumber: NumberLong(txnNumber),
         writeConcern: {w: "majority"}
     }),
-                                 ErrorCodes.InvalidOptions);
+                                 50768);
 
     // Committing the transaction should fail if autocommit=true.
     assert.commandFailedWithCode(sessionDb.adminCommand({
@@ -301,8 +300,7 @@
 
     // Aborting the transaction should fail if 'autocommit' is omitted.
     assert.commandFailedWithCode(
-        sessionDb.adminCommand({abortTransaction: 1, txnNumber: NumberLong(txnNumber)}),
-        ErrorCodes.InvalidOptions);
+        sessionDb.adminCommand({abortTransaction: 1, txnNumber: NumberLong(txnNumber)}), 50768);
 
     // Aborting the transaction should fail if autocommit=true.
     assert.commandFailedWithCode(
@@ -313,5 +311,4 @@
     // Aborting the transaction should succeed.
     assert.commandWorked(sessionDb.adminCommand(
         {abortTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
-
 }());

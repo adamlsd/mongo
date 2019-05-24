@@ -50,6 +50,7 @@
 #include "mongo/db/exec/update_stage.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/ops/delete_request.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/ops/parsed_delete.h"
@@ -208,7 +209,9 @@ void makeCollection(OperationContext* opCtx, const NamespaceString& ns) {
             !inTransaction);
 
     writeConflictRetry(opCtx, "implicit collection creation", ns.ns(), [&opCtx, &ns] {
-        AutoGetOrCreateDb db(opCtx, ns.db(), MODE_X);
+        AutoGetOrCreateDb db(opCtx, ns.db(), MODE_IX);
+        Lock::CollectionLock collLock(opCtx, ns, MODE_X);
+
         assertCanWrite_inlock(opCtx, ns);
         if (!db.getDb()->getCollection(opCtx, ns)) {  // someone else may have beat us to it.
             uassertStatusOK(userAllowedCreateNS(ns.db(), ns.coll()));
@@ -279,41 +282,6 @@ bool handleError(OperationContext* opCtx,
     return !wholeOp.getOrdered();
 }
 
-SingleWriteResult createIndex(OperationContext* opCtx,
-                              const NamespaceString& systemIndexes,
-                              const BSONObj& spec) {
-    BSONElement nsElement = spec["ns"];
-    uassert(ErrorCodes::NoSuchKey, "Missing \"ns\" field in index description", !nsElement.eoo());
-    uassert(ErrorCodes::TypeMismatch,
-            str::stream() << "Expected \"ns\" field of index description to be a "
-                             "string, "
-                             "but found a "
-                          << typeName(nsElement.type()),
-            nsElement.type() == String);
-    const NamespaceString ns(nsElement.valueStringData());
-    uassert(ErrorCodes::InvalidOptions,
-            str::stream() << "Cannot create an index on " << ns.ns() << " with an insert to "
-                          << systemIndexes.ns(),
-            ns.db() == systemIndexes.db());
-
-    BSONObjBuilder cmdBuilder;
-    cmdBuilder << "createIndexes" << ns.coll();
-    cmdBuilder << "indexes" << BSON_ARRAY(spec);
-
-    auto cmdResult = CommandHelpers::runCommandDirectly(
-        opCtx, OpMsgRequest::fromDBAndBody(systemIndexes.db(), cmdBuilder.obj()));
-    uassertStatusOK(getStatusFromCommandResult(cmdResult));
-
-    // Unlike normal inserts, it is not an error to "insert" a duplicate index.
-    long long n =
-        cmdResult["numIndexesAfter"].numberInt() - cmdResult["numIndexesBefore"].numberInt();
-    CurOp::get(opCtx)->debug().additiveMetrics.incrementNinserted(n);
-
-    SingleWriteResult result;
-    result.setN(n);
-    return result;
-}
-
 LockMode fixLockModeForSystemDotViewsChanges(const NamespaceString& nss, LockMode mode) {
     return nss.isSystemDotViews() ? MODE_X : mode;
 }
@@ -356,6 +324,30 @@ void insertDocuments(OperationContext* opCtx,
 }
 
 /**
+ * Returns a OperationNotSupportedInTransaction error Status if we are in a transaction and
+ * operating on a capped collection.
+ *
+ * The behavior of an operation against a capped collection may differ across replica set members,
+ * where it can succeed on one member and fail on another, crashing the failing member. Prepared
+ * transactions are not allowed to fail, so capped collections will not be allowed on shards.
+ * Even in the unsharded case, capped collections are still problematic with transactions because
+ * they only allow one operation at a time because they enforce insertion order with a MODE_X
+ * collection lock, which we cannot hold in transactions.
+ */
+Status checkIfTransactionOnCappedColl(OperationContext* opCtx, Collection* collection) {
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    if (txnParticipant && txnParticipant.inMultiDocumentTransaction() && collection->isCapped()) {
+        return {
+            ErrorCodes::OperationNotSupportedInTransaction,
+            str::stream()
+                << "Collection '"
+                << collection->ns()
+                << "' is a capped collection. Transactions are not allowed on capped collections."};
+    }
+    return Status::OK();
+}
+
+/**
  * Returns true if caller should try to insert more documents. Does nothing else if batch is empty.
  */
 bool insertBatchAndHandleErrors(OperationContext* opCtx,
@@ -369,26 +361,25 @@ bool insertBatchAndHandleErrors(OperationContext* opCtx,
 
     auto& curOp = *CurOp::get(opCtx);
 
+    CurOpFailpointHelpers::waitWhileFailPointEnabled(
+        &hangDuringBatchInsert,
+        opCtx,
+        "hangDuringBatchInsert",
+        [&wholeOp]() {
+            log() << "batch insert - hangDuringBatchInsert fail point enabled for namespace "
+                  << wholeOp.getNamespace() << ". Blocking "
+                                               "until fail point is disabled.";
+        },
+        true,  // Check for interrupt periodically.
+        wholeOp.getNamespace());
+
+    if (MONGO_FAIL_POINT(failAllInserts)) {
+        uasserted(ErrorCodes::InternalError, "failAllInserts failpoint active!");
+    }
+
     boost::optional<AutoGetCollection> collection;
     auto acquireCollection = [&] {
         while (true) {
-            CurOpFailpointHelpers::waitWhileFailPointEnabled(
-                &hangDuringBatchInsert,
-                opCtx,
-                "hangDuringBatchInsert",
-                [&wholeOp]() {
-                    log()
-                        << "batch insert - hangDuringBatchInsert fail point enabled for namespace "
-                        << wholeOp.getNamespace() << ". Blocking "
-                                                     "until fail point is disabled.";
-                },
-                true,  // Check for interrupt periodically.
-                wholeOp.getNamespace());
-
-            if (MONGO_FAIL_POINT(failAllInserts)) {
-                uasserted(ErrorCodes::InternalError, "failAllInserts failpoint active!");
-            }
-
             collection.emplace(
                 opCtx,
                 wholeOp.getNamespace(),
@@ -445,6 +436,9 @@ bool insertBatchAndHandleErrors(OperationContext* opCtx,
                 try {
                     if (!collection)
                         acquireCollection();
+                    // Transactions are not allowed to operate on capped collections.
+                    uassertStatusOK(
+                        checkIfTransactionOnCappedColl(opCtx, collection->getCollection()));
                     lastOpFixer->startingOp();
                     insertDocuments(opCtx, collection->getCollection(), it, it + 1, fromMigrate);
                     lastOpFixer->finishedOpSuccessfully();
@@ -597,37 +591,42 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const UpdateRequest& updateRequest) {
-    ParsedUpdate parsedUpdate(opCtx, &updateRequest);
+    const ExtensionsCallbackReal extensionsCallback(opCtx, &updateRequest.getNamespaceString());
+    ParsedUpdate parsedUpdate(opCtx, &updateRequest, extensionsCallback);
     uassertStatusOK(parsedUpdate.parseRequest());
+
+    CurOpFailpointHelpers::waitWhileFailPointEnabled(
+        &hangDuringBatchUpdate,
+        opCtx,
+        "hangDuringBatchUpdate",
+        [&ns]() {
+            log() << "batch update - hangDuringBatchUpdate fail point enabled for nss " << ns
+                  << ". Blocking until "
+                     "fail point is disabled.";
+        },
+        false /*checkForInterrupt*/,
+        ns);
+
+    if (MONGO_FAIL_POINT(failAllUpdates)) {
+        uasserted(ErrorCodes::InternalError, "failAllUpdates failpoint active!");
+    }
 
     boost::optional<AutoGetCollection> collection;
     while (true) {
-        const auto checkForInterrupt = false;
-        CurOpFailpointHelpers::waitWhileFailPointEnabled(
-            &hangDuringBatchUpdate,
-            opCtx,
-            "hangDuringBatchUpdate",
-            [&ns]() {
-                log() << "batch update - hangDuringBatchUpdate fail point enabled for nss " << ns
-                      << ". Blocking until "
-                         "fail point is disabled.";
-            },
-            checkForInterrupt,
-            ns);
+        collection.emplace(opCtx, ns, MODE_IX, fixLockModeForSystemDotViewsChanges(ns, MODE_IX));
 
-        if (MONGO_FAIL_POINT(failAllUpdates)) {
-            uasserted(ErrorCodes::InternalError, "failAllUpdates failpoint active!");
-        }
-
-        collection.emplace(opCtx,
-                           ns,
-                           MODE_IX,  // DB is always IX, even if collection is X.
-                           fixLockModeForSystemDotViewsChanges(ns, MODE_IX));
+        // If this is an upsert, which is an insert, we must have a collection.
+        // An update on a non-existant collection is okay and handled later.
         if (collection->getCollection() || !updateRequest.isUpsert())
             break;
 
         collection.reset();  // unlock.
         makeCollection(opCtx, ns);
+    }
+
+    if (auto coll = collection->getCollection()) {
+        // Transactions are not allowed to operate on capped collections.
+        uassertStatusOK(checkIfTransactionOnCappedColl(opCtx, coll));
     }
 
     CurOpFailpointHelpers::waitWhileFailPointEnabled(
@@ -686,7 +685,8 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
 static SingleWriteResult performSingleUpdateOpWithDupKeyRetry(OperationContext* opCtx,
                                                               const NamespaceString& ns,
                                                               StmtId stmtId,
-                                                              const write_ops::UpdateOpEntry& op) {
+                                                              const write_ops::UpdateOpEntry& op,
+                                                              RuntimeConstants runtimeConstants) {
     globalOpCounters.gotUpdate();
     ServerWriteConcernMetrics::get(opCtx)->recordWriteConcernForUpdate(opCtx->getWriteConcern());
     auto& curOp = *CurOp::get(opCtx);
@@ -707,7 +707,8 @@ static SingleWriteResult performSingleUpdateOpWithDupKeyRetry(OperationContext* 
 
     UpdateRequest request(ns);
     request.setQuery(op.getQ());
-    request.setUpdates(op.getU());
+    request.setUpdateModification(op.getU());
+    request.setRuntimeConstants(std::move(runtimeConstants));
     request.setCollation(write_ops::collationOf(op));
     request.setStmtId(stmtId);
     request.setArrayFilters(write_ops::arrayFiltersOf(op));
@@ -727,7 +728,8 @@ static SingleWriteResult performSingleUpdateOpWithDupKeyRetry(OperationContext* 
         try {
             return performSingleUpdateOp(opCtx, ns, stmtId, request);
         } catch (ExceptionFor<ErrorCodes::DuplicateKey>& ex) {
-            ParsedUpdate parsedUpdate(opCtx, &request);
+            const ExtensionsCallbackReal extensionsCallback(opCtx, &request.getNamespaceString());
+            ParsedUpdate parsedUpdate(opCtx, &request, extensionsCallback);
             uassertStatusOK(parsedUpdate.parseRequest());
 
             if (!parsedUpdate.hasParsedQuery()) {
@@ -770,6 +772,11 @@ WriteResult performUpdates(OperationContext* opCtx, const write_ops::Update& who
     WriteResult out;
     out.results.reserve(wholeOp.getUpdates().size());
 
+    // If the update command specified runtime constants, we adopt them. Otherwise, we set them to
+    // the current local and cluster time. These constants are applied to each update in the batch.
+    const auto& runtimeConstants =
+        wholeOp.getRuntimeConstants().value_or(Variables::generateRuntimeConstants(opCtx));
+
     for (auto&& singleOp : wholeOp.getUpdates()) {
         const auto stmtId = getStmtIdForWriteOp(opCtx, wholeOp, stmtIdIndex++);
         if (opCtx->getTxnNumber()) {
@@ -796,7 +803,7 @@ WriteResult performUpdates(OperationContext* opCtx, const write_ops::Update& who
         try {
             lastOpFixer.startingOp();
             out.results.emplace_back(performSingleUpdateOpWithDupKeyRetry(
-                opCtx, wholeOp.getNamespace(), stmtId, singleOp));
+                opCtx, wholeOp.getNamespace(), stmtId, singleOp, runtimeConstants));
             lastOpFixer.finishedOpSuccessfully();
         } catch (const DBException& ex) {
             const bool canContinue =
@@ -859,10 +866,9 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
         uasserted(ErrorCodes::InternalError, "failAllRemoves failpoint active!");
     }
 
-    AutoGetCollection collection(opCtx,
-                                 ns,
-                                 MODE_IX,  // DB is always IX, even if collection is X.
-                                 fixLockModeForSystemDotViewsChanges(ns, MODE_IX));
+    AutoGetCollection collection(
+        opCtx, ns, MODE_IX, fixLockModeForSystemDotViewsChanges(ns, MODE_IX));
+
     if (collection.getDb()) {
         curOp.raiseDbProfileLevel(collection.getDb()->getProfilingLevel());
     }

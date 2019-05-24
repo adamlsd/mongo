@@ -65,7 +65,6 @@ struct WiredTigerFileVersion {
 
 class WiredTigerKVEngine final : public KVEngine {
 public:
-    static const int kDefaultJournalDelayMillis;
     static StringData kTableUriPrefix;
 
     WiredTigerKVEngine(const std::string& canonicalName,
@@ -181,7 +180,7 @@ public:
     Status repairIdent(OperationContext* opCtx, StringData ident) override;
 
     Status recoverOrphanedIdent(OperationContext* opCtx,
-                                StringData ns,
+                                const NamespaceString& nss,
                                 StringData ident,
                                 const CollectionOptions& options) override;
 

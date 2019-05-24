@@ -36,10 +36,9 @@
 #include "mongo/bson/bson_depth.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/field_path.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
-using namespace mongoutils;
 using boost::intrusive_ptr;
 using std::string;
 using std::vector;
@@ -50,7 +49,8 @@ const std::vector<StringData> Document::allMetadataFieldNames = {Document::metaF
                                                                  Document::metaFieldRandVal,
                                                                  Document::metaFieldSortKey,
                                                                  Document::metaFieldGeoNearDistance,
-                                                                 Document::metaFieldGeoNearPoint};
+                                                                 Document::metaFieldGeoNearPoint,
+                                                                 Document::metaFieldSearchScore};
 
 Position DocumentStorage::findField(StringData requested) const {
     int reqSize = requested.size();  // get size calculation out of the way if needed
@@ -225,6 +225,7 @@ intrusive_ptr<DocumentStorage> DocumentStorage::clone() const {
         out->_sortKey = _sortKey.getOwned();
         out->_geoNearDistance = _geoNearDistance;
         out->_geoNearPoint = _geoNearPoint.getOwned();
+        out->_searchScore = _searchScore;
     }
 
     return out;
@@ -290,6 +291,7 @@ constexpr StringData Document::metaFieldRandVal;
 constexpr StringData Document::metaFieldSortKey;
 constexpr StringData Document::metaFieldGeoNearDistance;
 constexpr StringData Document::metaFieldGeoNearPoint;
+constexpr StringData Document::metaFieldSearchScore;
 
 BSONObj Document::toBsonWithMetaData() const {
     BSONObjBuilder bb;
@@ -304,6 +306,8 @@ BSONObj Document::toBsonWithMetaData() const {
         bb.append(metaFieldGeoNearDistance, getGeoNearDistance());
     if (hasGeoNearPoint())
         getGeoNearPoint().addToBsonObj(&bb, metaFieldGeoNearPoint);
+    if (hasSearchScore())
+        bb.append(metaFieldSearchScore, getSearchScore());
     return bb.obj();
 }
 
@@ -317,6 +321,9 @@ Document Document::fromBsonWithMetaData(const BSONObj& bson) {
         if (fieldName[0] == '$') {
             if (fieldName == metaFieldTextScore) {
                 md.setTextScore(elem.Double());
+                continue;
+            } else if (fieldName == metaFieldSearchScore) {
+                md.setSearchScore(elem.Double());
                 continue;
             } else if (fieldName == metaFieldRandVal) {
                 md.setRandMetaField(elem.Double());
@@ -515,6 +522,10 @@ void Document::serializeForSorter(BufBuilder& buf) const {
         buf.appendNum(char(DocumentStorage::MetaType::SORT_KEY + 1));
         getSortKeyMetaField().appendSelfToBufBuilder(buf);
     }
+    if (hasSearchScore()) {
+        buf.appendNum(char(DocumentStorage::MetaType::SEARCH_SCORE + 1));
+        buf.appendNum(getSearchScore());
+    }
     buf.appendNum(char(0));
 }
 
@@ -534,6 +545,8 @@ Document Document::deserializeForSorter(BufReader& buf, const SorterDeserializeS
         } else if (marker == char(DocumentStorage::MetaType::SORT_KEY) + 1) {
             doc.setSortKeyMetaField(
                 BSONObj::deserializeForSorter(buf, BSONObj::SorterDeserializeSettings()));
+        } else if (marker == char(DocumentStorage::MetaType::SEARCH_SCORE) + 1) {
+            doc.setSearchScore(buf.read<LittleEndian<double>>());
         } else {
             uasserted(28744, "Unrecognized marker, unable to deserialize buffer");
         }

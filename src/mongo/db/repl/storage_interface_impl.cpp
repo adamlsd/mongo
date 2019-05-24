@@ -46,11 +46,11 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -63,6 +63,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/logical_clock.h"
+#include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete_request.h"
 #include "mongo/db/ops/parsed_update.h"
@@ -76,7 +77,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace repl {
@@ -230,7 +231,7 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
         {
             // Create the collection.
             WriteUnitOfWork wunit(opCtx.get());
-            fassert(40332, db.getDb()->createCollection(opCtx.get(), nss.ns(), options, false));
+            fassert(40332, db.getDb()->createCollection(opCtx.get(), nss, options, false));
             wunit.commit();
         }
 
@@ -378,8 +379,8 @@ Status StorageInterfaceImpl::insertDocuments(OperationContext* opCtx,
 Status StorageInterfaceImpl::dropReplicatedDatabases(OperationContext* opCtx) {
     Lock::GlobalWrite globalWriteLock(opCtx);
 
-    std::vector<std::string> dbNames;
-    opCtx->getServiceContext()->getStorageEngine()->listDatabases(&dbNames);
+    std::vector<std::string> dbNames =
+        opCtx->getServiceContext()->getStorageEngine()->listDatabases();
     invariant(!dbNames.empty());
     log() << "dropReplicatedDatabases - dropping " << dbNames.size() << " databases";
 
@@ -411,7 +412,7 @@ Status StorageInterfaceImpl::dropReplicatedDatabases(OperationContext* opCtx) {
 }
 
 Status StorageInterfaceImpl::createOplog(OperationContext* opCtx, const NamespaceString& nss) {
-    mongo::repl::createOplog(opCtx, nss.ns(), true);
+    mongo::repl::createOplog(opCtx, nss, true);
     return Status::OK();
 }
 
@@ -444,7 +445,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
         }
         WriteUnitOfWork wuow(opCtx);
         try {
-            auto coll = db->createCollection(opCtx, nss.ns(), options);
+            auto coll = db->createCollection(opCtx, nss, options);
             invariant(coll);
         } catch (const AssertionException& ex) {
             return ex.toStatus();
@@ -516,8 +517,7 @@ Status StorageInterfaceImpl::renameCollection(OperationContext* opCtx,
                                         << " not found.");
         }
         WriteUnitOfWork wunit(opCtx);
-        const auto status =
-            autoDB.getDb()->renameCollection(opCtx, fromNS.ns(), toNS.ns(), stayTemp);
+        const auto status = autoDB.getDb()->renameCollection(opCtx, fromNS, toNS, stayTemp);
         if (!status.isOK()) {
             return status;
         }
@@ -538,7 +538,7 @@ Status StorageInterfaceImpl::setIndexIsMultikey(OperationContext* opCtx,
     }
 
     return writeConflictRetry(opCtx, "StorageInterfaceImpl::setIndexIsMultikey", nss.ns(), [&] {
-        AutoGetCollection autoColl(opCtx, nss, MODE_X);
+        AutoGetCollection autoColl(opCtx, nss, MODE_IX);
         auto collectionResult = getCollection(
             autoColl, nss, "The collection must exist before setting an index to multikey.");
         if (!collectionResult.isOK()) {
@@ -847,7 +847,8 @@ Status _updateWithQuery(OperationContext* opCtx,
         // ParsedUpdate needs to be inside the write conflict retry loop because it may create a
         // CanonicalQuery whose ownership will be transferred to the plan executor in
         // getExecutorUpdate().
-        ParsedUpdate parsedUpdate(opCtx, &request);
+        const ExtensionsCallbackReal extensionsCallback(opCtx, &request.getNamespaceString());
+        ParsedUpdate parsedUpdate(opCtx, &request, extensionsCallback);
         auto parsedUpdateStatus = parsedUpdate.parseRequest();
         if (!parsedUpdateStatus.isOK()) {
             return parsedUpdateStatus;
@@ -907,7 +908,7 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
         // the event it was specified as a UUID.
         UpdateRequest request(collection->ns());
         request.setQuery(query);
-        request.setUpdates(update);
+        request.setUpdateModification(update);
         request.setUpsert(true);
         invariant(!request.isMulti());  // This follows from using an exact _id query.
         invariant(!request.shouldReturnAnyDocs());
@@ -915,7 +916,8 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
 
         // ParsedUpdate needs to be inside the write conflict retry loop because it contains
         // the UpdateDriver whose state may be modified while we are applying the update.
-        ParsedUpdate parsedUpdate(opCtx, &request);
+        const ExtensionsCallbackReal extensionsCallback(opCtx, &request.getNamespaceString());
+        ParsedUpdate parsedUpdate(opCtx, &request, extensionsCallback);
         auto parsedUpdateStatus = parsedUpdate.parseRequest();
         if (!parsedUpdateStatus.isOK()) {
             return parsedUpdateStatus;
@@ -947,7 +949,7 @@ Status StorageInterfaceImpl::putSingleton(OperationContext* opCtx,
                                           const TimestampedBSONObj& update) {
     UpdateRequest request(nss);
     request.setQuery({});
-    request.setUpdates(update.obj);
+    request.setUpdateModification(update.obj);
     request.setUpsert(true);
     return _updateWithQuery(opCtx, request, update.timestamp);
 }
@@ -958,7 +960,7 @@ Status StorageInterfaceImpl::updateSingleton(OperationContext* opCtx,
                                              const TimestampedBSONObj& update) {
     UpdateRequest request(nss);
     request.setQuery(query);
-    request.setUpdates(update.obj);
+    request.setUpdateModification(update.obj);
     invariant(!request.isUpsert());
     return _updateWithQuery(opCtx, request, update.timestamp);
 }

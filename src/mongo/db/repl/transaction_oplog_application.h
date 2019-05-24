@@ -66,4 +66,10 @@ Status applyPrepareTransaction(OperationContext* opCtx,
                                const repl::OplogEntry& entry,
                                repl::OplogApplication::Mode mode);
 
+/*
+ * Reconstruct prepared transactions by iterating over the transactions table to see which
+ * transactions should be in the prepared state, getting the corresponding oplog entry and applying
+ * the operations. Called at the end of rollback, startup recovery and initial sync.
+ */
+void reconstructPreparedTransactions(OperationContext* opCtx, repl::OplogApplication::Mode mode);
 }  // namespace mongo

@@ -44,7 +44,7 @@ fi
 
 TARGET_UNAME=${UNAME}_${UNAME_PROCESSOR}
 
-git clone https://github.com/mongodb-labs/gperftools.git -c core.autocrlf=false $REPO
+git clone https://github.com/mongodb-forks/gperftools.git -c core.autocrlf=false $REPO
 
 pushd $REPO
 git checkout $REVISION
@@ -61,5 +61,6 @@ if [[ -d $DEST_DIR/dist ]]; then
     exit 1
 fi
 
+rm $DIST_DIR/libtool
 mv $DIST_DIR $DEST_DIR/dist
 popd

@@ -35,10 +35,10 @@
 
 #include "mongo/base/initializer.h"
 #include "mongo/config.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database_holder_impl.h"
 #include "mongo/db/catalog/health_log.h"
 #include "mongo/db/catalog/index_key_validate.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/commands/fsync_locked.h"
@@ -47,16 +47,18 @@
 #include "mongo/db/global_settings.h"
 #include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/logical_clock.h"
+#include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/repair_database_and_check_version.h"
 #include "mongo/db/repl/storage_interface_impl.h"
+#include "mongo/db/service_liaison_mongod.h"
 #include "mongo/db/session_killer.h"
+#include "mongo/db/sessions_collection_standalone.h"
 #include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/ttl.h"
 #include "mongo/embedded/index_builds_coordinator_embedded.h"
-#include "mongo/embedded/logical_session_cache_factory_embedded.h"
 #include "mongo/embedded/periodic_runner_embedded.h"
 #include "mongo/embedded/replication_coordinator_embedded.h"
 #include "mongo/embedded/service_entry_point_embedded.h"
@@ -127,8 +129,6 @@ MONGO_INITIALIZER(fsyncLockedForWriting)(InitializerContext* context) {
 
 GlobalInitializerRegisterer filterAllowedIndexFieldNamesEmbeddedInitializer(
     "FilterAllowedIndexFieldNamesEmbedded",
-    {},
-    {"FilterAllowedIndexFieldNames"},
     [](InitializerContext* service) {
         index_key_validate::filterAllowedIndexFieldNames =
             [](std::set<StringData>& allowedIndexFieldNames) {
@@ -136,7 +136,10 @@ GlobalInitializerRegisterer filterAllowedIndexFieldNamesEmbeddedInitializer(
                 allowedIndexFieldNames.erase(IndexDescriptor::kExpireAfterSecondsFieldName);
             };
         return Status::OK();
-    });
+    },
+    DeinitializerFunction(nullptr),
+    {},
+    {"FilterAllowedIndexFieldNames"});
 }  // namespace
 
 using logger::LogComponent;
@@ -194,9 +197,12 @@ ServiceContext* initialize(const char* yaml_config) {
 
     Status status = mongo::runGlobalInitializers(yaml_config ? 1 : 0, argv, nullptr);
     uassertStatusOKWithContext(status, "Global initilization failed");
+    auto giGuard = makeGuard([] { mongo::runGlobalDeinitializers().ignore(); });
     setGlobalServiceContext(ServiceContext::make());
 
     Client::initThread("initandlisten");
+    // Make sure current thread have no client set in thread_local when we leave this function
+    auto clientGuard = makeGuard([] { Client::releaseCurrent(); });
 
     initWireSpec();
 
@@ -205,7 +211,6 @@ ServiceContext* initialize(const char* yaml_config) {
 
     auto opObserverRegistry = std::make_unique<OpObserverRegistry>();
     opObserverRegistry->addObserver(std::make_unique<OpObserverImpl>());
-    opObserverRegistry->addObserver(std::make_unique<UUIDCatalogObserver>());
     serviceContext->setOpObserver(std::move(opObserverRegistry));
 
     DBDirectClientFactory::get(serviceContext).registerImplementation([](OperationContext* opCtx) {
@@ -285,10 +290,11 @@ ServiceContext* initialize(const char* yaml_config) {
         quickExit(EXIT_NEED_DOWNGRADE);
     }
 
-    // Assert that the in-memory featureCompatibilityVersion parameter has been explicitly set. If
-    // we are part of a replica set and are started up with no data files, we do not set the
-    // featureCompatibilityVersion until a primary is chosen. For this case, we expect the in-memory
-    // featureCompatibilityVersion parameter to still be uninitialized until after startup.
+    // Assert that the in-memory featureCompatibilityVersion parameter has been explicitly set.
+    // If we are part of a replica set and are started up with no data files, we do not set the
+    // featureCompatibilityVersion until a primary is chosen. For this case, we expect the
+    // in-memory featureCompatibilityVersion parameter to still be uninitialized until after
+    // startup.
     if (canCallFCVSetIfCleanStartup) {
         invariant(serverGlobalParams.featureCompatibility.isVersionInitialized());
     }
@@ -302,17 +308,22 @@ ServiceContext* initialize(const char* yaml_config) {
     srand((unsigned)(curTimeMicros64()) ^ (unsigned(uintptr_t(&startupOpCtx))));
 
     // Set up the logical session cache
-    auto sessionCache = makeLogicalSessionCacheEmbedded();
-    LogicalSessionCache::set(serviceContext, std::move(sessionCache));
+    LogicalSessionCache::set(serviceContext,
+                             stdx::make_unique<LogicalSessionCacheImpl>(
+                                 std::make_unique<ServiceLiaisonMongod>(),
+                                 std::make_shared<SessionsCollectionStandalone>(),
+                                 [](OperationContext*, SessionsCollection&, Date_t) {
+                                     return 0; /* No op */
+                                 }));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the
     // operation context anymore
     startupOpCtx.reset();
 
-    // Make sure current thread have no client set in thread_local
-    Client::releaseCurrent();
-
     serviceContext->notifyStartupComplete();
+
+    // Init succeeded, no need for global deinit.
+    giGuard.dismiss();
 
     return serviceContext;
 }

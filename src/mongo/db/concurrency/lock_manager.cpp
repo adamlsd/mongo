@@ -33,18 +33,17 @@
 
 #include "mongo/db/concurrency/lock_manager.h"
 
-#include <third_party/murmurhash3/MurmurHash3.h>
-
 #include "mongo/base/data_type_endian.h"
 #include "mongo/base/data_view.h"
 #include "mongo/base/static_assert.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/config.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/stringutils.h"
+#include "mongo/util/str.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
@@ -98,23 +97,6 @@ bool conflicts(LockMode newMode, uint32_t existingModesMask) {
 uint32_t modeMask(LockMode mode) {
     return 1 << mode;
 }
-
-uint64_t hashStringData(StringData str) {
-    char hash[16];
-    MurmurHash3_x64_128(str.rawData(), str.size(), 0, hash);
-    return static_cast<size_t>(ConstDataView(hash).read<LittleEndian<std::uint64_t>>());
-}
-
-/**
- * Maps the resource id to a human-readable string.
- */
-static const char* ResourceTypeNames[] = {
-    "Invalid", "Global", "Database", "Collection", "Metadata", "Mutex"};
-
-// Ensure we do not add new types without updating the names array
-MONGO_STATIC_ASSERT((sizeof(ResourceTypeNames) / sizeof(ResourceTypeNames[0])) ==
-                    ResourceTypesCount);
-
 
 /**
  * Maps the LockRequest status to a human-readable string.
@@ -297,8 +279,8 @@ struct LockHead {
 
     // Doubly-linked list of requests, which have not been granted yet because they conflict
     // with the set of granted modes. Requests are queued at the end of the queue and are
-    // granted from the beginning forward, which gives these locks FIFO ordering. Exceptions
-    // are high-priority locks, such as the MMAP V1 flush lock.
+    // granted from the beginning forward, which gives these locks FIFO ordering. Exceptions to the
+    // FIFO rule are strong lock requests for global resources, such as MODE_X for Global.
     LockRequestList conflictList;
 
     // Counts the conflicting requests for each of the lock modes. These counts should exactly
@@ -975,28 +957,6 @@ LockHead* LockManager::LockBucket::findOrInsert(ResourceId resId) {
 //
 // ResourceId
 //
-
-uint64_t ResourceId::fullHash(ResourceType type, uint64_t hashId) {
-    return (static_cast<uint64_t>(type) << (64 - resourceTypeBits)) +
-        (hashId & (std::numeric_limits<uint64_t>::max() >> resourceTypeBits));
-}
-
-ResourceId::ResourceId(ResourceType type, StringData ns)
-    : _fullHash(fullHash(type, hashStringData(ns))) {
-#ifdef MONGO_CONFIG_DEBUG_BUILD
-    _nsCopy = ns.toString();
-#endif
-}
-
-ResourceId::ResourceId(ResourceType type, const std::string& ns)
-    : _fullHash(fullHash(type, hashStringData(ns))) {
-#ifdef MONGO_CONFIG_DEBUG_BUILD
-    _nsCopy = ns;
-#endif
-}
-
-ResourceId::ResourceId(ResourceType type, uint64_t hashId) : _fullHash(fullHash(type, hashId)) {}
-
 std::string ResourceId::toString() const {
     StringBuilder ss;
     ss << "{" << _fullHash << ": " << resourceTypeName(getType()) << ", " << getHashId();
@@ -1004,9 +964,13 @@ std::string ResourceId::toString() const {
         ss << ", " << Lock::ResourceMutex::getName(*this);
     }
 
-#ifdef MONGO_CONFIG_DEBUG_BUILD
-    ss << ", " << _nsCopy;
-#endif
+    if (getType() == RESOURCE_DATABASE || getType() == RESOURCE_COLLECTION) {
+        CollectionCatalog& catalog = CollectionCatalog::get(getGlobalServiceContext());
+        boost::optional<std::string> resourceName = catalog.lookupResourceName(*this);
+        if (resourceName) {
+            ss << ", " << *resourceName;
+        }
+    }
 
     ss << "}";
 
@@ -1053,10 +1017,6 @@ const char* legacyModeName(LockMode mode) {
 bool isModeCovered(LockMode mode, LockMode coveringMode) {
     return (LockConflictsTable[coveringMode] | LockConflictsTable[mode]) ==
         LockConflictsTable[coveringMode];
-}
-
-const char* resourceTypeName(ResourceType resourceType) {
-    return ResourceTypeNames[resourceType];
 }
 
 const char* lockRequestStatusName(LockRequest::Status status) {

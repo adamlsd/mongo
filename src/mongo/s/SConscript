@@ -74,6 +74,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/session_catalog',
+        '$BUILD_DIR/mongo/db/sessions_collection',
     ],
 )
 
@@ -106,7 +107,6 @@ env.Library(
         'client/sharding_network_connection_hook.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/logical_session_cache_factory_mongos',
         '$BUILD_DIR/mongo/s/catalog/dist_lock_catalog_impl',
         '$BUILD_DIR/mongo/s/catalog/replset_dist_lock_manager',
         '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_impl',
@@ -128,6 +128,7 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/query/command_request_response",
+        "$BUILD_DIR/mongo/executor/scoped_task_executor",
         "$BUILD_DIR/mongo/executor/task_executor_interface",
         "$BUILD_DIR/mongo/s/client/sharding_client",
         "$BUILD_DIR/mongo/s/coreshard",
@@ -169,6 +170,7 @@ env.Library(
         'stale_exception.cpp',
         'would_change_owning_shard_exception.cpp',
         env.Idlc('catalog/type_chunk_base.idl')[0],
+        env.Idlc('chunk_version.idl')[0],
         env.Idlc('database_version.idl')[0],
         env.Idlc('request_types/clone_catalog_data.idl')[0],
         env.Idlc('request_types/create_collection.idl')[0],
@@ -480,6 +482,19 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/server_options_core',
     ],
+)
+
+env.CppUnitTest(
+    target='cluster_commands_helpers_test',
+    source=[
+        'append_raw_responses_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_mock',
+        'shard_server_test_fixture',
+        'sharding_router_api',
+    ]
 )
 
 env.CppUnitTest(

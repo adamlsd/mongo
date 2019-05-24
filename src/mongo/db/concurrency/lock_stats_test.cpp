@@ -31,11 +31,14 @@
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/concurrency/lock_manager_test_help.h"
+#include "mongo/db/service_context_test_fixture.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
 
-TEST(LockStats, NoWait) {
+class LockStatsTest : public unittest::Test, public ScopedGlobalServiceContextForTest {};
+
+TEST_F(LockStatsTest, NoWait) {
     const ResourceId resId(RESOURCE_COLLECTION, std::string("LockStats.NoWait"));
 
     resetGlobalLockStats();
@@ -53,7 +56,7 @@ TEST(LockStats, NoWait) {
     ASSERT_EQUALS(0, stats.get(resId, MODE_X).combinedWaitTimeMicros);
 }
 
-TEST(LockStats, Wait) {
+TEST_F(LockStatsTest, Wait) {
     const ResourceId resId(RESOURCE_COLLECTION, std::string("LockStats.Wait"));
 
     resetGlobalLockStats();
@@ -86,7 +89,7 @@ TEST(LockStats, Wait) {
     ASSERT_GREATER_THAN(stats.get(resId, MODE_S).combinedWaitTimeMicros, 0);
 }
 
-TEST(LockStats, Reporting) {
+TEST_F(LockStatsTest, Reporting) {
     const ResourceId resId(RESOURCE_COLLECTION, std::string("LockStats.Reporting"));
 
     resetGlobalLockStats();
@@ -103,7 +106,7 @@ TEST(LockStats, Reporting) {
     stats.report(&builder);
 }
 
-TEST(LockStats, Subtraction) {
+TEST_F(LockStatsTest, Subtraction) {
     const ResourceId resId(RESOURCE_COLLECTION, std::string("LockStats.Subtraction"));
 
     resetGlobalLockStats();
@@ -144,7 +147,12 @@ TEST(LockStats, Subtraction) {
 }
 
 namespace {
-void assertAcquisitionStats(ResourceId rid) {
+/**
+ * Locks 'rid' and then checks the global lock stat is reported correctly. Either the global lock is
+ * reported locked if 'rid' is the global lock resource, or unlocked if 'rid' is not the global lock
+ * resource.
+ */
+void assertGlobalAcquisitionStats(ResourceId rid) {
     resetGlobalLockStats();
 
     SingleThreadedLockStats stats;
@@ -173,21 +181,23 @@ void assertAcquisitionStats(ResourceId rid) {
 }
 }  // namespace
 
-TEST(LockStats, GlobalRetrievableSeparately) {
-    assertAcquisitionStats(resourceIdGlobal);
-    assertAcquisitionStats(resourceIdParallelBatchWriterMode);
-    assertAcquisitionStats(resourceIdReplicationStateTransitionLock);
+TEST_F(LockStatsTest, GlobalRetrievableSeparately) {
+    assertGlobalAcquisitionStats(resourceIdGlobal);
+    assertGlobalAcquisitionStats(resourceIdParallelBatchWriterMode);
+    assertGlobalAcquisitionStats(resourceIdReplicationStateTransitionLock);
 }
 
-TEST(LockStats, ServerStatusAggregatesAllGlobal) {
+TEST_F(LockStatsTest, ServerStatus) {
     resetGlobalLockStats();
 
+    // If there are no locks, nothing is reported.
     SingleThreadedLockStats stats;
     reportGlobalLockingStats(&stats);
     BSONObjBuilder builder;
     stats.report(&builder);
     ASSERT_EQUALS(0, builder.done().nFields());
 
+    // Take the global, PBWM and RSTL locks in MODE_IX to create acquisition stats for them.
     LockerImpl locker;
     locker.lockGlobal(LockMode::MODE_IX);
     locker.lock(resourceIdParallelBatchWriterMode, LockMode::MODE_IX);
@@ -197,12 +207,21 @@ TEST(LockStats, ServerStatusAggregatesAllGlobal) {
     locker.unlock(resourceIdParallelBatchWriterMode);
     locker.unlockGlobal();
 
+    // Now the MODE_IX lock acquisitions should be reported, separately for each lock type.
     reportGlobalLockingStats(&stats);
     BSONObjBuilder builder2;
     stats.report(&builder2);
+    auto lockingStats = builder2.done();
     ASSERT_EQUALS(
-        3,
-        builder2.done().getObjectField("Global").getObjectField("acquireCount").getIntField("w"));
+        1, lockingStats.getObjectField("Global").getObjectField("acquireCount").getIntField("w"));
+    ASSERT_EQUALS(1,
+                  lockingStats.getObjectField("ParallelBatchWriter")
+                      .getObjectField("acquireCount")
+                      .getIntField("w"));
+    ASSERT_EQUALS(1,
+                  lockingStats.getObjectField("ReplicationStateTransition")
+                      .getObjectField("acquireCount")
+                      .getIntField("w"));
 }
 
 }  // namespace mongo

@@ -35,6 +35,7 @@
 
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/transaction_coordinator_document_gen.h"
+#include "mongo/db/transaction_participant_gen.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/log.h"
@@ -121,6 +122,10 @@ boost::optional<Future<txn::CommitDecision>> TransactionCoordinatorService::reco
         return boost::none;
     }
 
+    // Make sure that recover can terminate right away if coordinateCommit never reached
+    // the coordinator.
+    coordinator->cancelIfCommitNotYetStarted();
+
     return coordinator->onCompletion().then(
         [coordinator] { return coordinator->getDecision().get(); });
 
@@ -154,7 +159,7 @@ void TransactionCoordinatorService::onStepUp(OperationContext* opCtx,
                     uassertStatusOK(waitForWriteConcern(
                         opCtx,
                         lastOpTime,
-                        WriteConcernOptions{WriteConcernOptions::kInternalMajorityNoSnapshot,
+                        WriteConcernOptions{WriteConcernOptions::kMajority,
                                             WriteConcernOptions::SyncMode::UNSET,
                                             WriteConcernOptions::kNoTimeout},
                         &unusedWCResult));
@@ -163,6 +168,9 @@ void TransactionCoordinatorService::onStepUp(OperationContext* opCtx,
 
                     LOG(0) << "Need to resume coordinating commit for " << coordinatorDocs.size()
                            << " transactions";
+
+                    const auto service = opCtx->getServiceContext();
+                    const auto clockSource = service->getFastClockSource();
 
                     auto& catalog = catalogAndScheduler->catalog;
                     auto& scheduler = catalogAndScheduler->scheduler;
@@ -173,21 +181,18 @@ void TransactionCoordinatorService::onStepUp(OperationContext* opCtx,
                         const auto lsid = *doc.getId().getSessionId();
                         const auto txnNumber = *doc.getId().getTxnNumber();
 
-                        auto coordinator =
-                            std::make_shared<TransactionCoordinator>(opCtx->getServiceContext(),
-                                                                     lsid,
-                                                                     txnNumber,
-                                                                     scheduler.makeChildScheduler(),
-                                                                     boost::none /* No deadline */);
+                        auto coordinator = std::make_shared<TransactionCoordinator>(
+                            service,
+                            lsid,
+                            txnNumber,
+                            scheduler.makeChildScheduler(),
+                            clockSource->now() + Seconds(gTransactionLifetimeLimitSeconds.load()));
 
                         catalog.insert(opCtx, lsid, txnNumber, coordinator, true /* forStepUp */);
                         coordinator->continueCommit(doc);
                     }
                 })
             .tapAll([catalogAndScheduler = _catalogAndScheduler](Status status) {
-                // TODO (SERVER-38320): Reschedule the step-up task if the interruption was not due
-                // to stepdown.
-
                 auto& catalog = catalogAndScheduler->catalog;
                 catalog.exitStepUp(status);
             });
@@ -255,6 +260,20 @@ void TransactionCoordinatorService::CatalogAndScheduler::onStepDown() {
 void TransactionCoordinatorService::CatalogAndScheduler::join() {
     recoveryTaskCompleted->wait();
     catalog.join();
+}
+
+void TransactionCoordinatorService::cancelIfCommitNotYetStarted(OperationContext* opCtx,
+                                                                LogicalSessionId lsid,
+                                                                TxnNumber txnNumber) {
+    auto cas = _getCatalogAndScheduler(opCtx);
+    auto& catalog = cas->catalog;
+
+    // No need to look at every coordinator since we cancel old coordinators when adding new ones.
+    if (auto latestTxnNumAndCoordinator = catalog.getLatestOnSession(opCtx, lsid)) {
+        if (txnNumber == latestTxnNumAndCoordinator->first) {
+            latestTxnNumAndCoordinator->second->cancelIfCommitNotYetStarted();
+        }
+    }
 }
 
 }  // namespace mongo

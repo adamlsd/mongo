@@ -46,7 +46,6 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
 #include "mongo/db/concurrency/replication_state_transition_lock_guard.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
@@ -55,6 +54,7 @@
 #include "mongo/db/logical_time.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context_noop.h"
+#include "mongo/db/prepare_conflict_tracker.h"
 #include "mongo/db/repl/check_quorum_for_config_change.h"
 #include "mongo/db/repl/data_replicator_external_state_initial_sync.h"
 #include "mongo/db/repl/is_master_response.h"
@@ -71,6 +71,7 @@
 #include "mongo/db/repl/rslog.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/topology_coordinator.h"
+#include "mongo/db/repl/transaction_oplog_application.h"
 #include "mongo/db/repl/update_position_args.h"
 #include "mongo/db/repl/vote_requester.h"
 #include "mongo/db/server_options.h"
@@ -422,11 +423,24 @@ OpTime ReplicationCoordinatorImpl::getCurrentCommittedSnapshotOpTime() const {
     return _getCurrentCommittedSnapshotOpTime_inlock();
 }
 
+OpTimeAndWallTime ReplicationCoordinatorImpl::getCurrentCommittedSnapshotOpTimeAndWallTime() const {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    return _getCurrentCommittedSnapshotOpTimeAndWallTime_inlock();
+}
+
 OpTime ReplicationCoordinatorImpl::_getCurrentCommittedSnapshotOpTime_inlock() const {
+    if (_currentCommittedSnapshot) {
+        return _currentCommittedSnapshot->opTime;
+    }
+    return OpTime();
+}
+
+OpTimeAndWallTime ReplicationCoordinatorImpl::_getCurrentCommittedSnapshotOpTimeAndWallTime_inlock()
+    const {
     if (_currentCommittedSnapshot) {
         return _currentCommittedSnapshot.get();
     }
-    return OpTime();
+    return OpTimeAndWallTime();
 }
 
 LogicalTime ReplicationCoordinatorImpl::_getCurrentCommittedLogicalTime_inlock() const {
@@ -505,6 +519,8 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
     // Read the last op from the oplog after cleaning up any partially applied batches.
     const auto stableTimestamp = boost::none;
     _replicationProcess->getReplicationRecovery()->recoverFromOplog(opCtx, stableTimestamp);
+    reconstructPreparedTransactions(opCtx, OplogApplication::Mode::kRecovering);
+
     const auto lastOpTimeAndWallTimeResult = _externalState->loadLastOpTimeAndWallTime(opCtx);
 
     // Use a callback here, because _finishLoadLocalConfig calls isself() which requires
@@ -777,6 +793,8 @@ void ReplicationCoordinatorImpl::startup(OperationContext* opCtx) {
             // for the recoveryTimestamp just like on replica set recovery.
             const auto stableTimestamp = boost::none;
             _replicationProcess->getReplicationRecovery()->recoverFromOplog(opCtx, stableTimestamp);
+            reconstructPreparedTransactions(opCtx, OplogApplication::Mode::kRecovering);
+
             warning() << "Setting mongod to readOnly mode as a result of specifying "
                          "'recoverFromOplogAsStandalone'.";
             storageGlobalParams.readOnly = true;
@@ -1041,7 +1059,7 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* opCtx,
 
     // Must calculate the commit level again because firstOpTimeOfMyTerm wasn't set when we logged
     // our election in onTransitionToPrimary(), above.
-    _updateLastCommittedOpTime(lk);
+    _updateLastCommittedOpTimeAndWallTime(lk);
 
     // Update _canAcceptNonLocalWrites
     _updateMemberStateFromTopologyCoordinator(lk, opCtx);
@@ -1183,7 +1201,7 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTimeAndWallTime(
         opTimeAndWallTime, _replExecutor->now(), isRollbackAllowed);
     // If we are using applied times to calculate the commit level, update it now.
     if (!_rsConfig.getWriteConcernMajorityShouldJournal()) {
-        _updateLastCommittedOpTime(lk);
+        _updateLastCommittedOpTimeAndWallTime(lk);
     }
 
     // Signal anyone waiting on optime changes.
@@ -1212,7 +1230,7 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTimeAndWallTime(
     if (consistency == DataConsistency::Consistent) {
         invariant(opTime.getTimestamp().getInc() > 0,
                   str::stream() << "Impossible optime received: " << opTime.toString());
-        _stableOpTimeCandidates.insert(opTime);
+        _stableOpTimeCandidates.insert(opTimeAndWallTime);
         // If we are lagged behind the commit optime, set a new stable timestamp here. When majority
         // read concern is disabled, the stable timestamp is set to lastApplied.
         if (opTime <= _topCoord->getLastCommittedOpTime() ||
@@ -1233,7 +1251,7 @@ void ReplicationCoordinatorImpl::_setMyLastDurableOpTimeAndWallTime(
         opTimeAndWallTime, _replExecutor->now(), isRollbackAllowed);
     // If we are using durable times to calculate the commit level, update it now.
     if (_rsConfig.getWriteConcernMajorityShouldJournal()) {
-        _updateLastCommittedOpTime(lk);
+        _updateLastCommittedOpTimeAndWallTime(lk);
     }
 }
 
@@ -1296,7 +1314,10 @@ Status ReplicationCoordinatorImpl::_validateReadConcern(OperationContext* opCtx,
 
     if (readConcern.getArgsAtClusterTime() && !serverGlobalParams.enableMajorityReadConcern) {
         return {ErrorCodes::InvalidOptions,
-                "'atClusterTime' is not supported when enableMajorityReadConcern=false"};
+                "readConcern level 'snapshot' is not supported in sharded clusters when "
+                "enableMajorityReadConcern=false. See "
+                "https://dochub.mongodb.org/core/"
+                "disabled-read-concern-majority-snapshot-restrictions."};
     }
 
     return Status::OK();
@@ -1388,7 +1409,14 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
             if (!waitStatus.isOK()) {
                 return waitStatus;
             }
-            LOG(3) << "Got notified of new snapshot: " << _currentCommittedSnapshot->toString();
+            if (!_currentCommittedSnapshot) {
+                // It is possible for the thread to be awoken due to a spurious wakeup, meaning
+                // the condition variable was never set.
+                LOG(3) << "waitUntilOpTime: awoken but current committed snapshot is null."
+                       << " Continuing to wait for new snapshot.";
+            } else {
+                LOG(3) << "Got notified of new snapshot: " << _currentCommittedSnapshot->toString();
+            }
             continue;
         }
 
@@ -1505,27 +1533,39 @@ OpTime ReplicationCoordinatorImpl::_getMyLastDurableOpTime_inlock() const {
 
 Status ReplicationCoordinatorImpl::setLastDurableOptime_forTest(long long cfgVer,
                                                                 long long memberId,
-                                                                const OpTime& opTime) {
+                                                                const OpTime& opTime,
+                                                                Date_t wallTime) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     invariant(getReplicationMode() == modeReplSet);
 
-    const UpdatePositionArgs::UpdateInfo update(OpTime(), opTime, cfgVer, memberId);
+    if (wallTime == Date_t::min()) {
+        wallTime = Date_t() + Seconds(opTime.getSecs());
+    }
+
+    const UpdatePositionArgs::UpdateInfo update(
+        OpTime(), Date_t::min(), opTime, wallTime, cfgVer, memberId);
     long long configVersion;
     const auto status = _setLastOptime(lock, update, &configVersion);
-    _updateLastCommittedOpTime(lock);
+    _updateLastCommittedOpTimeAndWallTime(lock);
     return status;
 }
 
 Status ReplicationCoordinatorImpl::setLastAppliedOptime_forTest(long long cfgVer,
                                                                 long long memberId,
-                                                                const OpTime& opTime) {
+                                                                const OpTime& opTime,
+                                                                Date_t wallTime) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     invariant(getReplicationMode() == modeReplSet);
 
-    const UpdatePositionArgs::UpdateInfo update(opTime, OpTime(), cfgVer, memberId);
+    if (wallTime == Date_t::min()) {
+        wallTime = Date_t() + Seconds(opTime.getSecs());
+    }
+
+    const UpdatePositionArgs::UpdateInfo update(
+        opTime, wallTime, OpTime(), Date_t::min(), cfgVer, memberId);
     long long configVersion;
     const auto status = _setLastOptime(lock, update, &configVersion);
-    _updateLastCommittedOpTime(lock);
+    _updateLastCommittedOpTimeAndWallTime(lock);
     return status;
 }
 
@@ -1538,7 +1578,7 @@ Status ReplicationCoordinatorImpl::_setLastOptime(WithLock lk,
     const bool advancedOpTime = result.getValue();
     // Only update committed optime if the remote optimes increased.
     if (advancedOpTime) {
-        _updateLastCommittedOpTime(lk);
+        _updateLastCommittedOpTimeAndWallTime(lk);
     }
 
     _cancelAndRescheduleLivenessUpdate_inlock(args.memberId);
@@ -1561,34 +1601,19 @@ bool ReplicationCoordinatorImpl::_doneWaitingForReplication_inlock(
             opTime, writeConcern.wNumNodes, useDurableOpTime);
     }
 
-    const bool modeIsMajorityNoSnapshot =
-        writeConcern.wMode == WriteConcernOptions::kInternalMajorityNoSnapshot;
-
     StringData patternName;
-    if (writeConcern.wMode == WriteConcernOptions::kMajority || modeIsMajorityNoSnapshot) {
-        if (modeIsMajorityNoSnapshot) {
-            // The internal majority no snapshot write concern waits for an opTime to be majority
-            // committed, but not necessarily in the committed snapshot.
-            const auto lastCommittedOpTime = _topCoord->getLastCommittedOpTime();
-            if (lastCommittedOpTime < opTime) {
-                LOG(1) << "Required optime: " << opTime
-                       << " is not yet majority committed, last committed optime: "
-                       << lastCommittedOpTime;
-                return false;
-            }
-
-            // Fall through to wait for "majority" write concern.
-        } else if (_externalState->snapshotsEnabled() && !gTestingSnapshotBehaviorInIsolation) {
+    if (writeConcern.wMode == WriteConcernOptions::kMajority) {
+        if (_externalState->snapshotsEnabled() && !gTestingSnapshotBehaviorInIsolation) {
             // Make sure we have a valid "committed" snapshot up to the needed optime.
             if (!_currentCommittedSnapshot) {
                 return false;
             }
 
             // Wait for the "current" snapshot to advance to/past the opTime.
-            const auto haveSnapshot = _currentCommittedSnapshot >= opTime;
+            const auto haveSnapshot = _currentCommittedSnapshot->opTime >= opTime;
             if (!haveSnapshot) {
                 LOG(1) << "Required snapshot optime: " << opTime << " is not yet part of the "
-                       << "current 'committed' snapshot: " << *_currentCommittedSnapshot;
+                       << "current 'committed' snapshot: " << _currentCommittedSnapshot->opTime;
                 return false;
             }
 
@@ -1674,6 +1699,11 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
         return Status::OK();
     }
 
+    auto interruptStatus = opCtx->checkForInterruptNoAssert();
+    if (!interruptStatus.isOK()) {
+        return interruptStatus;
+    }
+
     auto checkForStepDown = [&]() -> Status {
         if (replMode == modeReplSet && !_memberState.primary()) {
             return {ErrorCodes::PrimarySteppedDown,
@@ -1699,11 +1729,6 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     Status stepdownStatus = checkForStepDown();
     if (!stepdownStatus.isOK()) {
         return stepdownStatus;
-    }
-
-    auto interruptStatus = opCtx->checkForInterruptNoAssert();
-    if (!interruptStatus.isOK()) {
-        return interruptStatus;
     }
 
     if (writeConcern.wMode.empty()) {
@@ -1807,10 +1832,9 @@ void ReplicationCoordinatorImpl::_killUserOperationsOnStepDown(
 
         // Don't kill the stepdown thread.
         if (toKill && !toKill->isKillPending() && toKill->getOpID() != stepDownOpCtx->getOpID()) {
-            const GlobalLockAcquisitionTracker& globalLockTracker =
-                GlobalLockAcquisitionTracker::get(toKill);
-            if (globalLockTracker.getGlobalWriteLocked() ||
-                globalLockTracker.getGlobalSharedLockTaken()) {
+            auto locker = toKill->lockState();
+            if (locker->wasGlobalLockTakenInModeConflictingWithWrites() ||
+                PrepareConflictTracker::get(toKill).isWaitingOnPrepareConflict()) {
                 serviceCtx->killOperation(lk, toKill, ErrorCodes::InterruptedDueToStepDown);
                 userOpsKilled.increment();
             } else {
@@ -2125,6 +2149,11 @@ bool ReplicationCoordinatorImpl::canAcceptWritesForDatabase_UNSAFE(OperationCont
     return false;
 }
 
+bool ReplicationCoordinatorImpl::canAcceptNonLocalWrites() const {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    return _readWriteAbility->canAcceptNonLocalWrites(lk);
+}
+
 bool ReplicationCoordinatorImpl::canAcceptWritesFor(OperationContext* opCtx,
                                                     const NamespaceString& ns) {
     invariant(opCtx->lockState()->isRSTLLocked());
@@ -2295,7 +2324,7 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
         TopologyCoordinator::ReplSetStatusArgs{
             _replExecutor->now(),
             static_cast<unsigned>(time(0) - serverGlobalParams.started),
-            _getCurrentCommittedSnapshotOpTime_inlock(),
+            _getCurrentCommittedSnapshotOpTimeAndWallTime_inlock(),
             initialSyncProgress,
             _storage->getLastStableCheckpointTimestampDeprecated(_service),
             _storage->getLastStableRecoveryTimestamp(_service)},
@@ -2304,17 +2333,18 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
     return result;
 }
 
-void ReplicationCoordinatorImpl::fillIsMasterForReplSet(IsMasterResponse* response) {
+void ReplicationCoordinatorImpl::fillIsMasterForReplSet(
+    IsMasterResponse* response, const SplitHorizon::Parameters& horizonParams) {
     invariant(getSettings().usingReplSets());
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-    _topCoord->fillIsMasterForReplSet(response);
+    _topCoord->fillIsMasterForReplSet(response, horizonParams);
 
     OpTime lastOpTime = _getMyLastAppliedOpTime_inlock();
     response->setLastWrite(lastOpTime, lastOpTime.getTimestamp().getSecs());
     if (_currentCommittedSnapshot) {
-        response->setLastMajorityWrite(_currentCommittedSnapshot.get(),
-                                       _currentCommittedSnapshot->getTimestamp().getSecs());
+        response->setLastMajorityWrite(_currentCommittedSnapshot->opTime,
+                                       _currentCommittedSnapshot->opTime.getTimestamp().getSecs());
     }
 
     if (response->isMaster() && !_readWriteAbility->canAcceptNonLocalWrites(lk)) {
@@ -2822,7 +2852,7 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator(WithLock l
     if (_memberState.rollback()) {
         // Our 'lastApplied' optime at this point should be the rollback common point. We should
         // remove any stable optime candidates greater than the common point.
-        auto lastApplied = _getMyLastAppliedOpTime_inlock();
+        auto lastApplied = _getMyLastAppliedOpTimeAndWallTime_inlock();
         // The upper bound will give us the first optime T such that T > lastApplied.
         auto deletePoint = _stableOpTimeCandidates.upper_bound(lastApplied);
         _stableOpTimeCandidates.erase(deletePoint, _stableOpTimeCandidates.end());
@@ -2980,8 +3010,10 @@ void ReplicationCoordinatorImpl::CatchupState::signalHeartbeatUpdate_inlock() {
     }
 
     // We've caught up.
-    if (*targetOpTime <= _repl->_getMyLastAppliedOpTime_inlock()) {
-        log() << "Caught up to the latest optime known via heartbeats after becoming primary.";
+    const auto myLastApplied = _repl->_getMyLastAppliedOpTime_inlock();
+    if (*targetOpTime <= myLastApplied) {
+        log() << "Caught up to the latest optime known via heartbeats after becoming primary. "
+              << "Target optime: " << *targetOpTime << ". My Last Applied: " << myLastApplied;
         abort_inlock();
         return;
     }
@@ -3004,8 +3036,10 @@ void ReplicationCoordinatorImpl::CatchupState::signalHeartbeatUpdate_inlock() {
     }
     auto targetOpTimeCB = [this, targetOpTime]() {
         // Double check the target time since stepdown may signal us too.
-        if (*targetOpTime <= _repl->_getMyLastAppliedOpTime_inlock()) {
-            log() << "Caught up to the latest known optime successfully after becoming primary.";
+        const auto myLastApplied = _repl->_getMyLastAppliedOpTime_inlock();
+        if (*targetOpTime <= myLastApplied) {
+            log() << "Caught up to the latest known optime successfully after becoming primary. "
+                  << "Target optime: " << *targetOpTime << ". My Last Applied: " << myLastApplied;
             abort_inlock();
         }
     };
@@ -3093,7 +3127,7 @@ ReplicationCoordinatorImpl::_setCurrentRSConfig(WithLock lk,
         // nodes in the set will contact us.
         _startHeartbeats_inlock();
     }
-    _updateLastCommittedOpTime(lk);
+    _updateLastCommittedOpTimeAndWallTime(lk);
 
     return action;
 }
@@ -3321,8 +3355,8 @@ bool ReplicationCoordinatorImpl::shouldChangeSyncSource(
         currentSource, replMetadata, oqMetadata, _replExecutor->now());
 }
 
-void ReplicationCoordinatorImpl::_updateLastCommittedOpTime(WithLock lk) {
-    if (_topCoord->updateLastCommittedOpTime()) {
+void ReplicationCoordinatorImpl::_updateLastCommittedOpTimeAndWallTime(WithLock lk) {
+    if (_topCoord->updateLastCommittedOpTimeAndWallTime()) {
         _setStableTimestampForStorage(lk);
     }
     // Wake up any threads waiting for replication that now have their replication
@@ -3332,15 +3366,17 @@ void ReplicationCoordinatorImpl::_updateLastCommittedOpTime(WithLock lk) {
     _wakeReadyWaiters_inlock();
 }
 
-boost::optional<OpTime> ReplicationCoordinatorImpl::_chooseStableOpTimeFromCandidates(
-    WithLock lk, const std::set<OpTime>& candidates, OpTime maximumStableOpTime) {
+boost::optional<OpTimeAndWallTime> ReplicationCoordinatorImpl::_chooseStableOpTimeFromCandidates(
+    WithLock lk,
+    const std::set<OpTimeAndWallTime>& candidates,
+    OpTimeAndWallTime maximumStableOpTime) {
 
     // No optime candidates.
     if (candidates.empty()) {
         return boost::none;
     }
 
-    auto maximumStableTimestamp = maximumStableOpTime.getTimestamp();
+    auto maximumStableTimestamp = maximumStableOpTime.opTime.getTimestamp();
     if (_readWriteAbility->canAcceptNonLocalWrites(lk) && _storage->supportsDocLocking(_service)) {
         // If the storage engine supports document level locking, then it is possible for oplog
         // writes to commit out of order. In that case, we don't want to set the stable timestamp
@@ -3364,7 +3400,7 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_chooseStableOpTimeFromCandi
         // primary' oplog entry in the new term before accepting any new writes, so the all
         // committed must be in the current term.
         maximumStableTimestamp = std::min(_storage->getAllCommittedTimestamp(_service),
-                                          maximumStableOpTime.getTimestamp());
+                                          maximumStableOpTime.opTime.getTimestamp());
     }
 
     MONGO_FAIL_POINT_BLOCK(holdStableTimestampAtSpecificTimestamp, data) {
@@ -3373,7 +3409,8 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_chooseStableOpTimeFromCandi
         maximumStableTimestamp = std::min(maximumStableTimestamp, holdStableTimestamp);
     }
 
-    maximumStableOpTime = OpTime(maximumStableTimestamp, maximumStableOpTime.getTerm());
+    maximumStableOpTime = {OpTime(maximumStableTimestamp, maximumStableOpTime.opTime.getTerm()),
+                           maximumStableOpTime.wallTime};
 
     // Find the greatest optime candidate that is less than or equal to 'maximumStableOpTime'. To do
     // this we first find the upper bound of 'maximumStableOpTime', which points to the smallest
@@ -3389,13 +3426,13 @@ boost::optional<OpTime> ReplicationCoordinatorImpl::_chooseStableOpTimeFromCandi
     // There is a valid stable optime.
     else {
         auto stableOpTime = *std::prev(upperBoundIter);
-        invariant(stableOpTime.getTimestamp() <= maximumStableTimestamp);
+        invariant(stableOpTime.opTime.getTimestamp() <= maximumStableTimestamp);
         return stableOpTime;
     }
 }
 
-void ReplicationCoordinatorImpl::_cleanupStableOpTimeCandidates(std::set<OpTime>* candidates,
-                                                                OpTime stableOpTime) {
+void ReplicationCoordinatorImpl::_cleanupStableOpTimeCandidates(
+    std::set<OpTimeAndWallTime>* candidates, OpTimeAndWallTime stableOpTime) {
     // Discard optime candidates earlier than the current stable optime, since we don't need
     // them anymore. To do this, we find the lower bound of the 'stableOpTime' which is the first
     // element that is greater than or equal to the 'stableOpTime'. Then we discard everything up
@@ -3406,17 +3443,18 @@ void ReplicationCoordinatorImpl::_cleanupStableOpTimeCandidates(std::set<OpTime>
     candidates->erase(candidates->begin(), deletePoint);
 }
 
-boost::optional<OpTime> ReplicationCoordinatorImpl::chooseStableOpTimeFromCandidates_forTest(
-    const std::set<OpTime>& candidates, const OpTime& maximumStableOpTime) {
+boost::optional<OpTimeAndWallTime>
+ReplicationCoordinatorImpl::chooseStableOpTimeFromCandidates_forTest(
+    const std::set<OpTimeAndWallTime>& candidates, const OpTimeAndWallTime& maximumStableOpTime) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     return _chooseStableOpTimeFromCandidates(lk, candidates, maximumStableOpTime);
 }
-void ReplicationCoordinatorImpl::cleanupStableOpTimeCandidates_forTest(std::set<OpTime>* candidates,
-                                                                       OpTime stableOpTime) {
+void ReplicationCoordinatorImpl::cleanupStableOpTimeCandidates_forTest(
+    std::set<OpTimeAndWallTime>* candidates, OpTimeAndWallTime stableOpTime) {
     _cleanupStableOpTimeCandidates(candidates, stableOpTime);
 }
 
-std::set<OpTime> ReplicationCoordinatorImpl::getStableOpTimeCandidates_forTest() {
+std::set<OpTimeAndWallTime> ReplicationCoordinatorImpl::getStableOpTimeCandidates_forTest() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     return _stableOpTimeCandidates;
 }
@@ -3426,27 +3464,29 @@ void ReplicationCoordinatorImpl::attemptToAdvanceStableTimestamp() {
     _setStableTimestampForStorage(lk);
 }
 
-boost::optional<OpTime> ReplicationCoordinatorImpl::_recalculateStableOpTime(WithLock lk) {
-    auto commitPoint = _topCoord->getLastCommittedOpTime();
+boost::optional<OpTimeAndWallTime> ReplicationCoordinatorImpl::_recalculateStableOpTime(
+    WithLock lk) {
+    auto commitPoint = _topCoord->getLastCommittedOpTimeAndWallTime();
     if (_currentCommittedSnapshot) {
-        auto snapshotOpTime = *_currentCommittedSnapshot;
-        invariant(snapshotOpTime.getTimestamp() <= commitPoint.getTimestamp());
-        invariant(snapshotOpTime <= commitPoint);
+        auto snapshotOpTime = _currentCommittedSnapshot->opTime;
+        invariant(snapshotOpTime.getTimestamp() <= commitPoint.opTime.getTimestamp());
+        invariant(snapshotOpTime <= commitPoint.opTime);
     }
 
     // When majority read concern is disabled, the stable opTime is set to the lastApplied, rather
     // than the commit point.
     auto maximumStableOpTime = serverGlobalParams.enableMajorityReadConcern
         ? commitPoint
-        : _topCoord->getMyLastAppliedOpTime();
+        : _topCoord->getMyLastAppliedOpTimeAndWallTime();
 
     // Compute the current stable optime.
     auto stableOpTime =
         _chooseStableOpTimeFromCandidates(lk, _stableOpTimeCandidates, maximumStableOpTime);
     if (stableOpTime) {
         // Check that the selected stable optime does not exceed our maximum.
-        invariant(stableOpTime->getTimestamp() <= maximumStableOpTime.getTimestamp());
-        invariant(*stableOpTime <= maximumStableOpTime);
+        invariant(stableOpTime.get().opTime.getTimestamp() <=
+                  maximumStableOpTime.opTime.getTimestamp());
+        invariant(stableOpTime.get().opTime <= maximumStableOpTime.opTime);
     }
 
     return stableOpTime;
@@ -3471,19 +3511,21 @@ void ReplicationCoordinatorImpl::_setStableTimestampForStorage(WithLock lk) {
                 // stable optime.
                 if (_updateCommittedSnapshot_inlock(stableOpTime.value())) {
                     // Update the stable timestamp for the storage engine.
-                    _storage->setStableTimestamp(getServiceContext(), stableOpTime->getTimestamp());
+                    _storage->setStableTimestamp(getServiceContext(),
+                                                 stableOpTime->opTime.getTimestamp());
                 }
             } else {
                 // When majority read concern is disabled, the stable optime may be ahead of the
                 // commit point, so we set the committed snapshot to the commit point.
-                const auto lastCommittedOpTime = _topCoord->getLastCommittedOpTime();
-                if (!lastCommittedOpTime.isNull()) {
+                const auto lastCommittedOpTime = _topCoord->getLastCommittedOpTimeAndWallTime();
+                if (!lastCommittedOpTime.opTime.isNull()) {
                     _updateCommittedSnapshot_inlock(lastCommittedOpTime);
                 }
                 // Set the stable timestamp regardless of whether the majority commit point moved
                 // forward.
                 if (!MONGO_FAIL_POINT(disableSnapshotting)) {
-                    _storage->setStableTimestamp(getServiceContext(), stableOpTime->getTimestamp());
+                    _storage->setStableTimestamp(getServiceContext(),
+                                                 stableOpTime->opTime.getTimestamp());
                 }
             }
         }
@@ -3491,32 +3533,37 @@ void ReplicationCoordinatorImpl::_setStableTimestampForStorage(WithLock lk) {
     }
 }
 
-void ReplicationCoordinatorImpl::advanceCommitPoint(const OpTime& committedOpTime,
-                                                    bool fromSyncSource) {
+void ReplicationCoordinatorImpl::advanceCommitPoint(
+    const OpTimeAndWallTime& committedOpTimeAndWallTime, bool fromSyncSource) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    _advanceCommitPoint(lk, committedOpTime, fromSyncSource);
+    _advanceCommitPoint(lk, committedOpTimeAndWallTime, fromSyncSource);
 }
 
-void ReplicationCoordinatorImpl::_advanceCommitPoint(WithLock lk,
-                                                     const OpTime& committedOpTime,
-                                                     bool fromSyncSource) {
-    if (_topCoord->advanceLastCommittedOpTime(committedOpTime, fromSyncSource)) {
+void ReplicationCoordinatorImpl::_advanceCommitPoint(
+    WithLock lk, const OpTimeAndWallTime& committedOpTimeAndWallTime, bool fromSyncSource) {
+    if (_topCoord->advanceLastCommittedOpTimeAndWallTime(committedOpTimeAndWallTime,
+                                                         fromSyncSource)) {
         if (_getMemberState_inlock().arbiter()) {
             // Arbiters do not store replicated data, so we consider their data trivially
             // consistent.
             _setMyLastAppliedOpTimeAndWallTime(
-                lk, {committedOpTime, Date_t::min()}, false, DataConsistency::Consistent);
+                lk, committedOpTimeAndWallTime, false, DataConsistency::Consistent);
         }
 
         _setStableTimestampForStorage(lk);
         // Even if we have no new snapshot, we need to notify waiters that the commit point moved.
-        _externalState->notifyOplogMetadataWaiters(committedOpTime);
+        _externalState->notifyOplogMetadataWaiters(committedOpTimeAndWallTime.opTime);
     }
 }
 
 OpTime ReplicationCoordinatorImpl::getLastCommittedOpTime() const {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     return _topCoord->getLastCommittedOpTime();
+}
+
+OpTimeAndWallTime ReplicationCoordinatorImpl::getLastCommittedOpTimeAndWallTime() const {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    return _topCoord->getLastCommittedOpTimeAndWallTime();
 }
 
 Status ReplicationCoordinatorImpl::processReplSetRequestVotes(
@@ -3719,7 +3766,7 @@ void ReplicationCoordinatorImpl::waitUntilSnapshotCommitted(OperationContext* op
             "Cannot use snapshots until replica set is finished initializing.",
             _rsConfigState != kConfigUninitialized && _rsConfigState != kConfigInitiating);
     while (!_currentCommittedSnapshot ||
-           _currentCommittedSnapshot->getTimestamp() < untilSnapshot) {
+           _currentCommittedSnapshot->opTime.getTimestamp() < untilSnapshot) {
         opCtx->waitForConditionOrInterrupt(_currentCommittedSnapshotCond, lock);
     }
 }
@@ -3729,7 +3776,7 @@ size_t ReplicationCoordinatorImpl::getNumUncommittedSnapshots() {
 }
 
 bool ReplicationCoordinatorImpl::_updateCommittedSnapshot_inlock(
-    const OpTime& newCommittedSnapshot) {
+    const OpTimeAndWallTime& newCommittedSnapshot) {
     if (gTestingSnapshotBehaviorInIsolation) {
         return false;
     }
@@ -3740,24 +3787,25 @@ bool ReplicationCoordinatorImpl::_updateCommittedSnapshot_inlock(
         log() << "Not updating committed snapshot because we are in rollback";
         return false;
     }
-    invariant(!newCommittedSnapshot.isNull());
+    invariant(!newCommittedSnapshot.opTime.isNull());
 
     // The new committed snapshot should be <= the current replication commit point.
     OpTime lastCommittedOpTime = _topCoord->getLastCommittedOpTime();
-    invariant(newCommittedSnapshot.getTimestamp() <= lastCommittedOpTime.getTimestamp());
-    invariant(newCommittedSnapshot <= lastCommittedOpTime);
+    invariant(newCommittedSnapshot.opTime.getTimestamp() <= lastCommittedOpTime.getTimestamp());
+    invariant(newCommittedSnapshot.opTime <= lastCommittedOpTime);
 
     // The new committed snapshot should be >= the current snapshot.
     if (_currentCommittedSnapshot) {
-        invariant(newCommittedSnapshot.getTimestamp() >= _currentCommittedSnapshot->getTimestamp());
-        invariant(newCommittedSnapshot >= _currentCommittedSnapshot);
+        invariant(newCommittedSnapshot.opTime.getTimestamp() >=
+                  _currentCommittedSnapshot->opTime.getTimestamp());
+        invariant(newCommittedSnapshot.opTime >= _currentCommittedSnapshot->opTime);
     }
     if (MONGO_FAIL_POINT(disableSnapshotting))
         return false;
     _currentCommittedSnapshot = newCommittedSnapshot;
     _currentCommittedSnapshotCond.notify_all();
 
-    _externalState->updateCommittedSnapshot(newCommittedSnapshot);
+    _externalState->updateCommittedSnapshot(newCommittedSnapshot.opTime);
 
     // Wake up any threads waiting for read concern or write concern.
     _wakeReadyWaiters_inlock();
@@ -3882,15 +3930,15 @@ void ReplicationCoordinatorImpl::ReadWriteAbility::setCanAcceptNonLocalWrites(
     // We must be holding the RSTL in mode X to change _canAcceptNonLocalWrites.
     invariant(opCtx);
     invariant(opCtx->lockState()->isRSTLExclusive());
-    _canAcceptNonLocalWrites = canAcceptWrites;
+    _canAcceptNonLocalWrites.store(canAcceptWrites);
 }
 
 bool ReplicationCoordinatorImpl::ReadWriteAbility::canAcceptNonLocalWrites(WithLock) const {
-    return _canAcceptNonLocalWrites;
+    return _canAcceptNonLocalWrites.loadRelaxed();
 }
 
 bool ReplicationCoordinatorImpl::ReadWriteAbility::canAcceptNonLocalWrites_UNSAFE() const {
-    return _canAcceptNonLocalWrites;
+    return _canAcceptNonLocalWrites.loadRelaxed();
 }
 
 bool ReplicationCoordinatorImpl::ReadWriteAbility::canAcceptNonLocalWrites(
@@ -3898,7 +3946,7 @@ bool ReplicationCoordinatorImpl::ReadWriteAbility::canAcceptNonLocalWrites(
     // We must be holding the RSTL.
     invariant(opCtx);
     invariant(opCtx->lockState()->isRSTLLocked());
-    return _canAcceptNonLocalWrites;
+    return _canAcceptNonLocalWrites.loadRelaxed();
 }
 
 bool ReplicationCoordinatorImpl::ReadWriteAbility::canServeNonLocalReads_UNSAFE() const {

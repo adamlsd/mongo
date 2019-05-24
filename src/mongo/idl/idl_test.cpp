@@ -45,7 +45,7 @@ namespace mongo {
 namespace {
 
 bool isEquals(ConstDataRange left, const std::vector<uint8_t>& right) {
-    auto rightCDR = makeCDR(right);
+    ConstDataRange rightCDR(right);
     return std::equal(left.data(),
                       left.data() + left.length(),
                       rightCDR.data(),
@@ -1157,7 +1157,7 @@ void TestBinDataVector() {
     {
         BSONObjBuilder builder;
         ParserT one_new;
-        one_new.setValue(makeCDR(expected));
+        one_new.setValue(expected);
         testStruct.serialize(&builder);
 
         auto serializedDoc = builder.obj();
@@ -2829,6 +2829,14 @@ TEST(IDLValidatedField, Callback_validators) {
     tryFail(43, 123456789.01, "x-ray");
     tryFail(42, 123456789.11, "x-ray");
     tryFail(42, 123456789.01, "uniform");
+
+    Unusual_callback_validators obj1;
+    obj1.setInt_even(42);
+    ASSERT_THROWS(obj1.setInt_even(7), AssertionException);
+    obj1.setArray_of_int({42});
+    ASSERT_THROWS(obj1.setArray_of_int({7}), AssertionException);
+    obj1.setOne_int(One_int(42));
+    ASSERT_THROWS(obj1.setOne_int(One_int(7)), AssertionException);
 }
 
 // Positive: verify a command a string arg

@@ -78,13 +78,14 @@ TEST_F(DocumentSourceGroupTest, ShouldBeAbleToPauseLoading) {
                                          AccumulationStatement::getFactory("$sum")};
     auto group = DocumentSourceGroup::create(
         expCtx, ExpressionConstant::create(expCtx, Value(BSONNULL)), {countStatement});
-    auto mock = DocumentSourceMock::create({DocumentSource::GetNextResult::makePauseExecution(),
-                                            Document(),
-                                            DocumentSource::GetNextResult::makePauseExecution(),
-                                            Document(),
-                                            Document(),
-                                            DocumentSource::GetNextResult::makePauseExecution(),
-                                            Document()});
+    auto mock =
+        DocumentSourceMock::createForTest({DocumentSource::GetNextResult::makePauseExecution(),
+                                           Document(),
+                                           DocumentSource::GetNextResult::makePauseExecution(),
+                                           Document(),
+                                           Document(),
+                                           DocumentSource::GetNextResult::makePauseExecution(),
+                                           Document()});
     group->setSource(mock.get());
 
     // There were 3 pauses, so we should expect 3 paused results before any results can be returned.
@@ -116,11 +117,12 @@ TEST_F(DocumentSourceGroupTest, ShouldBeAbleToPauseLoadingWhileSpilled) {
         expCtx, groupByExpression, {pushStatement}, maxMemoryUsageBytes);
 
     string largeStr(maxMemoryUsageBytes, 'x');
-    auto mock = DocumentSourceMock::create({Document{{"_id", 0}, {"largeStr", largeStr}},
-                                            DocumentSource::GetNextResult::makePauseExecution(),
-                                            Document{{"_id", 1}, {"largeStr", largeStr}},
-                                            DocumentSource::GetNextResult::makePauseExecution(),
-                                            Document{{"_id", 2}, {"largeStr", largeStr}}});
+    auto mock =
+        DocumentSourceMock::createForTest({Document{{"_id", 0}, {"largeStr", largeStr}},
+                                           DocumentSource::GetNextResult::makePauseExecution(),
+                                           Document{{"_id", 1}, {"largeStr", largeStr}},
+                                           DocumentSource::GetNextResult::makePauseExecution(),
+                                           Document{{"_id", 2}, {"largeStr", largeStr}}});
     group->setSource(mock.get());
 
     // There were 2 pauses, so we should expect 2 paused results before any results can be returned.
@@ -155,8 +157,8 @@ TEST_F(DocumentSourceGroupTest, ShouldErrorIfNotAllowedToSpillToDiskAndResultSet
         expCtx, groupByExpression, {pushStatement}, maxMemoryUsageBytes);
 
     string largeStr(maxMemoryUsageBytes, 'x');
-    auto mock = DocumentSourceMock::create({Document{{"_id", 0}, {"largeStr", largeStr}},
-                                            Document{{"_id", 1}, {"largeStr", largeStr}}});
+    auto mock = DocumentSourceMock::createForTest({Document{{"_id", 0}, {"largeStr", largeStr}},
+                                                   Document{{"_id", 1}, {"largeStr", largeStr}}});
     group->setSource(mock.get());
 
     ASSERT_THROWS_CODE(group->getNext(), AssertionException, 16945);
@@ -177,10 +179,11 @@ TEST_F(DocumentSourceGroupTest, ShouldCorrectlyTrackMemoryUsageBetweenPauses) {
         expCtx, groupByExpression, {pushStatement}, maxMemoryUsageBytes);
 
     string largeStr(maxMemoryUsageBytes / 2, 'x');
-    auto mock = DocumentSourceMock::create({Document{{"_id", 0}, {"largeStr", largeStr}},
-                                            DocumentSource::GetNextResult::makePauseExecution(),
-                                            Document{{"_id", 1}, {"largeStr", largeStr}},
-                                            Document{{"_id", 2}, {"largeStr", largeStr}}});
+    auto mock =
+        DocumentSourceMock::createForTest({Document{{"_id", 0}, {"largeStr", largeStr}},
+                                           DocumentSource::GetNextResult::makePauseExecution(),
+                                           Document{{"_id", 1}, {"largeStr", largeStr}},
+                                           Document{{"_id", 2}, {"largeStr", largeStr}}});
     group->setSource(mock.get());
 
     // The first getNext() should pause.
@@ -207,7 +210,20 @@ TEST_F(DocumentSourceGroupTest, ShouldReportMultipleFieldGroupKeysAsARename) {
     VariablesParseState vps = expCtx->variablesParseState;
     auto x = ExpressionFieldPath::parse(expCtx, "$x", vps);
     auto y = ExpressionFieldPath::parse(expCtx, "$y", vps);
-    auto groupByExpression = ExpressionObject::create(expCtx, {{"x", x}, {"y", y}});
+    auto groupByExpression = [&]() {
+        std::vector<boost::intrusive_ptr<Expression>> children;
+        std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>> expressions;
+        auto doc = std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>>{{"x", x},
+                                                                                         {"y", y}};
+        for (auto & [ unused, expression ] : doc)
+            children.push_back(std::move(expression));
+        std::vector<boost::intrusive_ptr<Expression>>::size_type index = 0;
+        for (auto & [ fieldName, unused ] : doc) {
+            expressions.emplace_back(fieldName, children[index]);
+            ++index;
+        }
+        return ExpressionObject::create(expCtx, std::move(children), std::move(expressions));
+    }();
     auto group = DocumentSourceGroup::create(expCtx, groupByExpression, {});
     auto modifiedPathsRet = group->getModifiedPaths();
     ASSERT(modifiedPathsRet.type == DocumentSource::GetModPathsReturn::Type::kAllExcept);
@@ -309,7 +325,7 @@ public:
     virtual ~ExpressionBase() {}
     void _doTest() final {
         createGroup(spec());
-        auto source = DocumentSourceMock::create(Document(doc()));
+        auto source = DocumentSourceMock::createForTest(Document(doc()));
         group()->setSource(source.get());
         // A group result is available.
         auto next = group()->getNext();
@@ -545,7 +561,7 @@ public:
     }
     void runSharded(bool sharded) {
         createGroup(groupSpec());
-        auto source = DocumentSourceMock::create(inputData());
+        auto source = DocumentSourceMock::createForTest(inputData());
         group()->setSource(source.get());
 
         intrusive_ptr<DocumentSource> sink = group();
@@ -766,10 +782,10 @@ class UndefinedAccumulatorValue : public CheckResultsBase {
 class RouterMerger : public CheckResultsBase {
 public:
     void _doTest() final {
-        auto source = DocumentSourceMock::create({"{_id:0,list:[1,2]}",
-                                                  "{_id:1,list:[3,4]}",
-                                                  "{_id:0,list:[10,20]}",
-                                                  "{_id:1,list:[30,40]}]}"});
+        auto source = DocumentSourceMock::createForTest({"{_id:0,list:[1,2]}",
+                                                         "{_id:1,list:[3,4]}",
+                                                         "{_id:0,list:[10,20]}",
+                                                         "{_id:1,list:[30,40]}]}"});
 
         // Create a group source.
         createGroup(BSON("_id"

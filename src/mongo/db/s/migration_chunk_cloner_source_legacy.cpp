@@ -55,8 +55,8 @@
 #include "mongo/s/grid.h"
 #include "mongo/util/elapsed_tracker.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -92,7 +92,7 @@ bool shouldApplyOplogToSession(const repl::OplogEntry& oplog,
                                const ShardKeyPattern& keyPattern) {
     // Skip appending CRUD operations that don't pertain to the ChunkRange being migrated.
     if (oplog.isCrudOpType()) {
-        auto shardKey = keyPattern.extractShardKeyFromDoc(oplog.getOperationToApply());
+        auto shardKey = keyPattern.extractShardKeyFromDoc(oplog.getObjectContainingDocumentKey());
         if (!range.containsKey(shardKey)) {
             return false;
         }
@@ -126,6 +126,7 @@ public:
     void commit(boost::optional<Timestamp>) override {
         _cloner->_consumeOperationTrackRequestAndAddToTransferModsQueue(
             _idObj, _op, _opTime, _prePostImageOpTime);
+        _cloner->_decrementOutstandingOperationTrackRequests();
     }
 
     void rollback() override {
@@ -138,6 +139,31 @@ private:
     const char _op;
     const repl::OpTime _opTime;
     const repl::OpTime _prePostImageOpTime;
+};
+
+/**
+ * Used to keep track of new transactions that involve documents in any chunk
+ * with an ongoing migration.
+ */
+class LogPrepareOrCommitOpForShardingHandler final : public RecoveryUnit::Change {
+public:
+    LogPrepareOrCommitOpForShardingHandler(MigrationChunkClonerSourceLegacy* cloner,
+                                           const repl::OpTime& opTime)
+        : _cloner(cloner), _opTime(opTime) {}
+
+    void commit(boost::optional<Timestamp>) override {
+        _cloner->_addToSessionMigrationOptimeQueue(
+            _opTime, SessionCatalogMigrationSource::EntryAtOpTimeType::kTransaction);
+        _cloner->_decrementOutstandingOperationTrackRequests();
+    }
+
+    void rollback() override {
+        _cloner->_decrementOutstandingOperationTrackRequests();
+    }
+
+private:
+    MigrationChunkClonerSourceLegacy* const _cloner;
+    const repl::OpTime _opTime;
 };
 
 MigrationChunkClonerSourceLegacy::MigrationChunkClonerSourceLegacy(MoveChunkRequest request,
@@ -377,19 +403,28 @@ void MigrationChunkClonerSourceLegacy::onInsertOp(OperationContext* opCtx,
 }
 
 void MigrationChunkClonerSourceLegacy::onUpdateOp(OperationContext* opCtx,
-                                                  const BSONObj& updatedDoc,
+                                                  boost::optional<BSONObj> preImageDoc,
+                                                  const BSONObj& postImageDoc,
                                                   const repl::OpTime& opTime,
                                                   const repl::OpTime& prePostImageOpTime) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss(), MODE_IX));
 
-    BSONElement idElement = updatedDoc["_id"];
+    BSONElement idElement = postImageDoc["_id"];
     if (idElement.eoo()) {
         warning() << "logUpdateOp got a document with no _id field, ignoring updatedDoc: "
-                  << redact(updatedDoc);
+                  << redact(postImageDoc);
         return;
     }
 
-    if (!isInRange(updatedDoc, _args.getMinKey(), _args.getMaxKey(), _shardKeyPattern)) {
+    if (!isInRange(postImageDoc, _args.getMinKey(), _args.getMaxKey(), _shardKeyPattern)) {
+        // If the preImageDoc is not in range but the postImageDoc was, we know that the document
+        // has changed shard keys and no longer belongs in the chunk being cloned. We will model
+        // the deletion of the preImage document so that the destination chunk does not receive an
+        // outdated version of this document.
+        if (preImageDoc &&
+            isInRange(*preImageDoc, _args.getMinKey(), _args.getMaxKey(), _shardKeyPattern)) {
+            onDeleteOp(opCtx, *preImageDoc, opTime, prePostImageOpTime);
+        }
         return;
     }
 
@@ -432,6 +467,28 @@ void MigrationChunkClonerSourceLegacy::onDeleteOp(OperationContext* opCtx,
     }
 }
 
+void MigrationChunkClonerSourceLegacy::onTransactionPrepareOrUnpreparedCommit(
+    OperationContext* opCtx, const repl::OpTime& opTime) {
+
+    invariant(opCtx->getTxnNumber());
+
+    if (!_addedOperationToOutstandingOperationTrackRequests()) {
+        return;
+    }
+
+    opCtx->recoveryUnit()->registerChange(new LogPrepareOrCommitOpForShardingHandler(this, opTime));
+}
+
+void MigrationChunkClonerSourceLegacy::_addToSessionMigrationOptimeQueue(
+    const repl::OpTime& opTime,
+    SessionCatalogMigrationSource::EntryAtOpTimeType entryAtOpTimeType) {
+    if (auto sessionSource = _sessionCatalogSource.get()) {
+        if (!opTime.isNull()) {
+            sessionSource->notifyNewWriteOpTime(opTime, entryAtOpTimeType);
+        }
+    }
+}
+
 void MigrationChunkClonerSourceLegacy::_consumeOperationTrackRequestAndAddToTransferModsQueue(
     const BSONObj& idObj,
     const char op,
@@ -455,17 +512,10 @@ void MigrationChunkClonerSourceLegacy::_consumeOperationTrackRequestAndAddToTran
             MONGO_UNREACHABLE;
     }
 
-    if (auto sessionSource = _sessionCatalogSource.get()) {
-        if (!prePostImageOpTime.isNull()) {
-            sessionSource->notifyNewWriteOpTime(prePostImageOpTime);
-        }
-
-        if (!opTime.isNull()) {
-            sessionSource->notifyNewWriteOpTime(opTime);
-        }
-    }
-
-    _decrementOutstandingOperationTrackRequests();
+    _addToSessionMigrationOptimeQueue(
+        prePostImageOpTime, SessionCatalogMigrationSource::EntryAtOpTimeType::kRetryableWrite);
+    _addToSessionMigrationOptimeQueue(
+        opTime, SessionCatalogMigrationSource::EntryAtOpTimeType::kRetryableWrite);
 }
 
 bool MigrationChunkClonerSourceLegacy::_addedOperationToOutstandingOperationTrackRequests() {
@@ -516,21 +566,24 @@ Status MigrationChunkClonerSourceLegacy::nextCloneBatch(OperationContext* opCtx,
                            internalQueryExecYieldIterations.load(),
                            Milliseconds(internalQueryExecYieldPeriodMS.load()));
 
-    stdx::lock_guard<stdx::mutex> sl(_mutex);
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    auto iter = _cloneLocs.begin();
 
-    std::set<RecordId>::iterator it;
-
-    for (it = _cloneLocs.begin(); it != _cloneLocs.end(); ++it) {
+    for (; iter != _cloneLocs.end(); ++iter) {
         // We must always make progress in this method by at least one document because empty return
         // indicates there is no more initial clone data.
         if (arrBuilder->arrSize() && tracker.intervalHasElapsed()) {
             break;
         }
 
+        auto nextRecordId = *iter;
+
+        lk.unlock();
+
         Snapshotted<BSONObj> doc;
-        if (collection->findDoc(opCtx, *it, &doc)) {
-            // Use the builder size instead of accumulating the document sizes directly so that we
-            // take into consideration the overhead of BSONArray indices.
+        if (collection->findDoc(opCtx, nextRecordId, &doc)) {
+            // Use the builder size instead of accumulating the document sizes directly so
+            // that we take into consideration the overhead of BSONArray indices.
             if (arrBuilder->arrSize() &&
                 (arrBuilder->len() + doc.value().objsize() + 1024) > BSONObjMaxUserSize) {
                 break;
@@ -539,9 +592,11 @@ Status MigrationChunkClonerSourceLegacy::nextCloneBatch(OperationContext* opCtx,
             arrBuilder->append(doc.value());
             ShardingStatistics::get(opCtx).countDocsClonedOnDonor.addAndFetch(1);
         }
+
+        lk.lock();
     }
 
-    _cloneLocs.erase(_cloneLocs.begin(), it);
+    _cloneLocs.erase(_cloneLocs.begin(), iter);
 
     return Status::OK();
 }
@@ -551,17 +606,33 @@ Status MigrationChunkClonerSourceLegacy::nextModsBatch(OperationContext* opCtx,
                                                        BSONObjBuilder* builder) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss(), MODE_IS));
 
-    stdx::lock_guard<stdx::mutex> sl(_mutex);
+    std::list<BSONObj> deleteList;
+    std::list<BSONObj> updateList;
 
-    // All clone data must have been drained before starting to fetch the incremental changes
-    invariant(_cloneLocs.empty());
+    {
+        // All clone data must have been drained before starting to fetch the incremental changes.
+        stdx::unique_lock<stdx::mutex> lk(_mutex);
+        invariant(_cloneLocs.empty());
 
-    long long docSizeAccumulator = 0;
+        // The "snapshot" for delete and update list must be taken under a single lock. This is to
+        // ensure that we will preserve the causal order of writes. Always consume the delete
+        // buffer first, before the update buffer. If the delete is causally before the update to
+        // the same doc, then there's no problem since we consume the delete buffer first. If the
+        // delete is causally after, we will not be able to see the document when we attempt to
+        // fetch it, so it's also ok.
+        deleteList.splice(deleteList.cbegin(), _deleted);
+        updateList.splice(updateList.cbegin(), _reload);
+    }
 
-    _xfer(opCtx, db, &_deleted, builder, "deleted", &docSizeAccumulator, false);
-    _xfer(opCtx, db, &_reload, builder, "reload", &docSizeAccumulator, true);
+    auto totalDocSize = _xferDeletes(builder, &deleteList, 0);
+    totalDocSize = _xferUpdates(opCtx, db, builder, &updateList, totalDocSize);
 
-    builder->append("size", docSizeAccumulator);
+    builder->append("size", totalDocSize);
+
+    // Put back remaining ids we didn't consume
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    _deleted.splice(_deleted.cbegin(), deleteList);
+    _reload.splice(_reload.cbegin(), updateList);
 
     return Status::OK();
 }
@@ -719,41 +790,61 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* opC
     return Status::OK();
 }
 
-void MigrationChunkClonerSourceLegacy::_xfer(OperationContext* opCtx,
-                                             Database* db,
-                                             std::list<BSONObj>* docIdList,
-                                             BSONObjBuilder* builder,
-                                             const char* fieldName,
-                                             long long* sizeAccumulator,
-                                             bool explode) {
+long long MigrationChunkClonerSourceLegacy::_xferDeletes(BSONObjBuilder* builder,
+                                                         std::list<BSONObj>* removeList,
+                                                         long long initialSize) {
     const long long maxSize = 1024 * 1024;
 
-    if (docIdList->size() == 0 || *sizeAccumulator > maxSize) {
-        return;
+    if (removeList->empty() || initialSize > maxSize) {
+        return initialSize;
     }
 
-    const std::string& ns = _args.getNss().ns();
+    long long totalSize = initialSize;
+    BSONArrayBuilder arr(builder->subarrayStart("deleted"));
 
-    BSONArrayBuilder arr(builder->subarrayStart(fieldName));
-
-    std::list<BSONObj>::iterator docIdIter = docIdList->begin();
-    while (docIdIter != docIdList->end() && *sizeAccumulator < maxSize) {
+    auto docIdIter = removeList->begin();
+    for (; docIdIter != removeList->end() && totalSize < maxSize; ++docIdIter) {
         BSONObj idDoc = *docIdIter;
-        if (explode) {
-            BSONObj fullDoc;
-            if (Helpers::findById(opCtx, db, ns.c_str(), idDoc, fullDoc)) {
-                arr.append(fullDoc);
-                *sizeAccumulator += fullDoc.objsize();
-            }
-        } else {
-            arr.append(idDoc);
-            *sizeAccumulator += idDoc.objsize();
-        }
-
-        docIdIter = docIdList->erase(docIdIter);
+        arr.append(idDoc);
+        totalSize += idDoc.objsize();
     }
+
+    removeList->erase(removeList->begin(), docIdIter);
 
     arr.done();
+    return totalSize;
+}
+
+long long MigrationChunkClonerSourceLegacy::_xferUpdates(OperationContext* opCtx,
+                                                         Database* db,
+                                                         BSONObjBuilder* builder,
+                                                         std::list<BSONObj>* updateList,
+                                                         long long initialSize) {
+    const long long maxSize = 1024 * 1024;
+
+    if (updateList->empty() || initialSize > maxSize) {
+        return initialSize;
+    }
+
+    const auto& nss = _args.getNss();
+    BSONArrayBuilder arr(builder->subarrayStart("reload"));
+    long long totalSize = initialSize;
+
+    auto iter = updateList->begin();
+    for (; iter != updateList->end() && totalSize < maxSize; ++iter) {
+        auto idDoc = *iter;
+
+        BSONObj fullDoc;
+        if (Helpers::findById(opCtx, db, nss.ns().c_str(), idDoc, fullDoc)) {
+            arr.append(fullDoc);
+            totalSize += fullDoc.objsize();
+        }
+    }
+
+    updateList->erase(updateList->begin(), iter);
+
+    arr.done();
+    return totalSize;
 }
 
 boost::optional<repl::OpTime> MigrationChunkClonerSourceLegacy::nextSessionMigrationBatch(

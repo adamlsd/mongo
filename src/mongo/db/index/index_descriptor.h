@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include "mongo/db/index/index_descriptor_fwd.h"
+
 #include <set>
 #include <string>
 
@@ -160,7 +162,7 @@ public:
     }
 
     // Return the name of the indexed collection.
-    const std::string& parentNS() const {
+    const NamespaceString& parentNS() const {
         return _parentNS;
     }
 
@@ -269,7 +271,7 @@ private:
     BSONObj _keyPattern;
     BSONObj _projection;
     std::string _indexName;
-    std::string _parentNS;
+    NamespaceString _parentNS;
     std::string _indexNamespace;
     bool _isIdIndex;
     bool _sparse;

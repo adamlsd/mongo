@@ -29,8 +29,12 @@
 
 #pragma once
 
+#include <deque>
+
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/member_data.h"
+#include "mongo/db/repl/replication_coordinator_fwd.h"
 #include "mongo/db/service_context.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/mutex.h"
@@ -79,29 +83,45 @@ public:
                             const BSONElement& configElement) const override;
 
 private:
-    int64_t getLocksUsedLastPeriod();
+    const int _kMaxTickets = 1000 * 1000 * 1000;
+    std::int64_t _getLocksUsedLastPeriod();
+    double _getLocksPerOp();
 
-    std::int64_t _approximateOpsBetween(std::uint64_t prevTs, std::uint64_t currTs);
-    double _getMyLocksPerOp();
+    std::int64_t _approximateOpsBetween(Timestamp prevTs, Timestamp currTs);
+
+    void _updateTopologyData();
+    int _calculateNewTicketsForLag(const std::vector<repl::MemberData>& prevMemberData,
+                                   const std::vector<repl::MemberData>& currMemberData,
+                                   std::int64_t locksUsedLastPeriod,
+                                   double locksPerOp,
+                                   std::uint64_t lagMillis,
+                                   std::uint64_t thresholdLagMillis);
+    void _trimSamples(const Timestamp trimSamplesTo);
 
     repl::ReplicationCoordinator* _replCoord;
 
-    AtomicWord<int> _lastTargetTicketsPermitted;
-    AtomicWord<double> _lastLocksPerOp;
-    AtomicWord<int> _lastSustainerAppliedCount;
+    // These values are updated with each flow control computation and are also surfaced in server
+    // status.
+    AtomicWord<int> _lastTargetTicketsPermitted{_kMaxTickets};
+    AtomicWord<double> _lastLocksPerOp{0.0};
+    AtomicWord<int> _lastSustainerAppliedCount{0};
 
     mutable stdx::mutex _sampledOpsMutex;
     // Sample of (timestamp, ops, lock acquisitions) where ops and lock acquisitions are
     // observations of the corresponding counter at (roughly) <timestamp>.
     typedef std::tuple<std::uint64_t, std::uint64_t, std::int64_t> Sample;
-    std::vector<Sample> _sampledOpsApplied;
-    std::int64_t _lastPollLockAcquisitions = 0;
+    std::deque<Sample> _sampledOpsApplied;
+
+    // These values are used in the sampling process.
     std::uint64_t _numOpsSinceStartup = 0;
     std::uint64_t _lastSample = 0;
 
+    std::int64_t _lastPollLockAcquisitions = 0;
+
+    std::vector<repl::MemberData> _currMemberData;
     std::vector<repl::MemberData> _prevMemberData;
 
-    int _prevLagSecs = 0;
+    Date_t _lastTimeSustainerAdvanced;
 };
 
 }  // namespace mongo

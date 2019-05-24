@@ -92,7 +92,11 @@ public:
             std::make_shared<MockSessionsCollectionImpl>());
 
         auto localLogicalSessionCache = std::make_unique<LogicalSessionCacheImpl>(
-            std::move(localServiceLiaison), std::move(localSessionsCollection), nullptr);
+            std::move(localServiceLiaison),
+            std::move(localSessionsCollection),
+            [](OperationContext*, SessionsCollection&, Date_t) {
+                return 0; /* No op*/
+            });
 
         LogicalSessionCache::set(getServiceContext(), std::move(localLogicalSessionCache));
     }
@@ -381,7 +385,7 @@ TEST_F(LogicalSessionIdTest, InitializeOperationSessionInfo_VerifyUIDEvenIfDoNot
     LogicalSessionFromClient lsid;
     lsid.setId(UUID::gen());
 
-    auto invalidDigest = SHA256Block::computeHash({ConstDataRange("hacker", 6)});
+    auto invalidDigest = SHA256Block::computeHash({ConstDataRange("hacker")});
     lsid.setUid(invalidDigest);
 
     ASSERT_THROWS_CODE(initializeOperationSessionInfo(

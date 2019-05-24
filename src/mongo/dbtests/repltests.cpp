@@ -84,7 +84,8 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
                             boost::none,                // statement id
                             boost::none,   // optime of previous write within same transaction
                             boost::none,   // pre-image optime
-                            boost::none);  // post-image optime
+                            boost::none,   // post-image optime
+                            boost::none);  // prepare
 }
 
 BSONObj f(const char* s) {
@@ -138,9 +139,9 @@ public:
         dbtests::WriteContextForTests ctx(&_opCtx, ns());
         WriteUnitOfWork wuow(&_opCtx);
 
-        Collection* c = ctx.db()->getCollection(&_opCtx, ns());
+        Collection* c = ctx.db()->getCollection(&_opCtx, nss());
         if (!c) {
-            c = ctx.db()->createCollection(&_opCtx, ns());
+            c = ctx.db()->createCollection(&_opCtx, nss());
         }
 
         ASSERT(c->getIndexCatalog()->haveIdIndex(&_opCtx));
@@ -173,6 +174,9 @@ protected:
     static const char* ns() {
         return "unittests.repltests";
     }
+    static NamespaceString nss() {
+        return NamespaceString(ns());
+    }
     static const char* cllNS() {
         return "local.oplog.rs";
     }
@@ -203,10 +207,10 @@ protected:
         Lock::GlobalWrite lk(&_opCtx);
         OldClientContext ctx(&_opCtx, ns());
         Database* db = ctx.db();
-        Collection* coll = db->getCollection(&_opCtx, ns());
+        Collection* coll = db->getCollection(&_opCtx, nss());
         if (!coll) {
             WriteUnitOfWork wunit(&_opCtx);
-            coll = db->createCollection(&_opCtx, ns());
+            coll = db->createCollection(&_opCtx, nss());
             wunit.commit();
         }
 
@@ -254,12 +258,13 @@ protected:
     void printAll(const char* ns) {
         Lock::GlobalWrite lk(&_opCtx);
         OldClientContext ctx(&_opCtx, ns);
+        NamespaceString nss(ns);
 
         Database* db = ctx.db();
-        Collection* coll = db->getCollection(&_opCtx, ns);
+        Collection* coll = db->getCollection(&_opCtx, nss);
         if (!coll) {
             WriteUnitOfWork wunit(&_opCtx);
-            coll = db->createCollection(&_opCtx, ns);
+            coll = db->createCollection(&_opCtx, nss);
             wunit.commit();
         }
 
@@ -272,13 +277,14 @@ protected:
     // These deletes don't get logged.
     void deleteAll(const char* ns) const {
         ::mongo::writeConflictRetry(&_opCtx, "deleteAll", ns, [&] {
+            NamespaceString nss(ns);
             Lock::GlobalWrite lk(&_opCtx);
             OldClientContext ctx(&_opCtx, ns);
             WriteUnitOfWork wunit(&_opCtx);
             Database* db = ctx.db();
-            Collection* coll = db->getCollection(&_opCtx, ns);
+            Collection* coll = db->getCollection(&_opCtx, nss);
             if (!coll) {
-                coll = db->createCollection(&_opCtx, ns);
+                coll = db->createCollection(&_opCtx, nss);
             }
 
             ASSERT_OK(coll->truncate(&_opCtx));
@@ -290,9 +296,9 @@ protected:
         OldClientContext ctx(&_opCtx, ns());
         WriteUnitOfWork wunit(&_opCtx);
         Database* db = ctx.db();
-        Collection* coll = db->getCollection(&_opCtx, ns());
+        Collection* coll = db->getCollection(&_opCtx, nss());
         if (!coll) {
-            coll = db->createCollection(&_opCtx, ns());
+            coll = db->createCollection(&_opCtx, nss());
         }
 
         OpDebug* const nullOpDebug = nullptr;

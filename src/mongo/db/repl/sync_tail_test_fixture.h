@@ -31,10 +31,13 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/concurrency/lock_manager_defs.h"
+#include "mongo/db/db_raii.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/op_observer_noop.h"
 #include "mongo/db/repl/replication_consistency_markers.h"
 #include "mongo/db/repl/sync_tail.h"
 #include "mongo/db/service_context_d_test_fixture.h"
+#include "mongo/db/session_txn_record_gen.h"
 
 namespace mongo {
 
@@ -117,7 +120,7 @@ protected:
 
     ServiceContext::UniqueOperationContext _opCtx;
     std::unique_ptr<ReplicationConsistencyMarkers> _consistencyMarkers;
-    std::unique_ptr<StorageInterface> _storageInterface;
+    ServiceContext* serviceContext;
     SyncTailOpObserver* _opObserver = nullptr;
 
     // Implements the SyncTail::MultiSyncApplyFn interface and does nothing.
@@ -143,13 +146,37 @@ protected:
     Status runOpsSteadyState(std::vector<OplogEntry> ops);
     Status runOpInitialSync(const OplogEntry& entry);
     Status runOpsInitialSync(std::vector<OplogEntry> ops);
+    Status runOpPtrsInitialSync(MultiApplier::OperationPtrs ops);
 
     UUID kUuid{UUID::gen()};
+};
+
+// Utility class to allow easily scanning a collection.  Scans in forward order, returns
+// Status::CollectionIsEmpty when scan is exhausted.
+class CollectionReader {
+public:
+    CollectionReader(OperationContext* opCtx, const NamespaceString& nss);
+
+    StatusWith<BSONObj> next();
+
+private:
+    AutoGetCollectionForRead _collToScan;
+    std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> _exec;
 };
 
 Status failedApplyCommand(OperationContext* opCtx,
                           const BSONObj& theOperation,
                           OplogApplication::Mode);
+
+void checkTxnTable(OperationContext* opCtx,
+                   const LogicalSessionId& lsid,
+                   const TxnNumber& txnNum,
+                   const repl::OpTime& expectedOpTime,
+                   Date_t expectedWallClock,
+                   boost::optional<repl::OpTime> expectedStartOpTime,
+                   boost::optional<DurableTxnStateEnum> expectedState);
+
+bool docExists(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc);
 
 }  // namespace repl
 }  // namespace mongo

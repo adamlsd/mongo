@@ -31,6 +31,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/storage/mobile/mobile_options.h"
 #include "mongo/db/storage/record_store.h"
 
 #define MOBILE_LOG_LEVEL_LOW 2
@@ -38,6 +39,7 @@
 #define MOBILE_TRACE_LEVEL MOBILE_LOG_LEVEL_HIGH
 
 namespace mongo {
+namespace embedded {
 
 /**
  * Converts SQLite return codes to MongoDB statuses.
@@ -64,4 +66,11 @@ void validateLogAndAppendError(ValidateResults* results, const std::string& errM
  */
 void doValidate(OperationContext* opCtx, ValidateResults* results);
 
+/**
+ * Sets the SQLite Pragmas that we want (https://www.sqlite.org/pragma.html)
+ * These should generally improve behavior, performance, and resource usage
+ */
+void configureSession(sqlite3* session, const MobileOptions& options);
+
+}  // namespace embedded
 }  // namespace mongo

@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
+#include <cctype>
 #include <cerrno>
 #include <fstream>
 #include <stdio.h>
@@ -42,11 +43,12 @@
 #include "mongo/base/init.h"
 #include "mongo/base/parse_number.h"
 #include "mongo/base/status.h"
+#include "mongo/crypto/sha256_block.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/hex.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/net/http_client.h"
 #include "mongo/util/options_parser/constraints.h"
@@ -55,6 +57,7 @@
 #include "mongo/util/options_parser/option_section.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/shell_exec.h"
+#include "mongo/util/str.h"
 #include "mongo/util/text.h"
 
 namespace mongo {
@@ -245,11 +248,12 @@ bool OptionIsStringMap(const std::vector<OptionDescription>& options_vector, con
 }
 
 Status parseYAMLConfigFile(const std::string&, YAML::Node*);
+
 /* Searches a YAML node for configuration expansion directives such as:
  * __rest: https://example.com/path?query=val
  * __exec: '/usr/bin/getConfig param'
  *
- * and optionally the fields `type` and `trim`.
+ * and optionally the fields `type`, `trim`, `digest`, and `digest_key`.
  *
  * If the field pairing `trim: whitespace` is present,
  * then the process() method will have standard ctype spaces removed from
@@ -259,6 +263,11 @@ Status parseYAMLConfigFile(const std::string&, YAML::Node*);
  * then the process() method will parse any string provided to it as YAML.
  * If the field is not present, or is set to `string`, then process will
  * encapsulate any provided string in a YAML String Node.
+ *
+ * If the fields `digest` and `digest_key` are present (both a co-required)
+ * then the result of the expansion will be hashed (post trimming)
+ * using SHA256-HMAC. If the resulting digest does not match expectation,
+ * the expansion will be considered to have failed.
  *
  * If no configuration expansion directive is found, the constructor will
  * uassert with ErrorCodes::NoSuchKey.
@@ -296,6 +305,10 @@ public:
                 // Not this kind of expansion block.
                 return {boost::none};
             }
+        };
+
+        const auto uassertedElement = [&prefix](Status status, StringData element) {
+            uasserted(status.code(), str::stream() << prefix << element << ": " << status.reason());
         };
 
         _expansion = ExpansionType::kRest;
@@ -350,10 +363,53 @@ public:
             }
         }
 
+        auto optDigest = getStringField("digest", true);
+        auto optDigestKey = getStringField("digest_key", true);
+
+        if (optDigest) {
+            ++numVisitedFields;
+
+            auto swDigestVec = hexToVec(*optDigest);
+            if (!swDigestVec.isOK()) {
+                uassertedElement(swDigestVec.getStatus(), "digest");
+            }
+            auto digestVec = std::move(swDigestVec.getValue());
+
+            auto swDigest = SHA256Block::fromBuffer(digestVec.data(), digestVec.size());
+            if (!swDigest.isOK()) {
+                uassertedElement(swDigest.getStatus(), "digest");
+            }
+            _digest = std::move(swDigest.getValue());
+
+            uassert(ErrorCodes::BadValue,
+                    str::stream() << prefix << "digest requires digest_key",
+                    optDigestKey);
+        }
+
+        if (optDigestKey) {
+            ++numVisitedFields;
+
+            auto swKeyVec = hexToVec(*optDigestKey);
+            if (!swKeyVec.isOK()) {
+                uassertedElement(swKeyVec.getStatus(), "digest_key");
+            }
+            _digest_key = std::move(swKeyVec.getValue());
+
+            uassert(ErrorCodes::BadValue,
+                    str::stream() << prefix << "digest_key must not be empty",
+                    !_digest_key.empty());
+
+            uassert(ErrorCodes::BadValue,
+                    str::stream() << prefix << "digest_key requires digest",
+                    optDigest);
+        }
+
         uassert(ErrorCodes::BadValue,
-                str::stream() << nodeName << " expansion block must contain only '"
-                              << getExpansionName()
-                              << "', and optionally 'type' and/or 'trim' fields",
+                str::stream()
+                    << nodeName
+                    << " expansion block must contain only '"
+                    << getExpansionName()
+                    << "', and optionally 'type', 'trim', and/or 'digest'/'digest_key' fields",
                 node.size() == numVisitedFields);
 
         uassert(ErrorCodes::BadValue,
@@ -397,6 +453,20 @@ public:
             }
         }
 
+        if (_digest) {
+            SHA256Block computed;
+            SHA256Block::computeHmac(_digest_key.data(),
+                                     _digest_key.size(),
+                                     reinterpret_cast<const std::uint8_t*>(str.c_str()),
+                                     str.size(),
+                                     &computed);
+            uassert(ErrorCodes::BadValue,
+                    str::stream() << "SHA256HMAC of config expansion " << computed.toString()
+                                  << " does not match expected digest: "
+                                  << _digest->toString(),
+                    computed == *_digest);
+        }
+
         if (_type == ContentType::kString) {
             return YAML::Node(str);
         }
@@ -415,6 +485,26 @@ public:
     }
 
 private:
+    static StatusWith<std::vector<std::uint8_t>> hexToVec(StringData hex) {
+        if (!isValidHex(hex)) {
+            return {ErrorCodes::BadValue, "Not a valid, even length hex string"};
+        }
+
+        std::vector<std::uint8_t> ret;
+        ret.reserve(hex.size() / 2);
+
+        for (size_t i = 0; i < hex.size(); i += 2) {
+            auto swFromHex = fromHex(hex.substr(i, 2));
+            if (!swFromHex.isOK()) {
+                // isValidHex() above should guarantee this never occurs.
+                return {ErrorCodes::BadValue, str::stream() << "Invalid hexits at " << i};
+            }
+            ret.push_back(static_cast<std::uint8_t>(swFromHex.getValue()));
+        }
+
+        return ret;
+    }
+
     // The type of expansion represented.
     enum class ExpansionType {
         kRest,
@@ -435,6 +525,9 @@ private:
         kWhitespace,
     };
     Trim _trim = Trim::kNone;
+
+    boost::optional<SHA256Block> _digest;
+    std::vector<std::uint8_t> _digest_key;
 
     std::string _action;
 };
@@ -722,13 +815,15 @@ Status checkLongName(const po::variables_map& vm,
             for (StringVector_t::iterator keyValueVectorIt = keyValueVector.begin();
                  keyValueVectorIt != keyValueVector.end();
                  ++keyValueVectorIt) {
-                std::string key;
-                std::string value;
-                if (!mongoutils::str::splitOn(*keyValueVectorIt, '=', key, value)) {
+                StringData keySD;
+                StringData valueSD;
+                if (!str::splitOn(*keyValueVectorIt, '=', keySD, valueSD)) {
                     StringBuilder sb;
                     sb << "Illegal option assignment: \"" << *keyValueVectorIt << "\"";
                     return Status(ErrorCodes::BadValue, sb.str());
                 }
+                std::string key = keySD.toString();
+                std::string value = valueSD.toString();
                 // Make sure we aren't setting an option to two different values
                 if (mapValue.count(key) > 0 && mapValue[key] != value) {
                     StringBuilder sb;
@@ -1672,14 +1767,14 @@ Status OptionsParser::runConfigFile(
     const std::string& config,
     const std::map<std::string, std::string>& env,  // Unused, interface consistent with run()
     Environment* configEnvironment) {
-    // Add the default values to our resulting environment
-    Status ret = addDefaultValues(options, configEnvironment);
+    // Add values from the provided config file
+    Status ret = parseConfigFile(options, config, configEnvironment, ConfigExpand());
     if (!ret.isOK()) {
         return ret;
     }
 
-    // Add values from the provided config file
-    ret = parseConfigFile(options, config, configEnvironment, ConfigExpand());
+    // Add the default values to our resulting environment
+    ret = addDefaultValues(options, configEnvironment);
     if (!ret.isOK()) {
         return ret;
     }

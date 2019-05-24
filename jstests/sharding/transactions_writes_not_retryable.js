@@ -53,8 +53,12 @@
             sessionDB.runCommand(writeCmd),
             "expected write in transaction not to be retried on closed connection, cmd: " +
                 tojson(writeCmd) + ", sharded: " + isSharded);
+
+        // Network errors during sharded transactions are transient transaction errors, so they're
+        // returned as top level codes for all commands, including batch writes.
         assert(ErrorCodes.isNetworkError(res.code),
                "expected network error, got: " + tojson(res.code));
+        assert.eq(res.errorLabels, ["TransientTransactionError"]);
         assert.commandFailedWithCode(session.abortTransaction_forTesting(),
                                      ErrorCodes.NoSuchTransaction);
 

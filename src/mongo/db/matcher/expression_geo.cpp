@@ -36,12 +36,9 @@
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/platform/basic.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
-
-
-using mongoutils::str::equals;
 
 //
 // GeoExpression
@@ -80,7 +77,7 @@ Status GeoExpression::parseQuery(const BSONObj& obj) {
 
     while (geoIt.more()) {
         BSONElement elt = geoIt.next();
-        if (str::equals(elt.fieldName(), "$uniqueDocs")) {
+        if (elt.fieldNameStringData() == "$uniqueDocs") {
             // Deprecated "$uniqueDocs" field
             warning() << "deprecated $uniqueDocs option: " << redact(obj);
         } else {
@@ -175,8 +172,8 @@ bool GeoNearExpression::parseLegacyQuery(const BSONObj& obj) {
     BSONObjIterator it(obj);
     while (it.more()) {
         BSONElement e = it.next();
-        if (equals(e.fieldName(), "$near") || equals(e.fieldName(), "$geoNear") ||
-            equals(e.fieldName(), "$nearSphere")) {
+        StringData fieldName = e.fieldNameStringData();
+        if ((fieldName == "$near") || (fieldName == "$geoNear") || (fieldName == "$nearSphere")) {
             if (!e.isABSONObj()) {
                 return false;
             }
@@ -186,17 +183,17 @@ bool GeoNearExpression::parseLegacyQuery(const BSONObj& obj) {
                 GeoParser::parsePointWithMaxDistance(embeddedObj, centroid.get(), &maxDistance)) {
                 uassert(18522, "max distance must be non-negative", maxDistance >= 0.0);
                 hasGeometry = true;
-                isNearSphere = equals(e.fieldName(), "$nearSphere");
+                isNearSphere = (e.fieldNameStringData() == "$nearSphere");
             }
-        } else if (equals(e.fieldName(), "$minDistance")) {
+        } else if (fieldName == "$minDistance") {
             uassert(16893, "$minDistance must be a number", e.isNumber());
             minDistance = e.Number();
             uassert(16894, "$minDistance must be non-negative", minDistance >= 0.0);
-        } else if (equals(e.fieldName(), "$maxDistance")) {
+        } else if (fieldName == "$maxDistance") {
             uassert(16895, "$maxDistance must be a number", e.isNumber());
             maxDistance = e.Number();
             uassert(16896, "$maxDistance must be non-negative", maxDistance >= 0.0);
-        } else if (equals(e.fieldName(), "$uniqueDocs")) {
+        } else if (fieldName == "$uniqueDocs") {
             warning() << "ignoring deprecated option $uniqueDocs";
         } else {
             // In a query document, $near queries can have no non-geo sibling parameters.
@@ -219,7 +216,7 @@ Status GeoNearExpression::parseNewQuery(const BSONObj& obj) {
     // Just one arg. to $geoNear.
     if (objIt.more()) {
         return Status(ErrorCodes::BadValue,
-                      mongoutils::str::stream()
+                      str::stream()
                           << "geo near accepts just one argument when querying for a GeoJSON "
                           << "point. Extra field found: "
                           << objIt.next());
@@ -234,15 +231,15 @@ Status GeoNearExpression::parseNewQuery(const BSONObj& obj) {
 
     if (PathAcceptingKeyword::GEO_NEAR != MatchExpressionParser::parsePathAcceptingKeyword(e)) {
         return Status(ErrorCodes::BadValue,
-                      mongoutils::str::stream() << "invalid geo near query operator: "
-                                                << e.fieldName());
+                      str::stream() << "invalid geo near query operator: " << e.fieldName());
     }
 
     // Iterate over the argument.
     BSONObjIterator it(e.embeddedObject());
     while (it.more()) {
         BSONElement e = it.next();
-        if (equals(e.fieldName(), "$geometry")) {
+        StringData fieldName = e.fieldNameStringData();
+        if (fieldName == "$geometry") {
             if (e.isABSONObj()) {
                 BSONObj embeddedObj = e.embeddedObject();
                 Status status = GeoParser::parseQueryPoint(e, centroid.get());
@@ -259,11 +256,11 @@ Status GeoNearExpression::parseNewQuery(const BSONObj& obj) {
                         (SPHERE == centroid->crs));
                 hasGeometry = true;
             }
-        } else if (equals(e.fieldName(), "$minDistance")) {
+        } else if (fieldName == "$minDistance") {
             uassert(16897, "$minDistance must be a number", e.isNumber());
             minDistance = e.Number();
             uassert(16898, "$minDistance must be non-negative", minDistance >= 0.0);
-        } else if (equals(e.fieldName(), "$maxDistance")) {
+        } else if (fieldName == "$maxDistance") {
             uassert(16899, "$maxDistance must be a number", e.isNumber());
             maxDistance = e.Number();
             uassert(16900, "$maxDistance must be non-negative", maxDistance >= 0.0);

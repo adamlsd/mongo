@@ -42,7 +42,7 @@
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/util/stringutils.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -298,9 +298,10 @@ Document redactSafePortionDollarOps(BSONObj expr) {
 // the expression can safely be promoted in front of a $redact.
 Document redactSafePortionTopLevel(BSONObj query) {
     MutableDocument output;
-    BSONForEach(field, query) {
-        if (field.fieldName()[0] == '$') {
-            if (str::equals(field.fieldName(), "$or")) {
+    for (BSONElement field : query) {
+        StringData fieldName = field.fieldNameStringData();
+        if (fieldName.startsWith("$")) {
+            if (fieldName == "$or") {
                 // $or must be all-or-nothing (line $in). Can't include subset of elements.
                 vector<Value> okClauses;
                 BSONForEach(elem, field.Obj()) {
@@ -314,7 +315,7 @@ Document redactSafePortionTopLevel(BSONObj query) {
 
                 if (!okClauses.empty())
                     output["$or"] = Value(std::move(okClauses));
-            } else if (str::equals(field.fieldName(), "$and")) {
+            } else if (fieldName == "$and") {
                 // $and can include subset of elements (like $all).
                 vector<Value> okClauses;
                 BSONForEach(elem, field.Obj()) {
@@ -356,7 +357,7 @@ Document redactSafePortionTopLevel(BSONObj query) {
     }
     return output.freeze();
 }
-}
+}  // namespace
 
 BSONObj DocumentSourceMatch::redactSafePortion() const {
     return redactSafePortionTopLevel(getQuery()).toBson();
@@ -375,13 +376,7 @@ bool DocumentSourceMatch::isTextQuery(const BSONObj& query) {
 }
 
 void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other) {
-    _predicate = BSON("$and" << BSON_ARRAY(_predicate << other->getQuery()));
-
-    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
-        _predicate, pExpCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
-    _expression = std::move(status.getValue());
-    _dependencies = DepsTracker(_dependencies.getMetadataAvailable());
-    getDependencies(&_dependencies);
+    rebuild(BSON("$and" << BSON_ARRAY(_predicate << other->getQuery())));
 }
 
 pair<intrusive_ptr<DocumentSourceMatch>, intrusive_ptr<DocumentSourceMatch>>
@@ -497,14 +492,17 @@ DepsTracker::State DocumentSourceMatch::getDependencies(DepsTracker* deps) const
 
 DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,
                                          const intrusive_ptr<ExpressionContext>& expCtx)
-    : DocumentSource(expCtx),
-      _predicate(query.getOwned()),
-      _isTextQuery(isTextQuery(query)),
-      _dependencies(_isTextQuery ? DepsTracker::MetadataAvailable::kTextScore
-                                 : DepsTracker::MetadataAvailable::kNoMetadata) {
-    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
-        _predicate, expCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
-    _expression = std::move(status.getValue());
+    : DocumentSource(expCtx) {
+    rebuild(query);
+}
+
+void DocumentSourceMatch::rebuild(BSONObj filter) {
+    _predicate = filter.getOwned();
+    _expression = uassertStatusOK(MatchExpressionParser::parse(
+        _predicate, pExpCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
+    _isTextQuery = isTextQuery(_predicate);
+    _dependencies = DepsTracker(_isTextQuery ? DepsTracker::MetadataAvailable::kTextScore
+                                             : DepsTracker::MetadataAvailable::kNoMetadata);
     getDependencies(&_dependencies);
 }
 

@@ -35,6 +35,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/find_and_modify_common.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
+#include "mongo/db/storage/duplicate_key_error_info.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/balancer_configuration.h"
@@ -46,6 +47,7 @@
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/multi_statement_transaction_requests_sender.h"
+#include "mongo/s/session_catalog_router.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/s/would_change_owning_shard_exception.h"
@@ -83,43 +85,45 @@ void updateShardKeyValueOnWouldChangeOwningShardError(OperationContext* opCtx,
                                                       Status responseStatus,
                                                       const BSONObj& cmdObj,
                                                       BSONObjBuilder* result) {
-    auto txnRouter = TransactionRouter::get(opCtx);
-    bool isRetryableWrite = opCtx->getTxnNumber() && !txnRouter;
-
     BSONObjBuilder extraInfoBuilder;
     responseStatus.extraInfo()->serialize(&extraInfoBuilder);
     auto extraInfo = extraInfoBuilder.obj();
     auto wouldChangeOwningShardExtraInfo =
         WouldChangeOwningShardInfo::parseFromCommandError(extraInfo);
 
-    if (isRetryableWrite) {
-        // TODO: SERVER-39843 Start txn and resend command
-        uasserted(ErrorCodes::ImmutableField,
-                  "After applying the update, an immutable field was found to have been altered.");
-    }
-
     try {
-        auto matchedDoc = documentShardKeyUpdateUtil::updateShardKeyForDocument(
+        auto matchedDocOrUpserted = documentShardKeyUpdateUtil::updateShardKeyForDocument(
             opCtx, nss, wouldChangeOwningShardExtraInfo, cmdObj.getIntField("stmtId"));
+        auto upserted = matchedDocOrUpserted && wouldChangeOwningShardExtraInfo.getShouldUpsert();
+        auto updatedExistingDocument = matchedDocOrUpserted && !upserted;
 
         BSONObjBuilder lastErrorObjBuilder(result->subobjStart("lastErrorObject"));
-        lastErrorObjBuilder.appendNumber("n", matchedDoc ? 1 : 0);
-        lastErrorObjBuilder.appendBool("updatedExisting", matchedDoc ? true : false);
+        lastErrorObjBuilder.appendNumber("n", matchedDocOrUpserted ? 1 : 0);
+        lastErrorObjBuilder.appendBool("updatedExisting", updatedExistingDocument);
+        if (upserted) {
+            lastErrorObjBuilder.appendAs(wouldChangeOwningShardExtraInfo.getPostImage()["_id"],
+                                         "upserted");
+        }
         lastErrorObjBuilder.doneFast();
 
-        if (matchedDoc) {
+        auto shouldReturnPostImage = cmdObj.getBoolField("new");
+        if (updatedExistingDocument) {
             result->append("value",
-                           cmdObj.getBoolField("new")
-                               ? wouldChangeOwningShardExtraInfo.getPostImage().get()
-                               : wouldChangeOwningShardExtraInfo.getPreImage());
+                           shouldReturnPostImage ? wouldChangeOwningShardExtraInfo.getPostImage()
+                                                 : wouldChangeOwningShardExtraInfo.getPreImage());
+        } else if (upserted && shouldReturnPostImage) {
+            result->append("value", wouldChangeOwningShardExtraInfo.getPostImage());
         } else {
             result->appendNull("value");
         }
         result->append("ok", 1.0);
-    } catch (const DBException& e) {
-        auto status = e.toStatus();
-        if (!isRetryableWrite)
-            uassertStatusOK(status.withContext("findAndModify"));
+    } catch (DBException& e) {
+        if (e.code() == ErrorCodes::DuplicateKey &&
+            e.extraInfo<DuplicateKeyErrorInfo>()->getKeyPattern().hasField("_id")) {
+            e.addContext(documentShardKeyUpdateUtil::kDuplicateKeyErrorContext);
+        }
+        e.addContext("findAndModify");
+        throw;
     }
 }
 
@@ -250,14 +254,13 @@ private:
                             const NamespaceString& nss,
                             const BSONObj& cmdObj,
                             BSONObjBuilder* result) {
+        bool isRetryableWrite = opCtx->getTxnNumber() && !TransactionRouter::get(opCtx);
         const auto response = [&] {
             std::vector<AsyncRequestsSender::Request> requests;
             requests.emplace_back(
                 shardId,
                 appendShardVersion(CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
                                    shardVersion));
-
-            bool isRetryableWrite = opCtx->getTxnNumber() && !TransactionRouter::get(opCtx);
 
             MultiStatementTransactionRequestsSender ars(
                 opCtx,
@@ -283,8 +286,46 @@ private:
         }
 
         if (responseStatus.code() == ErrorCodes::WouldChangeOwningShard) {
-            updateShardKeyValueOnWouldChangeOwningShardError(
-                opCtx, nss, responseStatus, cmdObj, result);
+            if (isRetryableWrite) {
+                RouterOperationContextSession routerSession(opCtx);
+                try {
+                    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+                    readConcernArgs =
+                        repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
+
+                    // Re-run the findAndModify command that will change the shard key value in a
+                    // transaction. We call _runCommand recursively, and this second time through
+                    // since it will be run as a transaction it will take the other code path to
+                    // updateShardKeyValueOnWouldChangeOwningShardError.
+                    auto txnRouterForShardKeyChange =
+                        documentShardKeyUpdateUtil::startTransactionForShardKeyUpdate(opCtx);
+                    _runCommand(opCtx, shardId, shardVersion, nss, cmdObj, result);
+                    auto commitResponse =
+                        documentShardKeyUpdateUtil::commitShardKeyUpdateTransaction(
+                            opCtx, txnRouterForShardKeyChange);
+
+                    uassertStatusOK(getStatusFromCommandResult(commitResponse));
+                    if (auto wcErrorElem = commitResponse["writeConcernError"]) {
+                        appendWriteConcernErrorToCmdResponse(shardId, wcErrorElem, *result);
+                    }
+                } catch (DBException& e) {
+                    if (e.code() != ErrorCodes::DuplicateKey ||
+                        (e.code() == ErrorCodes::DuplicateKey &&
+                         !e.extraInfo<DuplicateKeyErrorInfo>()->getKeyPattern().hasField("_id"))) {
+                        e.addContext(documentShardKeyUpdateUtil::kNonDuplicateKeyErrorContext);
+                    };
+
+                    auto txnRouterForAbort = TransactionRouter::get(opCtx);
+                    if (txnRouterForAbort)
+                        txnRouterForAbort->implicitlyAbortTransaction(opCtx, e.toStatus());
+
+                    throw;
+                }
+            } else {
+                updateShardKeyValueOnWouldChangeOwningShardError(
+                    opCtx, nss, responseStatus, cmdObj, result);
+            }
+
             return;
         }
 

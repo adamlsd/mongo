@@ -32,7 +32,7 @@
 #include "mongo/db/pipeline/mongos_process_interface.h"
 
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/catalog/uuid_catalog.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/pipeline/document_source.h"
@@ -48,7 +48,6 @@
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/establish_cursors.h"
 #include "mongo/s/query/router_exec_stage.h"
-#include "mongo/s/transaction_router.h"
 #include "mongo/util/fail_point.h"
 
 namespace mongo {

@@ -89,8 +89,7 @@ auto runIfStandaloneOrPrimary(const NamespaceString& ns, OperationContext* opCtx
     bool isStandaloneOrPrimary;
     {
         Lock::DBLock lk(opCtx, ns.db(), MODE_IS);
-        Lock::CollectionLock lock(
-            opCtx->lockState(), NamespaceString::kLogicalSessionsNamespace.ns(), MODE_IS);
+        Lock::CollectionLock lock(opCtx, NamespaceString::kLogicalSessionsNamespace, MODE_IS);
 
         auto coord = mongo::repl::ReplicationCoordinator::get(opCtx);
 
@@ -208,18 +207,20 @@ Status SessionsCollectionRS::checkSessionsCollectionExists(OperationContext* opC
 
 Status SessionsCollectionRS::refreshSessions(OperationContext* opCtx,
                                              const LogicalSessionRecordSet& sessions) {
+    const std::vector<LogicalSessionRecord> sessionsVector(sessions.begin(), sessions.end());
+
     return dispatch(NamespaceString::kLogicalSessionsNamespace,
                     opCtx,
                     [&] {
                         DBDirectClient client(opCtx);
                         return doRefresh(NamespaceString::kLogicalSessionsNamespace,
-                                         sessions,
+                                         sessionsVector,
                                          makeSendFnForBatchWrite(
                                              NamespaceString::kLogicalSessionsNamespace, &client));
                     },
                     [&](DBClientBase* client) {
                         return doRefresh(NamespaceString::kLogicalSessionsNamespace,
-                                         sessions,
+                                         sessionsVector,
                                          makeSendFnForBatchWrite(
                                              NamespaceString::kLogicalSessionsNamespace, client));
                     });
@@ -227,18 +228,20 @@ Status SessionsCollectionRS::refreshSessions(OperationContext* opCtx,
 
 Status SessionsCollectionRS::removeRecords(OperationContext* opCtx,
                                            const LogicalSessionIdSet& sessions) {
+    const std::vector<LogicalSessionId> sessionsVector(sessions.begin(), sessions.end());
+
     return dispatch(NamespaceString::kLogicalSessionsNamespace,
                     opCtx,
                     [&] {
                         DBDirectClient client(opCtx);
                         return doRemove(NamespaceString::kLogicalSessionsNamespace,
-                                        sessions,
+                                        sessionsVector,
                                         makeSendFnForBatchWrite(
                                             NamespaceString::kLogicalSessionsNamespace, &client));
                     },
                     [&](DBClientBase* client) {
                         return doRemove(NamespaceString::kLogicalSessionsNamespace,
-                                        sessions,
+                                        sessionsVector,
                                         makeSendFnForBatchWrite(
                                             NamespaceString::kLogicalSessionsNamespace, client));
                     });
@@ -246,43 +249,24 @@ Status SessionsCollectionRS::removeRecords(OperationContext* opCtx,
 
 StatusWith<LogicalSessionIdSet> SessionsCollectionRS::findRemovedSessions(
     OperationContext* opCtx, const LogicalSessionIdSet& sessions) {
-    return dispatch(NamespaceString::kLogicalSessionsNamespace,
-                    opCtx,
-                    [&] {
-                        DBDirectClient client(opCtx);
-                        return doFetch(NamespaceString::kLogicalSessionsNamespace,
-                                       sessions,
-                                       makeFindFnForCommand(
-                                           NamespaceString::kLogicalSessionsNamespace, &client));
-                    },
-                    [&](DBClientBase* client) {
-                        return doFetch(NamespaceString::kLogicalSessionsNamespace,
-                                       sessions,
-                                       makeFindFnForCommand(
-                                           NamespaceString::kLogicalSessionsNamespace, client));
-                    });
-}
+    const std::vector<LogicalSessionId> sessionsVector(sessions.begin(), sessions.end());
 
-Status SessionsCollectionRS::removeTransactionRecords(OperationContext* opCtx,
-                                                      const LogicalSessionIdSet& sessions) {
     return dispatch(
-        NamespaceString::kSessionTransactionsTableNamespace,
+        NamespaceString::kLogicalSessionsNamespace,
         opCtx,
         [&] {
             DBDirectClient client(opCtx);
-            return doRemove(NamespaceString::kSessionTransactionsTableNamespace,
-                            sessions,
-                            makeSendFnForBatchWrite(
-                                NamespaceString::kSessionTransactionsTableNamespace, &client));
+            return doFindRemoved(
+                NamespaceString::kLogicalSessionsNamespace,
+                sessionsVector,
+                makeFindFnForCommand(NamespaceString::kLogicalSessionsNamespace, &client));
         },
-        [](DBClientBase*) {
-            return Status(ErrorCodes::NotMaster, "Not eligible to remove transaction records");
+        [&](DBClientBase* client) {
+            return doFindRemoved(
+                NamespaceString::kLogicalSessionsNamespace,
+                sessionsVector,
+                makeFindFnForCommand(NamespaceString::kLogicalSessionsNamespace, client));
         });
-}
-
-Status SessionsCollectionRS::removeTransactionRecordsHelper(OperationContext* opCtx,
-                                                            const LogicalSessionIdSet& sessions) {
-    return SessionsCollectionRS{}.removeTransactionRecords(opCtx, sessions);
 }
 
 }  // namespace mongo

@@ -57,10 +57,9 @@ MONGO_FAIL_POINT_DEFINE(hangBeforeDeletingCoordinatorDoc);
 
 using ResponseStatus = executor::TaskExecutor::ResponseStatus;
 
-const WriteConcernOptions kInternalMajorityNoSnapshotWriteConcern(
-    WriteConcernOptions::kInternalMajorityNoSnapshot,
-    WriteConcernOptions::SyncMode::UNSET,
-    WriteConcernOptions::kNoTimeout);
+const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
+                                                WriteConcernOptions::SyncMode::UNSET,
+                                                WriteConcernOptions::kNoTimeout);
 
 const Backoff kExponentialBackoff(Seconds(1), Milliseconds::max());
 
@@ -187,7 +186,7 @@ void persistParticipantListBlocking(OperationContext* opCtx,
     uassertStatusOK(
         waitForWriteConcern(opCtx,
                             repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
-                            kInternalMajorityNoSnapshotWriteConcern,
+                            kMajorityWriteConcern,
                             &unusedWCResult));
 }
 }  // namespace
@@ -241,7 +240,7 @@ Future<PrepareVoteConsensus> sendPrepare(ServiceContext* service,
     auto prepareObj = prepareTransaction.toBSON(
         BSON("lsid" << lsid.toBSON() << "txnNumber" << txnNumber << "autocommit" << false
                     << WriteConcernOptions::kWriteConcernField
-                    << WriteConcernOptions::InternalMajorityNoSnapshot));
+                    << WriteConcernOptions::Majority));
 
     std::vector<Future<PrepareResponse>> responses;
 
@@ -258,21 +257,26 @@ Future<PrepareVoteConsensus> sendPrepare(ServiceContext* service,
     // (used for commit), stopping the aggregation and preventing any further retries as soon as an
     // abort decision is received. Return a future containing the result.
     return txn::collect(
-        std::move(responses),
-        // Initial value
-        PrepareVoteConsensus{int(participants.size())},
-        // Aggregates an incoming response (next) with the existing aggregate value (result)
-        [prepareScheduler = std::move(prepareScheduler)](PrepareVoteConsensus & result,
-                                                         const PrepareResponse& next) {
-            result.registerVote(next);
+               std::move(responses),
+               // Initial value
+               PrepareVoteConsensus{int(participants.size())},
+               // Aggregates an incoming response (next) with the existing aggregate value (result)
+               [&prepareScheduler = *prepareScheduler](PrepareVoteConsensus & result,
+                                                       const PrepareResponse& next) {
+                   result.registerVote(next);
 
-            if (next.vote == PrepareVote::kAbort) {
-                prepareScheduler->shutdown(
-                    {ErrorCodes::TransactionCoordinatorReachedAbortDecision,
-                     str::stream() << "Received abort vote from " << next.shardId});
-            }
+                   if (next.vote == PrepareVote::kAbort) {
+                       prepareScheduler.shutdown(
+                           {ErrorCodes::TransactionCoordinatorReachedAbortDecision,
+                            str::stream() << "Received abort vote from " << next.shardId});
+                   }
 
-            return txn::ShouldStopIteration::kNo;
+                   return txn::ShouldStopIteration::kNo;
+               })
+        .tapAll([prepareScheduler = std::move(prepareScheduler)](auto&& unused) mutable {
+            // Destroy the prepare scheduler before the rest of the future chain has executed so
+            // that any parent schedulers can be destroyed without dangling children
+            prepareScheduler.reset();
         });
 }
 
@@ -383,7 +387,7 @@ void persistDecisionBlocking(OperationContext* opCtx,
     uassertStatusOK(
         waitForWriteConcern(opCtx,
                             repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
-                            kInternalMajorityNoSnapshotWriteConcern,
+                            kMajorityWriteConcern,
                             &unusedWCResult));
 }
 }  // namespace

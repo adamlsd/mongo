@@ -37,30 +37,50 @@
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/s/write_ops/cluster_write.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace {
 
+MONGO_FAIL_POINT_DEFINE(hangBeforeInsertOnUpdateShardKey);
+
 /**
  * Calls into the command execution stack to run the given command. Will blindly uassert on any
- * error returned by a command.
+ * error returned by a command. If the original update was sent with {upsert: false}, returns
+ * whether or not we deleted the original doc and inserted the new one sucessfully. If the original
+ * update was sent with {upsert: true}, returns whether or not we inserted the new doc successfully.
  */
 bool executeOperationsAsPartOfShardKeyUpdate(OperationContext* opCtx,
                                              const BSONObj& deleteCmdObj,
                                              const BSONObj& insertCmdObj,
-                                             const StringData db) {
+                                             const StringData db,
+                                             const bool shouldUpsert) {
     auto deleteOpMsg = OpMsgRequest::fromDBAndBody(db, deleteCmdObj);
     auto deleteRequest = BatchedCommandRequest::parseDelete(deleteOpMsg);
 
     BatchedCommandResponse deleteResponse;
     BatchWriteExecStats deleteStats;
+
     ClusterWriter::write(opCtx, deleteRequest, &deleteStats, &deleteResponse);
     uassertStatusOK(deleteResponse.toStatus());
-    // If we do not delete any document, this is essentially equivalent to not matching a doc.
-    if (deleteResponse.getN() != 1)
+    // If shouldUpsert is true, this means the original command specified {upsert: true} and did not
+    // match any docs, so we should not match any when doing this delete. If shouldUpsert is false
+    // and we do not delete any document, this is essentially equivalent to not matching a doc and
+    // we should not insert.
+    if (shouldUpsert) {
+        uassert(ErrorCodes::ConflictingOperationInProgress,
+                "Delete matched a document when it should not have.",
+                deleteResponse.getN() == 0);
+    } else if (deleteResponse.getN() != 1) {
         return false;
+    }
+
+    if (MONGO_FAIL_POINT(hangBeforeInsertOnUpdateShardKey)) {
+        log() << "Hit hangBeforeInsertOnUpdateShardKey failpoint";
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(opCtx, hangBeforeInsertOnUpdateShardKey);
+    }
 
     auto insertOpMsg = OpMsgRequest::fromDBAndBody(db, insertCmdObj);
     auto insertRequest = BatchedCommandRequest::parseInsert(insertOpMsg);
@@ -75,24 +95,6 @@ bool executeOperationsAsPartOfShardKeyUpdate(OperationContext* opCtx,
             insertResponse.getN() == 1);
 
     return true;
-}
-
-TransactionRouter* startTransactionForShardKeyUpdate(OperationContext* opCtx) {
-    auto txnRouter = TransactionRouter::get(opCtx);
-    invariant(txnRouter);
-
-    auto txnNumber = opCtx->getTxnNumber();
-    invariant(txnNumber);
-
-    txnRouter->beginOrContinueTxn(opCtx, *txnNumber, TransactionRouter::TransactionActions::kStart);
-
-    return txnRouter;
-}
-
-void commitShardKeyUpdateTransaction(OperationContext* opCtx,
-                                     TransactionRouter* txnRouter,
-                                     TxnNumber txnNumber) {
-    auto commitResponse = txnRouter->commitTransaction(opCtx, boost::none);
 }
 
 /**
@@ -131,14 +133,29 @@ bool updateShardKeyForDocument(OperationContext* opCtx,
                                const WouldChangeOwningShardInfo& documentKeyChangeInfo,
                                int stmtId) {
     auto updatePreImage = documentKeyChangeInfo.getPreImage().getOwned();
-    invariant(documentKeyChangeInfo.getPostImage());
-    auto updatePostImage = documentKeyChangeInfo.getPostImage()->getOwned();
+    auto updatePostImage = documentKeyChangeInfo.getPostImage().getOwned();
 
     auto deleteCmdObj = constructShardKeyDeleteCmdObj(nss, updatePreImage, stmtId);
-
     auto insertCmdObj = constructShardKeyInsertCmdObj(nss, updatePostImage, stmtId);
 
-    return executeOperationsAsPartOfShardKeyUpdate(opCtx, deleteCmdObj, insertCmdObj, nss.db());
+    return executeOperationsAsPartOfShardKeyUpdate(
+        opCtx, deleteCmdObj, insertCmdObj, nss.db(), documentKeyChangeInfo.getShouldUpsert());
+}
+
+TransactionRouter* startTransactionForShardKeyUpdate(OperationContext* opCtx) {
+    auto txnRouter = TransactionRouter::get(opCtx);
+    invariant(txnRouter);
+
+    auto txnNumber = opCtx->getTxnNumber();
+    invariant(txnNumber);
+
+    txnRouter->beginOrContinueTxn(opCtx, *txnNumber, TransactionRouter::TransactionActions::kStart);
+
+    return txnRouter;
+}
+
+BSONObj commitShardKeyUpdateTransaction(OperationContext* opCtx, TransactionRouter* txnRouter) {
+    return txnRouter->commitTransaction(opCtx, boost::none);
 }
 
 BSONObj constructShardKeyDeleteCmdObj(const NamespaceString& nss,

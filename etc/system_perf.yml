@@ -55,7 +55,7 @@ post:
           # these default values in the distro config in evergreen.
 
           if [ -d "${scons_cache_path}" ]; then
-              /opt/mongodbtoolchain/v3/bin/python2 buildscripts/scons_cache_prune.py --cache-dir ${scons_cache_path} --cache-size ${scons_cache_size|200} --prune-ratio ${scons_prune_ratio|0.8}
+              /opt/mongodbtoolchain/v3/bin/python3 buildscripts/scons_cache_prune.py --cache-dir ${scons_cache_path} --cache-size ${scons_cache_size|200} --prune-ratio ${scons_prune_ratio|0.8}
           fi
 
 functions:
@@ -81,10 +81,11 @@ functions:
           set -o errexit
           set -o verbose
 
+          /opt/mongodbtoolchain/v3/bin/virtualenv --python /opt/mongodbtoolchain/v3/bin/python3 "${workdir}/compile_venv"
           /opt/mongodbtoolchain/v3/bin/virtualenv --python /opt/mongodbtoolchain/v3/bin/python2 "${workdir}/venv"
-          source "${workdir}/venv/bin/activate"
+          source "${workdir}/compile_venv/bin/activate"
 
-          python2 -m pip install -r etc/pip/compile-requirements.txt
+          python -m pip install -r etc/pip/compile-requirements.txt
 
     - command: shell.exec
       params:
@@ -94,12 +95,12 @@ functions:
           set -o verbose
 
           # We get the raw version string (r1.2.3-45-gabcdef) from git
-          MONGO_VERSION=$(git describe)
+          MONGO_VERSION=$(git describe --abbrev=7)
 
           # If we're going to compile the upstream wtdevelop repository for wiredtiger, add
           # that githash to version string.
           if [ "${compile-variant|}" = "-wtdevelop" ]; then
-            WT_VERSION=$(cd src/third_party/wtdevelop; git describe | cut -c 9-)
+            WT_VERSION=$(cd src/third_party/wtdevelop; git describe --abbrev=7 | cut -c 9-)
             MONGO_VERSION="$MONGO_VERSION-wtdevelop-$WT_VERSION"
           fi
           # If this is a patch build, we add the patch version id to the version string so we know
@@ -110,8 +111,8 @@ functions:
 
           # This script converts the generated version string into a sanitized version string for
           # use by scons and uploading artifacts as well as information about for the scons cache.
-          source "${workdir}/venv/bin/activate"
-          MONGO_VERSION=$MONGO_VERSION USE_SCONS_CACHE=${use_scons_cache|false} python2 buildscripts/generate_compile_expansions.py --out compile_expansions.yml
+          source "${workdir}/compile_venv/bin/activate"
+          MONGO_VERSION=$MONGO_VERSION USE_SCONS_CACHE=${use_scons_cache|false} python buildscripts/generate_compile_expansions.py --out compile_expansions.yml
     # Then we load the generated version data into the agent so we can use it in task definitions
     - command: expansions.update
       params:
@@ -144,8 +145,8 @@ functions:
         script: |
           set -o errexit
           set -o verbose
-          source "${workdir}/venv/bin/activate"
-          python2 ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} mongo${extension} --use-new-tools mongod${extension} mongos${extension} MONGO_VERSION=${version}
+          source "${workdir}/compile_venv/bin/activate"
+          python ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} mongo${extension} --use-new-tools mongod${extension} mongos${extension} MONGO_VERSION=${version}
           mkdir -p mongodb/bin
           mkdir -p mongodb/jstests/hooks
           mv mongo${extension|} mongodb/bin
@@ -230,6 +231,7 @@ functions:
           build_variant: ${build_variant}
           execution: ${execution}
           is_patch: ${is_patch|false}
+          order: ${revision_order_id}
           project: ${project}
           project_dir: ${project_dir}
           revision: ${revision}
@@ -345,7 +347,7 @@ functions:
           if [ -s "$filename" ]; then
             echo "Rejecting task due to the following outliers:"
             cat "$filename"
-            exit 1
+            exit ${detected_outlier_exit_code|0}
           fi
     - command: shell.exec
       type: test
@@ -463,6 +465,16 @@ tasks:
     - func: "run test"
     - func: "analyze"
 
+- name: cursor_manager
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "cursor_manager"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
 - name: mixed_workloads
   priority: 5
   commands:
@@ -512,6 +524,26 @@ tasks:
     - func: "deploy cluster"
     - func: "run test"
     - func: "analyze"
+
+- name: genny_canaries
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "genny_canaries"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
+- name: genny_overhead
+  priority: 5
+  commands:
+  - func: "prepare environment"
+    vars:
+      test: "genny_overhead"
+  - func: "deploy cluster"
+  - func: "run test"
+  - func: "analyze"
 
 - name: retryable_writes_workloads
   priority: 5
@@ -756,7 +788,7 @@ buildvariants:
     tooltags: ""
     use_scons_cache: true
   run_on:
-      - "linux-64-amzn-build"
+      - "amazon1-2018-build"
   tasks:
     - name: compile
 
@@ -852,6 +884,9 @@ buildvariants:
     - name: industry_benchmarks
     - name: crud_workloads
     - name: jasper_smoke
+    - name: genny_canaries
+    - name: genny_overhead
+    - name: cursor_manager
     - name: insert_remove
     - name: mixed_workloads
     - name: misc_workloads
@@ -1036,6 +1071,36 @@ buildvariants:
     - name: linkbench
     - name: big_update
 
+- name: linux-3-node-replSet-flowcontrol
+  display_name: Linux 3-Node ReplSet with Flow Control
+  batchtime: 1440  # 24 hours
+  modules: *modules
+  expansions:
+    setup: replica-flowcontrol
+    cluster: replica
+    platform: linux
+    project_dir: *project_dir
+    authentication: enabled
+    storageEngine: wiredTiger
+  run_on:
+      - "rhel70-perf-replset"
+  depends_on:
+      - name: compile
+        variant: compile-linux-64-amzn
+  tasks:
+    - name: industry_benchmarks
+    - name: industry_benchmarks_secondary_reads
+    - name: crud_workloads
+    - name: service_architecture_workloads
+    - name: mixed_workloads
+    - name: smoke_test
+    - name: industry_benchmarks_wmajority
+    - name: change_streams_throughput
+    - name: change_streams_latency
+    - name: tpcc
+    - name: linkbench
+    - name: big_update
+
 - name: linux-3-node-replSet-ssl
   display_name: Linux 3-Node ReplSet (SSL)
   batchtime: 10080 # 7 days
@@ -1102,7 +1167,7 @@ buildvariants:
 #######################################
 - name: wtdevelop-1-node-replSet
   display_name: WT Develop 1-Node ReplSet
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: single-replica
@@ -1121,7 +1186,7 @@ buildvariants:
 
 - name: wtdevelop-standalone
   display_name: WT Develop Standalone
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: standalone
@@ -1140,7 +1205,7 @@ buildvariants:
 
 - name: wtdevelop-3-node-replSet
   display_name: WT Develop 3-Node ReplSet
-  batchtime: 1440  # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: replica
@@ -1160,7 +1225,7 @@ buildvariants:
 # Disabled: SERVER-35586
 #- name: wtdevelop-shard-lite
 #  display_name: WT Develop Shard Lite Cluster
-#  batchtime: 1440  # 24 hours
+#  batchtime: 10080 # 7 days
 #  modules: *modules
 #  expansions:
 #    setup: shard-lite

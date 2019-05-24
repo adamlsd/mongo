@@ -53,13 +53,13 @@
 #include "mongo/util/exit.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/private/ssl_expiration.h"
 #include "mongo/util/net/sockaddr.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl.hpp"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/net/ssl_types.h"
+#include "mongo/util/str.h"
 #include "mongo/util/text.h"
 #include "mongo/util/uuid.h"
 
@@ -235,6 +235,12 @@ StatusWith<stdx::unordered_set<RoleName>> parsePeerRoles(PCCERT_CONTEXT cert) {
                        reinterpret_cast<char*>(extension->Value.pbData) + extension->Value.cbData));
 }
 
+// TODO(SERVER-41045): If SNI functionality is needed on Windows, this is where one would implement
+// it.
+boost::optional<std::string> getSNIServerName_impl() {
+    return boost::none;
+}
+
 /**
  * Manage state for a SSL Connection. Used by the Socket class.
  */
@@ -251,8 +257,7 @@ public:
     ~SSLConnectionWindows();
 
     std::string getSNIServerName() const final {
-        // TODO
-        return "";
+        return getSNIServerName_impl().value_or("");
     };
 };
 
@@ -277,7 +282,7 @@ public:
                                                           const std::string& remoteHost,
                                                           const HostAndPort& hostForLogging) final;
 
-    StatusWith<boost::optional<SSLPeerInfo>> parseAndValidatePeerCertificate(
+    StatusWith<SSLPeerInfo> parseAndValidatePeerCertificate(
         PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) final;
 
 
@@ -342,14 +347,24 @@ private:
     UniqueCertificate _sslClusterCertificate;
 };
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(SSLManager, ("EndStartupOptionHandling"))
-(InitializerContext*) {
-    if (!isSSLServer || (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled)) {
-        theSSLManager = new SSLManagerWindows(sslGlobalParams, isSSLServer);
-    }
+GlobalInitializerRegisterer sslManagerInitializer(
+    "SSLManager",
+    [](InitializerContext*) {
+        if (!isSSLServer || (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled)) {
+            theSSLManager = new SSLManagerWindows(sslGlobalParams, isSSLServer);
+        }
+        return Status::OK();
+    },
+    [](DeinitializerContext* context) {
+        if (theSSLManager) {
+            delete theSSLManager;
+            theSSLManager = nullptr;
+        }
 
-    return Status::OK();
-}
+        return Status::OK();
+    },
+    {"EndStartupOptionHandling"},
+    {});
 
 SSLConnectionWindows::SSLConnectionWindows(SCHANNEL_CRED* cred,
                                            Socket* sock,
@@ -1506,7 +1521,7 @@ SSLPeerInfo SSLManagerWindows::parseAndValidatePeerCertificateDeprecated(
         throwSocketError(SocketErrorKind::CONNECT_ERROR, swPeerSubjectName.getStatus().reason());
     }
 
-    return swPeerSubjectName.getValue().get_value_or(SSLPeerInfo());
+    return swPeerSubjectName.getValue();
 }
 
 // Get a list of subject alternative names to assist the user in diagnosing certificate verification
@@ -1665,13 +1680,21 @@ Status validatePeerCertificate(const std::string& remoteHost,
 
             // Give the user a hint why the certificate validation failed.
             StringBuilder certificateNames;
+            bool hasSAN = false;
             if (swAltNames.isOK() && !swAltNames.getValue().empty()) {
+                hasSAN = true;
                 for (auto& name : swAltNames.getValue()) {
                     certificateNames << name << " ";
                 }
             };
 
             certificateNames << ", Subject Name: " << *peerSubjectName;
+
+            auto swCN = peerSubjectName->getOID(kOID_CommonName);
+            if (hasSAN && swCN.isOK() &&
+                hostNameMatchForX509Certificates(remoteHost, swCN.getValue())) {
+                certificateNames << " would have matched, but was overridden by SAN";
+            }
 
             str::stream msg;
             msg << "The server certificate does not match the host name. Hostname: " << remoteHost
@@ -1729,8 +1752,9 @@ StatusWith<TLSVersion> mapTLSVersion(PCtxtHandle ssl) {
     }
 }
 
-StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeerCertificate(
+StatusWith<SSLPeerInfo> SSLManagerWindows::parseAndValidatePeerCertificate(
     PCtxtHandle ssl, const std::string& remoteHost, const HostAndPort& hostForLogging) {
+    auto sniName = getSNIServerName_impl();
     PCCERT_CONTEXT cert;
 
     auto tlsVersionStatus = mapTLSVersion(ssl);
@@ -1741,7 +1765,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     recordTLSVersion(tlsVersionStatus.getValue(), hostForLogging);
 
     if (!_sslConfiguration.hasCA && isSSLServer)
-        return {boost::none};
+        return SSLPeerInfo(sniName);
 
     SECURITY_STATUS ss = QueryContextAttributes(ssl, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &cert);
 
@@ -1751,7 +1775,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
             if (!_suppressNoCertificateWarning) {
                 warning() << "no SSL certificate provided by peer";
             }
-            return {boost::none};
+            return SSLPeerInfo(sniName);
         } else {
             auto msg = "no SSL certificate provided by peer; connection rejected";
             error() << msg;
@@ -1793,7 +1817,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
     }
 
     if (peerSubjectName.empty()) {
-        return {boost::none};
+        return SSLPeerInfo(sniName);
     }
 
     LOG(2) << "Accepted TLS connection from peer: " << peerSubjectName;
@@ -1810,10 +1834,9 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManagerWindows::parseAndValidatePeer
             return swPeerCertificateRoles.getStatus();
         }
 
-        return boost::make_optional(
-            SSLPeerInfo(peerSubjectName, std::move(swPeerCertificateRoles.getValue())));
+        return SSLPeerInfo(peerSubjectName, sniName, std::move(swPeerCertificateRoles.getValue()));
     } else {
-        return boost::make_optional(SSLPeerInfo(peerSubjectName, stdx::unordered_set<RoleName>()));
+        return SSLPeerInfo(peerSubjectName);
     }
 }
 

@@ -114,7 +114,9 @@ public:
      * Retrieves operations from the OplogBuffer in batches that will be applied in parallel using
      * multiApply().
      */
-    void oplogApplication(OplogBuffer* oplogBuffer, ReplicationCoordinator* replCoord);
+    void oplogApplication(OplogBuffer* oplogBuffer,
+                          OplogApplier::GetNextApplierBatchFn getNextApplierBatchFn,
+                          ReplicationCoordinator* replCoord);
 
     /**
      * Shuts down oplogApplication() processing.
@@ -196,18 +198,6 @@ public:
     using BatchLimits = OplogApplier::BatchLimits;
 
     /**
-     * Attempts to pop an OplogEntry off the BGSync queue and add it to ops.
-     *
-     * Returns true if the (possibly empty) batch in ops should be ended and a new one started.
-     * If ops is empty on entry and nothing can be added yet, will wait up to a second before
-     * returning true.
-     */
-    bool tryPopAndWaitForMore(OperationContext* opCtx,
-                              OplogBuffer* oplogBuffer,
-                              OpQueue* ops,
-                              const BatchLimits& limits);
-
-    /**
      * Fetch a single document referenced in the operation from the sync source.
      *
      * The sync source is specified at construction in
@@ -240,29 +230,21 @@ public:
      */
     StatusWith<OpTime> multiApply(OperationContext* opCtx, MultiApplier::Operations ops);
 
-private:
-    /**
-     * Pops the operation at the front of the OplogBuffer.
-     * Updates stats on BackgroundSync.
-     */
-    void _consume(OperationContext* opCtx, OplogBuffer* oplogBuffer);
+    void fillWriterVectors(OperationContext* opCtx,
+                           MultiApplier::Operations* ops,
+                           std::vector<MultiApplier::OperationPtrs>* writerVectors,
+                           std::vector<MultiApplier::Operations>* derivedOps);
 
+private:
     class OpQueueBatcher;
 
-    void _oplogApplication(OplogBuffer* oplogBuffer,
-                           ReplicationCoordinator* replCoord,
-                           OpQueueBatcher* batcher) noexcept;
+    void _oplogApplication(ReplicationCoordinator* replCoord, OpQueueBatcher* batcher) noexcept;
 
     void _fillWriterVectors(OperationContext* opCtx,
                             MultiApplier::Operations* ops,
                             std::vector<MultiApplier::OperationPtrs>* writerVectors,
                             std::vector<MultiApplier::Operations>* derivedOps,
                             SessionUpdateTracker* sessionUpdateTracker);
-
-    void _fillWriterVectors(OperationContext* opCtx,
-                            MultiApplier::Operations* ops,
-                            std::vector<MultiApplier::OperationPtrs>* writerVectors,
-                            std::vector<MultiApplier::Operations>* derivedOps);
 
     /**
      * Doles out all the work to the writer pool threads. Does not modify writerVectors, but passes

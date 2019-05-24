@@ -28,6 +28,7 @@
  */
 #pragma once
 
+#include "mongo/db/index/index_descriptor_fwd.h"
 #include "mongo/db/storage/biggie/store.h"
 #include "mongo/db/storage/key_string.h"
 #include "mongo/db/storage/sorted_data_interface.h"
@@ -43,7 +44,7 @@ public:
                                Ordering order,
                                const std::string& prefix,
                                const std::string& identEnd,
-                               const std::string& collectionNamespace,
+                               const NamespaceString& collectionNamespace,
                                const std::string& indexName,
                                const BSONObj& keyPattern);
     SpecialFormatInserted commit(bool mayInterrupt) override;
@@ -59,7 +60,7 @@ private:
     std::string _prefix;
     std::string _identEnd;
     // Index metadata.
-    const std::string _collectionNamespace;
+    const NamespaceString _collectionNamespace;
     const std::string _indexName;
     const BSONObj _keyPattern;
     // Whether or not we've already added something before.
@@ -188,7 +189,7 @@ private:
     std::string _prefix;
     std::string _identEnd;
     // Index metadata.
-    const std::string _collectionNamespace;
+    const NamespaceString _collectionNamespace;
     const std::string _indexName;
     const BSONObj _keyPattern;
     // These are the keystring representations of the _prefix and the _identEnd.

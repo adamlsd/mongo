@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include "mongo/db/repl/replication_coordinator_fwd.h"
+
 #include <vector>
 
 #include "mongo/base/status.h"
@@ -37,6 +39,7 @@
 #include "mongo/db/repl/member_data.h"
 #include "mongo/db/repl/member_state.h"
 #include "mongo/db/repl/repl_settings.h"
+#include "mongo/db/repl/split_horizon.h"
 #include "mongo/db/repl/sync_source_selector.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
@@ -151,6 +154,11 @@ public:
      * It is invalid to call this unless getReplicationMode() == modeReplSet.
      */
     virtual MemberState getMemberState() const = 0;
+
+    /**
+     * Returns whether this node can accept writes to databases other than local.
+     */
+    virtual bool canAcceptNonLocalWrites() const = 0;
 
     /**
      * Waits for 'timeout' ms for member state to become 'state'.
@@ -587,7 +595,8 @@ public:
      * Handles an incoming isMaster command for a replica set node.  Should not be
      * called on a standalone node.
      */
-    virtual void fillIsMasterForReplSet(IsMasterResponse* result) = 0;
+    virtual void fillIsMasterForReplSet(IsMasterResponse* result,
+                                        const SplitHorizon::Parameters& horizonParams) = 0;
 
     /**
      * Adds to "result" a description of the slaveInfo data structure used to map RIDs to their
@@ -620,7 +629,8 @@ public:
      * the same branch of history as 'committedOptime', so we update our commit point to
      * min(committedOptime, lastApplied).
      */
-    virtual void advanceCommitPoint(const OpTime& committedOptime, bool fromSyncSource) = 0;
+    virtual void advanceCommitPoint(const OpTimeAndWallTime& committedOpTimeAndWallTime,
+                                    bool fromSyncSource) = 0;
 
     /**
      * Elections under protocol version 1 are triggered by a timer.
@@ -755,6 +765,7 @@ public:
      * operation in their oplogs.  This implies such ops will never be rolled back.
      */
     virtual OpTime getLastCommittedOpTime() const = 0;
+    virtual OpTimeAndWallTime getLastCommittedOpTimeAndWallTime() const = 0;
 
     /**
      * Returns a list of objects that contain this node's knowledge of the state of the members of
@@ -818,6 +829,11 @@ public:
      * Gets the latest OpTime of the currentCommittedSnapshot.
      */
     virtual OpTime getCurrentCommittedSnapshotOpTime() const = 0;
+
+    /**
+     * Gets the latest OpTime of the currentCommittedSnapshot and its corresponding wall clock time.
+     */
+    virtual OpTimeAndWallTime getCurrentCommittedSnapshotOpTimeAndWallTime() const = 0;
 
     /**
      * Appends diagnostics about the replication subsystem.

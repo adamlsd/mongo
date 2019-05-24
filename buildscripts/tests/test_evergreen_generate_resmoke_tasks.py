@@ -1,7 +1,5 @@
 """Unit tests for the generate_resmoke_suite script."""
 
-from __future__ import absolute_import
-
 import datetime
 import math
 import os
@@ -10,11 +8,11 @@ import unittest
 import requests
 import yaml
 
-from mock import patch, mock_open, call, Mock
+from mock import patch, mock_open, call, Mock, MagicMock
 
 from buildscripts import evergreen_generate_resmoke_tasks as grt
 from buildscripts.evergreen_generate_resmoke_tasks import render_suite, render_misc_suite, \
-    prepare_directory_for_suite
+    prepare_directory_for_suite, remove_gen_suffix
 
 # pylint: disable=missing-docstring,invalid-name,unused-argument,no-self-use,protected-access
 
@@ -26,6 +24,17 @@ NS = "buildscripts.evergreen_generate_resmoke_tasks"
 def ns(relative_name):  # pylint: disable-invalid-name
     """Return a full name from a name relative to the test module"s name space."""
     return NS + "." + relative_name
+
+
+class TestHelperMethods(unittest.TestCase):
+    def test_removes_gen_suffix(self):
+        input_task_name = "sharding_auth_auditg_gen"
+        self.assertEqual("sharding_auth_auditg", remove_gen_suffix(input_task_name))
+
+    def test_doesnt_remove_non_gen_suffix(self):
+        input_task_name = "sharded_multi_stmt_txn_jscore_passthroug"
+        self.assertEqual("sharded_multi_stmt_txn_jscore_passthroug",
+                         remove_gen_suffix(input_task_name))
 
 
 class TestTestStats(unittest.TestCase):
@@ -59,18 +68,29 @@ class TestTestStats(unittest.TestCase):
         ]
         self.assertEqual(expected_runtimes, test_stats.get_tests_runtimes())
 
+    def test_zero_runs(self):
+        evg_results = [
+            self._make_evg_result("dir/test1.js", 0, 0),
+            self._make_evg_result("dir/test1.js", 0, 0),
+        ]
+        test_stats = grt.TestStats(evg_results)
+        expected_runtimes = [
+            ("dir/test1.js", 0),
+        ]
+        self.assertEqual(expected_runtimes, test_stats.get_tests_runtimes())
+
     @staticmethod
     def _make_evg_result(test_file="dir/test1.js", num_pass=0, duration=0):
-        return {
-            "test_file": test_file,
-            "task_name": "task1",
-            "variant": "variant1",
-            "distro": "distro1",
-            "date": _DATE,
-            "num_pass": num_pass,
-            "num_fail": 0,
-            "avg_duration_pass": duration,
-        }
+        return Mock(
+            test_file=test_file,
+            task_name="task1",
+            variant="variant1",
+            distro="distro1",
+            date=_DATE,
+            num_pass=num_pass,
+            num_fail=0,
+            avg_duration_pass=duration,
+        )
 
 
 class DivideRemainingTestsAmongSuitesTest(unittest.TestCase):
@@ -234,7 +254,8 @@ class RenderSuites(unittest.TestCase):
 
         suites = [create_suite(start=3 * i) for i in range(size)]
         expected = [
-            self.EXPECTED_FORMAT.format(*range(3 * i, 3 * (i + 1))) for i in range(len(suites))
+            self.EXPECTED_FORMAT.format(*list(range(3 * i, 3 * (i + 1))))
+            for i in range(len(suites))
         ]
 
         m = mock_open(read_data=yaml.dump({"selector": {"roots": [], "excludes": ["fixed"]}}))
@@ -243,7 +264,7 @@ class RenderSuites(unittest.TestCase):
         handle = m()
 
         # The other writes are for the headers.
-        self.assertEquals(len(suites) * 2, handle.write.call_count)
+        self.assertEqual(len(suites) * 2, handle.write.call_count)
         handle.write.assert_has_calls([call(e) for e in expected], any_order=True)
         calls = [
             call(os.path.join(grt.TEST_SUITE_DIR, "suite_name.yml"), "r")
@@ -275,7 +296,7 @@ class RenderMiscSuites(unittest.TestCase):
         handle = m()
 
         # The other writes are for the headers.
-        self.assertEquals(2, handle.write.call_count)
+        self.assertEqual(2, handle.write.call_count)
         handle.write.assert_any_call("""selector:
   exclude_files:
   - test0
@@ -308,7 +329,7 @@ class PrepareDirectoryForSuite(unittest.TestCase):
 
 class CalculateTimeoutTest(unittest.TestCase):
     def test_min_timeout(self):
-        self.assertEqual(300, grt.calculate_timeout(15, 1))
+        self.assertEqual(grt.MIN_TIMEOUT_SECONDS, grt.calculate_timeout(15, 1))
 
     def test_over_timeout_by_one_minute(self):
         self.assertEqual(360, grt.calculate_timeout(301, 1))
@@ -317,7 +338,9 @@ class CalculateTimeoutTest(unittest.TestCase):
         self.assertEqual(360, grt.calculate_timeout(300.14, 1))
 
     def test_scaling_factor(self):
-        self.assertEqual(600, grt.calculate_timeout(30, 10))
+        scaling_factor = 10
+        self.assertEqual(grt.MIN_TIMEOUT_SECONDS * scaling_factor,
+                         grt.calculate_timeout(30, scaling_factor))
 
 
 class EvergreenConfigGeneratorTest(unittest.TestCase):
@@ -341,6 +364,7 @@ class EvergreenConfigGeneratorTest(unittest.TestCase):
         options.variant = "buildvariant"
         options.suite = "suite"
         options.task = "suite"
+        options.use_default_timeouts = False
         options.use_large_distro = None
         options.use_multiversion = False
         options.is_patch = True
@@ -409,13 +433,13 @@ class EvergreenConfigGeneratorTest(unittest.TestCase):
 
         cfg_generator = grt.EvergreenConfigGenerator(suites, options, Mock())
         cfg_generator.build_tasks = [
-            {"display_name": "sharding_gen"},
-            {"display_name": "sharding_0"},
-            {"display_name": "other_task"},
-            {"display_name": "other_task_2"},
-            {"display_name": "sharding_1"},
-            {"display_name": "compile"},
-            {"display_name": "sharding_misc"},
+            Mock(display_name="sharding_gen"),
+            Mock(display_name="sharding_0"),
+            Mock(display_name="other_task"),
+            Mock(display_name="other_task_2"),
+            Mock(display_name="sharding_1"),
+            Mock(display_name="compile"),
+            Mock(display_name="sharding_misc"),
         ]
 
         dependent_tasks = cfg_generator._get_tasks_for_depends_on("sharding")
@@ -432,13 +456,13 @@ class EvergreenConfigGeneratorTest(unittest.TestCase):
 
         cfg_generator = grt.EvergreenConfigGenerator(suites, options, Mock())
         cfg_generator.build_tasks = [
-            {"display_name": "sharding_gen"},
-            {"display_name": "sharding_0"},
-            {"display_name": "other_task"},
-            {"display_name": "other_task_2"},
-            {"display_name": "sharding_1"},
-            {"display_name": "compile"},
-            {"display_name": "sharding_misc"},
+            Mock(display_name="sharding_gen"),
+            Mock(display_name="sharding_0"),
+            Mock(display_name="other_task"),
+            Mock(display_name="other_task_2"),
+            Mock(display_name="sharding_1"),
+            Mock(display_name="compile"),
+            Mock(display_name="sharding_misc"),
         ]
 
         cfg_mock = Mock()
@@ -475,6 +499,18 @@ class EvergreenConfigGeneratorTest(unittest.TestCase):
         self.assertNotIn("command", timeout_cmd)
         self.assertEqual("do setup", timeout_cmd["func"])
 
+    def test_timeout_info_not_included_if_use_default_timeouts_set(self):
+        suite_without_timing_info = 1
+        options = self.generate_mock_options()
+        suites = self.generate_mock_suites(3)
+        options.use_default_timeouts = True
+
+        config = grt.EvergreenConfigGenerator(suites, options, Mock()).generate_config().to_map()
+
+        timeout_cmd = config["tasks"][suite_without_timing_info]["commands"][0]
+        self.assertNotIn("command", timeout_cmd)
+        self.assertEqual("do setup", timeout_cmd["func"])
+
 
 class NormalizeTestNameTest(unittest.TestCase):
     def test_unix_names(self):
@@ -494,18 +530,20 @@ class MainTest(unittest.TestCase):
 
     def test_calculate_suites(self):
         evg = Mock()
-        evg.test_stats.return_value = [{
-            "test_file": "test{}.js".format(i), "avg_duration_pass": 60, "num_pass": 1
-        } for i in range(100)]
+        evg.test_stats_by_project.return_value = [
+            Mock(test_file="test{}.js".format(i), avg_duration_pass=60, num_pass=1)
+            for i in range(100)
+        ]
 
         main = grt.Main(evg)
         main.options = Mock()
+        main.options.max_sub_suites = 1000
         main.config_options = self.get_mock_options()
 
         with patch("os.path.exists") as exists_mock, patch(ns("suitesconfig")) as suitesconfig_mock:
             exists_mock.return_value = True
             suitesconfig_mock.get_suite.return_value.tests = \
-                [stat["test_file"] for stat in evg.test_stats.return_value]
+                [stat.test_file for stat in evg.test_stats_by_project.return_value]
             suites = main.calculate_suites(_DATE, _DATE)
 
             # There are 100 tests taking 1 minute, with a target of 10 min we expect 10 suites.
@@ -518,7 +556,7 @@ class MainTest(unittest.TestCase):
         response = Mock()
         response.status_code = requests.codes.SERVICE_UNAVAILABLE
         evg = Mock()
-        evg.test_stats.side_effect = requests.HTTPError(response=response)
+        evg.test_stats_by_project.side_effect = requests.HTTPError(response=response)
 
         main = grt.Main(evg)
         main.options = Mock()
@@ -537,7 +575,7 @@ class MainTest(unittest.TestCase):
     def test_calculate_suites_uses_fallback_for_no_results(self):
         n_tests = 100
         evg = Mock()
-        evg.test_stats.return_value = []
+        evg.test_stats_by_project.return_value = []
 
         main = grt.Main(evg)
         main.options = Mock()
@@ -554,10 +592,10 @@ class MainTest(unittest.TestCase):
     def test_calculate_suites_uses_fallback_if_only_results_are_filtered(self):
         n_tests = 100
         evg = Mock()
-        evg.test_stats.return_value = [{
-            "test_file": "test{}.js".format(i), "avg_duration_pass": 60, "num_pass": 1
-        } for i in range(100)]
-
+        evg.test_stats_by_project.return_value = [
+            Mock(test_file="test{}.js".format(i), avg_duration_pass=60, num_pass=1)
+            for i in range(100)
+        ]
         main = grt.Main(evg)
         main.options = Mock()
         main.config_options = self.get_mock_options()
@@ -576,7 +614,7 @@ class MainTest(unittest.TestCase):
         response = Mock()
         response.status_code = requests.codes.INTERNAL_SERVER_ERROR
         evg = Mock()
-        evg.test_stats.side_effect = requests.HTTPError(response=response)
+        evg.test_stats_by_project.side_effect = requests.HTTPError(response=response)
 
         main = grt.Main(evg)
         main.options = Mock()
@@ -658,3 +696,53 @@ class MainTest(unittest.TestCase):
             self.assertIn(tests_runtimes[2], filtered_list)
             self.assertIn(tests_runtimes[0], filtered_list)
             self.assertEqual(2, len(filtered_list))
+
+
+class TestShouldTasksBeGenerated(unittest.TestCase):
+    def test_during_first_execution(self):
+        evg_api = MagicMock()
+        task_id = "task_id"
+        evg_api.task_by_id.return_value.execution = 0
+
+        self.assertTrue(grt.should_tasks_be_generated(evg_api, task_id))
+        evg_api.task_by_id.assert_called_with(task_id, fetch_all_executions=True)
+
+    def test_after_successful_execution(self):
+        evg_api = MagicMock()
+        task_id = "task_id"
+        task = evg_api.task_by_id.return_value
+        task.execution = 1
+        task.get_execution.return_value.is_success.return_value = True
+
+        self.assertFalse(grt.should_tasks_be_generated(evg_api, task_id))
+        evg_api.task_by_id.assert_called_with(task_id, fetch_all_executions=True)
+
+    def test_after_multiple_successful_execution(self):
+        evg_api = MagicMock()
+        task_id = "task_id"
+        task = evg_api.task_by_id.return_value
+        task.execution = 5
+        task.get_execution.return_value.is_success.return_value = True
+
+        self.assertFalse(grt.should_tasks_be_generated(evg_api, task_id))
+        evg_api.task_by_id.assert_called_with(task_id, fetch_all_executions=True)
+
+    def test_after_failed_execution(self):
+        evg_api = MagicMock()
+        task_id = "task_id"
+        task = evg_api.task_by_id.return_value
+        task.execution = 1
+        task.get_execution.return_value.is_success.return_value = False
+
+        self.assertTrue(grt.should_tasks_be_generated(evg_api, task_id))
+        evg_api.task_by_id.assert_called_with(task_id, fetch_all_executions=True)
+
+    def test_after_multiple_failed_execution(self):
+        evg_api = MagicMock()
+        task_id = "task_id"
+        task = evg_api.task_by_id.return_value
+        task.execution = 5
+        task.get_execution.return_value.is_success.return_value = False
+
+        self.assertTrue(grt.should_tasks_be_generated(evg_api, task_id))
+        evg_api.task_by_id.assert_called_with(task_id, fetch_all_executions=True)

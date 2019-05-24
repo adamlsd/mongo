@@ -192,6 +192,7 @@ if (typeof _threadInject != "undefined") {
             "geo_update_btree2.js",   // SERVER-11132 test disables table scans
             "update_setOnInsert.js",  // SERVER-9982
             "max_time_ms.js",         // Sensitive to query execution time, by design
+            "autocomplete.js",        // Likewise.
 
             // This overwrites MinKey/MaxKey's singleton which breaks
             // any other test that uses MinKey/MaxKey
@@ -212,6 +213,8 @@ if (typeof _threadInject != "undefined") {
         // The following tests cannot run when shell readMode is legacy.
         if (db.getMongo().readMode() === "legacy") {
             var requires_find_command = [
+                "update_pipeline_shell_helpers.js",
+                "update_with_pipeline.js",
                 "views/views_aggregation.js",
                 "views/views_change.js",
                 "views/views_drop.js",

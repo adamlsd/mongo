@@ -41,13 +41,14 @@ MONGO_INIT_REGISTER_ERROR_EXTRA_INFO(WouldChangeOwningShardInfo);
 
 constexpr StringData kPreImage = "preImage"_sd;
 constexpr StringData kPostImage = "postImage"_sd;
+constexpr StringData kShouldUpsert = "shouldUpsert"_sd;
 
 }  // namespace
 
 void WouldChangeOwningShardInfo::serialize(BSONObjBuilder* bob) const {
     bob->append(kPreImage, _preImage);
-    if (_postImage)
-        bob->append(kPostImage, _postImage.get());
+    bob->append(kPostImage, _postImage);
+    bob->append(kShouldUpsert, _shouldUpsert);
 }
 
 std::shared_ptr<const ErrorExtraInfo> WouldChangeOwningShardInfo::parse(const BSONObj& obj) {
@@ -55,12 +56,9 @@ std::shared_ptr<const ErrorExtraInfo> WouldChangeOwningShardInfo::parse(const BS
 }
 
 WouldChangeOwningShardInfo WouldChangeOwningShardInfo::parseFromCommandError(const BSONObj& obj) {
-    boost::optional<BSONObj> originalUpdate = boost::none;
-    boost::optional<BSONObj> postImage = boost::none;
-    if (obj[kPostImage])
-        postImage = obj[kPostImage].Obj().getOwned();
-
-    return WouldChangeOwningShardInfo(obj[kPreImage].Obj().getOwned(), postImage);
+    return WouldChangeOwningShardInfo(obj[kPreImage].Obj().getOwned(),
+                                      obj[kPostImage].Obj().getOwned(),
+                                      obj[kShouldUpsert].Bool());
 }
 
 }  // namespace mongo

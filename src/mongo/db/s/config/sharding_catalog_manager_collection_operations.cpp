@@ -69,8 +69,8 @@
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -126,6 +126,17 @@ boost::optional<UUID> checkCollectionOptions(OperationContext* opCtx,
 
     auto collectionInfo = collectionDetails["info"].Obj();
     return uassertStatusOK(UUID::parse(collectionInfo["uuid"]));
+}
+
+void writeFirstChunksForShardCollection(
+    OperationContext* opCtx, const InitialSplitPolicy::ShardCollectionConfig& initialChunks) {
+    for (const auto& chunk : initialChunks.chunks) {
+        uassertStatusOK(Grid::get(opCtx)->catalogClient()->insertConfigDocument(
+            opCtx,
+            ChunkType::ConfigNS,
+            chunk.toConfigBSON(),
+            ShardingCatalogClient::kMajorityWriteConcern));
+    }
 }
 
 }  // namespace
@@ -406,15 +417,29 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                                               ->makeFromBSON(defaultCollation));
     }
 
-    const auto initialChunks = InitialSplitPolicy::createFirstChunks(opCtx,
-                                                                     nss,
-                                                                     fieldsAndOrder,
-                                                                     dbPrimaryShardId,
-                                                                     splitPoints,
-                                                                     treatAsNoZonesDefined,
-                                                                     treatAsEmpty);
+    auto optimizationType = InitialSplitPolicy::calculateOptimizationType(
+        splitPoints, treatAsNoZonesDefined, treatAsEmpty);
 
-    InitialSplitPolicy::writeFirstChunksToConfig(opCtx, initialChunks);
+    InitialSplitPolicy::ShardCollectionConfig initialChunks;
+
+    if (optimizationType != InitialSplitPolicy::ShardingOptimizationType::None) {
+        initialChunks =
+            InitialSplitPolicy::createFirstChunksOptimized(opCtx,
+                                                           nss,
+                                                           fieldsAndOrder,
+                                                           dbPrimaryShardId,
+                                                           splitPoints,
+                                                           treatAsNoZonesDefined,
+                                                           optimizationType,
+                                                           treatAsEmpty,
+                                                           1  // numContiguousChunksPerShard
+                                                           );
+    } else {
+        initialChunks = InitialSplitPolicy::createFirstChunksUnoptimized(
+            opCtx, nss, fieldsAndOrder, dbPrimaryShardId);
+    }
+
+    writeFirstChunksForShardCollection(opCtx, initialChunks);
 
     {
         CollectionType coll;

@@ -55,13 +55,15 @@
 #include "mongo/db/lasterror.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/logical_clock.h"
-#include "mongo/db/logical_session_cache_factory_mongos.h"
+#include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/logical_time_metadata_hook.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/service_liaison_mongos.h"
 #include "mongo/db/session_killer.h"
+#include "mongo/db/sessions_collection_sharded.h"
 #include "mongo/db/startup_warnings_common.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -83,7 +85,7 @@
 #include "mongo/s/query/cluster_cursor_cleanup_job.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/service_entry_point_mongos.h"
-#include "mongo/s/sharding_egress_metadata_hook_for_mongos.h"
+#include "mongo/s/session_catalog_router.h"
 #include "mongo/s/sharding_egress_metadata_hook_for_mongos.h"
 #include "mongo/s/sharding_initialization.h"
 #include "mongo/s/sharding_uptime_reporter.h"
@@ -110,7 +112,7 @@
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers.h"
 #include "mongo/util/stacktrace.h"
-#include "mongo/util/stringutils.h"
+#include "mongo/util/str.h"
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
 
@@ -121,6 +123,9 @@ using logger::LogComponent;
 #if !defined(__has_feature)
 #define __has_feature(x) 0
 #endif
+
+// Failpoint for disabling replicaSetChangeConfigServerUpdateHook calls on signaled mongos.
+MONGO_FAIL_POINT_DEFINE(failReplicaSetChangeConfigServerUpdateHook);
 
 namespace {
 
@@ -144,8 +149,7 @@ Status waitForSigningKeys(OperationContext* opCtx) {
         auto rsm = ReplicaSetMonitor::get(configCS.getSetName());
         // mongod will set minWireVersion == maxWireVersion for isMaster requests from
         // internalClient.
-        if (rsm && (rsm->getMaxWireVersion() < WireVersion::SUPPORTS_OP_MSG ||
-                    rsm->getMaxWireVersion() != rsm->getMinWireVersion())) {
+        if (rsm && (rsm->getMaxWireVersion() < WireVersion::SUPPORTS_OP_MSG)) {
             log() << "Not waiting for signing keys, not supported by the config shard "
                   << configCS.getSetName();
             return Status::OK();
@@ -184,6 +188,9 @@ void cleanupTask(ServiceContext* serviceContext) {
         if (!haveClient())
             Client::initThread(getThreadName());
         Client& client = cc();
+
+        // Join the logical session cache before the transport layer
+        LogicalSessionCache::get(serviceContext)->joinOnShutDown();
 
         // Shutdown the TransportLayer so that new connections aren't accepted
         if (auto tl = serviceContext->getTransportLayer()) {
@@ -342,6 +349,52 @@ void initWireSpec() {
     spec.isInternalClient = true;
 }
 
+class ShardingReplicaSetChangeListener final : public ReplicaSetChangeNotifier::Listener {
+public:
+    ShardingReplicaSetChangeListener(ServiceContext* serviceContext)
+        : _serviceContext(serviceContext) {}
+    ~ShardingReplicaSetChangeListener() final = default;
+
+    void onFoundSet(const Key& key) final {}
+
+    void onConfirmedSet(const State& state) final {
+        auto connStr = state.connStr;
+
+        auto fun = [ serviceContext = _serviceContext, connStr ](auto args) {
+            if (ErrorCodes::isCancelationError(args.status.code())) {
+                return;
+            }
+            uassertStatusOK(args.status);
+
+            LOG(0) << "Updating sharding state with confirmed set " << connStr;
+
+            Grid::get(serviceContext)->shardRegistry()->updateReplSetHosts(connStr);
+
+            if (MONGO_FAIL_POINT(failReplicaSetChangeConfigServerUpdateHook)) {
+                return;
+            }
+            ShardRegistry::updateReplicaSetOnConfigServer(serviceContext, connStr);
+        };
+
+        auto executor = Grid::get(_serviceContext)->getExecutorPool()->getFixedExecutor();
+        auto schedStatus = executor->scheduleWork(std::move(fun)).getStatus();
+        if (ErrorCodes::isCancelationError(schedStatus.code())) {
+            LOG(2) << "Unable to schedule confirmed set update due to " << schedStatus;
+            return;
+        }
+        uassertStatusOK(schedStatus);
+    }
+
+    void onPossibleSet(const State& state) final {
+        Grid::get(_serviceContext)->shardRegistry()->updateReplSetHosts(state.connStr);
+    }
+
+    void onDroppedSet(const Key& key) final {}
+
+private:
+    ServiceContext* _serviceContext;
+};
+
 ExitCode runMongosServer(ServiceContext* serviceContext) {
     Client::initThread("mongosMain");
     printShardingVersionInfo(false);
@@ -380,10 +433,11 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
 
     shardConnectionPool.addHook(new ShardingConnectionHook(true, std::move(shardedHookList)));
 
-    ReplicaSetMonitor::setAsynchronousConfigChangeHook(
-        &ShardRegistry::replicaSetChangeConfigServerUpdateHook);
-    ReplicaSetMonitor::setSynchronousConfigChangeHook(
-        &ShardRegistry::replicaSetChangeShardRegistryUpdateHook);
+    // Hook up a Listener for changes from the ReplicaSetMonitor
+    // This will last for the scope of this function. i.e. until shutdown finishes
+    auto shardingRSCL =
+        ReplicaSetMonitor::getNotifier().makeListener<ShardingReplicaSetChangeListener>(
+            serviceContext);
 
     // Mongos connection pools already takes care of authenticating new connections so the
     // replica set connection shouldn't need to.
@@ -447,8 +501,11 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
     SessionKiller::set(serviceContext,
                        std::make_shared<SessionKiller>(serviceContext, killSessionsRemote));
 
-    // Set up the logical session cache
-    LogicalSessionCache::set(serviceContext, makeLogicalSessionCacheS());
+    LogicalSessionCache::set(
+        serviceContext,
+        stdx::make_unique<LogicalSessionCacheImpl>(stdx::make_unique<ServiceLiaisonMongos>(),
+                                                   stdx::make_unique<SessionsCollectionSharded>(),
+                                                   RouterSessionCatalog::reapSessionsOlderThan));
 
     status = serviceContext->getServiceExecutor()->start();
     if (!status.isOK()) {

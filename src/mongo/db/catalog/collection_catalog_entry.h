@@ -36,6 +36,7 @@
 #include "mongo/db/record_id.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/storage/kv/kv_prefix.h"
+#include "mongo/db/storage/record_store.h"
 
 namespace mongo {
 
@@ -126,12 +127,6 @@ public:
                                     StringData indexName,
                                     const MultikeyPaths& multikeyPaths) = 0;
 
-    virtual RecordId getIndexHead(OperationContext* opCtx, StringData indexName) const = 0;
-
-    virtual void setIndexHead(OperationContext* opCtx,
-                              StringData indexName,
-                              const RecordId& newHead) = 0;
-
     virtual bool isIndexReady(OperationContext* opCtx, StringData indexName) const = 0;
 
     virtual bool isIndexPresent(OperationContext* opCtx, StringData indexName) const = 0;
@@ -205,12 +200,6 @@ public:
     virtual void updateIndexMetadata(OperationContext* opCtx, const IndexDescriptor* desc) {}
 
     /**
-     * Sets the flags field of CollectionOptions to newValue.
-     * Subsequent calls to getCollectionOptions should have flags==newValue and flagsSet==true.
-     */
-    virtual void updateFlags(OperationContext* opCtx, int newValue) = 0;
-
-    /**
      * Updates the validator for this collection.
      *
      * An empty validator removes all validation.
@@ -239,6 +228,9 @@ public:
     // TODO SERVER-36385 Remove this function: we don't set the feature tracker bit in 4.4 because
     // 4.4 can only downgrade to 4.2 which can read long TypeBits.
     virtual void setIndexKeyStringWithLongTypeBitsExistsOnDisk(OperationContext* opCtx) = 0;
+
+    virtual RecordStore* getRecordStore() = 0;
+    virtual const RecordStore* getRecordStore() const = 0;
 
 private:
     NamespaceString _ns;

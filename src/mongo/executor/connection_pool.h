@@ -42,6 +42,7 @@
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/future.h"
 #include "mongo/util/net/hostandport.h"
+#include "mongo/util/out_of_line_executor.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -61,7 +62,7 @@ struct ConnectionPoolStats;
  * The overall workflow here is to manage separate pools for each unique
  * HostAndPort. See comments on the various Options for how the pool operates.
  */
-class ConnectionPool : public EgressTagCloser {
+class ConnectionPool : public EgressTagCloser, public std::enable_shared_from_this<ConnectionPool> {
     class SpecificPool;
 
 public:
@@ -72,7 +73,7 @@ public:
     using ConnectionHandleDeleter = stdx::function<void(ConnectionInterface* connection)>;
     using ConnectionHandle = std::unique_ptr<ConnectionInterface, ConnectionHandleDeleter>;
 
-    using GetConnectionCallback = stdx::function<void(StatusWith<ConnectionHandle>)>;
+    using GetConnectionCallback = unique_function<void(StatusWith<ConnectionHandle>)>;
 
     static constexpr Milliseconds kDefaultHostTimeout = Milliseconds(300000);  // 5mins
     static const size_t kDefaultMaxConns;
@@ -131,6 +132,11 @@ public:
          * The manager will hold this pool for the lifetime of the pool.
          */
         EgressTagCloserManager* egressTagCloserManager = nullptr;
+
+        /**
+         * Connections created through this connection pool will not attempt to authenticate.
+         */
+        bool skipAuthentication = false;
     };
 
     explicit ConnectionPool(std::shared_ptr<DependentTypeFactoryInterface> impl,
@@ -156,16 +162,11 @@ public:
                      Milliseconds timeout,
                      GetConnectionCallback cb);
 
-    boost::optional<ConnectionHandle> tryGet(const HostAndPort& hostAndPort,
-                                             transport::ConnectSSLMode sslMode);
-
     void appendConnectionStats(ConnectionPoolStats* stats) const;
 
     size_t getNumConnectionsPerHost(const HostAndPort& hostAndPort) const;
 
 private:
-    void returnConnection(ConnectionInterface* connection);
-
     std::string _name;
 
     // Options are set at startup and never changed at run time, so these are
@@ -340,6 +341,11 @@ public:
     virtual std::shared_ptr<ConnectionInterface> makeConnection(const HostAndPort& hostAndPort,
                                                                 transport::ConnectSSLMode sslMode,
                                                                 size_t generation) = 0;
+
+    /**
+     *  Return the executor for use with this factory
+     */
+    virtual const std::shared_ptr<OutOfLineExecutor>& getExecutor() = 0;
 
     /**
      * Makes a new timer

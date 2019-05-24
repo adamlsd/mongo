@@ -228,7 +228,8 @@ protected:
                 ASSERT_EQ(itExpected->getUpsert(), itActual->getUpsert());
                 ASSERT_EQ(itExpected->getMulti(), itActual->getMulti());
                 ASSERT_BSONOBJ_EQ(itExpected->getQ(), itActual->getQ());
-                ASSERT_BSONOBJ_EQ(itExpected->getU(), itActual->getU());
+                ASSERT_BSONOBJ_EQ(itExpected->getU().getUpdateClassic(),
+                                  itActual->getU().getUpdateClassic());
             }
 
             BatchedCommandResponse response;
@@ -269,7 +270,8 @@ protected:
                 ASSERT_EQ(itExpected->getUpsert(), itActual->getUpsert());
                 ASSERT_EQ(itExpected->getMulti(), itActual->getMulti());
                 ASSERT_BSONOBJ_EQ(itExpected->getQ(), itActual->getQ());
-                ASSERT_BSONOBJ_EQ(itExpected->getU(), itActual->getU());
+                ASSERT_BSONOBJ_EQ(itExpected->getU().getUpdateClassic(),
+                                  itActual->getU().getUpdateClassic());
             }
 
             return statusToReturn;
@@ -285,7 +287,7 @@ protected:
         auto foundShard = assertGet(getShardDoc(operationContext(), expectedShard.getName()));
 
         ASSERT_EQUALS(expectedShard.getName(), foundShard.getName());
-        ASSERT_EQUALS(expectedShard.getHost(), foundShard.getHost());
+        ASSERT_EQUALS_CI(expectedShard.getHost(), foundShard.getHost());
         ASSERT_EQUALS(expectedShard.getMaxSizeMB(), foundShard.getMaxSizeMB());
         ASSERT_EQUALS(expectedShard.getDraining(), foundShard.getDraining());
         ASSERT_EQUALS((int)expectedShard.getState(), (int)foundShard.getState());
@@ -330,7 +332,7 @@ protected:
         auto logEntry = assertGet(ChangeLogType::fromBSON(logEntryBSON));
 
         ASSERT_EQUALS(addedShard.getName(), logEntry.getDetails()["name"].String());
-        ASSERT_EQUALS(addedShard.getHost(), logEntry.getDetails()["host"].String());
+        ASSERT_EQUALS_CI(addedShard.getHost(), logEntry.getDetails()["host"].String());
     }
 
     void forwardAddShardNetwork(Date_t when) {

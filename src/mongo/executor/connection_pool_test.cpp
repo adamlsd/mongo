@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <random>
 #include <stack>
+#include <tuple>
 
 #include "mongo/executor/connection_pool_test_fixture.h"
 
@@ -51,49 +52,62 @@ protected:
     void setUp() override {}
 
     void tearDown() override {
+        if (_pool) {
+            _pool->shutdown();
+        }
+
         ConnectionImpl::clear();
         TimerImpl::clear();
     }
 
+    auto makePool(ConnectionPool::Options options = {}) {
+        _pool =
+            std::make_shared<ConnectionPool>(std::make_shared<PoolImpl>(), "test pool", options);
+        return _pool;
+    }
+
 private:
+    std::shared_ptr<ConnectionPool> _pool;
 };
 
-void doneWith(const ConnectionPool::ConnectionHandle& swConn) {
-    static_cast<ConnectionImpl*>(swConn.get())->indicateSuccess();
+void doneWith(const ConnectionPool::ConnectionHandle& conn) {
+    dynamic_cast<ConnectionImpl*>(conn.get())->indicateSuccess();
 }
 
-#define CONN2ID(swConn)                                                     \
-    [](StatusWith<ConnectionPool::ConnectionHandle>& swConn) {              \
-        ASSERT(swConn.isOK());                                              \
-        return static_cast<ConnectionImpl*>(swConn.getValue().get())->id(); \
-    }(swConn)
+using StatusWithConn = StatusWith<ConnectionPool::ConnectionHandle>;
+
+auto verifyAndGetId(StatusWithConn& swConn) {
+    ASSERT(swConn.isOK());
+    auto& conn = swConn.getValue();
+    return dynamic_cast<ConnectionImpl*>(conn.get())->id();
+}
 
 /**
  * Verify that we get the same connection if we grab one, return it and grab
  * another.
  */
 TEST_F(ConnectionPoolTest, SameConn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     // Grab and stash an id for the first request
     size_t conn1Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn1Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn1Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     // Grab and stash an id for the second request
     size_t conn2Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn2Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn2Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     // Verify that we hit them, and that they're the same
     ASSERT(conn1Id);
@@ -105,7 +119,7 @@ TEST_F(ConnectionPoolTest, SameConn) {
  * Verify that connections are obtained in MRU order.
  */
 TEST_F(ConnectionPoolTest, ConnectionsAreAcquiredInMRUOrder) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     // Obtain a set of connections
     constexpr size_t kSize = 100;
@@ -129,13 +143,14 @@ TEST_F(ConnectionPoolTest, ConnectionsAreAcquiredInMRUOrder) {
 
     for (size_t i = 0; i != kSize; ++i) {
         ConnectionImpl::pushSetup(Status::OK());
-        pool.get_forTest(HostAndPort(),
-                         Milliseconds(5000),
-                         [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                             ASSERT(swConn.isOK());
-                             connections.push_back(std::move(swConn.getValue()));
-                         });
+        pool->get_forTest(HostAndPort(),
+                          Milliseconds(5000),
+                          [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                              ASSERT(swConn.isOK());
+                              connections.push_back(std::move(swConn.getValue()));
+                          });
     }
+    ASSERT_EQ(connections.size(), kSize);
 
     // Shuffle them into a random order
     std::random_device rd;
@@ -150,21 +165,23 @@ TEST_F(ConnectionPoolTest, ConnectionsAreAcquiredInMRUOrder) {
         ids.push(static_cast<ConnectionImpl*>(conn.get())->id());
         conn->indicateSuccess();
     }
+    ASSERT_EQ(ids.size(), kSize);
 
     // Re-obtain the connections. They should come back in the same order
     // as the IDs in the stack, since the pool returns them in MRU order.
     for (size_t i = 0; i != kSize; ++i) {
         ConnectionImpl::pushSetup(Status::OK());
-        pool.get_forTest(HostAndPort(),
-                         Milliseconds(5000),
-                         [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                             ASSERT(swConn.isOK());
-                             const auto id = CONN2ID(swConn);
-                             connections.push_back(std::move(swConn.getValue()));
-                             ASSERT(id == ids.top());
-                             ids.pop();
-                         });
+        pool->get_forTest(HostAndPort(),
+                          Milliseconds(5000),
+                          [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                              ASSERT(swConn.isOK());
+                              const auto id = verifyAndGetId(swConn);
+                              connections.push_back(std::move(swConn.getValue()));
+                              ASSERT_EQ(id, ids.top());
+                              ids.pop();
+                          });
     }
+    ASSERT(ids.empty());
 }
 
 /**
@@ -176,9 +193,9 @@ TEST_F(ConnectionPoolTest, ConnectionsNotUsedRecentlyArePurged) {
     options.refreshRequirement = Milliseconds(1000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Minutes(1);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
-    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), 0U);
+    ASSERT_EQ(pool->getNumConnectionsPerHost(HostAndPort()), 0U);
 
     // Obtain a set of connections
     constexpr size_t kSize = 100;
@@ -207,17 +224,17 @@ TEST_F(ConnectionPoolTest, ConnectionsNotUsedRecentlyArePurged) {
     std::set<size_t> original_ids;
     for (size_t i = 0; i != kSize; ++i) {
         ConnectionImpl::pushSetup(Status::OK());
-        pool.get_forTest(HostAndPort(),
-                         Milliseconds(5000),
-                         [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                             ASSERT(swConn.isOK());
-                             original_ids.insert(CONN2ID(swConn));
-                             connections.push_back(std::move(swConn.getValue()));
-                         });
+        pool->get_forTest(HostAndPort(),
+                          Milliseconds(5000),
+                          [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                              ASSERT(swConn.isOK());
+                              original_ids.insert(verifyAndGetId(swConn));
+                              connections.push_back(std::move(swConn.getValue()));
+                          });
     }
 
     ASSERT_EQ(original_ids.size(), kSize);
-    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+    ASSERT_EQ(pool->getNumConnectionsPerHost(HostAndPort()), kSize);
 
     // Shuffle them into a random order
     std::random_device rd;
@@ -233,25 +250,25 @@ TEST_F(ConnectionPoolTest, ConnectionsNotUsedRecentlyArePurged) {
 
     // Advance the time, but not enough to age out connections. We should still have them all.
     PoolImpl::setNow(now + Milliseconds(500));
-    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+    ASSERT_EQ(pool->getNumConnectionsPerHost(HostAndPort()), kSize);
 
     // Re-obtain a quarter of the connections, and record their IDs in a set.
     std::set<size_t> reacquired_ids;
     for (size_t i = 0; i < kSize / 4; ++i) {
         ConnectionImpl::pushSetup(Status::OK());
-        pool.get_forTest(HostAndPort(),
-                         Milliseconds(5000),
-                         [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                             ASSERT(swConn.isOK());
-                             reacquired_ids.insert(CONN2ID(swConn));
-                             connections.push_back(std::move(swConn.getValue()));
-                         });
+        pool->get_forTest(HostAndPort(),
+                          Milliseconds(5000),
+                          [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                              ASSERT(swConn.isOK());
+                              reacquired_ids.insert(verifyAndGetId(swConn));
+                              connections.push_back(std::move(swConn.getValue()));
+                          });
     }
 
     ASSERT_EQ(reacquired_ids.size(), kSize / 4);
     ASSERT(std::includes(
         original_ids.begin(), original_ids.end(), reacquired_ids.begin(), reacquired_ids.end()));
-    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+    ASSERT_EQ(pool->getNumConnectionsPerHost(HostAndPort()), kSize);
 
     // Put them right back in.
     while (!connections.empty()) {
@@ -261,40 +278,40 @@ TEST_F(ConnectionPoolTest, ConnectionsNotUsedRecentlyArePurged) {
     }
 
     // We should still have all of them in the pool
-    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+    ASSERT_EQ(pool->getNumConnectionsPerHost(HostAndPort()), kSize);
 
     // Advance across the host timeout for the 75 connections we
     // didn't use. Afterwards, the pool should contain only those
     // kSize/4 connections we used above.
     PoolImpl::setNow(now + Milliseconds(1000));
-    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize / 4);
+    ASSERT_EQ(pool->getNumConnectionsPerHost(HostAndPort()), kSize / 4);
 }
 
 /**
  * Verify that a failed connection isn't returned to the pool
  */
 TEST_F(ConnectionPoolTest, FailedConnDifferentConn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     // Grab the first connection and indicate that it failed
     size_t conn1Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn1Id = CONN2ID(swConn);
-                         swConn.getValue()->indicateFailure(Status(ErrorCodes::BadValue, "error"));
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn1Id = verifyAndGetId(swConn);
+                          swConn.getValue()->indicateFailure(Status(ErrorCodes::BadValue, "error"));
+                      });
 
     // Grab the second id
     size_t conn2Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn2Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn2Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     // Verify that we hit them, and that they're different
     ASSERT(conn1Id);
@@ -307,27 +324,27 @@ TEST_F(ConnectionPoolTest, FailedConnDifferentConn) {
  * connections.
  */
 TEST_F(ConnectionPoolTest, DifferentHostDifferentConn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     // Conn 1 from port 30000
     size_t conn1Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort("localhost:30000"),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn1Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort("localhost:30000"),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn1Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     // Conn 2 from port 30001
     size_t conn2Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort("localhost:30001"),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn2Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort("localhost:30001"),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn2Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     // Hit them and not the same
     ASSERT(conn1Id);
@@ -339,27 +356,27 @@ TEST_F(ConnectionPoolTest, DifferentHostDifferentConn) {
  * Verify that not returning handle's to the pool spins up new connections.
  */
 TEST_F(ConnectionPoolTest, DifferentConnWithoutReturn) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     // Get the first connection, move it out rather than letting it return
     ConnectionPool::ConnectionHandle conn1;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
-                         conn1 = std::move(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
+                          conn1 = std::move(swConn.getValue());
+                      });
 
     // Get the second connection, move it out rather than letting it return
     ConnectionPool::ConnectionHandle conn2;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
-                         conn2 = std::move(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
+                          conn2 = std::move(swConn.getValue());
+                      });
 
     // Verify that the two connections are different
     ASSERT_NE(conn1.get(), conn2.get());
@@ -375,7 +392,7 @@ TEST_F(ConnectionPoolTest, DifferentConnWithoutReturn) {
  * Note that the lack of pushSetup() calls delays the get.
  */
 TEST_F(ConnectionPoolTest, TimeoutOnSetup) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     bool notOk = false;
 
@@ -383,7 +400,7 @@ TEST_F(ConnectionPoolTest, TimeoutOnSetup) {
 
     PoolImpl::setNow(now);
 
-    pool.get_forTest(
+    pool->get_forTest(
         HostAndPort(),
         Milliseconds(5000),
         [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) { notOk = !swConn.isOK(); });
@@ -411,7 +428,7 @@ TEST_F(ConnectionPoolTest, refreshHappens) {
 
     ConnectionPool::Options options;
     options.refreshRequirement = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -419,12 +436,12 @@ TEST_F(ConnectionPoolTest, refreshHappens) {
 
     // Get a connection
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
+                          doneWith(swConn.getValue());
+                      });
 
     // After 1 second, one refresh has occurred
     PoolImpl::setNow(now + Milliseconds(1000));
@@ -447,7 +464,7 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
     ConnectionPool::Options options;
     options.refreshRequirement = Milliseconds(1000);
     options.refreshTimeout = Milliseconds(2000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -457,23 +474,23 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
 
     // Grab a connection and verify it's good
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn1Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn1Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     PoolImpl::setNow(now + Milliseconds(500));
 
     size_t conn2Id = 0;
     // Make sure we still get the first one
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn2Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn2Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
     ASSERT_EQ(conn1Id, conn2Id);
 
     // This should trigger a refresh, but not time it out. So now we have one
@@ -484,13 +501,13 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
     // This will wait because we have a refreshing connection, so it'll wait to
     // see if that pans out. In this case, we'll get a failure on timeout.
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(1000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(!swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(1000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(!swConn.isOK());
 
-                         reachedA = true;
-                     });
+                          reachedA = true;
+                      });
     ASSERT(!reachedA);
     PoolImpl::setNow(now + Milliseconds(3000));
 
@@ -500,13 +517,13 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
     bool reachedB = false;
 
     // Make sure we can get a new connection
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(1000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_NE(CONN2ID(swConn), conn1Id);
-                         reachedB = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(1000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_NE(verifyAndGetId(swConn), conn1Id);
+                          reachedB = true;
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(reachedA);
     ASSERT(reachedB);
@@ -516,31 +533,31 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
  * Verify that requests are served in expiration order, not insertion order
  */
 TEST_F(ConnectionPoolTest, requestsServedByUrgency) {
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+    auto pool = makePool();
 
     bool reachedA = false;
     bool reachedB = false;
 
     ConnectionPool::ConnectionHandle conn;
 
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(2000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(2000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         reachedA = true;
-                         doneWith(swConn.getValue());
-                     });
+                          reachedA = true;
+                          doneWith(swConn.getValue());
+                      });
 
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(1000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(1000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         reachedB = true;
+                          reachedB = true;
 
-                         conn = std::move(swConn.getValue());
-                     });
+                          conn = std::move(swConn.getValue());
+                      });
 
     ConnectionImpl::pushSetup(Status::OK());
 
@@ -563,7 +580,7 @@ TEST_F(ConnectionPoolTest, maxPoolRespected) {
     ConnectionPool::Options options;
     options.minConnections = 1;
     options.maxConnections = 2;
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     ConnectionPool::ConnectionHandle conn1;
     ConnectionPool::ConnectionHandle conn2;
@@ -571,27 +588,27 @@ TEST_F(ConnectionPoolTest, maxPoolRespected) {
 
     // Make 3 requests, each which keep their connection (don't return it to
     // the pool)
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(3000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(3000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn3 = std::move(swConn.getValue());
-                     });
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(2000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+                          conn3 = std::move(swConn.getValue());
+                      });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(2000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn2 = std::move(swConn.getValue());
-                     });
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(1000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+                          conn2 = std::move(swConn.getValue());
+                      });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(1000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn1 = std::move(swConn.getValue());
-                     });
+                          conn1 = std::move(swConn.getValue());
+                      });
 
     ConnectionImpl::pushSetup(Status::OK());
     ConnectionImpl::pushSetup(Status::OK());
@@ -621,7 +638,7 @@ TEST_F(ConnectionPoolTest, maxConnectingRespected) {
     ConnectionPool::Options options;
     options.minConnections = 1;
     options.maxConnecting = 2;
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     ConnectionPool::ConnectionHandle conn1;
     ConnectionPool::ConnectionHandle conn2;
@@ -629,27 +646,27 @@ TEST_F(ConnectionPoolTest, maxConnectingRespected) {
 
     // Make 3 requests, each which keep their connection (don't return it to
     // the pool)
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(3000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(3000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn3 = std::move(swConn.getValue());
-                     });
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(2000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+                          conn3 = std::move(swConn.getValue());
+                      });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(2000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn2 = std::move(swConn.getValue());
-                     });
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(1000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+                          conn2 = std::move(swConn.getValue());
+                      });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(1000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn1 = std::move(swConn.getValue());
-                     });
+                          conn1 = std::move(swConn.getValue());
+                      });
 
     ASSERT_EQ(ConnectionImpl::setupQueueDepth(), 2u);
     ConnectionImpl::pushSetup(Status::OK());
@@ -680,7 +697,7 @@ TEST_F(ConnectionPoolTest, maxConnectingWithRefresh) {
     ConnectionPool::Options options;
     options.maxConnecting = 1;
     options.refreshRequirement = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -688,12 +705,12 @@ TEST_F(ConnectionPoolTest, maxConnectingWithRefresh) {
 
     // Get a connection
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT_EQ(ConnectionImpl::refreshQueueDepth(), 0u);
 
@@ -704,13 +721,13 @@ TEST_F(ConnectionPoolTest, maxConnectingWithRefresh) {
     bool reachedA = false;
 
     // Try to get another connection
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
-                         doneWith(swConn.getValue());
-                         reachedA = true;
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
+                          doneWith(swConn.getValue());
+                          reachedA = true;
+                      });
 
     ASSERT_EQ(ConnectionImpl::setupQueueDepth(), 0u);
     ASSERT(!reachedA);
@@ -727,19 +744,19 @@ TEST_F(ConnectionPoolTest, maxConnectingWithMultipleRefresh) {
     options.maxConnecting = 2;
     options.minConnections = 3;
     options.refreshRequirement = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
     PoolImpl::setNow(now);
 
     // Get us spun up to 3 connections in the pool
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
+                          doneWith(swConn.getValue());
+                      });
     ASSERT_EQ(ConnectionImpl::setupQueueDepth(), 2u);
     ConnectionImpl::pushSetup(Status::OK());
     ASSERT_EQ(ConnectionImpl::setupQueueDepth(), 2u);
@@ -755,12 +772,12 @@ TEST_F(ConnectionPoolTest, maxConnectingWithMultipleRefresh) {
 
     // Start 5 new requests
     for (size_t i = 0; i < conns.size(); ++i) {
-        pool.get_forTest(HostAndPort(),
-                         Milliseconds(static_cast<int>(1000 + i)),
-                         [&conns, i](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                             ASSERT(swConn.isOK());
-                             conns[i] = std::move(swConn.getValue());
-                         });
+        pool->get_forTest(HostAndPort(),
+                          Milliseconds(static_cast<int>(1000 + i)),
+                          [&conns, i](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                              ASSERT(swConn.isOK());
+                              conns[i] = std::move(swConn.getValue());
+                          });
     }
 
     auto firstNBound = [&](size_t n) {
@@ -819,7 +836,7 @@ TEST_F(ConnectionPoolTest, minPoolRespected) {
     options.maxConnections = 3;
     options.refreshRequirement = Milliseconds(1000);
     options.refreshTimeout = Milliseconds(2000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -830,13 +847,13 @@ TEST_F(ConnectionPoolTest, minPoolRespected) {
     ConnectionPool::ConnectionHandle conn3;
 
     // Grab one connection without returning it
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(1000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(1000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn1 = std::move(swConn.getValue());
-                     });
+                          conn1 = std::move(swConn.getValue());
+                      });
 
     bool reachedA = false;
     bool reachedB = false;
@@ -862,20 +879,20 @@ TEST_F(ConnectionPoolTest, minPoolRespected) {
     ASSERT(!reachedC);
 
     // Two more get's without returns
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(2000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(2000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn2 = std::move(swConn.getValue());
-                     });
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(3000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(swConn.isOK());
+                          conn2 = std::move(swConn.getValue());
+                      });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(3000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(swConn.isOK());
 
-                         conn3 = std::move(swConn.getValue());
-                     });
+                          conn3 = std::move(swConn.getValue());
+                      });
 
     ASSERT(conn2);
     ASSERT(conn3);
@@ -928,7 +945,7 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappens) {
     options.refreshRequirement = Milliseconds(5000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -939,13 +956,13 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappens) {
     bool reachedA = false;
     // Grab 1 connection and return it
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         connId = CONN2ID(swConn);
-                         reachedA = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          connId = verifyAndGetId(swConn);
+                          reachedA = true;
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(reachedA);
 
@@ -956,13 +973,13 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappens) {
 
     // Verify that a new connection was spawned
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_NE(connId, CONN2ID(swConn));
-                         reachedB = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_NE(connId, verifyAndGetId(swConn));
+                          reachedB = true;
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(reachedB);
 }
@@ -977,7 +994,7 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensMoreGetsDelay) {
     options.refreshRequirement = Milliseconds(5000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -989,13 +1006,13 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensMoreGetsDelay) {
 
     // Grab and return
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         connId = CONN2ID(swConn);
-                         reachedA = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          connId = verifyAndGetId(swConn);
+                          reachedA = true;
+                          doneWith(swConn.getValue());
+                      });
     ASSERT(reachedA);
 
     // Jump almost up to the hostTimeout
@@ -1003,26 +1020,26 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensMoreGetsDelay) {
 
     bool reachedB = false;
     // Same connection
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_EQ(connId, CONN2ID(swConn));
-                         reachedB = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_EQ(connId, verifyAndGetId(swConn));
+                          reachedB = true;
+                          doneWith(swConn.getValue());
+                      });
     ASSERT(reachedB);
 
     // Now our timeout should be 1999 ms from 'now' instead of 1000 ms
     // if we do another 'get' we should still get the original connection
     PoolImpl::setNow(now + Milliseconds(1500));
     bool reachedB2 = false;
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_EQ(connId, CONN2ID(swConn));
-                         reachedB2 = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_EQ(connId, verifyAndGetId(swConn));
+                          reachedB2 = true;
+                          doneWith(swConn.getValue());
+                      });
     ASSERT(reachedB2);
 
     // We should time out when we get to 'now' + 2500 ms
@@ -1031,13 +1048,13 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensMoreGetsDelay) {
     bool reachedC = false;
     // Different id
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_NE(connId, CONN2ID(swConn));
-                         reachedC = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_NE(connId, verifyAndGetId(swConn));
+                          reachedC = true;
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(reachedC);
 }
@@ -1052,7 +1069,7 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensCheckoutDelays) {
     options.refreshRequirement = Milliseconds(5000);
     options.refreshTimeout = Milliseconds(5000);
     options.hostTimeout = Milliseconds(1000);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
 
@@ -1064,23 +1081,23 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensCheckoutDelays) {
 
     // save 1 connection
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn1Id = CONN2ID(swConn);
-                         conn1 = std::move(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn1Id = verifyAndGetId(swConn);
+                          conn1 = std::move(swConn.getValue());
+                      });
 
     ASSERT(conn1Id);
 
     // return the second
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn2Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn2Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(conn2Id);
 
@@ -1090,13 +1107,13 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensCheckoutDelays) {
     bool reachedA = false;
 
     // conn 2 is still there
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_EQ(conn2Id, CONN2ID(swConn));
-                         reachedA = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_EQ(conn2Id, verifyAndGetId(swConn));
+                          reachedA = true;
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(reachedA);
 
@@ -1111,14 +1128,14 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensCheckoutDelays) {
 
     // make sure that this is a new id
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_NE(conn1Id, CONN2ID(swConn));
-                         ASSERT_NE(conn2Id, CONN2ID(swConn));
-                         reachedB = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_NE(conn1Id, verifyAndGetId(swConn));
+                          ASSERT_NE(conn2Id, verifyAndGetId(swConn));
+                          reachedB = true;
+                          doneWith(swConn.getValue());
+                      });
     ASSERT(reachedB);
 }
 
@@ -1132,7 +1149,7 @@ TEST_F(ConnectionPoolTest, dropConnections) {
     options.maxConnections = 1;
     options.refreshRequirement = Seconds(1);
     options.refreshTimeout = Seconds(2);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
     PoolImpl::setNow(now);
@@ -1140,22 +1157,22 @@ TEST_F(ConnectionPoolTest, dropConnections) {
     // Grab the first connection id
     size_t conn1Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn1Id = CONN2ID(swConn);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn1Id = verifyAndGetId(swConn);
+                          doneWith(swConn.getValue());
+                      });
     ASSERT(conn1Id);
 
     // Grab it and this time keep it out of the pool
     ConnectionPool::ConnectionHandle handle;
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_EQ(CONN2ID(swConn), conn1Id);
-                         handle = std::move(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_EQ(verifyAndGetId(swConn), conn1Id);
+                          handle = std::move(swConn.getValue());
+                      });
 
     ASSERT(handle);
 
@@ -1163,16 +1180,16 @@ TEST_F(ConnectionPoolTest, dropConnections) {
 
     // Queue up a request. This won't fire until we drop connections, then it
     // will fail.
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT(!swConn.isOK());
-                         reachedA = true;
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT(!swConn.isOK());
+                          reachedA = true;
+                      });
     ASSERT(!reachedA);
 
     // fails the previous get
-    pool.dropConnections(HostAndPort());
+    pool->dropConnections(HostAndPort());
 
     ASSERT(reachedA);
 
@@ -1184,20 +1201,20 @@ TEST_F(ConnectionPoolTest, dropConnections) {
     // connection
     size_t conn2Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         conn2Id = CONN2ID(swConn);
-                         ASSERT_NE(conn2Id, conn1Id);
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          conn2Id = verifyAndGetId(swConn);
+                          ASSERT_NE(conn2Id, conn1Id);
+                          doneWith(swConn.getValue());
+                      });
     ASSERT(conn2Id);
 
     // Push conn2 into refresh
     PoolImpl::setNow(now + Milliseconds(1500));
 
     // drop the connections
-    pool.dropConnections(HostAndPort());
+    pool->dropConnections(HostAndPort());
 
     // refresh still pending
     PoolImpl::setNow(now + Milliseconds(2500));
@@ -1206,13 +1223,13 @@ TEST_F(ConnectionPoolTest, dropConnections) {
     // being pending
     bool reachedB = false;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(HostAndPort(),
-                     Milliseconds(5000),
-                     [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-                         ASSERT_NE(CONN2ID(swConn), conn2Id);
-                         reachedB = true;
-                         doneWith(swConn.getValue());
-                     });
+    pool->get_forTest(HostAndPort(),
+                      Milliseconds(5000),
+                      [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                          ASSERT_NE(verifyAndGetId(swConn), conn2Id);
+                          reachedB = true;
+                          doneWith(swConn.getValue());
+                      });
 
     ASSERT(reachedB);
 }
@@ -1225,13 +1242,13 @@ TEST_F(ConnectionPoolTest, SetupTimeoutsDontTimeoutUnrelatedRequests) {
 
     options.maxConnections = 1;
     options.refreshTimeout = Seconds(2);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
     PoolImpl::setNow(now);
 
     boost::optional<StatusWith<ConnectionPool::ConnectionHandle>> conn1;
-    pool.get_forTest(
+    pool->get_forTest(
         HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
             conn1 = std::move(swConn);
         });
@@ -1245,7 +1262,7 @@ TEST_F(ConnectionPoolTest, SetupTimeoutsDontTimeoutUnrelatedRequests) {
     ASSERT(!conn1);
 
     // Get conn2 (which should have an extra second before the timeout)
-    pool.get_forTest(
+    pool->get_forTest(
         HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
             ASSERT_EQ(swConn.getStatus(), ErrorCodes::ShutdownInProgress);
         });
@@ -1266,7 +1283,7 @@ TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
     options.maxConnections = 1;
     options.refreshTimeout = Seconds(2);
     options.refreshRequirement = Seconds(3);
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
     PoolImpl::setNow(now);
@@ -1274,9 +1291,9 @@ TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
     // Successfully get a new connection
     size_t conn1Id = 0;
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(
+    pool->get_forTest(
         HostAndPort(), Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-            conn1Id = CONN2ID(swConn);
+            conn1Id = verifyAndGetId(swConn);
             doneWith(swConn.getValue());
         });
     ASSERT(conn1Id);
@@ -1285,7 +1302,7 @@ TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
     PoolImpl::setNow(now + Seconds(3));
 
     boost::optional<StatusWith<ConnectionPool::ConnectionHandle>> conn1;
-    pool.get_forTest(
+    pool->get_forTest(
         HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
             conn1 = std::move(swConn);
         });
@@ -1298,7 +1315,7 @@ TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
     ASSERT(!conn1);
 
     // Get conn2 (which should have an extra second before the timeout)
-    pool.get_forTest(
+    pool->get_forTest(
         HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
             ASSERT_EQ(swConn.getStatus(), ErrorCodes::ShutdownInProgress);
         });
@@ -1310,8 +1327,8 @@ TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
     ASSERT(conn1->getStatus().code() == ErrorCodes::NetworkInterfaceExceededTimeLimit);
 }
 
-template <typename T>
-void dropConnectionsTest(ConnectionPool& pool, T& t) {
+template <typename Ptr>
+void dropConnectionsTest(std::shared_ptr<ConnectionPool> const& pool, Ptr t) {
     auto now = Date_t::now();
     PoolImpl::setNow(now);
 
@@ -1322,69 +1339,70 @@ void dropConnectionsTest(ConnectionPool& pool, T& t) {
 
     // Successfully get connections to two hosts
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(hap1, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+    pool->get_forTest(hap1, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
         doneWith(swConn.getValue());
     });
 
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(hap2, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+    pool->get_forTest(hap2, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
         doneWith(swConn.getValue());
     });
 
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(hap3, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+    pool->get_forTest(hap3, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
         doneWith(swConn.getValue());
     });
 
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap1));
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap2));
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap3));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap1));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap2));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap3));
 
-    t.dropConnections(transport::Session::kPending);
+    t->dropConnections(transport::Session::kPending);
 
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap1));
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap2));
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap3));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap1));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap2));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap3));
 
-    t.mutateTags(hap1, [](transport::Session::TagMask tags) {
+    t->mutateTags(hap1, [](transport::Session::TagMask tags) {
         return transport::Session::kKeepOpen | transport::Session::kInternalClient;
     });
 
-    t.mutateTags(hap2,
-                 [](transport::Session::TagMask tags) { return transport::Session::kKeepOpen; });
+    t->mutateTags(hap2,
+                  [](transport::Session::TagMask tags) { return transport::Session::kKeepOpen; });
 
-    t.mutateTags(
+    t->mutateTags(
         hap3, [](transport::Session::TagMask tags) { return transport::Session::kEmptyTagMask; });
 
-    t.dropConnections(transport::Session::kKeepOpen);
+    t->dropConnections(transport::Session::kKeepOpen);
 
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap1));
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap2));
-    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap3));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap1));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap2));
+    ASSERT_EQ(0ul, pool->getNumConnectionsPerHost(hap3));
 
-    t.dropConnections(transport::Session::kInternalClient);
+    t->dropConnections(transport::Session::kInternalClient);
 
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap1));
-    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap2));
-    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap3));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap1));
+    ASSERT_EQ(0ul, pool->getNumConnectionsPerHost(hap2));
+    ASSERT_EQ(0ul, pool->getNumConnectionsPerHost(hap3));
 
     ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(hap4, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+    pool->get_forTest(hap4, Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
         doneWith(swConn.getValue());
     });
 
     // drop connections by hostAndPort
-    t.dropConnections(hap1);
+    t->dropConnections(hap1);
 
-    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap1));
-    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap2));
-    ASSERT_EQ(0ul, pool.getNumConnectionsPerHost(hap3));
-    ASSERT_EQ(1ul, pool.getNumConnectionsPerHost(hap4));
+    ASSERT_EQ(0ul, pool->getNumConnectionsPerHost(hap1));
+    ASSERT_EQ(0ul, pool->getNumConnectionsPerHost(hap2));
+    ASSERT_EQ(0ul, pool->getNumConnectionsPerHost(hap3));
+    ASSERT_EQ(1ul, pool->getNumConnectionsPerHost(hap4));
 }
 
 TEST_F(ConnectionPoolTest, DropConnections) {
     ConnectionPool::Options options;
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    options.minConnections = 0;
+    auto pool = makePool(options);
 
     dropConnectionsTest(pool, pool);
 }
@@ -1392,74 +1410,92 @@ TEST_F(ConnectionPoolTest, DropConnections) {
 TEST_F(ConnectionPoolTest, DropConnectionsInMultipleViaManager) {
     EgressTagCloserManager manager;
     ConnectionPool::Options options;
+    options.minConnections = 0;
     options.egressTagCloserManager = &manager;
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
-    dropConnectionsTest(pool, manager);
+    dropConnectionsTest(pool, &manager);
 }
 
-TEST_F(ConnectionPoolTest, TryGetWorks) {
+TEST_F(ConnectionPoolTest, AsyncGet) {
     ConnectionPool::Options options;
     options.maxConnections = 1;
-    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+    auto pool = makePool(options);
 
     auto now = Date_t::now();
     PoolImpl::setNow(now);
 
-    // no connections in the pool, tryGet should fail
-    ASSERT_FALSE(pool.tryGet(HostAndPort(), transport::kGlobalSSLMode));
+    // Make our initial connection, use and return it
+    {
+        size_t connId = 0;
 
-    // Successfully get a new connection
-    size_t conn1Id = 0;
-    ConnectionImpl::pushSetup(Status::OK());
-    pool.get_forTest(
-        HostAndPort(), Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-            conn1Id = CONN2ID(swConn);
+        // no connections in the pool, our future is not satisfied
+        auto connFuture = pool->get(HostAndPort(), transport::kGlobalSSLMode, Seconds{1});
+        ASSERT_FALSE(connFuture.isReady());
+
+        // Successfully get a new connection
+        ConnectionImpl::pushSetup(Status::OK());
+
+        // Future should be ready now
+        ASSERT_TRUE(connFuture.isReady());
+        std::move(connFuture).getAsync([&](StatusWithConn swConn) mutable {
+            connId = verifyAndGetId(swConn);
             doneWith(swConn.getValue());
         });
-    ASSERT(conn1Id);
+        ASSERT(connId);
+    }
 
-    // 1 connection in the pool, tryGet should succeed
-    auto tryGetConn = pool.tryGet(HostAndPort(), transport::kGlobalSSLMode);
-    ASSERT(tryGetConn);
+    // There is one connection in the pool:
+    // * The first get should resolve immediately
+    // * The second get should should be queued
+    // * The eventual third should be queued before the second
+    {
+        size_t connId1 = 0;
+        size_t connId2 = 0;
+        size_t connId3 = 0;
 
-    // No connection available, this waits in the request queue
-    size_t conn3Id = 0;
-    pool.get_forTest(
-        HostAndPort(), Seconds(2), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-            conn3Id = CONN2ID(swConn);
+        auto connFuture1 = pool->get(HostAndPort(), transport::kGlobalSSLMode, Seconds{1});
+        auto connFuture2 = pool->get(HostAndPort(), transport::kGlobalSSLMode, Seconds{10});
+
+        // Queue up the second future to resolve as soon as it is ready
+        std::move(connFuture2).getAsync([&](StatusWithConn swConn) mutable {
+            connId2 = verifyAndGetId(swConn);
             doneWith(swConn.getValue());
         });
 
-    ASSERT_EQ(conn3Id, 0ul);
+        // The first future should be immediately ready. The second should be in the queue.
+        ASSERT_TRUE(connFuture1.isReady());
+        ASSERT_FALSE(connFuture2.isReady());
 
-    // We want to wait if there are any outstanding requests (to provide fair access to the pool),
-    // so we need to call tryGet while fulfilling requests.  This triggers that race by actually
-    // calling tryGet from within a callback (which works, because we drop locks).  Not the cleanest
-    // way to do it, but gets us at least the code coverage we need.
-    //
-    // We run before the previous get because our deadline is 1 sec instead of 2
-    size_t conn2Id = 0;
-    pool.get_forTest(
-        HostAndPort(), Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
-            conn2Id = CONN2ID(swConn);
+        // Resolve the first future to return the connection and continue on to the second.
+        decltype(connFuture1) connFuture3;
+        std::move(connFuture1).getAsync([&](StatusWithConn swConn) mutable {
+            // Grab our third future while our first one is being fulfilled
+            connFuture3 = pool->get(HostAndPort(), transport::kGlobalSSLMode, Seconds{1});
+
+            connId1 = verifyAndGetId(swConn);
             doneWith(swConn.getValue());
-            swConn.getValue().reset();
+        });
+        ASSERT(connId1);
+        ASSERT_FALSE(connId2);
 
-            // we do have one connection
-            ASSERT_EQUALS(pool.getNumConnectionsPerHost(HostAndPort()), 1ul);
+        // Since the third future has a smaller timeout than the second,
+        // it should take priority over the second
+        ASSERT_TRUE(connFuture3.isReady());
+        ASSERT_FALSE(connFuture2.isReady());
 
-            // we fail because there's an outstanding request, even though we do have a good
-            // connection
-            // available.
-            ASSERT_FALSE(pool.tryGet(HostAndPort(), transport::kGlobalSSLMode));
+        // Resolve the third future. This should trigger the second future
+        std::move(connFuture3).getAsync([&](StatusWithConn swConn) mutable {
+            // We run before the second future
+            ASSERT_FALSE(connId2);
+
+            connId3 = verifyAndGetId(swConn);
+            doneWith(swConn.getValue());
         });
 
-    doneWith(*tryGetConn);
-    tryGetConn.reset();
-
-    ASSERT(conn2Id);
-    ASSERT(conn3Id);
+        ASSERT_EQ(connId1, connId2);
+        ASSERT_EQ(connId2, connId3);
+    }
 }
 
 }  // namespace connection_pool_test_details

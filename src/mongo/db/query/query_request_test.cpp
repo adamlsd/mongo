@@ -33,8 +33,9 @@
 #include <boost/optional.hpp>
 #include <boost/optional/optional_io.hpp>
 
+#include "mongo/db/catalog/collection_catalog.h"
+#include "mongo/db/catalog/collection_catalog_entry_mock.h"
 #include "mongo/db/catalog/collection_mock.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/json.h"
 #include "mongo/db/namespace_string.h"
@@ -1418,11 +1419,13 @@ class QueryRequestTest : public ServiceContextTest {};
 
 TEST_F(QueryRequestTest, ParseFromUUID) {
     auto opCtx = makeOperationContext();
-    // Register a UUID/Collection pair in the UUIDCatalog.
+    // Register a UUID/Collection pair in the CollectionCatalog.
     const CollectionUUID uuid = UUID::gen();
     const NamespaceString nss("test.testns");
     auto coll = std::make_unique<CollectionMock>(nss);
-    UUIDCatalog& catalog = UUIDCatalog::get(opCtx.get());
+    auto catalogEntry = std::make_unique<CollectionCatalogEntryMock>(nss.ns());
+    CollectionCatalog& catalog = CollectionCatalog::get(opCtx.get());
+    catalog.registerCatalogEntry(uuid, std::move(catalogEntry));
     catalog.onCreateCollection(opCtx.get(), std::move(coll), uuid);
     QueryRequest qr(NamespaceStringOrUUID("test", uuid));
     // Ensure a call to refreshNSS succeeds.

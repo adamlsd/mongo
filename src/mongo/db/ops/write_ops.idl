@@ -33,6 +33,7 @@ global:
 
 imports:
     - "mongo/db/logical_session_id.idl"
+    - "mongo/db/pipeline/runtime_constants.idl"
 
 types:
     multi_delete_bool:
@@ -43,6 +44,14 @@ types:
         cpp_type: "bool"
         serializer: "::mongo::write_ops::writeMultiDeleteProperty"
         deserializer: "::mongo::write_ops::readMultiDeleteProperty"
+
+    update_modification:
+        bson_serialization_type: any
+        description: "Holds the contents of the update command 'u' field, describing the
+                      modifications to apply on update."
+        cpp_type: "mongo::write_ops::UpdateModification"
+        serializer: "mongo::write_ops::UpdateModification::serializeToBSON"
+        deserializer: "mongo::write_ops::UpdateModification::parseFromBSON"
 
 structs:
 
@@ -91,7 +100,7 @@ structs:
                 type: object
             u:
                 description: "Set of modifications to apply."
-                type: object
+                type: update_modification
             arrayFilters:
                 description: "Specifies which array elements an update modifier should apply to."
                 type: array<object>
@@ -155,6 +164,11 @@ commands:
                 description: "An array of one or more update statements to perform."
                 type: array<UpdateOpEntry>
                 supports_doc_sequence: true
+            runtimeConstants:
+                description: "A collection of values that do not change once computed. These are
+                              used by pipeline-style update operations."
+                type: RuntimeConstants
+                optional: true
 
     delete:
         description: "Parser for the 'delete' command."

@@ -68,7 +68,7 @@
     const sessionColl = sessionDB.getCollection("foo");
     session.startTransaction();
     assert.commandWorked(sessionColl.insert({c: 1}));
-    PrepareHelpers.prepareTransaction(session);
+    let prepareTimestamp = PrepareHelpers.prepareTransaction(session);
 
     // Do same listDatabases command as CollectionCloner.
     const databases =
@@ -147,6 +147,10 @@
     }
 
     // Check that we see the expected number of batches during oplog application.
+
+    // This batch should correspond to the 'prepare' op.
+    assert(!initialSyncTest.step());
+    checkLogForOplogApplicationMsg(secondary, 1);
     assert(!initialSyncTest.step());
     checkLogForOplogApplicationMsg(secondary, 9);
     assert(!initialSyncTest.step());
@@ -159,8 +163,11 @@
 
     // Confirm that node can be read from and that it has the inserts that were made while the node
     // was in initial sync.
-    assert.eq(secondary.getDB("test").foo.find().count(), 6);
-    assert.eq(secondary.getDB("test").bar.find().count(), 6);
+    // TODO SERVER-40973: use fastcount after it is fixed instead of itcount.
+    // assert.eq(secondary.getDB("test").foo.find().count(), 6);
+    // assert.eq(secondary.getDB("test").bar.find().count(), 6);
+    assert.eq(secondary.getDB("test").foo.find().itcount(), 6);
+    assert.eq(secondary.getDB("test").bar.find().itcount(), 6);
 
     // Do data consistency checks at the end.
     initialSyncTest.stop();

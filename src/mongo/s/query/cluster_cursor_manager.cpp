@@ -39,7 +39,7 @@
 #include "mongo/db/logical_session_cache.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -674,7 +674,13 @@ std::vector<GenericCursor> ClusterCursorManager::getIdleCursors(
 std::pair<Status, int> ClusterCursorManager::killCursorsWithMatchingSessions(
     OperationContext* opCtx, const SessionKiller::Matcher& matcher) {
     auto eraser = [&](ClusterCursorManager& mgr, CursorId id) {
-        uassertStatusOK(mgr.killCursor(opCtx, getNamespaceForCursorId(id).get(), id));
+        auto cursorNss = getNamespaceForCursorId(id);
+        if (!cursorNss) {
+            // The cursor manager couldn't find a namespace associated with 'id'. This means the
+            // cursor must have already been killed, so we have no more work to do.
+            return;
+        }
+        uassertStatusOK(mgr.killCursor(opCtx, *cursorNss, id));
     };
 
     auto bySessionCursorKiller = makeKillCursorsBySessionAdaptor(opCtx, matcher, std::move(eraser));

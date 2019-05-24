@@ -55,7 +55,7 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/file.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -176,7 +176,7 @@ Status StorageEngineMetadata::read() {
     }
 
     ConstDataRange cdr(&buffer[0], buffer.size());
-    auto swObj = cdr.read<Validated<BSONObj>>();
+    auto swObj = cdr.readNoThrow<Validated<BSONObj>>();
     if (!swObj.isOK()) {
         return swObj.getStatus();
     }

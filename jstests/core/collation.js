@@ -332,7 +332,7 @@
     coll.drop();
     assert.commandWorked(db.createCollection(coll.getName(), {collation: {locale: "en_US"}}));
     assert.commandWorked(coll.ensureIndex({a: 1}, {collation: {locale: "en_US"}}));
-    var explain = coll.explain("queryPlanner").aggregate([{$match: {a: "foo"}}]).stages[0].$cursor;
+    var explain = coll.explain("queryPlanner").aggregate([{$match: {a: "foo"}}]);
     assert(isIxscan(db, explain.queryPlanner.winningPlan));
 
     // Aggregation should not use index when no collation specified and collection default
@@ -340,7 +340,7 @@
     coll.drop();
     assert.commandWorked(db.createCollection(coll.getName(), {collation: {locale: "en_US"}}));
     assert.commandWorked(coll.ensureIndex({a: 1}, {collation: {locale: "simple"}}));
-    var explain = coll.explain("queryPlanner").aggregate([{$match: {a: "foo"}}]).stages[0].$cursor;
+    var explain = coll.explain("queryPlanner").aggregate([{$match: {a: "foo"}}]);
     assert(isCollscan(db, explain.queryPlanner.winningPlan));
 
     // Explain of aggregation with collation should succeed.
@@ -1951,20 +1951,23 @@
         assert.writeOK(coll.insert({str: "D"}));
 
         // This query should fail, since there is no index to support the min/max.
-        assert.throws(() => coll.find()
-                                .min({str: "b"})
-                                .max({str: "D"})
-                                .collation({locale: "en_US", strength: 2})
-                                .itcount());
+        let err = assert.throws(() => coll.find()
+                                          .min({str: "b"})
+                                          .max({str: "D"})
+                                          .collation({locale: "en_US", strength: 2})
+                                          .itcount());
+        assert.commandFailedWithCode(err, 51173);
 
         // Even after building an index with the right key pattern, the query should fail since the
         // collations don't match.
         assert.commandWorked(coll.createIndex({str: 1}, {name: "noCollation"}));
-        assert.throws(() => coll.find()
-                                .min({str: "b"})
-                                .max({str: "D"})
-                                .collation({locale: "en_US", strength: 2})
-                                .itcount());
+        err = assert.throws(() => coll.find()
+                                      .min({str: "b"})
+                                      .max({str: "D"})
+                                      .collation({locale: "en_US", strength: 2})
+                                      .hint({str: 1})
+                                      .itcount());
+        assert.commandFailedWithCode(err, 51174);
 
         // After building an index with the case-insensitive US English collation, the query should
         // work. Furthermore, the bounds defined by the min and max should respect the
@@ -1976,6 +1979,7 @@
                       .min({str: "b"})
                       .max({str: "D"})
                       .collation({locale: "en_US", strength: 2})
+                      .hint("withCollation")
                       .itcount());
 
         // Ensure results from index with min/max query are sorted to match requested collation.

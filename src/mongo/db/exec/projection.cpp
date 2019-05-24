@@ -42,7 +42,7 @@
 #include "mongo/db/record_id.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 
@@ -136,7 +136,7 @@ void ProjectionStage::getSimpleInclusionFields(const BSONObj& projObj, FieldSet*
         BSONElement elt = projObjIt.next();
         // Must deal with the _id case separately as there is an implicit _id: 1 in the
         // projection.
-        if (mongoutils::str::equals(elt.fieldName(), kIdField) && !elt.trueValue()) {
+        if ((elt.fieldNameStringData() == kIdField) && !elt.trueValue()) {
             includeId = false;
             continue;
         }

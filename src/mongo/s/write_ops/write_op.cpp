@@ -163,17 +163,23 @@ void WriteOp::_updateOpState() {
     std::vector<ChildWriteOp const*> childErrors;
 
     bool isRetryError = true;
+    bool hasPendingChild = false;
     for (const auto& childOp : _childOps) {
-        // Don't do anything till we have all the info
+        // Don't do anything till we have all the info. Unless we're in a transaction because
+        // we abort aggresively whenever we get an error during a transaction.
         if (childOp.state != WriteOpState_Completed && childOp.state != WriteOpState_Error) {
-            return;
+            hasPendingChild = true;
+
+            if (!_inTxn) {
+                return;
+            }
         }
 
         if (childOp.state == WriteOpState_Error) {
             childErrors.push_back(&childOp);
 
             // Any non-retry error aborts all
-            if (!isRetryErrCode(childOp.error->toStatus().code())) {
+            if (_inTxn || !isRetryErrCode(childOp.error->toStatus().code())) {
                 isRetryError = false;
             }
         }
@@ -187,6 +193,10 @@ void WriteOp::_updateOpState() {
         _error.reset(new WriteErrorDetail);
         combineOpErrors(childErrors, _error.get());
         _state = WriteOpState_Error;
+    } else if (hasPendingChild && _inTxn) {
+        // Return early here since this means that there were no errors while in txn
+        // but there are still ops that have not yet finished.
+        return;
     } else {
         _state = WriteOpState_Completed;
     }

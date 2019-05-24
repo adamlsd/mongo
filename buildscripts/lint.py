@@ -1,8 +1,5 @@
 """Lint module."""
 
-from __future__ import absolute_import
-from __future__ import print_function
-
 import codecs
 import os
 import sys
@@ -35,7 +32,7 @@ class CheckForConfigH(object):
                   'MONGO_CONFIG define used without prior inclusion of config.h.')
 
 
-def run_lint(paths, nudge_on=False):
+def run_lint(paths, nudge_on=False):  # pylint: disable=too-many-statements
     """Run lint."""
     # errors are as of 10/14
     # idea is not to let it any new type of error
@@ -106,10 +103,6 @@ def run_lint(paths, nudge_on=False):
     # pylint: disable=protected-access
     cpplint._IsTestFilename = _our_is_test_filename
 
-    # Change stderr to write with replacement characters so we don't die
-    # if we try to print something containing non-ASCII characters.
-    sys.stderr = codecs.StreamReaderWriter(sys.stderr, codecs.getreader('utf8'),
-                                           codecs.getwriter('utf8'), 'replace')
     cpplint._cpplint_state.ResetErrorCounts()
     for filename in filenames:
         config_h_check_obj = CheckForConfigH()

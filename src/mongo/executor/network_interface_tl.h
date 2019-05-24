@@ -97,17 +97,7 @@ private:
         Date_t deadline = RemoteCommandRequest::kNoExpirationDate;
         Date_t start;
 
-        struct Deleter {
-            ConnectionPool::ConnectionHandleDeleter returner;
-            transport::ReactorHandle reactor;
-
-            void operator()(ConnectionPool::ConnectionInterface* ptr) const {
-                reactor->dispatch([ ret = returner, ptr ] { ret(ptr); });
-            }
-        };
-        using ConnHandle = std::unique_ptr<ConnectionPool::ConnectionInterface, Deleter>;
-
-        ConnHandle conn;
+        ConnectionPool::ConnectionHandle conn;
         std::unique_ptr<transport::ReactorTimer> timer;
 
         AtomicWord<bool> done;
@@ -138,7 +128,7 @@ private:
     void _eraseInUseConn(const TaskExecutor::CallbackHandle& handle);
     Future<RemoteCommandResponse> _onAcquireConn(std::shared_ptr<CommandState> state,
                                                  Future<RemoteCommandResponse> future,
-                                                 CommandState::ConnHandle conn,
+                                                 ConnectionPool::ConnectionHandle conn,
                                                  const BatonHandle& baton);
 
     std::string _instanceName;
@@ -151,11 +141,19 @@ private:
     mutable stdx::mutex _mutex;
     ConnectionPool::Options _connPoolOpts;
     std::unique_ptr<NetworkConnectionHook> _onConnectHook;
-    std::unique_ptr<ConnectionPool> _pool;
+    std::shared_ptr<ConnectionPool> _pool;
     Counters _counters;
 
     std::unique_ptr<rpc::EgressMetadataHook> _metadataHook;
-    AtomicWord<bool> _inShutdown;
+
+    // We start in kDefault, transition to kStarted after startup() is complete and enter kStopped
+    // at the first call to shutdown()
+    enum State : int {
+        kDefault,
+        kStarted,
+        kStopped,
+    };
+    AtomicWord<State> _state;
     stdx::thread _ioThread;
 
     stdx::mutex _inProgressMutex;

@@ -35,10 +35,10 @@
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog_entry.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/cursor_manager.h"
@@ -172,7 +172,7 @@ repl::OplogEntry MongoInterfaceStandalone::lookUpOplogEntryByOpTime(OperationCon
 
 bool MongoInterfaceStandalone::isSharded(OperationContext* opCtx, const NamespaceString& nss) {
     Lock::DBLock dbLock(opCtx, nss.db(), MODE_IS);
-    Lock::CollectionLock collLock(opCtx->lockState(), nss.ns(), MODE_IS);
+    Lock::CollectionLock collLock(opCtx, nss, MODE_IS);
     const auto metadata = CollectionShardingState::get(opCtx, nss)->getCurrentMetadata();
     return metadata->isSharded();
 }
@@ -193,7 +193,7 @@ Insert MongoInterfaceStandalone::buildInsertOp(const NamespaceString& nss,
 
 Update MongoInterfaceStandalone::buildUpdateOp(const NamespaceString& nss,
                                                std::vector<BSONObj>&& queries,
-                                               std::vector<BSONObj>&& updates,
+                                               std::vector<write_ops::UpdateModification>&& updates,
                                                bool upsert,
                                                bool multi,
                                                bool bypassDocValidation) {
@@ -242,14 +242,15 @@ void MongoInterfaceStandalone::insert(const boost::intrusive_ptr<ExpressionConte
         "Insert failed: ");
 }
 
-void MongoInterfaceStandalone::update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                      const NamespaceString& ns,
-                                      std::vector<BSONObj>&& queries,
-                                      std::vector<BSONObj>&& updates,
-                                      const WriteConcernOptions& wc,
-                                      bool upsert,
-                                      bool multi,
-                                      boost::optional<OID> targetEpoch) {
+WriteResult MongoInterfaceStandalone::updateWithResult(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    const NamespaceString& ns,
+    std::vector<BSONObj>&& queries,
+    std::vector<write_ops::UpdateModification>&& updates,
+    const WriteConcernOptions& wc,
+    bool upsert,
+    bool multi,
+    boost::optional<OID> targetEpoch) {
     auto writeResults = performUpdates(expCtx->opCtx,
                                        buildUpdateOp(ns,
                                                      std::move(queries),
@@ -257,7 +258,6 @@ void MongoInterfaceStandalone::update(const boost::intrusive_ptr<ExpressionConte
                                                      upsert,
                                                      multi,
                                                      expCtx->bypassDocumentValidation));
-
     // Need to check each result in the batch since the writes are unordered.
     uassertStatusOKWithContext(
         [&writeResults]() {
@@ -269,6 +269,20 @@ void MongoInterfaceStandalone::update(const boost::intrusive_ptr<ExpressionConte
             return Status::OK();
         }(),
         "Update failed: ");
+
+    return writeResults;
+}
+
+void MongoInterfaceStandalone::update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                      const NamespaceString& ns,
+                                      std::vector<BSONObj>&& queries,
+                                      std::vector<write_ops::UpdateModification>&& updates,
+                                      const WriteConcernOptions& wc,
+                                      bool upsert,
+                                      bool multi,
+                                      boost::optional<OID> targetEpoch) {
+    [[maybe_unused]] auto writeResult = updateWithResult(
+        expCtx, ns, std::move(queries), std::move(updates), wc, upsert, multi, targetEpoch);
 }
 
 CollectionIndexUsageMap MongoInterfaceStandalone::getIndexStats(OperationContext* opCtx,
@@ -288,7 +302,7 @@ void MongoInterfaceStandalone::appendLatencyStats(OperationContext* opCtx,
                                                   const NamespaceString& nss,
                                                   bool includeHistograms,
                                                   BSONObjBuilder* builder) const {
-    Top::get(opCtx->getServiceContext()).appendLatencyStats(nss.ns(), includeHistograms, builder);
+    Top::get(opCtx->getServiceContext()).appendLatencyStats(nss, includeHistograms, builder);
 }
 
 Status MongoInterfaceStandalone::appendStorageStats(OperationContext* opCtx,
@@ -384,7 +398,8 @@ unique_ptr<Pipeline, PipelineDeleter> MongoInterfaceStandalone::attachCursorSour
                      Date_t::max(),
                      AutoStatsTracker::LogMode::kUpdateTop);
 
-    PipelineD::prepareCursorSource(autoColl->getCollection(), expCtx->ns, nullptr, pipeline.get());
+    PipelineD::buildAndAttachInnerQueryExecutorToPipeline(
+        autoColl->getCollection(), expCtx->ns, nullptr, pipeline.get());
 
     // Optimize again, since there may be additional optimizations that can be done after adding
     // the initial cursor stage.
@@ -535,7 +550,7 @@ bool MongoInterfaceStandalone::uniqueKeyIsSupportedByIndex(
     // db version or do anything else. We simply want to protect against concurrent modifications to
     // the catalog.
     Lock::DBLock dbLock(opCtx, nss.db(), MODE_IS);
-    Lock::CollectionLock collLock(opCtx->lockState(), nss.ns(), MODE_IS);
+    Lock::CollectionLock collLock(opCtx, nss, MODE_IS);
     auto databaseHolder = DatabaseHolder::get(opCtx);
     auto db = databaseHolder->getDb(opCtx, nss.db());
     auto collection = db ? db->getCollection(opCtx, nss) : nullptr;
@@ -572,6 +587,9 @@ BSONObj MongoInterfaceStandalone::_reportCurrentOpForClient(
                 CurOp::get(*clientOpCtx)->getLockStatsBase())) {
             fillLockerInfo(*lockerInfo, builder);
         }
+
+        auto flowControlStats = clientOpCtx->lockState()->getFlowControlStats();
+        flowControlStats.writeToBuilder(builder);
     }
 
     return builder.obj();

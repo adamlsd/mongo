@@ -42,6 +42,7 @@ env.SConscript(
         'transport',
         'unittest',
         'util',
+        'watchdog',
     ],
     exports=[
         'env',
@@ -130,7 +131,7 @@ env.Library(
         'util/stacktrace.cpp',
         'util/stacktrace_${TARGET_OS_FAMILY}.cpp',
         'util/startup_test.cpp',
-        'util/stringutils.cpp',
+        'util/str.cpp',
         'util/system_clock_source.cpp',
         'util/system_tick_source.cpp',
         'util/text.cpp',
@@ -146,6 +147,7 @@ env.Library(
         '$BUILD_DIR/third_party/shim_abseil',
         '$BUILD_DIR/third_party/shim_allocator',
         '$BUILD_DIR/third_party/shim_boost',
+        '$BUILD_DIR/third_party/shim_fmt',
         '$BUILD_DIR/third_party/shim_intel_decimal128',
         '$BUILD_DIR/third_party/shim_pcrecpp',
         'util/quick_exit',
@@ -159,9 +161,9 @@ js_engine_ver = get_option("js-engine") if get_option("server-js") == "on" else 
 
 # On windows, we need to escape the backslashes in the command-line
 # so that windows paths look okay.
-cmd_line = " ".join(sys.argv).encode('string-escape')
+cmd_line = " ".join(sys.argv).encode('unicode_escape')
 if env.TargetOSIs('windows'):
-    cmd_line = cmd_line.replace('\\', r'\\')
+    cmd_line = cmd_line.replace(b'\\', b'\\')
 
 module_list = '{ %s }' % ', '.join([ '"{0}"'.format(x) for x in env['MONGO_MODULES'] ])
 
@@ -327,14 +329,14 @@ mongod = env.Program(
         'db/catalog/index_key_validate',
         'db/cloner',
         'db/collection_index_usage_tracker',
-        'db/commands/mongod',
         'db/commands/mongod_fcv',
+        'db/commands/mongod',
         'db/commands/server_status_servers',
         'db/common',
         'db/concurrency/lock_manager',
         'db/concurrency/write_conflict_exception',
-        'db/curop',
         'db/curop_metrics',
+        'db/curop',
         'db/db_raii',
         'db/dbdirectclient',
         'db/dbhelpers',
@@ -342,9 +344,9 @@ mongod = env.Program(
         'db/free_mon/free_mon_mongod',
         'db/ftdc/ftdc_mongod',
         'db/fts/ftsmongod',
+        'db/index_builds_coordinator_mongod',
         'db/index/index_access_method',
         'db/index/index_descriptor',
-        'db/index_builds_coordinator_mongod',
         'db/initialize_snmp',
         'db/introspect',
         'db/keys_collection_client_direct',
@@ -374,13 +376,13 @@ mongod = env.Program(
         'db/repl/rs_rollback',
         'db/repl/rslog',
         'db/repl/serveronly_repl',
-        'db/repl/storage_interface',
         'db/repl/storage_interface_impl',
+        'db/repl/storage_interface',
         'db/repl/topology_coordinator',
         'db/rw_concern_d',
         'db/s/balancer',
-        'db/s/commands_db_s',
         'db/s/op_observer_sharding_impl',
+        'db/s/sharding_commands_d',
         'db/s/sharding_runtime_d',
         'db/service_context_d',
         'db/startup_warnings_mongod',
@@ -391,6 +393,7 @@ mongod = env.Program(
         'db/storage/biggie/storage_biggie',
         'db/storage/devnull/storage_devnull',
         'db/storage/ephemeral_for_test/storage_ephemeral_for_test',
+        'db/storage/flow_control_parameters',
         'db/storage/flow_control',
         'db/storage/storage_engine_lock_file',
         'db/storage/storage_engine_metadata',
@@ -401,8 +404,8 @@ mongod = env.Program(
         'db/traffic_recorder',
         'db/ttl_collection_cache',
         'db/ttl_d',
-        'db/update/update_driver',
         'db/update_index_data',
+        'db/update/update_driver',
         'db/views/views_mongod',
         'db/windows_options' if env.TargetOSIs('windows') else [],
         'executor/network_interface_factory',
@@ -422,6 +425,7 @@ mongod = env.Program(
         'util/options_parser/options_parser_init',
         'util/periodic_runner_factory',
         'util/version_impl',
+        'watchdog/watchdog_mongod',
     ],
     INSTALL_ALIAS=[
         'core',
@@ -488,15 +492,19 @@ mongos = env.Program(
     LIBDEPS=[
         'db/audit',
         'db/auth/authmongos',
-        'db/commands/server_status',
         'db/commands/server_status_core',
         'db/commands/server_status_servers',
+        'db/commands/server_status',
         'db/curop',
         'db/ftdc/ftdc_mongos',
+        'db/logical_session_cache_impl',
+        'db/logical_session_cache',
         'db/logical_time_metadata_hook',
         'db/mongodandmongos',
-        'db/server_options',
         'db/server_options_base',
+        'db/server_options',
+        'db/service_liaison_mongos',
+        'db/sessions_collection_sharded',
         'db/startup_warnings_common',
         'db/stats/counters',
         'db/windows_options' if env.TargetOSIs('windows') else [],
@@ -505,10 +513,10 @@ mongos = env.Program(
         's/committed_optime_metadata_hook',
         's/coreshard',
         's/is_mongos',
+        's/query/cluster_cursor_cleanup_job',
         's/sharding_egress_metadata_hook_for_mongos',
         's/sharding_initialization',
         's/sharding_router_api',
-        's/query/cluster_cursor_cleanup_job',
         'transport/message_compressor_options_server',
         'transport/service_entry_point',
         'transport/transport_layer_manager',
@@ -750,7 +758,7 @@ env.Append(MODULE_BANNERS = [distsrc.File('README'),
 
 # If no module has introduced a file named LICENSE-Enterprise.txt then this
 # is a Community build, so inject the AGPL and the Community license
-if sum(itertools.imap(lambda x: x.name == "LICENSE-Enterprise.txt", env['MODULE_BANNERS'])) == 0:
+if sum(map(lambda x: x.name == "LICENSE-Enterprise.txt", env['MODULE_BANNERS'])) == 0:
     env.Append(MODULE_BANNERS = [distsrc.File('LICENSE-Community.txt')])
 
 # All module banners get staged to the top level of the tarfile, so we
@@ -769,7 +777,7 @@ module_banner_transforms = ["--transform %s=$SERVER_DIST_BASENAME" % d for d in 
 # Allow modules to map original file name directories to subdirectories
 # within the archive (e.g. { "src/mongo/db/modules/enterprise/docs": "snmp"})
 archive_addition_transforms = []
-for full_dir, archive_dir in env["ARCHIVE_ADDITION_DIR_MAP"].items():
+for full_dir, archive_dir in list(env["ARCHIVE_ADDITION_DIR_MAP"].items()):
   archive_addition_transforms.append("--transform \"%s=$SERVER_DIST_BASENAME/%s\"" %
                                      (full_dir, archive_dir))
 

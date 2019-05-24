@@ -80,7 +80,7 @@ void OplogTest::setUp() {
  * Assert that oplog only has a single entry and return that oplog entry.
  */
 OplogEntry _getSingleOplogEntry(OperationContext* opCtx) {
-    OplogInterfaceLocal oplogInterface(opCtx, NamespaceString::kRsOplogNamespace.ns());
+    OplogInterfaceLocal oplogInterface(opCtx);
     auto oplogIter = oplogInterface.makeIterator();
     auto opEntry = unittest::assertGet(oplogIter->next());
     ASSERT_EQUALS(ErrorCodes::CollectionIsEmpty, oplogIter->next().getStatus())
@@ -113,7 +113,6 @@ TEST_F(OplogTest, LogOpReturnsOpTimeOnSuccessfulInsertIntoOplogCollection) {
                        kUninitializedStmtId,
                        {},
                        false /* prepare */,
-                       false /* inTxn */,
                        OplogSlot());
         ASSERT_FALSE(opTime.isNull());
         wunit.commit();
@@ -156,12 +155,8 @@ void _checkOplogEntry(const OplogEntry& oplogEntry,
  * the contents of the oplog collection.
  */
 using OpTimeNamespaceStringMap = std::map<OpTime, NamespaceString>;
-using MakeTaskFunction =
-    stdx::function<ThreadPoolInterface::Task(const NamespaceString& nss,
-                                             stdx::mutex* mtx,
-                                             OpTimeNamespaceStringMap* opTimeNssMap,
-                                             unittest::Barrier* barrier)>;
-void _testConcurrentLogOp(const MakeTaskFunction& makeTaskFunction,
+template <typename F>
+void _testConcurrentLogOp(const F& makeTaskFunction,
                           OpTimeNamespaceStringMap* opTimeNssMap,
                           std::vector<OplogEntry>* oplogEntries,
                           std::size_t expectedNumOplogEntries) {
@@ -181,10 +176,14 @@ void _testConcurrentLogOp(const MakeTaskFunction& makeTaskFunction,
     unittest::Barrier barrier(3U);
     const NamespaceString nss1("test1.coll");
     const NamespaceString nss2("test2.coll");
-    ASSERT_OK(pool.schedule(makeTaskFunction(nss1, &mtx, opTimeNssMap, &barrier)))
-        << "Failed to schedule logOp() task for namespace " << nss1;
-    ASSERT_OK(pool.schedule(makeTaskFunction(nss2, &mtx, opTimeNssMap, &barrier)))
-        << "Failed to schedule logOp() task for namespace " << nss2;
+    pool.schedule([&](auto status) mutable {
+        ASSERT_OK(status) << "Failed to schedule logOp() task for namespace " << nss1;
+        makeTaskFunction(nss1, &mtx, opTimeNssMap, &barrier)();
+    });
+    pool.schedule([&](auto status) mutable {
+        ASSERT_OK(status) << "Failed to schedule logOp() task for namespace " << nss2;
+        makeTaskFunction(nss2, &mtx, opTimeNssMap, &barrier)();
+    });
     barrier.countDownAndWait();
 
     // Shut thread pool down.
@@ -194,7 +193,7 @@ void _testConcurrentLogOp(const MakeTaskFunction& makeTaskFunction,
     // Read oplog entries from the oplog collection starting with the entry with the most recent
     // optime.
     auto opCtx = cc().makeOperationContext();
-    OplogInterfaceLocal oplogInterface(opCtx.get(), NamespaceString::kRsOplogNamespace.ns());
+    OplogInterfaceLocal oplogInterface(opCtx.get());
     auto oplogIter = oplogInterface.makeIterator();
     auto nextValue = oplogIter->next();
     while (nextValue.isOK()) {
@@ -238,7 +237,6 @@ OpTime _logOpNoopWithMsg(OperationContext* opCtx,
                         kUninitializedStmtId,
                         {},
                         false /* prepare */,
-                        false /* inTxn */,
                         OplogSlot());
     ASSERT_FALSE(opTime.isNull());
 

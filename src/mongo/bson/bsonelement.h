@@ -359,6 +359,36 @@ public:
      */
     long long safeNumberLongForHash() const;
 
+    /**
+     * Parses a BSONElement of any numeric type into a positive long long, failing if the value
+     * is any of the following:
+     *
+     * - NaN.
+     * - Negative.
+     * - A floating point number which is not integral.
+     * - Too large to fit within a 64-bit signed integer.
+     */
+    StatusWith<long long> parseIntegerElementToNonNegativeLong() const;
+
+    /**
+     * Parses a BSONElement of any numeric type into a long long, failing if the value
+     * is any of the following:
+     *
+     * - NaN.
+     * - A floating point number which is not integral.
+     * - Too large in the positive or negative direction to fit within a 64-bit signed integer.
+     */
+    StatusWith<long long> parseIntegerElementToLong() const;
+
+    /**
+     * Parses a BSONElement of any numeric type into an integer, failing if the value is:
+     *
+     * - NaN
+     * - a non-integral number
+     * - too large in the positive or negative direction to fit in an int
+     */
+    StatusWith<int> parseIntegerElementToInt() const;
+
     /** Retrieve decimal value for the element safely. */
     Decimal128 numberDecimal() const;
 
@@ -384,9 +414,9 @@ public:
         return type() == jstNULL;
     }
 
-    /** Size (length) of a std::string element.
-        You must assure of type std::string first.
-        @return std::string size including terminating null
+    /** Size of a BSON String element.
+        Requires that type() == mongo::String.
+        @return String size including its null-termination.
     */
     int valuestrsize() const {
         return ConstDataView(value()).read<LittleEndian<int>>();
@@ -404,14 +434,17 @@ public:
         return value() + 4;
     }
 
-    /** Get the std::string value of the element.  If not a std::string returns "". */
+    /** Like valuestr, but returns a valid empty string if `type() != mongo::String`. */
     const char* valuestrsafe() const {
         return type() == mongo::String ? valuestr() : "";
     }
-    /** Get the std::string value of the element.  If not a std::string returns "". */
+    /** Like valuestrsafe, but returns StringData. */
+    StringData valueStringDataSafe() const {
+        return type() == mongo::String ? StringData(valuestr(), valuestrsize() - 1) : StringData();
+    }
+    /** Like valuestrsafe, but returns std::string. */
     std::string str() const {
-        return type() == mongo::String ? std::string(valuestr(), valuestrsize() - 1)
-                                       : std::string();
+        return valueStringDataSafe().toString();
     }
 
     /**
@@ -893,28 +926,20 @@ inline long long BSONElement::safeNumberLong() const {
  * same behavior.
  *
  * Historically, safeNumberLong() used a check that would consider 2^63 to be safe to cast to
- * int64_t, but that value actually overflows. That overflow is preserved here.
+ * int64_t, but that cast actually overflows. On most platforms, the undefined cast of 2^63 to
+ * int64_t would roll over to -2^63, and that's the behavior we preserve here explicitly.
  *
  * The new safeNumberLong() function uses a tight bound, allowing it to correctly clamp double 2^63
  * to the max 64-bit int (2^63 - 1).
  */
 inline long long BSONElement::safeNumberLongForHash() const {
-    if (NumberDouble == type()) {
-        double d = numberDouble();
-        if (std::isnan(d)) {
-            return 0;
-        }
-        if (d > (double)std::numeric_limits<long long>::max()) {
-            return std::numeric_limits<long long>::max();
-        }
-        if (d < std::numeric_limits<long long>::min()) {
-            return std::numeric_limits<long long>::min();
-        }
-        return (long long)d;
+    // Rather than relying on the undefined overflow conversion, we maintain compatibility by
+    // explicitly checking for a 2^63 double value and returning -2^63.
+    if (NumberDouble == type() && numberDouble() == BSONElement::kLongLongMaxPlusOneAsDouble) {
+        return std::numeric_limits<long long>::lowest();
+    } else {
+        return safeNumberLong();
     }
-
-    // safeNumberLong() and safeNumberLongForHash() have identical behavior for non-long value.
-    return safeNumberLong();
 }
 
 inline BSONElement::BSONElement() {

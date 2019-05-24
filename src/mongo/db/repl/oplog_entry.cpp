@@ -107,7 +107,8 @@ BSONObj makeOplogEntryDoc(OpTime opTime,
                           const boost::optional<StmtId>& statementId,
                           const boost::optional<OpTime>& prevWriteOpTimeInTransaction,
                           const boost::optional<OpTime>& preImageOpTime,
-                          const boost::optional<OpTime>& postImageOpTime) {
+                          const boost::optional<OpTime>& postImageOpTime,
+                          const boost::optional<bool>& prepare) {
     BSONObjBuilder builder;
     sessionInfo.serialize(&builder);
     builder.append(OplogEntryBase::kTimestampFieldName, opTime.getTimestamp());
@@ -149,6 +150,9 @@ BSONObj makeOplogEntryDoc(OpTime opTime,
     if (postImageOpTime) {
         const BSONObj localObject = postImageOpTime.get().toBSON();
         builder.append(OplogEntryBase::kPostImageOpTimeFieldName, localObject);
+    }
+    if (prepare) {
+        builder.append(OplogEntryBase::kPrepareFieldName, prepare.get());
     }
     return builder.obj();
 }
@@ -193,7 +197,7 @@ ReplOperation OplogEntry::makeDeleteOperation(const NamespaceString& nss,
     return op;
 }
 
-size_t OplogEntry::getReplOperationSize(const ReplOperation& op) {
+size_t OplogEntry::getDurableReplOperationSize(const DurableReplOperation& op) {
     return sizeof(op) + op.getNss().size() + op.getObject().objsize() +
         (op.getObject2() ? op.getObject2()->objsize() : 0);
 }
@@ -233,7 +237,8 @@ OplogEntry::OplogEntry(OpTime opTime,
                        const boost::optional<StmtId>& statementId,
                        const boost::optional<OpTime>& prevWriteOpTimeInTransaction,
                        const boost::optional<OpTime>& preImageOpTime,
-                       const boost::optional<OpTime>& postImageOpTime)
+                       const boost::optional<OpTime>& postImageOpTime,
+                       const boost::optional<bool>& prepare)
     : OplogEntry(makeOplogEntryDoc(opTime,
                                    hash,
                                    opType,
@@ -249,7 +254,8 @@ OplogEntry::OplogEntry(OpTime opTime,
                                    statementId,
                                    prevWriteOpTimeInTransaction,
                                    preImageOpTime,
-                                   postImageOpTime)) {}
+                                   postImageOpTime,
+                                   prepare)) {}
 
 bool OplogEntry::isCommand() const {
     return getOpType() == OpTypeEnum::kCommand;
@@ -274,14 +280,15 @@ bool OplogEntry::isCrudOpType() const {
 }
 
 bool OplogEntry::shouldPrepare() const {
-    return getPrepare() && *getPrepare();
+    return getObject().hasField("prepare") && getObject().getBoolField("prepare");
 }
 
 BSONElement OplogEntry::getIdElement() const {
     invariant(isCrudOpType());
     if (getOpType() == OpTypeEnum::kUpdate) {
-        // We cannot use getOperationToApply() here because the BSONObj will go out out of scope
-        // after we return the BSONElement.
+        // We cannot use getObjectContainingDocumentKey() here because the BSONObj will go out
+        // of scope after we return the BSONElement.
+        fassert(31080, getObject2() != boost::none);
         return getObject2()->getField("_id");
     } else {
         return getObject()["_id"];
@@ -289,15 +296,17 @@ BSONElement OplogEntry::getIdElement() const {
 }
 
 BSONObj OplogEntry::getOperationToApply() const {
-    if (getOpType() != OpTypeEnum::kUpdate) {
+    return getObject();
+}
+
+BSONObj OplogEntry::getObjectContainingDocumentKey() const {
+    invariant(isCrudOpType());
+    if (getOpType() == OpTypeEnum::kUpdate) {
+        fassert(31081, getObject2() != boost::none);
+        return *getObject2();
+    } else {
         return getObject();
     }
-
-    if (auto optionalObj = getObject2()) {
-        return *optionalObj;
-    }
-
-    return {};
 }
 
 OplogEntry::CommandType OplogEntry::getCommandType() const {

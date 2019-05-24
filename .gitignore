@@ -76,6 +76,7 @@ scratch
 /loadgen
 /mongo
 /mongobridge
+/mongocryptd
 /mongod
 /mongoed
 /mongogrid
@@ -174,3 +175,6 @@ local.properties
 
 compile_commands.json
 generated_resmoke_config
+
+# Code review tool config
+codereview.rc

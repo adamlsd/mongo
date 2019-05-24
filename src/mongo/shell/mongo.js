@@ -1,11 +1,6 @@
 // mongo.js
 
-// NOTE 'Mongo' may be defined here or in MongoJS.cpp.  Add code to init, not to this constructor.
-if (typeof Mongo == "undefined") {
-    Mongo = function(host) {
-        this.init(host);
-    };
-}
+// Defined in mongo.cpp
 
 if (!Mongo.prototype) {
     throw Error("Mongo.prototype not defined");
@@ -544,7 +539,8 @@ Mongo.prototype.startSession = function startSession(options = {}) {
     // Only log this message if we are running a test
     if (typeof TestData === "object" && TestData.testName) {
         jsTest.log("New session started with sessionID: " +
-                   tojson(newDriverSession.getSessionId()));
+                   tojsononeline(newDriverSession.getSessionId()) + " and options: " +
+                   tojsononeline(options));
     }
 
     return newDriverSession;

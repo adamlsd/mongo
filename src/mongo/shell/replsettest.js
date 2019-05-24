@@ -279,7 +279,8 @@ var ReplSetTest = function(opts) {
                           "/" + node.name);
                 }
 
-                if (status.members[i].name == node.host || status.members[i].name == node.name) {
+                if (status.members[i].name.toLowerCase() == node.host.toLowerCase() ||
+                    status.members[i].name.toLowerCase() == node.name.toLowerCase()) {
                     for (var j = 0; j < states.length; j++) {
                         if (printStatus) {
                             print("Status -- " + " current state: " + status.members[i][ind] +
@@ -461,6 +462,13 @@ var ReplSetTest = function(opts) {
     this.getPort = function(n) {
         var n = this.getNodeId(n);
         return this.ports[n];
+    };
+
+    this.getDbPath = function(node) {
+        // Get a replica set node (check for use of bridge).
+        const n = this.getNodeId(node);
+        const replNode = _useBridge ? _unbridgedNodes[n] : this.nodes[n];
+        return replNode.dbpath;
     };
 
     this._addPath = function(p) {
@@ -1494,8 +1502,7 @@ var ReplSetTest = function(opts) {
         // Run a no-op command and wait for it to be applied on secondaries. Due to the asynchronous
         // completion nature of indexes on secondaries, we can guarantee an index build is complete
         // on all secondaries once all secondaries have applied this collMod command.
-        assert.commandWorked(this.getPrimary().getDB(dbName).runCommand(
-            {collMod: collName, usePowerOf2Sizes: true}));
+        assert.commandWorked(this.getPrimary().getDB(dbName).runCommand({collMod: collName}));
         this.awaitReplication();
     };
 
@@ -1699,16 +1706,11 @@ var ReplSetTest = function(opts) {
                     // filter to take advantage of the fact that a simple 'collection' filter will
                     // skip view evaluation, and therefore won't fail on an invalid view.
                     if (!collInfo.name.startsWith('system.')) {
-                        // 'usePowerOf2Sizes' is ignored by the server so no actual collection
-                        // modification takes place. We intentionally await replication without
-                        // doing any I/O to avoid any overhead from allocating or deleting data
-                        // files when using the MMAPv1 storage engine. We call awaitReplication()
-                        // later on to ensure the collMod is replicated to all nodes.
+                        // We intentionally await replication without doing any I/O to avoid any
+                        // overhead. We call awaitReplication() later on to ensure the collMod
+                        // is replicated to all nodes.
                         try {
-                            assert.commandWorked(dbHandle.runCommand({
-                                collMod: collInfo.name,
-                                usePowerOf2Sizes: true,
-                            }));
+                            assert.commandWorked(dbHandle.runCommand({collMod: collInfo.name}));
                         } catch (e) {
                             // Ignore NamespaceNotFound errors because a background thread could
                             // have dropped the collection after getCollectionInfos but before
@@ -1954,6 +1956,11 @@ var ReplSetTest = function(opts) {
                                     primaryInfo.info.uuid = null;
                                     secondaryInfo.info.uuid = null;
                                 }
+
+                                // Ignore the 'flags' collection option as it was removed in 4.2
+                                primaryInfo.options.flags = null;
+                                secondaryInfo.options.flags = null;
+
                                 if (!bsonBinaryEqual(secondaryInfo, primaryInfo)) {
                                     print(msgPrefix +
                                           ', the primary and secondary have different ' +
@@ -2505,6 +2512,24 @@ var ReplSetTest = function(opts) {
             }
         }
 
+        // Make shutdown faster in tests, especially when election handoff has no viable candidate.
+        // Ignore errors from setParameter, perhaps it's a pre-4.1.10 mongod.
+        if (_callIsMaster()) {
+            asCluster(this._liveNodes, () => {
+                for (let node of this._liveNodes) {
+                    try {
+                        assert.commandWorked(node.adminCommand({
+                            setParameter: 1,
+                            waitForStepDownOnNonCommandShutdown: false,
+                        }));
+                    } catch (e) {
+                        print("Error in setParameter for waitForStepDownOnNonCommandShutdown:");
+                        print(e);
+                    }
+                }
+            });
+        }
+
         for (var i = 0; i < this.ports.length; i++) {
             this.stop(i, signal, opts);
         }
@@ -2534,6 +2559,10 @@ var ReplSetTest = function(opts) {
 
     /**
      * Wait for a state indicator to go to a particular state or states.
+     *
+     * Note that this waits for the state as indicated by the primary node.  If you want to wait for
+     * a node to actually reach SECONDARY state, as reported by itself, use awaitSecondaryNodes
+     * instead.
      *
      * @param node is a single node or list of nodes, by id or conn
      * @param state is a single state or list of states
@@ -2569,7 +2598,7 @@ var ReplSetTest = function(opts) {
         print('Starting new replica set ' + self.name);
 
         self.useHostName = opts.useHostName == undefined ? true : opts.useHostName;
-        self.host = self.useHostName ? (opts.host || getHostName()) : 'localhost';
+        self.host = (self.useHostName ? (opts.host || getHostName()) : 'localhost').toLowerCase();
         self.oplogSize = opts.oplogSize || 40;
         self.useSeedList = opts.useSeedList || false;
         self.keyFile = opts.keyFile;
@@ -2665,7 +2694,7 @@ var ReplSetTest = function(opts) {
         self.ports = existingNodes.map(node => node.split(':')[1]);
         self.nodes = existingNodes.map(node => new Mongo(node));
         self.waitForKeys = false;
-        self.host = existingNodes[0].split(':')[0];
+        self.host = existingNodes[0].split(':')[0].toLowerCase();
         self.name = conf._id;
     }
 

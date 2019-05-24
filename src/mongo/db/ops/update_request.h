@@ -33,12 +33,12 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/ops/write_ops_parsers.h"
+#include "mongo/db/pipeline/runtime_constants_gen.h"
 #include "mongo/db/query/explain.h"
-#include "mongo/util/mongoutils/str.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
-
-namespace str = mongoutils::str;
 
 class FieldRef;
 
@@ -103,12 +103,20 @@ public:
         return _collation;
     }
 
-    inline void setUpdates(const BSONObj& updates) {
-        _updates = updates;
+    inline void setUpdateModification(const write_ops::UpdateModification& updateMod) {
+        _updateMod = updateMod;
     }
 
-    inline const BSONObj& getUpdates() const {
-        return _updates;
+    inline const write_ops::UpdateModification& getUpdateModification() const {
+        return _updateMod;
+    }
+
+    inline void setRuntimeConstants(const RuntimeConstants& runtimeConstants) {
+        _runtimeConstants = runtimeConstants;
+    }
+
+    inline const boost::optional<RuntimeConstants>& getRuntimeConstants() const {
+        return _runtimeConstants;
     }
 
     inline void setArrayFilters(const std::vector<BSONObj>& arrayFilters) {
@@ -208,8 +216,12 @@ public:
         builder << " projection: " << _proj;
         builder << " sort: " << _sort;
         builder << " collation: " << _collation;
-        builder << " updates: " << _updates;
+        builder << " updateModification: " << _updateMod.toString();
         builder << " stmtId: " << _stmtId;
+
+        if (_runtimeConstants) {
+            builder << "runtimeConstants: " << _runtimeConstants->toBSON().toString();
+        }
 
         builder << " arrayFilters: [";
         bool first = true;
@@ -247,7 +259,10 @@ private:
     BSONObj _collation;
 
     // Contains the modifiers to apply to matched objects, or a replacement document.
-    BSONObj _updates;
+    write_ops::UpdateModification _updateMod;
+
+    // Contains any constant values which may be required by the query or update operation.
+    boost::optional<RuntimeConstants> _runtimeConstants;
 
     // Filters to specify which array elements should be updated.
     std::vector<BSONObj> _arrayFilters;

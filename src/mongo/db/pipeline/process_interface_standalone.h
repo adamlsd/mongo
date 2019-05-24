@@ -65,11 +65,20 @@ public:
     void update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                 const NamespaceString& ns,
                 std::vector<BSONObj>&& queries,
-                std::vector<BSONObj>&& updates,
+                std::vector<write_ops::UpdateModification>&& updates,
                 const WriteConcernOptions& wc,
                 bool upsert,
                 bool multi,
                 boost::optional<OID> targetEpoch) override;
+    WriteResult updateWithResult(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                 const NamespaceString& ns,
+                                 std::vector<BSONObj>&& queries,
+                                 std::vector<write_ops::UpdateModification>&& updates,
+                                 const WriteConcernOptions& wc,
+                                 bool upsert,
+                                 bool multi,
+                                 boost::optional<OID> targetEpoch) override;
+
     CollectionIndexUsageMap getIndexStats(OperationContext* opCtx, const NamespaceString& ns) final;
     void appendLatencyStats(OperationContext* opCtx,
                             const NamespaceString& nss,
@@ -154,7 +163,7 @@ protected:
      */
     Update buildUpdateOp(const NamespaceString& nss,
                          std::vector<BSONObj>&& queries,
-                         std::vector<BSONObj>&& updates,
+                         std::vector<write_ops::UpdateModification>&& updates,
                          bool upsert,
                          bool multi,
                          bool bypassDocValidation);

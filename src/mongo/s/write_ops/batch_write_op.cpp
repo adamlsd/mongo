@@ -35,6 +35,7 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/ops/write_ops_parsers.h"
 #include "mongo/s/transaction_router.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
@@ -47,11 +48,6 @@ using std::stringstream;
 using std::vector;
 
 namespace {
-
-// Conservative overhead per element contained in the write batch. This value was calculated as 1
-// byte (element type) + 5 bytes (max string encoding of the array index encoded as string and the
-// maximum key is 99999) + 1 byte (zero terminator) = 7 bytes
-const int kBSONArrayPerElementOverheadBytes = 7;
 
 struct WriteErrorDetailComp {
     bool operator()(const WriteErrorDetail* errorA, const WriteErrorDetail* errorB) const {
@@ -242,17 +238,15 @@ void trackErrors(const ShardEndpoint& endpoint,
 }  // namespace
 
 BatchWriteOp::BatchWriteOp(OperationContext* opCtx, const BatchedCommandRequest& clientRequest)
-    : _opCtx(opCtx), _clientRequest(clientRequest), _batchTxnNum(_opCtx->getTxnNumber()) {
+    : _opCtx(opCtx),
+      _clientRequest(clientRequest),
+      _batchTxnNum(_opCtx->getTxnNumber()),
+      _inTransaction(TransactionRouter::get(opCtx) != nullptr) {
     _writeOps.reserve(_clientRequest.sizeWriteOps());
 
     for (size_t i = 0; i < _clientRequest.sizeWriteOps(); ++i) {
-        _writeOps.emplace_back(BatchItemRef(&_clientRequest, i));
+        _writeOps.emplace_back(BatchItemRef(&_clientRequest, i), _inTransaction);
     }
-}
-
-BatchWriteOp::~BatchWriteOp() {
-    // Caller's responsibility to dispose of TargetedBatches
-    invariant(_targeted.empty());
 }
 
 Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
@@ -318,17 +312,19 @@ Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
         Status targetStatus = writeOp.targetWrites(_opCtx, targeter, &writes);
 
         if (!targetStatus.isOK()) {
-            // Throw any error encountered during a transaction, since the whole batch must fail.
-            if (TransactionRouter::get(_opCtx)) {
-                forgetTargetedBatchesOnTransactionAbortingError();
-                uassertStatusOK(targetStatus.withContext(
-                    str::stream() << "Encountered targeting error during a transaction"));
-            }
-
             WriteErrorDetail targetError;
             buildTargetError(targetStatus, &targetError);
 
-            if (!recordTargetErrors) {
+            if (TransactionRouter::get(_opCtx)) {
+                writeOp.setOpError(targetError);
+                ++numTargetErrors;
+
+                // Cleanup all the writes we have targetted in this call so far since we are going
+                // to abort the entire transaction.
+                _cancelBatches(targetError, std::move(batchMap));
+
+                return targetStatus;
+            } else if (!recordTargetErrors) {
                 // Cancel current batch state with an error
                 _cancelBatches(targetError, std::move(batchMap));
                 return targetStatus;
@@ -367,8 +363,9 @@ Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
 
         // Account the array overhead once for the actual updates array and once for the statement
         // ids array, if retryable writes are used
-        const int writeSizeBytes = getWriteSizeBytes(writeOp) + kBSONArrayPerElementOverheadBytes +
-            (_batchTxnNum ? kBSONArrayPerElementOverheadBytes + 4 : 0);
+        const int writeSizeBytes = getWriteSizeBytes(writeOp) +
+            write_ops::kWriteCommandBSONArrayPerElementOverheadBytes +
+            (_batchTxnNum ? write_ops::kWriteCommandBSONArrayPerElementOverheadBytes + 4 : 0);
 
         if (wouldMakeBatchesTooBig(writes, writeSizeBytes, batchMap)) {
             invariant(!batchMap.empty());
@@ -484,12 +481,15 @@ BatchedCommandRequest BatchWriteOp::buildBatchRequest(
                     insertOp.setDocuments(std::move(*insertDocs));
                     return insertOp;
                 }());
-            case BatchedCommandRequest::BatchType_Update:
+            case BatchedCommandRequest::BatchType_Update: {
                 return BatchedCommandRequest([&] {
                     write_ops::Update updateOp(_clientRequest.getNS());
                     updateOp.setUpdates(std::move(*updates));
+                    // Each child batch inherits its runtime constants from the parent batch.
+                    updateOp.setRuntimeConstants(_clientRequest.getRuntimeConstants());
                     return updateOp;
                 }());
+            }
             case BatchedCommandRequest::BatchType_Delete:
                 return BatchedCommandRequest([&] {
                     write_ops::Delete deleteOp(_clientRequest.getNS());
@@ -707,7 +707,9 @@ bool BatchWriteOp::isFinished() {
 }
 
 void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
-    dassert(isFinished());
+    // Note: we aggresively abandon the batch when encountering errors during transactions, so
+    // it can be in a state that is not "finished" even for unordered batches.
+    dassert(_inTransaction || isFinished());
 
     // Result is OK
     batchResp->setStatus(Status::OK());

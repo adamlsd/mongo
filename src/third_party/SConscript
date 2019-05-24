@@ -32,15 +32,47 @@ thirdPartyEnvironmentModifications = {
    }
 }
 
-if not use_system_version_of_library('tcmalloc'):
-    # Only gperftools-2.5 is covered here. gperftools-2.7 does something different further
-    # down in the file. Its SConscript internally calculates a CPPPATH for its consumers.
-    if gperftoolsSuffix == '-2.5':
-        thirdPartyEnvironmentModifications['gperftools'] = {
-            'CPPPATH' : ['#/src/third_party/gperftools-2.5/src']
-        }
+def injectMozJS(thisEnv):
+    thisEnv.InjectThirdParty(libraries=['mozjs'])
+
+    if thisEnv.TargetOSIs('windows'):
+        thisEnv.Append(
+            CCFLAGS=[
+                '/FI', 'js-config.h',
+                '/FI', 'js/RequiredDefines.h',
+            ],
+            CPPDEFINES=[
+                '_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING',
+            ]
+        )
     else:
-        thirdPartyEnvironmentModifications['gperftools'] = {}
+        thisEnv.Append(
+            CCFLAGS=[
+                '-include', 'js-config.h',
+                '-include', 'js/RequiredDefines.h',
+            ],
+            CXXFLAGS=[
+                '-Wno-non-virtual-dtor',
+                '-Wno-invalid-offsetof',
+            ],
+        )
+
+    thisEnv.Prepend(CPPDEFINES=[
+        'JS_USE_CUSTOM_ALLOCATOR',
+        'STATIC_JS_API=1',
+    ])
+
+    if get_option('spider-monkey-dbg') == "on":
+        thisEnv.Prepend(CPPDEFINES=[
+            'DEBUG',
+            'JS_DEBUG',
+        ])
+
+env.AddMethod(injectMozJS, 'InjectMozJS');
+
+if not use_system_version_of_library('tcmalloc'):
+    # GPerftools does this slightly differently than the others.
+    thirdPartyEnvironmentModifications['gperftools'] = {}
 
 if not use_system_version_of_library('pcre'):
     thirdPartyEnvironmentModifications['pcre'] = {
@@ -163,18 +195,37 @@ env.AddMethod(injectThirdParty, 'InjectThirdParty')
 env = env.Clone()
 
 murmurEnv = env.Clone()
+murmurEnv.InjectThirdParty(libraries=['fmt'])
 murmurEnv.SConscript('murmurhash3/SConscript', exports={ 'env' : murmurEnv })
 
 
 s2Env = env.Clone()
-s2Env.InjectThirdParty(libraries=['s2', 'boost', 'abseil-cpp'])
+s2Env.InjectThirdParty(libraries=['s2', 'boost', 'abseil-cpp', 'fmt'])
 s2Env.InjectMongoIncludePaths()
 s2Env.SConscript('s2/SConscript', exports={'env' : s2Env})
 
-fmtEnv = env.Clone()
-fmtEnv.InjectThirdParty(libraries=['fmt'])
-fmtEnv.InjectMongoIncludePaths()
-fmtEnv.SConscript('fmt/SConscript', exports={'env' : fmtEnv})
+
+if use_system_version_of_library("fmt"):
+    fmtEnv = env.Clone(
+        SYSLIBDEPS=[
+            env['LIBDEPS_FMT_SYSLIBDEP'],
+        ])
+else:
+    fmtEnv = env.Clone()
+    fmtEnv.InjectThirdParty(libraries=['fmt'])
+    fmtEnv.InjectMongoIncludePaths()
+    fmtEnv.SConscript('fmt/SConscript', exports={'env' : fmtEnv})
+    fmtEnv = fmtEnv.Clone(
+        LIBDEPS_INTERFACE=[
+            'fmt/fmt',
+        ])
+
+fmtEnv.Library(
+    target="shim_fmt",
+    source=[
+        'shim_fmt.cpp',
+    ])
+
 
 if use_system_version_of_library("pcre"):
     pcreEnv = env.Clone(

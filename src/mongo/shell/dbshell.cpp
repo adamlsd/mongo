@@ -32,6 +32,7 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/filesystem/operations.hpp>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 #include <pcrecpp.h>
@@ -45,6 +46,7 @@
 #include "mongo/client/mongo_uri.h"
 #include "mongo/db/auth/sasl_command_constants.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/server_options.h"
 #include "mongo/logger/console_appender.h"
@@ -68,7 +70,7 @@
 #include "mongo/util/signal_handlers.h"
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/startup_test.h"
-#include "mongo/util/stringutils.h"
+#include "mongo/util/str.h"
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
 
@@ -102,6 +104,15 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion42, ("EndStar
 (InitializerContext* context) {
     mongo::serverGlobalParams.featureCompatibility.setVersion(
         ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+    return Status::OK();
+}
+
+// Initialize the testCommandsEnabled server parameter to true since the mongo shell does not have
+// any test-only commands that could cause harm to the server, and it may be necessary to enable
+// this to test certain features, for example through benchRun (see SERVER-40419).
+MONGO_INITIALIZER_WITH_PREREQUISITES(EnableShellTestCommands, ("EndStartupOptionSetup"))
+(InitializerContext* context) {
+    setTestCommandsEnabled(true);
     return Status::OK();
 }
 const auto kAuthParam = "authSource"s;
@@ -232,7 +243,10 @@ void shellHistoryAdd(const char* line) {
     // via runCommand.
     static pcrecpp::RE hiddenCommands(
         "(run|admin)Command\\s*\\(\\s*{\\s*(createUser|updateUser)\\s*:");
-    if (!hiddenHelpers.PartialMatch(line) && !hiddenCommands.PartialMatch(line)) {
+
+    static pcrecpp::RE hiddenFLEConstructor(".*Mongo\\(([\\s\\S]*)secretAccessKey([\\s\\S]*)");
+    if (!hiddenHelpers.PartialMatch(line) && !hiddenCommands.PartialMatch(line) &&
+        !hiddenFLEConstructor.PartialMatch(line)) {
         linenoiseHistoryAdd(line);
     }
 }
@@ -844,7 +858,7 @@ int _main(int argc, char* argv[], char** envp) {
     // Parse the output of getURIFromArgs which will determine if --host passed in a URI
     MongoURI parsedURI;
     parsedURI = uassertStatusOK(MongoURI::parse(getURIFromArgs(
-        cmdlineURI, escape(shellGlobalParams.dbhost), escape(shellGlobalParams.port))));
+        cmdlineURI, str::escape(shellGlobalParams.dbhost), str::escape(shellGlobalParams.port))));
 
     // TODO: add in all of the relevant shellGlobalParams to parsedURI
     parsedURI.setOptionIfNecessary("compressors"s, shellGlobalParams.networkMessageCompressors);
@@ -855,14 +869,14 @@ int _main(int argc, char* argv[], char** envp) {
 
     if (const auto authMechanisms = parsedURI.getOption("authMechanism")) {
         std::stringstream ss;
-        ss << "DB.prototype._defaultAuthenticationMechanism = \"" << escape(authMechanisms.get())
-           << "\";" << std::endl;
+        ss << "DB.prototype._defaultAuthenticationMechanism = \""
+           << str::escape(authMechanisms.get()) << "\";" << std::endl;
         mongo::shell_utils::dbConnect += ss.str();
     }
 
     if (const auto gssapiServiveName = parsedURI.getOption("gssapiServiceName")) {
         std::stringstream ss;
-        ss << "DB.prototype._defaultGssapiServiceName = \"" << escape(gssapiServiveName.get())
+        ss << "DB.prototype._defaultGssapiServiceName = \"" << str::escape(gssapiServiveName.get())
            << "\";" << std::endl;
         mongo::shell_utils::dbConnect += ss.str();
     }

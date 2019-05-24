@@ -47,8 +47,8 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/bufreader.h"
 #include "mongo/util/hex.h"
-#include "mongo/util/mongoutils/str.h"
 #include "mongo/util/shared_buffer.h"
+#include "mongo/util/str.h"
 
 namespace mongo {
 namespace biggie {
@@ -164,7 +164,7 @@ SortedDataBuilderInterface::SortedDataBuilderInterface(OperationContext* opCtx,
                                                        Ordering order,
                                                        const std::string& prefix,
                                                        const std::string& identEnd,
-                                                       const std::string& collectionNamespace,
+                                                       const NamespaceString& collectionNamespace,
                                                        const std::string& indexName,
                                                        const BSONObj& keyPattern)
     : _opCtx(opCtx),

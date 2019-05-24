@@ -92,6 +92,8 @@ public:
 
     repl::MemberState getMemberState() const override;
 
+    bool canAcceptNonLocalWrites() const override;
+
     std::vector<repl::MemberData> getMemberData() const override;
 
     Status waitForMemberState(repl::MemberState, Milliseconds) override;
@@ -165,7 +167,8 @@ public:
 
     Status processReplSetGetStatus(BSONObjBuilder*, ReplSetGetStatusResponseStyle) override;
 
-    void fillIsMasterForReplSet(repl::IsMasterResponse*) override;
+    void fillIsMasterForReplSet(repl::IsMasterResponse*,
+                                const repl::SplitHorizon::Parameters& horizon) override;
 
     void appendSlaveInfoData(BSONObjBuilder*) override;
 
@@ -175,7 +178,8 @@ public:
 
     void processReplSetMetadata(const rpc::ReplSetMetadata&) override;
 
-    void advanceCommitPoint(const repl::OpTime& committedOpTime, bool fromSyncSource) override;
+    void advanceCommitPoint(const repl::OpTimeAndWallTime& committedOpTimeAndWallTime,
+                            bool fromSyncSource) override;
 
     void cancelAndRescheduleElectionTimeout() override;
 
@@ -212,6 +216,8 @@ public:
 
     repl::OpTime getLastCommittedOpTime() const override;
 
+    repl::OpTimeAndWallTime getLastCommittedOpTimeAndWallTime() const override;
+
     Status processReplSetRequestVotes(OperationContext*,
                                       const repl::ReplSetRequestVotesArgs&,
                                       repl::ReplSetRequestVotesResponse*) override;
@@ -230,6 +236,8 @@ public:
     Status updateTerm(OperationContext*, long long) override;
 
     repl::OpTime getCurrentCommittedSnapshotOpTime() const override;
+
+    repl::OpTimeAndWallTime getCurrentCommittedSnapshotOpTimeAndWallTime() const override;
 
     void waitUntilSnapshotCommitted(OperationContext*, const Timestamp&) override;
 

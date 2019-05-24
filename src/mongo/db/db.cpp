@@ -592,7 +592,7 @@ ExitCode _initAndListen(int listenPort) {
             log() << " For more info see http://dochub.mongodb.org/core/ttlcollections";
             log() << startupWarningsLog;
         } else {
-            startTTLBackgroundJob();
+            startTTLBackgroundJob(serviceContext);
         }
 
         if (replSettings.usingReplSets() || !gInternalValidateFeaturesAsMaster) {
@@ -615,7 +615,7 @@ ExitCode _initAndListen(int listenPort) {
     // release periodically in order to avoid storage cache pressure build up.
     if (storageEngine->supportsReadConcernSnapshot()) {
         startPeriodicThreadToAbortExpiredTransactions(serviceContext);
-        startPeriodicThreadToDecreaseSnapshotHistoryCachePressure(serviceContext);
+        startPeriodicThreadToDecreaseSnapshotHistoryIfNotNeeded(serviceContext);
     }
 
     // Set up the logical session cache

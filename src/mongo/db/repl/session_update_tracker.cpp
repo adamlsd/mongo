@@ -65,12 +65,10 @@ OplogEntry createOplogEntryForTransactionTableUpdate(repl::OpTime opTime,
                             {},    // sessionInfo
                             true,  // upsert
                             wallClockTime,
-                            boost::none,  // statementId
-                            boost::none,  // prevWriteOpTime
-                            boost::none,  // preImangeOpTime
-                            boost::none,  // postImageOpTime
-                            boost::none   // prepare
-                            );
+                            boost::none,   // statementId
+                            boost::none,   // prevWriteOpTime
+                            boost::none,   // preImangeOpTime
+                            boost::none);  // postImageOpTime
 }
 
 /**
@@ -117,7 +115,6 @@ bool isTransactionEntry(OplogEntry entry) {
     }
 
     return entry.isPartialTransaction() ||
-        entry.getCommandType() == repl::OplogEntry::CommandType::kPrepareTransaction ||
         entry.getCommandType() == repl::OplogEntry::CommandType::kAbortTransaction ||
         entry.getCommandType() == repl::OplogEntry::CommandType::kCommitTransaction ||
         entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps;
@@ -289,15 +286,7 @@ boost::optional<OplogEntry> SessionUpdateTracker::_createTransactionTableUpdateF
         }
         switch (entry.getCommandType()) {
             case repl::OplogEntry::CommandType::kApplyOps:
-                // The single applyOps transaction oplog format will have a 'prepare' boolean
-                // flag at the root level of the oplog entry. The multi-oplog-entry format
-                // only has the flag in the applyOps object.
-                // TODO (SERVER-39809): Remove this check once we remove the old applyOps
-                // format.
-                if (entry.getPrepare() && *entry.getPrepare()) {
-                    newTxnRecord.setState(DurableTxnStateEnum::kPrepared);
-                    newTxnRecord.setStartOpTime(entry.getOpTime());
-                } else if (entry.shouldPrepare()) {
+                if (entry.shouldPrepare()) {
                     newTxnRecord.setState(DurableTxnStateEnum::kPrepared);
                     if (entry.getPrevWriteOpTimeInTransaction()->isNull()) {
                         // The prepare oplog entry is the first operation of the transaction.
@@ -309,17 +298,6 @@ boost::optional<OplogEntry> SessionUpdateTracker::_createTransactionTableUpdateF
                     }
                 } else {
                     newTxnRecord.setState(DurableTxnStateEnum::kCommitted);
-                }
-                break;
-            case repl::OplogEntry::CommandType::kPrepareTransaction:
-                newTxnRecord.setState(DurableTxnStateEnum::kPrepared);
-                if (entry.getPrevWriteOpTimeInTransaction()->isNull()) {
-                    // The 'prepareTransaction' entry is the first operation of the transaction.
-                    newTxnRecord.setStartOpTime(entry.getOpTime());
-                } else {
-                    // Update the transaction record using $set to avoid overwriting the
-                    // startOpTime.
-                    return BSON("$set" << newTxnRecord.toBSON());
                 }
                 break;
             case repl::OplogEntry::CommandType::kCommitTransaction:

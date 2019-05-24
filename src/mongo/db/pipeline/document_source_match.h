@@ -90,6 +90,7 @@ public:
                 DiskUseRequirement::kNoDiskUse,
                 FacetRequirement::kAllowed,
                 TransactionRequirement::kAllowed,
+                LookupRequirement::kAllowed,
                 ChangeStreamRequirement::kWhitelist};
     }
 
@@ -164,7 +165,7 @@ public:
     std::pair<boost::intrusive_ptr<DocumentSourceMatch>, boost::intrusive_ptr<DocumentSourceMatch>>
     splitSourceBy(const std::set<std::string>& fields, const StringMap<std::string>& renames);
 
-    boost::optional<MergingLogic> mergingLogic() final {
+    boost::optional<DistributedPlanLogic> distributedPlanLogic() final {
         return boost::none;
     }
 

@@ -65,7 +65,7 @@ std::vector<std::string> mergeOnFieldsParseFromBSON(const BSONElement& elem) {
     std::vector<std::string> fields;
 
     uassert(51186,
-            "{} 'into' field  must be either a string or an array of strings, "
+            "{} 'on' field  must be either a string or an array of strings, "
             "but found {}"_format(DocumentSourceMerge::kStageName, typeName(elem.type())),
             elem.type() == BSONType::String || elem.type() == BSONType::Array);
 
@@ -78,7 +78,7 @@ std::vector<std::string> mergeOnFieldsParseFromBSON(const BSONElement& elem) {
         while (iter.more()) {
             const BSONElement matchByElem = iter.next();
             uassert(51134,
-                    "{} 'on' array elements must be strings, but found "_format(
+                    "{} 'on' array elements must be strings, but found {}"_format(
                         DocumentSourceMerge::kStageName, typeName(matchByElem.type())),
                     matchByElem.type() == BSONType::String);
             fields.push_back(matchByElem.str());

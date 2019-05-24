@@ -336,21 +336,25 @@ namespace {
  */
 void appendSessionInfo(OperationContext* opCtx,
                        BSONObjBuilder* builder,
-                       StmtId statementId,
+                       boost::optional<StmtId> statementId,
                        const OperationSessionInfo& sessionInfo,
                        const OplogLink& oplogLink) {
     if (!sessionInfo.getTxnNumber()) {
         return;
     }
 
-    // Note: certain operations, like implicit collection creation will not have a stmtId.
+    // Note: certain non-transaction operations, like implicit collection creation will have an
+    // uninitialized statementId.
     if (statementId == kUninitializedStmtId) {
         return;
     }
 
     sessionInfo.serialize(builder);
 
-    builder->append(OplogEntryBase::kStatementIdFieldName, statementId);
+    // Only non-transaction operations will have a statementId.
+    if (statementId) {
+        builder->append(OplogEntryBase::kStatementIdFieldName, *statementId);
+    }
     oplogLink.prevOpTime.append(builder,
                                 OplogEntryBase::kPrevWriteOpTimeInTransactionFieldName.toString());
 
@@ -375,9 +379,8 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
                             OpTime optime,
                             Date_t wallTime,
                             const OperationSessionInfo& sessionInfo,
-                            StmtId statementId,
-                            const OplogLink& oplogLink,
-                            bool prepare) {
+                            boost::optional<StmtId> statementId,
+                            const OplogLink& oplogLink) {
     BSONObjBuilder b(256);
 
     b.append("ts", optime.getTimestamp());
@@ -403,10 +406,6 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
     b.appendDate(OplogEntryBase::kWallClockTimeFieldName, wallTime);
 
     appendSessionInfo(opCtx, &b, statementId, sessionInfo, oplogLink);
-
-    if (prepare) {
-        b.appendBool(OplogEntryBase::kPrepareFieldName, true);
-    }
 
     return OplogDocWriter(OplogDocWriter(b.obj(), obj));
 }
@@ -477,7 +476,7 @@ void _logOpsInner(OperationContext* opCtx,
 
             // We set the last op on the client to 'finalOpTime', because that contains the
             // timestamp of the operation that the client actually performed.
-            ReplClientInfo::forClient(opCtx->getClient()).setLastOp(finalOpTime);
+            ReplClientInfo::forClient(opCtx->getClient()).setLastOp(opCtx, finalOpTime);
         });
 }
 
@@ -490,9 +489,8 @@ OpTime logOp(OperationContext* opCtx,
              bool fromMigrate,
              Date_t wallClockTime,
              const OperationSessionInfo& sessionInfo,
-             StmtId statementId,
+             boost::optional<StmtId> statementId,
              const OplogLink& oplogLink,
-             bool prepare,
              const OplogSlot& oplogSlot) {
     // All collections should have UUIDs now, so all insert, update, and delete oplog entries should
     // also have uuids. Some no-op (n) and command (c) entries may still elide the uuid field.
@@ -508,10 +506,11 @@ OpTime logOp(OperationContext* opCtx,
     // For commands, the test below is on the command ns and therefore does not check for
     // specific namespaces such as system.profile. This is the caller's responsibility.
     if (replCoord->isOplogDisabledFor(opCtx, nss)) {
+        invariant(statementId);
         uassert(ErrorCodes::IllegalOperation,
                 str::stream() << "retryable writes is not supported for unreplicated ns: "
                               << nss.ns(),
-                statementId == kUninitializedStmtId);
+                *statementId == kUninitializedStmtId);
         return {};
     }
 
@@ -545,8 +544,7 @@ OpTime logOp(OperationContext* opCtx,
                                wallClockTime,
                                sessionInfo,
                                statementId,
-                               oplogLink,
-                               prepare);
+                               oplogLink);
     const DocWriter* basePtr = &writer;
     auto timestamp = slot.getTimestamp();
     _logOpsInner(opCtx, nss, &basePtr, &timestamp, 1, oplog, slot, wallClockTime);
@@ -606,8 +604,6 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
         if (insertStatementOplogSlot.isNull()) {
             insertStatementOplogSlot = oplogInfo->getNextOpTimes(opCtx, 1U)[0];
         }
-        // Only 'applyOps' oplog entries can be prepared.
-        constexpr bool prepare = false;
         writers.emplace_back(_logOpWriter(opCtx,
                                           "i",
                                           nss,
@@ -619,8 +615,7 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
                                           wallClockTime,
                                           sessionInfo,
                                           begin[i].stmtId,
-                                          oplogLink,
-                                          prepare));
+                                          oplogLink));
         oplogLink.prevOpTime = insertStatementOplogSlot;
         timestamps[i] = oplogLink.prevOpTime.getTimestamp();
         opTimes.push_back(insertStatementOplogSlot);
@@ -1243,17 +1238,6 @@ const StringMap<ApplyOpMetadata> kOpsMap = {
          boost::optional<Timestamp> stableTimestampForRecovery) -> Status {
          return applyCommitTransaction(opCtx, entry, mode);
      }}},
-    {"prepareTransaction",
-     {[](OperationContext* opCtx,
-         const char* ns,
-         const BSONElement& ui,
-         BSONObj& cmd,
-         const OpTime& opTime,
-         const OplogEntry& entry,
-         OplogApplication::Mode mode,
-         boost::optional<Timestamp> stableTimestampForRecovery) -> Status {
-         return applyPrepareTransaction(opCtx, entry, mode);
-     }}},
     {"abortTransaction",
      {[](OperationContext* opCtx,
          const char* ns,
@@ -1828,12 +1812,8 @@ Status applyCommand_inlock(OperationContext* opCtx,
     // for each collection dropped. 'applyOps' and 'commitTransaction' will try to apply each
     // individual operation, and those will be caught then if they are a problem. 'abortTransaction'
     // won't ever change the server configuration collection.
-    std::vector<std::string> whitelistedOps{"dropDatabase",
-                                            "applyOps",
-                                            "dbCheck",
-                                            "commitTransaction",
-                                            "abortTransaction",
-                                            "prepareTransaction"};
+    std::vector<std::string> whitelistedOps{
+        "dropDatabase", "applyOps", "dbCheck", "commitTransaction", "abortTransaction"};
     if ((mode == OplogApplication::Mode::kInitialSync) &&
         (std::find(whitelistedOps.begin(), whitelistedOps.end(), o.firstElementFieldName()) ==
          whitelistedOps.end()) &&
@@ -1854,7 +1834,7 @@ Status applyCommand_inlock(OperationContext* opCtx,
         }
     }
 
-    const bool assignCommandTimestamp = [opCtx, mode, &op, &o] {
+    const bool assignCommandTimestamp = [&] {
         const auto replMode = ReplicationCoordinator::get(opCtx)->getReplicationMode();
         if (opCtx->writesAreReplicated()) {
             // We do not assign timestamps on replicated writes since they will get their oplog
@@ -1864,8 +1844,9 @@ Status applyCommand_inlock(OperationContext* opCtx,
 
         // Don't assign commit timestamp for transaction commands.
         const StringData commandName(o.firstElementFieldName());
-        if (op.getBoolField("prepare") || commandName == "abortTransaction" ||
-            commandName == "commitTransaction" || commandName == "prepareTransaction")
+        if (entry.shouldPrepare() ||
+            entry.getCommandType() == OplogEntry::CommandType::kCommitTransaction ||
+            entry.getCommandType() == OplogEntry::CommandType::kAbortTransaction)
             return false;
 
         switch (replMode) {

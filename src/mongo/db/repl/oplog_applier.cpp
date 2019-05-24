@@ -162,12 +162,11 @@ bool isUnpreparedCommit(const OplogEntry& entry) {
 }
 
 /**
- * Returns whether an oplog entry represents an applyOps which is a self-contained atomic operation,
- * as opposed to part of a prepared transaction.
+ * Returns whether an oplog entry represents an applyOps which doesn't imply prepare.
+ * It could be a partial transaction oplog entry, an implicit commit applyOps or an applyOps outside
+ * of transaction.
  */
 bool isUnpreparedApplyOps(const OplogEntry& entry) {
-    // TODO (SERVER-39810): Remove the check of the prepare flag in the root oplog level once the
-    // multiple oplog format becomes the default.
     return entry.getCommandType() == OplogEntry::CommandType::kApplyOps && !entry.shouldPrepare();
 }
 
@@ -272,6 +271,13 @@ StatusWith<OplogApplier::Operations> OplogApplier::getNextApplierBatch(
             if (totalOps + opCount > batchLimits.ops || totalBytes + opBytes > batchLimits.bytes) {
                 return std::move(ops);
             }
+        }
+
+        // If we have a forced batch boundary, apply it.
+        if (totalOps > 0 && !batchLimits.forceBatchBoundaryAfter.isNull() &&
+            entry.getOpTime().getTimestamp() > batchLimits.forceBatchBoundaryAfter &&
+            ops.back().getOpTime().getTimestamp() <= batchLimits.forceBatchBoundaryAfter) {
+            return std::move(ops);
         }
 
         // Add op to buffer.

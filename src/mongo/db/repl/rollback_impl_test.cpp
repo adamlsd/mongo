@@ -534,9 +534,9 @@ TEST_F(RollbackImplTest, RollbackKillsNecessaryOperations) {
 
     // We assume that an interrupted opCtx would release its locks.
     unittest::log() << "Both opCtx's marked for kill";
-    ASSERT_EQ(ErrorCodes::NotMasterOrSecondary, writeOpCtx->checkForInterruptNoAssert());
+    ASSERT_EQ(ErrorCodes::InterruptedDueToReplStateChange, writeOpCtx->checkForInterruptNoAssert());
     globalWrite = boost::none;
-    ASSERT_EQ(ErrorCodes::NotMasterOrSecondary, readOpCtx->checkForInterruptNoAssert());
+    ASSERT_EQ(ErrorCodes::InterruptedDueToReplStateChange, readOpCtx->checkForInterruptNoAssert());
     globalRead = boost::none;
     unittest::log() << "Both opCtx's were interrupted";
 
@@ -1445,8 +1445,7 @@ RollbackImplTest::_setUpUnpreparedTransactionForCountTest(UUID collId) {
                                          boost::none,                // statementId
                                          OpTime(),                   // prevWriteOpTimeInTransaction
                                          boost::none,                // preImageOpTime
-                                         boost::none,                // postImageOpTime
-                                         boost::none);               // prepare
+                                         boost::none);               // postImageOpTime
     ASSERT_OK(_insertOplogEntry(partialApplyOpsOplogEntry.toBSON()));
     ops.push_back(std::make_pair(partialApplyOpsOplogEntry.toBSON(), insertOp2.second));
 
@@ -1471,8 +1470,7 @@ RollbackImplTest::_setUpUnpreparedTransactionForCountTest(UUID collId) {
                                         boost::none,                // statementId
                                         partialApplyOpsOpTime,      // prevWriteOpTimeInTransaction
                                         boost::none,                // preImageOpTime
-                                        boost::none,                // postImageOpTime
-                                        boost::none);               // prepare
+                                        boost::none);               // postImageOpTime
     ASSERT_OK(_insertOplogEntry(commitApplyOpsOplogEntry.toBSON()));
     ops.push_back(std::make_pair(commitApplyOpsOplogEntry.toBSON(), insertOp3.second));
 

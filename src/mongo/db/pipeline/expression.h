@@ -1635,6 +1635,7 @@ private:
         TEXT_SCORE,
         RAND_VAL,
         SEARCH_SCORE,
+        SEARCH_HIGHLIGHTS,
     };
 
     ExpressionMeta(const boost::intrusive_ptr<ExpressionContext>& expCtx, MetaType metaType);
@@ -2324,6 +2325,10 @@ public:
     explicit ExpressionTrunc(const boost::intrusive_ptr<ExpressionContext>& expCtx)
         : ExpressionRangedArity<ExpressionTrunc, 1, 2>(expCtx) {}
 
+    static boost::intrusive_ptr<Expression> parse(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        BSONElement elem,
+        const VariablesParseState& vps);
     Value evaluate(const Document& root) const final;
     const char* getOpName() const final;
 

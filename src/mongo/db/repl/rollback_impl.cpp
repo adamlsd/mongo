@@ -281,14 +281,11 @@ void killAllUserOperations(OperationContext* opCtx) {
     int numOpsKilled = 0;
 
     for (ServiceContext::LockedClientsCursor cursor(serviceCtx); Client* client = cursor.next();) {
-        if (!client->isFromUserConnection()) {
-            // Don't kill system operations.
-            // TODO SERVER-40594: kill RangeDeleter if needed.
-            // TODO SERVER-40641: kill TTLMonitor if needed.
+        stdx::lock_guard<Client> lk(*client);
+        if (client->isFromSystemConnection() && !client->shouldKillSystemOperation(lk)) {
             continue;
         }
 
-        stdx::lock_guard<Client> lk(*client);
         OperationContext* toKill = client->getOperationContext();
 
         if (toKill && toKill->getOpID() == opCtx->getOpID()) {
@@ -297,7 +294,7 @@ void killAllUserOperations(OperationContext* opCtx) {
         }
 
         if (toKill && !toKill->isKillPending()) {
-            serviceCtx->killOperation(lk, toKill, ErrorCodes::NotMasterOrSecondary);
+            serviceCtx->killOperation(lk, toKill, ErrorCodes::InterruptedDueToReplStateChange);
             numOpsKilled++;
         }
     }
@@ -440,7 +437,6 @@ StatusWith<std::set<NamespaceString>> RollbackImpl::_namespacesForOp(const Oplog
                 break;
             }
             case OplogEntry::CommandType::kCommitTransaction:
-            case OplogEntry::CommandType::kPrepareTransaction:
             case OplogEntry::CommandType::kAbortTransaction: {
                 break;
             }
@@ -716,7 +712,7 @@ Status RollbackImpl::_processRollbackOp(OperationContext* opCtx, const OplogEntr
 
     // For applyOps entries, we process each sub-operation individually.
     if (oplogEntry.getCommandType() == OplogEntry::CommandType::kApplyOps) {
-        if (oplogEntry.getPrepare()) {
+        if (oplogEntry.shouldPrepare()) {
             // Uncommitted prepared transactions are always aborted before rollback begins, which
             // rolls back collection counts. Processing the operation here would result in
             // double-counting the sub-operations when correcting collection counts later.

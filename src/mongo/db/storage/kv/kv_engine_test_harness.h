@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <memory>
 #include <functional>
+#include <memory>
 
 #include "mongo/db/storage/kv/kv_engine.h"
 

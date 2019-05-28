@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/expression_context.h"

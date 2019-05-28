@@ -38,8 +38,8 @@
 #include "mongo/client/dbclient_connection.h"
 
 #include <algorithm>
-#include <utility>
 #include <functional>
+#include <utility>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"

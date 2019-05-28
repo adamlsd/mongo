@@ -33,12 +33,12 @@
 
 #include <algorithm>
 #include <boost/intrusive_ptr.hpp>
+#include <functional>
 #include <map>
 #include <pcre.h>
 #include <string>
 #include <utility>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/init.h"
 #include "mongo/db/pipeline/dependencies.h"

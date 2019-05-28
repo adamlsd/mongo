@@ -33,11 +33,11 @@
 
 #include <boost/intrusive_ptr.hpp>
 #include <boost/optional.hpp>
+#include <functional>
 #include <list>
 #include <memory>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"

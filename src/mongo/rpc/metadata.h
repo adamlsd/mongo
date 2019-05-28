@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <tuple>
 #include <functional>
+#include <tuple>
 
 #include "mongo/base/status_with.h"
 #include "mongo/rpc/op_msg.h"

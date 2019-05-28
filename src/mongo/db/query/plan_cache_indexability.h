@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/db/exec/projection_exec_agg.h"
 #include "mongo/util/string_map.h"

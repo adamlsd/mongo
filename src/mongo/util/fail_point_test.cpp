@@ -31,10 +31,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"

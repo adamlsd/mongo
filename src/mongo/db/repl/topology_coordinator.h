@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include <functional>
 #include <iosfwd>
 #include <string>
-#include <functional>
 
 #include "mongo/db/repl/last_vote.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"

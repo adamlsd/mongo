@@ -33,8 +33,8 @@
 
 #include <boost/intrusive_ptr.hpp>
 #include <boost/optional.hpp>
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/bsontypes.h"

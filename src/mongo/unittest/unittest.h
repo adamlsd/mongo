@@ -37,12 +37,12 @@
 
 #include <boost/preprocessor/cat.hpp>
 #include <cmath>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/logger/logstream_builder.h"

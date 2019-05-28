@@ -30,8 +30,8 @@
 #pragma once
 
 #include <cstdint>
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/platform/random.h"
 #include "mongo/stdx/mutex.h"

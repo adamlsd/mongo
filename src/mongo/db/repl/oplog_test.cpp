@@ -30,10 +30,10 @@
 #include "mongo/platform/basic.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <utility>
 #include <vector>
-#include <functional>
 
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/lock_manager_test_help.h"

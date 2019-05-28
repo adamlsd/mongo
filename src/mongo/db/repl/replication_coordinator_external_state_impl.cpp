@@ -33,8 +33,8 @@
 
 #include "mongo/db/repl/replication_coordinator_external_state_impl.h"
 
-#include <string>
 #include <functional>
+#include <string>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/oid.h"

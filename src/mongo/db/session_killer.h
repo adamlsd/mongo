@@ -30,10 +30,10 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <functional>
 #include <memory>
 #include <random>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/kill_sessions.h"

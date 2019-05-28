@@ -30,9 +30,9 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <functional>
 #include <limits>
 #include <queue>
-#include <functional>
 
 #include "mongo/stdx/chrono.h"
 #include "mongo/stdx/condition_variable.h"

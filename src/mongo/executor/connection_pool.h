@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <queue>
-#include <functional>
 
 #include "mongo/executor/egress_tag_closer.h"
 #include "mongo/executor/egress_tag_closer_manager.h"

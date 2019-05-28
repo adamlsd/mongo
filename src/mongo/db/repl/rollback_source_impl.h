@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <string>
 #include <functional>
+#include <string>
 
 #include "mongo/db/repl/oplog_interface_remote.h"
 #include "mongo/db/repl/rollback_source.h"

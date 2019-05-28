@@ -33,9 +33,9 @@
 
 #include "mongo/db/commands/user_management_commands.h"
 
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/mutable/algorithm.h"

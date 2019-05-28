@@ -30,11 +30,10 @@
 #pragma once
 
 #include <atomic>
-#include <memory>
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
-#include <functional>
 
 #include "mongo/base/string_data.h"
 #include "mongo/client/mongo_uri.h"

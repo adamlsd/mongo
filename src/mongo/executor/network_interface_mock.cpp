@@ -34,11 +34,11 @@
 #include "mongo/executor/network_interface_mock.h"
 
 #include <algorithm>
-#include <iterator>
 #include <functional>
+#include <iterator>
 
-#include "mongo/executor/network_connection_hook.h"
 #include "mongo/executor/connection_pool_stats.h"
+#include "mongo/executor/network_connection_hook.h"
 #include "mongo/util/log.h"
 #include "mongo/util/str.h"
 #include "mongo/util/time_support.h"

@@ -34,9 +34,9 @@
 #include "mongo/db/repl/database_cloner.h"
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <set>
-#include <functional>
 
 #include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/db/catalog/collection_options.h"

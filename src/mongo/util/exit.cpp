@@ -34,8 +34,8 @@
 #include "mongo/util/exit.h"
 
 #include <boost/optional.hpp>
-#include <stack>
 #include <functional>
+#include <stack>
 
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"

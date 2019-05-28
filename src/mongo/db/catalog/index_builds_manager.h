@@ -29,10 +29,10 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/namespace_string.h"

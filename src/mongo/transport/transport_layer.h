@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <memory>
 #include <functional>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/db/operation_context.h"

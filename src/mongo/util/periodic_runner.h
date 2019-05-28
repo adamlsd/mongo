@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <string>
 #include <functional>
+#include <string>
 
 #include "mongo/util/time_support.h"
 

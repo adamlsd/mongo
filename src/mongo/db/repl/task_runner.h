@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <list>
 #include <functional>
+#include <list>
 
 #include "mongo/db/service_context.h"
 #include "mongo/stdx/condition_variable.h"

@@ -29,10 +29,10 @@
 
 #pragma once
 
+#include <functional>
 #include <list>
 #include <memory>
 #include <string>
-#include <functional>
 
 #include <boost/filesystem/path.hpp>
 #include <wiredtiger.h>

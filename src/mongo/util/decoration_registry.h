@@ -34,7 +34,6 @@
 #include <iterator>
 #include <type_traits>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/static_assert.h"
 #include "mongo/util/decoration_container.h"

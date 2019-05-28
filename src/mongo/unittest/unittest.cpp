@@ -33,9 +33,9 @@
 
 #include "mongo/unittest/unittest.h"
 
+#include <functional>
 #include <iostream>
 #include <map>
-#include <functional>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/init.h"

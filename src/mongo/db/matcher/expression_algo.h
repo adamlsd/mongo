@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <set>
-#include <functional>
 
 #include "mongo/base/string_data.h"
 #include "mongo/util/string_map.h"

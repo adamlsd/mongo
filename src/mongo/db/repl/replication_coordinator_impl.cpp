@@ -36,8 +36,8 @@
 #include "mongo/db/repl/replication_coordinator_impl.h"
 
 #include <algorithm>
-#include <limits>
 #include <functional>
+#include <limits>
 
 #include "mongo/base/status.h"
 #include "mongo/client/fetcher.h"

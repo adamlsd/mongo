@@ -30,8 +30,8 @@
 #pragma once
 
 #include <boost/optional.hpp>
-#include <string>
 #include <functional>
+#include <string>
 
 #include "mongo/executor/task_executor.h"
 #include "mongo/transport/baton.h"

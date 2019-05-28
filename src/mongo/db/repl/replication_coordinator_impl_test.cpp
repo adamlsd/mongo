@@ -32,11 +32,11 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/optional/optional_io.hpp>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <set>
 #include <vector>
-#include <functional>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/concurrency/lock_state.h"

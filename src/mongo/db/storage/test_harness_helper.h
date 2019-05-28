@@ -30,9 +30,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <memory>
-#include <functional>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_noop.h"

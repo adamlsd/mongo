@@ -33,9 +33,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include <functional>
 #include <limits>
 #include <string>
-#include <functional>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/unittest/death_test.h"

@@ -29,10 +29,10 @@
 
 #pragma once
 
+#include <functional>
 #include <tuple>
 #include <type_traits>
 #include <vector>
-#include <functional>
 
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/task_executor.h"

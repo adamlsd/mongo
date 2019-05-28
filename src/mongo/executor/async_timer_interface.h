@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <system_error>
 #include <functional>
+#include <system_error>
 
 #include "mongo/util/time_support.h"
 

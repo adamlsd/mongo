@@ -299,6 +299,8 @@ public:
                 break;
             }
 
+            const Date_t startTime = Date_t::now();
+
             const Timestamp stableTimestamp = _wiredTigerKVEngine->getStableTimestamp();
             const Timestamp initialDataTimestamp = _wiredTigerKVEngine->getInitialDataTimestamp();
 
@@ -360,6 +362,11 @@ public:
                         _oplogNeededForCrashRecovery.store(
                             oplogNeededForRollback.getValue().asULL());
                     }
+                }
+
+                const auto secondsElapsed = durationCount<Seconds>(Date_t::now() - startTime);
+                if (secondsElapsed >= 30) {
+                    LOG(1) << "Checkpoint took " << secondsElapsed << " seconds to complete.";
                 }
             } catch (const WriteConflictException&) {
                 // Temporary: remove this after WT-3483
@@ -1881,6 +1888,10 @@ boost::optional<Timestamp> WiredTigerKVEngine::getOplogNeededForCrashRecovery() 
         return boost::none;
     }
 
+    if (_readOnly) {
+        return boost::none;
+    }
+
     return Timestamp(_checkpointThread->getOplogNeededForCrashRecovery());
 }
 
@@ -1948,14 +1959,14 @@ void WiredTigerKVEngine::replicationBatchIsComplete() const {
     _oplogManager->triggerJournalFlush();
 }
 
-bool WiredTigerKVEngine::isCacheUnderPressure(OperationContext* opCtx) const {
+int64_t WiredTigerKVEngine::getCacheOverflowTableInsertCount(OperationContext* opCtx) const {
     WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSessionNoTxn();
     invariant(session);
 
-    int64_t score = uassertStatusOK(WiredTigerUtil::getStatisticsValueAs<int64_t>(
-        session->getSession(), "statistics:", "", WT_STAT_CONN_CACHE_LOOKASIDE_SCORE));
+    int64_t insertCount = uassertStatusOK(WiredTigerUtil::getStatisticsValueAs<int64_t>(
+        session->getSession(), "statistics:", "", WT_STAT_CONN_CACHE_LOOKASIDE_INSERT));
 
-    return (score >= snapshotWindowParams.cachePressureThreshold.load());
+    return insertCount;
 }
 
 Timestamp WiredTigerKVEngine::getStableTimestamp() const {

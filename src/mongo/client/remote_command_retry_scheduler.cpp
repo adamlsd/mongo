@@ -36,7 +36,6 @@
 #include <vector>
 
 #include "mongo/client/remote_command_retry_scheduler.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/destructor_guard.h"
 #include "mongo/util/log.h"

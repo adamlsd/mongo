@@ -34,7 +34,6 @@
 #include <memory>
 
 #include "mongo/executor/thread_pool_mock.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace executor {

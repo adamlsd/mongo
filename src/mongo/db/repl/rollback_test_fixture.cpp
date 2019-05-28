@@ -49,7 +49,6 @@
 #include "mongo/db/repl/rs_rollback.h"
 #include "mongo/logger/log_component.h"
 #include "mongo/logger/logger.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/str.h"
 
 namespace mongo {

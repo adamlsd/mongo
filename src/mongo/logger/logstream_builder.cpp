@@ -37,7 +37,6 @@
 #include "mongo/base/status.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
 #include "mongo/logger/tee.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"  // TODO: remove apple dep for this in threadlocal.h
 #include "mongo/util/time_support.h"
 

@@ -34,7 +34,6 @@
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 #include "mongo/db/storage/mobile/mobile_kv_engine.h"
 #include "mongo/db/storage/mobile/mobile_options_gen.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/util/options_parser/options_parser.h"
 #include "mongo/util/options_parser/startup_options.h"

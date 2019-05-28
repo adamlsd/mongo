@@ -43,7 +43,6 @@
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/config_server_catalog_cache_loader.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace {

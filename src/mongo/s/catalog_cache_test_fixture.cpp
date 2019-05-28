@@ -48,7 +48,6 @@
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/database_version_helpers.h"
 #include "mongo/s/grid.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/scopeguard.h"
 

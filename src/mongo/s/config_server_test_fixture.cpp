@@ -78,7 +78,6 @@
 #include "mongo/s/request_types/set_shard_version_request.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/tick_source_mock.h"
 

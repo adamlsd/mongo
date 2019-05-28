@@ -43,7 +43,6 @@
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace {

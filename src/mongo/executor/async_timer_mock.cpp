@@ -32,7 +32,6 @@
 #include <memory>
 
 #include "mongo/base/system_error.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace executor {

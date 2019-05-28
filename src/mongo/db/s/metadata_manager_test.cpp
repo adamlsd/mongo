@@ -46,7 +46,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/shard_server_test_fixture.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 

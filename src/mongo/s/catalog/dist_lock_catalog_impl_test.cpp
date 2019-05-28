@@ -50,7 +50,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_server_test_fixture.h"
 #include "mongo/s/write_ops/batched_command_request.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {

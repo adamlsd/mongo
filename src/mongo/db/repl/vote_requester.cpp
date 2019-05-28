@@ -39,7 +39,6 @@
 #include "mongo/db/repl/repl_set_request_votes_args.h"
 #include "mongo/db/repl/scatter_gather_runner.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace mongo {

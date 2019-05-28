@@ -33,7 +33,6 @@
 
 #include <memory>
 
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace fts {

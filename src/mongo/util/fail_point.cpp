@@ -35,7 +35,6 @@
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/platform/random.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"

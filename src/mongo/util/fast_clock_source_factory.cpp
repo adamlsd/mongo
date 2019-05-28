@@ -33,7 +33,6 @@
 
 #include <memory>
 
-#include "mongo/stdx/memory.h"
 #include "mongo/util/background_thread_clock_source.h"
 #include "mongo/util/system_clock_source.h"
 

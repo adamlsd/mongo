@@ -62,7 +62,6 @@
 #include "mongo/db/matcher/expression_text_base.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/query/plan_executor.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace mongo {

@@ -38,7 +38,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/write_ops_parsers.h"
 #include "mongo/s/transaction_router.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {

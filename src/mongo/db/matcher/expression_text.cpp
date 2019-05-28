@@ -39,7 +39,6 @@
 #include "mongo/db/fts/fts_language.h"
 #include "mongo/db/fts/fts_spec.h"
 #include "mongo/db/index/fts_access_method.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

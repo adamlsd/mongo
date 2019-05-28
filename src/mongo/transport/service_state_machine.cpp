@@ -42,7 +42,6 @@
 #include "mongo/db/traffic_recorder.h"
 #include "mongo/rpc/message.h"
 #include "mongo/rpc/op_msg.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/service_executor_task_names.h"

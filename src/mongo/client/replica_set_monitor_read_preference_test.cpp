@@ -35,7 +35,6 @@
 
 #include "mongo/client/mongo_uri.h"
 #include "mongo/client/read_preference.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace {

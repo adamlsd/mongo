@@ -36,7 +36,6 @@
 #include <zstd.h>
 
 #include "mongo/base/init.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_registry.h"
 #include "mongo/transport/message_compressor_zstd.h"
 

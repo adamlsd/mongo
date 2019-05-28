@@ -33,7 +33,6 @@
 #include <vector>
 
 #include "mongo/db/auth/restriction.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

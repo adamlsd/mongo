@@ -49,7 +49,6 @@
 #include "mongo/db/update/rename_node.h"
 #include "mongo/db/update/set_node.h"
 #include "mongo/db/update/unset_node.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

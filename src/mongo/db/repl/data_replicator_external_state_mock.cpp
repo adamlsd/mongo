@@ -34,7 +34,6 @@
 #include <memory>
 
 #include "mongo/db/repl/oplog_buffer_blocking_queue.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace repl {

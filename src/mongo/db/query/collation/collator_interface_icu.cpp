@@ -36,7 +36,6 @@
 #include <unicode/coll.h>
 #include <unicode/sortkey.h>
 
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {

@@ -41,7 +41,6 @@
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/catalog/type_tags.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

@@ -46,7 +46,6 @@
 #include "mongo/db/ftdc/ftdc_system_stats.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/service_context.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/synchronized_value.h"
 
 namespace mongo {

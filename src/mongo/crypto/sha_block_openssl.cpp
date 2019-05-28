@@ -36,7 +36,6 @@
 #include "mongo/crypto/sha512_block.h"
 
 #include "mongo/config.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 #ifndef MONGO_CONFIG_SSL

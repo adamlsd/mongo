@@ -42,7 +42,6 @@
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/destructor_guard.h"
 
 namespace mongo {

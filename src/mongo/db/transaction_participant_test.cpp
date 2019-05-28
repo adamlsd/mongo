@@ -50,7 +50,6 @@
 #include "mongo/db/transaction_participant_gen.h"
 #include "mongo/logger/logger.h"
 #include "mongo/stdx/future.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/barrier.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"

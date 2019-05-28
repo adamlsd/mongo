@@ -60,7 +60,6 @@
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view_catalog.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

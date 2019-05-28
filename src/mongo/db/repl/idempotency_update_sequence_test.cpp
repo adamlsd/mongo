@@ -37,7 +37,6 @@
 #include "mongo/db/field_ref_set.h"
 #include "mongo/db/repl/idempotency_document_structure.h"
 #include "mongo/db/repl/idempotency_update_sequence.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {

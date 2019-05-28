@@ -35,7 +35,6 @@
 
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_mock.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

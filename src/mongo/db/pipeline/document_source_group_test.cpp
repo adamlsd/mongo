@@ -51,7 +51,6 @@
 #include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"

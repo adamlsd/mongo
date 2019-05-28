@@ -47,7 +47,6 @@
 #include "mongo/db/query/planner_ixselect.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/ttl_collection_cache.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/log.h"
 

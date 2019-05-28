@@ -34,7 +34,6 @@
 #include "mongo/db/auth/address_restriction.h"
 #include "mongo/db/auth/address_restriction_gen.h"
 #include "mongo/db/server_options.h"
-#include "mongo/stdx/memory.h"
 
 constexpr mongo::StringData mongo::address_restriction_detail::ClientSource::label;
 constexpr mongo::StringData mongo::address_restriction_detail::ClientSource::field;

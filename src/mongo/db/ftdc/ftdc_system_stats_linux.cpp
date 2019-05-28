@@ -40,7 +40,6 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/ftdc/collector.h"
 #include "mongo/db/ftdc/controller.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/procparser.h"
 

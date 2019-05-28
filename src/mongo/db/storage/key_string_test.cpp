@@ -48,7 +48,6 @@
 #include "mongo/db/storage/key_string.h"
 #include "mongo/platform/decimal128.h"
 #include "mongo/stdx/future.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/hex.h"

@@ -40,7 +40,6 @@
 #include "mongo/executor/network_connection_hook.h"
 #include "mongo/executor/network_interface_tl.h"
 #include "mongo/rpc/metadata/metadata_hook.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace executor {

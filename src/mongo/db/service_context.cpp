@@ -44,7 +44,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/recovery_unit_noop.h"
 #include "mongo/stdx/list.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"

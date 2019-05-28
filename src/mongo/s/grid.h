@@ -36,7 +36,6 @@
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {

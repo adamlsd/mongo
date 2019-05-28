@@ -34,7 +34,6 @@
 #include <memory>
 
 #include "mongo/db/matcher/expression.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

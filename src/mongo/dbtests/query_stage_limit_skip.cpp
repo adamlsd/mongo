@@ -44,7 +44,6 @@
 #include "mongo/db/exec/skip.h"
 #include "mongo/db/json.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 
 using namespace mongo;
 

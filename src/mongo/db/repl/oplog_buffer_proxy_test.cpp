@@ -36,7 +36,6 @@
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/oplog_buffer_proxy.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 

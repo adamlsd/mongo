@@ -55,7 +55,6 @@
 #include "mongo/db/wire_version.h"
 #include "mongo/dbtests/framework.h"
 #include "mongo/scripting/engine.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/transport_layer_manager.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/quick_exit.h"

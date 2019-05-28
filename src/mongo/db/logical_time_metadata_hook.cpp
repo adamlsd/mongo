@@ -37,7 +37,6 @@
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_time_tracker.h"
 #include "mongo/rpc/metadata/logical_time_metadata.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

@@ -41,7 +41,6 @@
 #include <memory>
 
 #include "mongo/base/init.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/tick_source.h"
 #include "mongo/util/time_support.h"

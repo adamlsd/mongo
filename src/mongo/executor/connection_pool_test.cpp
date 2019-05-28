@@ -39,7 +39,6 @@
 
 #include "mongo/executor/connection_pool.h"
 #include "mongo/stdx/future.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/scopeguard.h"
 

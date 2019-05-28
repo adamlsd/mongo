@@ -36,7 +36,6 @@
 #include <vector>
 
 #include "mongo/db/update/update_leaf_node.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

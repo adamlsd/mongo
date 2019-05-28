@@ -32,7 +32,6 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/executor/network_connection_hook.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace executor {

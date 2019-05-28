@@ -36,7 +36,6 @@
 #include <functional>
 #include <memory>
 
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/debug_util.h"

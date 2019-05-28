@@ -35,7 +35,6 @@
 #include <memory>
 
 #include "mongo/db/repl/task_runner.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace repl {

@@ -37,7 +37,6 @@
 #include "mongo/s/query/router_stage_merge.h"
 #include "mongo/s/query/router_stage_remove_metadata_fields.h"
 #include "mongo/s/query/router_stage_skip.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

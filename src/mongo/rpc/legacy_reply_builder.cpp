@@ -39,7 +39,6 @@
 #include "mongo/rpc/metadata.h"
 #include "mongo/rpc/metadata/sharding_metadata.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
 

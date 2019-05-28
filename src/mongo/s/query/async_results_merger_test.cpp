@@ -42,7 +42,6 @@
 #include "mongo/executor/task_executor.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/query/results_merger_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"

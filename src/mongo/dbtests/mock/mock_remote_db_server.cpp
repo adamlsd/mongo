@@ -37,7 +37,6 @@
 #include "mongo/dbtests/mock/mock_dbclient_connection.h"
 #include "mongo/rpc/metadata.h"
 #include "mongo/rpc/op_msg_rpc_impls.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/str.h"

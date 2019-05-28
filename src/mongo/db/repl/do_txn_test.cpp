@@ -48,7 +48,6 @@
 #include "mongo/db/transaction_participant.h"
 #include "mongo/logger/logger.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace repl {

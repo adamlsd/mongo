@@ -66,7 +66,6 @@
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/sharding_task_executor.h"
 #include "mongo/s/sharding_task_executor_pool_gen.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"

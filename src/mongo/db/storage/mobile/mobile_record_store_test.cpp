@@ -44,7 +44,6 @@
 #include "mongo/db/storage/mobile/mobile_sqlite_statement.h"
 #include "mongo/db/storage/mobile/mobile_util.h"
 #include "mongo/db/storage/record_store_test_harness.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/options_parser/options_parser.h"

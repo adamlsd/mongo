@@ -47,7 +47,6 @@
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 
 /**
  * This file tests db/exec/merge_sort.cpp

@@ -49,7 +49,6 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 
 namespace QueryStageCollectionScan {

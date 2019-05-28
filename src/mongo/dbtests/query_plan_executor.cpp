@@ -54,7 +54,6 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/query_solution.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace {

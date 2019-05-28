@@ -45,7 +45,6 @@
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/repl/sync_tail_test_fixture.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/barrier.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"

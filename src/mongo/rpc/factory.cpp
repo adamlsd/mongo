@@ -40,7 +40,6 @@
 #include "mongo/rpc/message.h"
 #include "mongo/rpc/op_msg_rpc_impls.h"
 #include "mongo/rpc/protocol.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
 

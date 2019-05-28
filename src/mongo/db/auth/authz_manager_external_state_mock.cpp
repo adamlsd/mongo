@@ -45,7 +45,6 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/update/update_driver.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/map_util.h"
 #include "mongo/util/str.h"
 

@@ -42,7 +42,6 @@
 #include "mongo/db/time_proof_service.h"
 #include "mongo/s/catalog/dist_lock_manager_mock.h"
 #include "mongo/s/config_server_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 

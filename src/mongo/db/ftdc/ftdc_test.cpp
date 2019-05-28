@@ -41,7 +41,6 @@
 #include "mongo/db/ftdc/file_reader.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/service_context.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/clock_source_mock.h"

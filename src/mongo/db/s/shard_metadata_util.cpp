@@ -45,7 +45,6 @@
 #include "mongo/s/catalog/type_shard_database.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace mongo {

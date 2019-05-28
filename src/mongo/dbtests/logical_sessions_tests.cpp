@@ -38,7 +38,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/sessions_collection_standalone.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {

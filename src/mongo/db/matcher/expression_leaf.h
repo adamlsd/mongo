@@ -37,7 +37,6 @@
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_path.h"
 #include "mongo/db/query/collation/collator_interface.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_map.h"
 
 namespace pcrecpp {

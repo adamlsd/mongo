@@ -34,7 +34,6 @@
 #include <memory>
 
 #include "mongo/base/status.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/mock_session.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/time_support.h"

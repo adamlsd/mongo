@@ -44,7 +44,6 @@
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/index_entry.h"
 #include "mongo/db/query/planner_ixselect.h"
-#include "mongo/stdx/memory.h"
 #include <memory>
 
 namespace mongo {

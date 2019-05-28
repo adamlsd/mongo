@@ -48,7 +48,6 @@
 #include "mongo/db/service_liaison_mock.h"
 #include "mongo/db/sessions_collection_mock.h"
 #include "mongo/stdx/future.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/ensure_fcv.h"
 #include "mongo/unittest/unittest.h"
 

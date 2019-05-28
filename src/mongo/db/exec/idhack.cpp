@@ -41,7 +41,6 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/index/btree_access_method.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

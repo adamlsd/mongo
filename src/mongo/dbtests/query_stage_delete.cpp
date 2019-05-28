@@ -47,7 +47,6 @@
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/service_context.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 
 namespace QueryStageDelete {
 

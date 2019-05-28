@@ -42,7 +42,6 @@
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/logger/logger.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace repl {

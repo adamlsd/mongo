@@ -36,7 +36,6 @@
 #include "mongo/base/status.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/remote_command_request.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
 

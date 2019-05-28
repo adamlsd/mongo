@@ -37,7 +37,6 @@
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter_rs.h"
 #include "mongo/client/remote_command_targeter_standalone.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {

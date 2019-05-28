@@ -44,7 +44,6 @@
 #include "mongo/crypto/sha1_block.h"
 #include "mongo/crypto/sha256_block.h"
 #include "mongo/platform/random.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/base64.h"
 #include "mongo/util/concurrency/mutex.h"
 #include "mongo/util/log.h"

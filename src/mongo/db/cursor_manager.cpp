@@ -53,7 +53,6 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/service_context.h"
 #include "mongo/platform/random.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/startup_test.h"

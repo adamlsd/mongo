@@ -40,7 +40,6 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/baton.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/assert_util.h"

@@ -42,7 +42,6 @@
 #include "mongo/db/query/collation/collator_factory_mock.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 

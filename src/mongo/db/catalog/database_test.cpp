@@ -57,7 +57,6 @@
 #include "mongo/db/repl/storage_interface_mock.h"
 #include "mongo/db/s/op_observer_sharding_impl.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/scopeguard.h"
 

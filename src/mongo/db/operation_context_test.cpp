@@ -39,7 +39,6 @@
 #include "mongo/db/operation_context_group.h"
 #include "mongo/db/service_context.h"
 #include "mongo/stdx/future.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/barrier.h"
 #include "mongo/unittest/death_test.h"

@@ -37,7 +37,6 @@
 #include "mongo/db/fts/fts_basic_tokenizer.h"
 #include "mongo/db/fts/fts_unicode_phrase_matcher.h"
 #include "mongo/db/fts/fts_unicode_tokenizer.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/str.h"
 #include "mongo/util/string_map.h"

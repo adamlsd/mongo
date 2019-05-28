@@ -64,7 +64,6 @@
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"

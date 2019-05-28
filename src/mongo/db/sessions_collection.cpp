@@ -43,7 +43,6 @@
 #include "mongo/db/refresh_sessions_gen.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

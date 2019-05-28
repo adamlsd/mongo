@@ -38,7 +38,6 @@
 #include "mongo/db/update/modifier_table.h"
 #include "mongo/db/update/update_array_node.h"
 #include "mongo/db/update/update_leaf_node.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/str.h"
 
 namespace mongo {

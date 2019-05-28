@@ -66,7 +66,6 @@
 #include "mongo/db/matcher/schema/json_schema_parser.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/query_knobs_gen.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/str.h"
 #include "mongo/util/string_map.h"
 

@@ -46,7 +46,6 @@
 #include "mongo/s/catalog/type_shard_database.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace mongo {

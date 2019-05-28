@@ -34,7 +34,6 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/update/modifier_node.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

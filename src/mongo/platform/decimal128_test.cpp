@@ -36,7 +36,6 @@
 #include <utility>
 
 #include "mongo/config.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {

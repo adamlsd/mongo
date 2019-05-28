@@ -41,7 +41,6 @@
 #include "mongo/db/storage/key_string.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace biggie {

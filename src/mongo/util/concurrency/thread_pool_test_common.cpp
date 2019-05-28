@@ -36,7 +36,6 @@
 #include <memory>
 
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/util/assert_util.h"

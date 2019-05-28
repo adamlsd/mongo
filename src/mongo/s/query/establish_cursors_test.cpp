@@ -39,7 +39,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/query/establish_cursors.h"
 #include "mongo/s/sharding_router_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {

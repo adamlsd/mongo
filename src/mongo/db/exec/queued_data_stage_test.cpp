@@ -39,7 +39,6 @@
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 

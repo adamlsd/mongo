@@ -84,7 +84,6 @@
 #include "mongo/db/storage/oplog_hack.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/scripting/engine.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/str.h"
 

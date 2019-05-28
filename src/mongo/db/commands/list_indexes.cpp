@@ -49,7 +49,6 @@
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {

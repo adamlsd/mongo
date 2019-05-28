@@ -33,7 +33,6 @@
 
 #include "mongo/base/init.h"
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 namespace {

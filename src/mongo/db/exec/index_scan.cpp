@@ -43,7 +43,6 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/query/index_bounds_builder.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace {

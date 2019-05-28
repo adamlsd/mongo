@@ -34,7 +34,6 @@
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/service_context_test_fixture.h"
 #include "mongo/db/storage/kv/kv_drop_pending_ident_reaper.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 

@@ -33,7 +33,6 @@
 #include <memory>
 
 #include "mongo/db/service_liaison_mock.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/periodic_runner_factory.h"
 
 namespace mongo {

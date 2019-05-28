@@ -43,7 +43,6 @@
 #include "mongo/db/fts/fts_index_format.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/query/internal_plans.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

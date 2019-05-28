@@ -33,7 +33,6 @@
 #include <memory>
 
 #include "mongo/s/request_types/shard_collection_gen.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/notification.h"
 

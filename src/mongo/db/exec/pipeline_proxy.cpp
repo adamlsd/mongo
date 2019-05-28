@@ -36,7 +36,6 @@
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/pipeline_d.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

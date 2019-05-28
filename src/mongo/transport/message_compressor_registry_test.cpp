@@ -31,7 +31,6 @@
 
 #include <memory>
 
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_noop.h"
 #include "mongo/transport/message_compressor_registry.h"
 #include "mongo/unittest/unittest.h"

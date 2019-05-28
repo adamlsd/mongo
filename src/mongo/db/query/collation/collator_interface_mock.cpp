@@ -36,7 +36,6 @@
 #include <memory>
 #include <string>
 
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {

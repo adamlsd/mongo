@@ -35,7 +35,6 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/sharding_router_test_fixture.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

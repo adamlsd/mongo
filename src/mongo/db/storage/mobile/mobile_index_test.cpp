@@ -38,7 +38,6 @@
 #include "mongo/db/storage/mobile/mobile_session_pool.h"
 #include "mongo/db/storage/sorted_data_interface_test_harness.h"
 #include "mongo/platform/basic.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
 

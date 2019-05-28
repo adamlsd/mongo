@@ -35,7 +35,6 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/index/index_access_method.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

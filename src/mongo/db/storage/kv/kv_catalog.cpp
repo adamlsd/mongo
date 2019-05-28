@@ -48,7 +48,6 @@
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/platform/bits.h"
 #include "mongo/platform/random.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/str.h"
 

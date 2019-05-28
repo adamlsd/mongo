@@ -34,7 +34,6 @@
 #include <memory>
 
 #include "mongo/base/init.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_registry.h"
 #include "mongo/transport/message_compressor_zlib.h"
 

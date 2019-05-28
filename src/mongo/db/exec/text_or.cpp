@@ -42,7 +42,6 @@
 #include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/record_id.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

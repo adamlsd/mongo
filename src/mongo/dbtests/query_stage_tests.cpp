@@ -45,7 +45,6 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 
 /**
  * This file tests db/exec/index_scan.cpp

@@ -35,7 +35,6 @@
 #include "mongo/db/repl/abstract_async_component.h"
 #include "mongo/db/repl/task_executor_mock.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 
 #include "mongo/unittest/unittest.h"

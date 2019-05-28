@@ -40,7 +40,6 @@
 #include "mongo/db/matcher/expression_with_placeholder.h"
 #include "mongo/db/update/modifier_table.h"
 #include "mongo/db/update/update_internal_node.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_map.h"
 
 namespace mongo {

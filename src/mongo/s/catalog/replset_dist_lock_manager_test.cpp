@@ -45,7 +45,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_server_test_fixture.h"
 #include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/system_tick_source.h"

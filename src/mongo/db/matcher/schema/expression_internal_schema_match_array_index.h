@@ -33,7 +33,6 @@
 
 #include "mongo/db/matcher/expression_array.h"
 #include "mongo/db/matcher/expression_with_placeholder.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

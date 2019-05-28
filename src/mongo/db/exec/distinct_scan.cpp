@@ -38,7 +38,6 @@
 #include "mongo/db/exec/working_set_computed_data.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/stdx/memory.h"
 
 namespace mongo {
 

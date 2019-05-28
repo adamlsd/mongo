@@ -33,7 +33,6 @@
 #include <memory>
 
 #include "mongo/base/owned_pointer_vector.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 

@@ -37,7 +37,6 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/service_context_test_fixture.h"
 #include "mongo/s/query/router_stage_mock.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {

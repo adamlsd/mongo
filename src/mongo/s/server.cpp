@@ -91,7 +91,6 @@
 #include "mongo/s/sharding_initialization.h"
 #include "mongo/s/sharding_uptime_reporter.h"
 #include "mongo/s/version_mongos.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/transport_layer_manager.h"
 #include "mongo/util/admin_access.h"

@@ -37,7 +37,6 @@
 #include "mongo/db/query/datetime/date_time_support.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/util/str.h"
 
 namespace mongo {

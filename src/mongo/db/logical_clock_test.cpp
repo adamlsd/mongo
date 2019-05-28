@@ -41,7 +41,6 @@
 #include "mongo/db/logical_clock_test_fixture.h"
 #include "mongo/db/logical_time.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/log.h"

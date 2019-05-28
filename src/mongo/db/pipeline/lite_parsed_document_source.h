@@ -38,7 +38,6 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/aggregation_request.h"
 #include "mongo/db/repl/read_concern_args.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_set.h"
 
 namespace mongo {

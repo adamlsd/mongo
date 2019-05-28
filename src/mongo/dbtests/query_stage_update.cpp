@@ -54,7 +54,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/update/update_driver.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/stdx/memory.h"
 
 #define ASSERT_DOES_NOT_THROW(EXPRESSION)                                          \
     try {                                                                          \

@@ -30,6 +30,7 @@
 #include "mongo/db/geo/big_polygon.h"
 
 #include <map>
+#include <memory>
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/stdx/memory.h"

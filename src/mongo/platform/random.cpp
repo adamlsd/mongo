@@ -46,6 +46,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"

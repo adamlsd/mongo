@@ -31,6 +31,8 @@
 
 #include "mongo/scripting/mozjs/mongo.h"
 
+#include <memory>
+
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/client/dbclient_base.h"
 #include "mongo/client/dbclient_rs.h"

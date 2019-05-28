@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/bson/oid.h"
 #include "mongo/db/catalog/capped_utils.h"
 #include "mongo/db/catalog/catalog_test_fixture.h"

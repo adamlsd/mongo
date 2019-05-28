@@ -31,6 +31,8 @@
 
 #include "mongo/db/logical_clock_test_fixture.h"
 
+#include <memory>
+
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time.h"

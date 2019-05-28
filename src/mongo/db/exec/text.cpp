@@ -30,6 +30,7 @@
 #include "mongo/db/exec/text.h"
 
 #include <vector>
+#include <memory>
 
 #include "mongo/db/exec/fetch.h"
 #include "mongo/db/exec/filter.h"

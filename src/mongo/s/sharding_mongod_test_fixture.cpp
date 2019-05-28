@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <memory>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/status_with.h"

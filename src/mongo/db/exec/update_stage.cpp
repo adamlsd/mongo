@@ -34,6 +34,7 @@
 #include "mongo/db/exec/update_stage.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bson_comparator_interface_base.h"

@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/client/connection_string.h"

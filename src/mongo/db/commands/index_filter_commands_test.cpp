@@ -33,6 +33,8 @@
 
 #include "mongo/db/commands/index_filter_commands.h"
 
+#include <memory>
+
 #include "mongo/db/json.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"

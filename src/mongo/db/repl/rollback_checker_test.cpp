@@ -30,6 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/db/client.h"
 #include "mongo/db/repl/rollback_checker.h"
 #include "mongo/executor/network_interface_mock.h"

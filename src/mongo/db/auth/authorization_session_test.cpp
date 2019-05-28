@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 /**
  * Unit tests of the AuthorizationSession type.
  */

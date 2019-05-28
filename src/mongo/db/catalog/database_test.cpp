@@ -29,7 +29,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 #include <boost/optional/optional_io.hpp>
+
 #include <pcrecpp.h>
 
 #include "mongo/bson/util/builder.h"

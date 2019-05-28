@@ -33,6 +33,8 @@
 
 #include "mongo/db/service_context.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/client.h"

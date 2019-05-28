@@ -31,6 +31,7 @@
 
 #include <boost/filesystem.hpp>
 #include <iostream>
+#include <memory>
 
 #include "mongo/base/data_type_validated.h"
 #include "mongo/base/init.h"

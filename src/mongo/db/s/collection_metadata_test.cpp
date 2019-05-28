@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/db/range_arithmetic.h"
 #include "mongo/db/s/collection_metadata.h"

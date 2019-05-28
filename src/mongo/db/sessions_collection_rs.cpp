@@ -33,6 +33,7 @@
 
 #include <boost/optional.hpp>
 #include <utility>
+#include <memory>
 
 #include "mongo/client/authenticate.h"
 #include "mongo/client/connection_string.h"

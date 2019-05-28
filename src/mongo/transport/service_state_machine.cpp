@@ -33,6 +33,8 @@
 
 #include "mongo/transport/service_state_machine.h"
 
+#include <memory>
+
 #include "mongo/config.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbmessage.h"

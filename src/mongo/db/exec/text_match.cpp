@@ -30,6 +30,7 @@
 #include "mongo/db/exec/text_match.h"
 
 #include <vector>
+#include <memory>
 
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set.h"

@@ -31,6 +31,7 @@
 
 #include <set>
 #include <string>
+#include <memory>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/keys_collection_client_sharded.h"

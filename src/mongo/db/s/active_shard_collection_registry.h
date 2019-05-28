@@ -30,6 +30,7 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/s/request_types/shard_collection_gen.h"
 #include "mongo/stdx/memory.h"

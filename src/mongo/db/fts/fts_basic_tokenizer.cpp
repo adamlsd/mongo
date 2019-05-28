@@ -31,6 +31,8 @@
 
 #include "mongo/db/fts/fts_basic_tokenizer.h"
 
+#include <memory>
+
 #include "mongo/db/fts/fts_query_impl.h"
 #include "mongo/db/fts/fts_spec.h"
 #include "mongo/db/fts/stemmer.h"

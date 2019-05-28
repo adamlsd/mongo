@@ -33,6 +33,7 @@
 
 #include <tuple>
 #include <utility>
+#include <memory>
 
 #include "mongo/client/read_preference.h"
 #include "mongo/db/dbmessage.h"

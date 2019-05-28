@@ -32,6 +32,7 @@
 #include "mongo/db/exec/sort.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/exec/scoped_timer.h"

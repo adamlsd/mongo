@@ -32,6 +32,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"

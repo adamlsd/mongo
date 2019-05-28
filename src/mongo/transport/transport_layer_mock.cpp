@@ -31,6 +31,8 @@
 
 #include "mongo/transport/transport_layer_mock.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/transport/mock_session.h"

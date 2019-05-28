@@ -31,6 +31,7 @@
 
 #include "mongo/db/matcher/expression_parser.h"
 
+#include <memory>
 #include <pcrecpp.h>
 
 #include "mongo/base/init.h"

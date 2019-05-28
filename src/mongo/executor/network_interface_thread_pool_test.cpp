@@ -31,6 +31,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/executor/async_timer_mock.h"
 #include "mongo/executor/network_interface_asio.h"

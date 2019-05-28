@@ -32,6 +32,7 @@
 #include "mongo/dbtests/mock/mock_remote_db_server.h"
 
 #include <tuple>
+#include <memory>
 
 #include "mongo/dbtests/mock/mock_dbclient_connection.h"
 #include "mongo/rpc/metadata.h"

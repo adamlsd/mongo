@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <string>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobjbuilder.h"

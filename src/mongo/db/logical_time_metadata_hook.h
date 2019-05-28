@@ -30,6 +30,7 @@
 #pragma once
 
 #include <vector>
+#include <memory>
 
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/stdx/memory.h"

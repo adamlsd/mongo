@@ -34,6 +34,7 @@
 #include "mongo/transport/service_entry_point_utils.h"
 
 #include <functional>
+#include <memory>
 
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"

@@ -32,6 +32,7 @@
 #include <boost/optional/optional_io.hpp>
 #include <deque>
 #include <functional>
+#include <memory>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/oplog_buffer_proxy.h"

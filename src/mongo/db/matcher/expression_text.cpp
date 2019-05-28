@@ -31,6 +31,8 @@
 
 #include "mongo/db/matcher/expression_text.h"
 
+#include <memory>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/db_raii.h"

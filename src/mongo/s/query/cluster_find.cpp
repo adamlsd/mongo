@@ -35,6 +35,7 @@
 
 #include <set>
 #include <vector>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/util/bson_extract.h"

@@ -29,10 +29,3 @@
 
 #pragma once
 
-#include <memory>
-
-namespace mongo {
-namespace stdx {
-
-}  // namespace stdx
-}  // namespace mongo

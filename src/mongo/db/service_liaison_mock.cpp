@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "mongo/db/service_liaison_mock.h"
 #include "mongo/stdx/memory.h"

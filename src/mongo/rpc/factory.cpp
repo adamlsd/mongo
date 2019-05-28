@@ -31,6 +31,8 @@
 
 #include "mongo/rpc/factory.h"
 
+#include <memory>
+
 #include "mongo/rpc/legacy_reply.h"
 #include "mongo/rpc/legacy_reply_builder.h"
 #include "mongo/rpc/legacy_request.h"

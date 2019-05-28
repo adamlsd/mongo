@@ -30,6 +30,7 @@
 #include "mongo/db/index/btree_key_generator.h"
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/bson/dotted_path_support.h"

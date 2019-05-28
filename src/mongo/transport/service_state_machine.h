@@ -31,6 +31,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/config.h"

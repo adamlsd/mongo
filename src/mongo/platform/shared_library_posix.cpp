@@ -34,6 +34,7 @@
 
 #include <boost/filesystem.hpp>
 #include <dlfcn.h>
+#include <memory>
 
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"

@@ -31,6 +31,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/base/data_range_cursor.h"
 #include "mongo/base/init.h"
 #include "mongo/stdx/memory.h"

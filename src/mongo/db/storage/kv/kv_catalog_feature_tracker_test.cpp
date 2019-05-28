@@ -31,6 +31,8 @@
 
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 
+#include <memory>
+
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/storage/kv/kv_catalog_feature_tracker.h"
 #include "mongo/db/storage/kv/kv_engine.h"

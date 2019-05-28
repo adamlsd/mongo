@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <memory>
 
 #include "mongo/db/field_ref.h"
 #include "mongo/db/field_ref_set.h"

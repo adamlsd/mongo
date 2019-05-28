@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/db/query/collation/collator_factory_icu.h"
 #include "mongo/db/service_context.h"

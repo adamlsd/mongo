@@ -29,9 +29,12 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/util/background_thread_clock_source.h"
+
+#include <memory>
+
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/background_thread_clock_source.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/system_clock_source.h"

@@ -29,6 +29,8 @@
 
 #include "mongo/db/exec/merge_sort.h"
 
+#include <memory>
+
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/exec/working_set_common.h"

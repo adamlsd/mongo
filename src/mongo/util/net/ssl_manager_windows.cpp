@@ -39,6 +39,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer_context.h"

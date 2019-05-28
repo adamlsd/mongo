@@ -33,6 +33,8 @@
 
 #include "mongo/db/repl/abstract_oplog_fetcher.h"
 
+#include <memory>
+
 #include "mongo/base/counter.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/commands/server_status_metric.h"

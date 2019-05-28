@@ -32,6 +32,7 @@
 #include "mongo/db/repl/task_runner_test_fixture.h"
 
 #include <functional>
+#include <memory>
 
 #include "mongo/db/repl/task_runner.h"
 #include "mongo/stdx/memory.h"

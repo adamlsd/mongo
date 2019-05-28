@@ -31,6 +31,8 @@
 
 #include "mongo/s/shard_server_test_fixture.h"
 
+#include <memory>
+
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"

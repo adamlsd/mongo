@@ -32,6 +32,7 @@
 #include "mongo/platform/basic.h"
 
 #include <exception>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonmisc.h"

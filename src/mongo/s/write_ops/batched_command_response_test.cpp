@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <string>
+#include <memory>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/s/write_ops/batched_command_response.h"

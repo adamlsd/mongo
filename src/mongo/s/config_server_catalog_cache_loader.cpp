@@ -33,6 +33,8 @@
 
 #include "mongo/s/config_server_catalog_cache_loader.h"
 
+#include <memory>
+
 #include "mongo/db/client.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"

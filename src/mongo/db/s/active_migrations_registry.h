@@ -30,6 +30,7 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/db/s/migration_session_id.h"
 #include "mongo/s/request_types/move_chunk_request.h"

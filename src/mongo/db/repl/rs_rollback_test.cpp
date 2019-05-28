@@ -33,6 +33,7 @@
 
 #include <initializer_list>
 #include <utility>
+#include <memory>
 
 #include "mongo/db/catalog/collection_catalog.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"

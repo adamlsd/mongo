@@ -31,6 +31,8 @@
 
 #include "mongo/db/repl/data_replicator_external_state_mock.h"
 
+#include <memory>
+
 #include "mongo/db/repl/oplog_buffer_blocking_queue.h"
 #include "mongo/stdx/memory.h"
 

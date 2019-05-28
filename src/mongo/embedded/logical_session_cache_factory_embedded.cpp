@@ -33,6 +33,8 @@
 
 #include "mongo/embedded/logical_session_cache_factory_embedded.h"
 
+#include <memory>
+
 #include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/service_liaison_mongod.h"
 #include "mongo/db/sessions_collection_standalone.h"

@@ -32,6 +32,7 @@
 #include "mongo/db/repl/rollback_test_fixture.h"
 
 #include <string>
+#include <memory>
 
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"

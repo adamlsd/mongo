@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/runtime_constants_gen.h"

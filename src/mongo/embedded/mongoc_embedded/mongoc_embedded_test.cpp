@@ -34,6 +34,7 @@
 #include "mongoc_embedded/mongoc_embedded.h"
 
 #include <set>
+#include <memory>
 
 #include <mongoc/mongoc.h>
 #include <yaml-cpp/yaml.h>

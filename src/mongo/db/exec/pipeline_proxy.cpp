@@ -31,6 +31,7 @@
 
 #include "mongo/db/exec/pipeline_proxy.h"
 
+#include <memory>
 
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/expression_context.h"

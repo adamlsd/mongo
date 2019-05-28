@@ -31,6 +31,8 @@
 
 #include "mongo/db/matcher/expression_where_noop.h"
 
+#include <memory>
+
 #include "mongo/stdx/memory.h"
 
 namespace mongo {

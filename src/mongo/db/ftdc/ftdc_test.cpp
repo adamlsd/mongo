@@ -32,6 +32,7 @@
 #include "mongo/db/ftdc/ftdc_test.h"
 
 #include <boost/filesystem.hpp>
+#include <memory>
 
 #include "mongo/base/data_type_validated.h"
 #include "mongo/base/init.h"

@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/plan_cache_indexability.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/index/wildcard_key_generator.h"

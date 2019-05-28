@@ -34,6 +34,7 @@
 #include "mongo/db/repl/replication_coordinator_test_fixture.h"
 
 #include <functional>
+#include <memory>
 
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/operation_context_noop.h"

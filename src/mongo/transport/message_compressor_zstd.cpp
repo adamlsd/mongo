@@ -31,6 +31,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include <zstd.h>
 
 #include "mongo/base/init.h"

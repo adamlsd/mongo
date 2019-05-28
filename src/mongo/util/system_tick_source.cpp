@@ -38,6 +38,7 @@
 #if defined(MONGO_CONFIG_HAVE_HEADER_UNISTD_H)
 #include <unistd.h>
 #endif
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/stdx/memory.h"

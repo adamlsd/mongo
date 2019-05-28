@@ -31,6 +31,8 @@
 
 #include "mongo/db/logical_time_metadata_hook.h"
 
+#include <memory>
+
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_time_tracker.h"

@@ -33,6 +33,8 @@
 
 #include "mongo/client/replica_set_monitor_manager.h"
 
+#include <memory>
+
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/client/mongo_uri.h"

@@ -31,6 +31,8 @@
 
 #include "mongo/db/pipeline/document_source_graph_lookup.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/jsobj.h"

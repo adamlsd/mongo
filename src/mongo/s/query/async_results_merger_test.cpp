@@ -31,6 +31,8 @@
 
 #include "mongo/s/query/async_results_merger.h"
 
+#include <memory>
+
 #include "mongo/db/json.h"
 #include "mongo/db/pipeline/change_stream_constants.h"
 #include "mongo/db/pipeline/resume_token.h"

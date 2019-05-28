@@ -32,6 +32,7 @@
 #include "mongo/rpc/legacy_reply_builder.h"
 
 #include <iterator>
+#include <memory>
 
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/jsobj.h"

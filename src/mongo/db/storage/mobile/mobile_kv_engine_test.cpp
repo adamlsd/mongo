@@ -29,6 +29,8 @@
 
 #include "mongo/base/init.h"
 
+#include <memory>
+
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 #include "mongo/db/storage/mobile/mobile_kv_engine.h"
 #include "mongo/db/storage/mobile/mobile_options_gen.h"

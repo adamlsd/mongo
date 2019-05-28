@@ -33,6 +33,7 @@
 
 #include <cmath>
 #include <pcrecpp.h>
+#include <memory>
 
 #include "mongo/bson/bsonelement_comparator.h"
 #include "mongo/bson/bsonmisc.h"

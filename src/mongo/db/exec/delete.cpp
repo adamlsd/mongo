@@ -33,6 +33,8 @@
 
 #include "mongo/db/exec/delete.h"
 
+#include <memory>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"

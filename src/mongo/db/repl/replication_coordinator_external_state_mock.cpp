@@ -33,6 +33,8 @@
 
 #include "mongo/db/repl/replication_coordinator_external_state_mock.h"
 
+#include <memory>
+
 #include "mongo/base/status_with.h"
 #include "mongo/bson/oid.h"
 #include "mongo/db/client.h"

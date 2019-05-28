@@ -33,6 +33,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/bson/json.h"
 #include "mongo/s/balancer_configuration.h"

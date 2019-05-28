@@ -34,6 +34,7 @@
 #include "mongo/db/storage/mobile/mobile_record_store.h"
 
 #include <sqlite3.h>
+#include <memory>
 
 #include "mongo/base/static_assert.h"
 #include "mongo/db/catalog/collection_options.h"

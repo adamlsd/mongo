@@ -29,6 +29,8 @@
 
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_engine.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 #include "mongo/stdx/memory.h"

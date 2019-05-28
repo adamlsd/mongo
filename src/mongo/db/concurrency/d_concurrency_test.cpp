@@ -35,6 +35,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <memory>
 
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/lock_manager_test_help.h"

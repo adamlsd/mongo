@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/optional/optional_io.hpp>
+#include <memory>
 
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"

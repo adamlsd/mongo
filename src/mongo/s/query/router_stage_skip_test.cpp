@@ -31,6 +31,8 @@
 
 #include "mongo/s/query/router_stage_skip.h"
 
+#include <memory>
+
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/s/query/router_stage_mock.h"

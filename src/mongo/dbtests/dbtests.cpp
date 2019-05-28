@@ -35,6 +35,8 @@
 
 #include "mongo/dbtests/dbtests.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
 #include "mongo/db/auth/authorization_manager.h"

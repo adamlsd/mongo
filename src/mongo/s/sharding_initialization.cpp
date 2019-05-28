@@ -34,6 +34,7 @@
 #include "mongo/s/sharding_initialization.h"
 
 #include <string>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/db/audit.h"

@@ -31,6 +31,8 @@
 
 #include "mongo/util/fail_point.h"
 
+#include <memory>
+
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/platform/random.h"
 #include "mongo/stdx/memory.h"

@@ -33,6 +33,8 @@
 
 #include "mongo/util/concurrency/thread_pool_test_common.h"
 
+#include <memory>
+
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"

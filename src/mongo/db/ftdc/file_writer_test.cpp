@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/filesystem.hpp>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonmisc.h"

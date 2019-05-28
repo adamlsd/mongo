@@ -31,6 +31,8 @@
 
 #include "mongo/executor/network_interface_factory.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"
 #include "mongo/config.h"

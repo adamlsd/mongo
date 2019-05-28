@@ -33,6 +33,8 @@
 
 #include "mongo/db/matcher/schema/json_schema_parser.h"
 
+#include <memory>
+
 #include "mongo/bson/bsontypes.h"
 #include "mongo/bson/unordered_fields_bsonelement_comparator.h"
 #include "mongo/db/commands/feature_compatibility_version_documentation.h"

@@ -34,6 +34,7 @@
 #include "mongo/db/catalog/index_catalog_entry_impl.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"

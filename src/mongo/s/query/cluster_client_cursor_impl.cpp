@@ -31,6 +31,8 @@
 
 #include "mongo/s/query/cluster_client_cursor_impl.h"
 
+#include <memory>
+
 #include "mongo/s/query/router_stage_limit.h"
 #include "mongo/s/query/router_stage_merge.h"
 #include "mongo/s/query/router_stage_remove_metadata_fields.h"

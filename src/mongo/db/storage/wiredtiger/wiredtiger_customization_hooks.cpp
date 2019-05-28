@@ -31,6 +31,8 @@
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/service_context.h"

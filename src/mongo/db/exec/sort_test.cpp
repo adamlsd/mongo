@@ -34,6 +34,7 @@
 #include "mongo/db/exec/sort.h"
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/db/exec/queued_data_stage.h"
 #include "mongo/db/json.h"

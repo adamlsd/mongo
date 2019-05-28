@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/parsed_distinct.h"
 
+#include <memory>
+
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/query/canonical_query.h"

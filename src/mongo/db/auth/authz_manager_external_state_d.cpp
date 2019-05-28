@@ -33,6 +33,8 @@
 
 #include "mongo/db/auth/authz_manager_external_state_d.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/db/auth/authz_session_external_state_d.h"
 #include "mongo/db/auth/user_name.h"

@@ -32,6 +32,7 @@
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 
 #include <string>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/mutable/algorithm.h"

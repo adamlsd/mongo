@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/internal_plans.h"
 
+#include <memory>
+
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"
 #include "mongo/db/exec/collection_scan.h"

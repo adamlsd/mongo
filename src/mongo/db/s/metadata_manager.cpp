@@ -33,6 +33,8 @@
 
 #include "mongo/db/s/metadata_manager.h"
 
+#include <memory>
+
 #include "mongo/base/string_data.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/builder.h"

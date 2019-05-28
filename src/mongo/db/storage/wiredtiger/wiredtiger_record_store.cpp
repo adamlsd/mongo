@@ -35,6 +35,8 @@
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
 
+#include <memory>
+
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/static_assert.h"
 #include "mongo/bson/util/builder.h"

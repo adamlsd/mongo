@@ -33,6 +33,8 @@
 
 #include "mongo/db/catalog/collection_info_cache_impl.h"
 
+#include <memory>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"

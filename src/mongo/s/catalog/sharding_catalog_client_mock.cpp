@@ -31,6 +31,8 @@
 
 #include "mongo/s/catalog/sharding_catalog_client_mock.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/s/catalog/type_chunk.h"

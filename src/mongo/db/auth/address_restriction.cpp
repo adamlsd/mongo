@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/db/auth/address_restriction.h"
 #include "mongo/db/auth/address_restriction_gen.h"
 #include "mongo/db/server_options.h"

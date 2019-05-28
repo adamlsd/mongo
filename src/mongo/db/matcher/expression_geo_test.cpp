@@ -31,6 +31,8 @@
 
 #include "mongo/unittest/unittest.h"
 
+#include <memory>
+
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/db/matcher/expression.h"

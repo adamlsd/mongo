@@ -33,6 +33,8 @@
 
 #include "mongo/db/repl/sync_source_resolver.h"
 
+#include <memory>
+
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/replication_process.h"

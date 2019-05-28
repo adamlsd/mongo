@@ -33,6 +33,7 @@
 #include <cmath>
 #include <string>
 #include <utility>
+#include <memory>
 
 #include "mongo/config.h"
 #include "mongo/stdx/memory.h"

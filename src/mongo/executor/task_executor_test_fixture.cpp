@@ -31,6 +31,8 @@
 
 #include "mongo/executor/task_executor_test_fixture.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/remote_command_request.h"

@@ -31,6 +31,7 @@
 
 #include <chrono>
 #include <thread>
+#include <memory>
 
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/condition_variable.h"

@@ -34,6 +34,7 @@
 #include "mongo/platform/basic.h"
 
 #include <iostream>
+#include <memory>
 
 #include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/catalog/collection.h"

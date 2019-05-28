@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/collation/collator_factory_icu.h"
 
+#include <memory>
+
 #include <unicode/coll.h>
 #include <unicode/errorcode.h>
 #include <unicode/ucol.h>

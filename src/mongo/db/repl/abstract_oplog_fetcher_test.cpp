@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/db/repl/abstract_oplog_fetcher.h"
 #include "mongo/db/repl/abstract_oplog_fetcher_test_fixture.h"
 #include "mongo/db/repl/oplog_entry.h"

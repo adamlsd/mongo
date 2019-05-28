@@ -34,6 +34,7 @@
 #include "mongo/db/exec/queued_data_stage.h"
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/operation_context.h"

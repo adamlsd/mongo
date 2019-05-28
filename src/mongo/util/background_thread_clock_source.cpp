@@ -35,6 +35,7 @@
 
 #include <chrono>
 #include <thread>
+#include <memory>
 
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"

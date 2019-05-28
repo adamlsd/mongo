@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 
 #include "mongo/db/matcher/expression.h"
 #include "mongo/stdx/memory.h"

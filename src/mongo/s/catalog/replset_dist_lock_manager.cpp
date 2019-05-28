@@ -33,6 +33,8 @@
 
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/db/operation_context_noop.h"

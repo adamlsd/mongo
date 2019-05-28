@@ -33,6 +33,8 @@
 
 #include "mongo/db/s/migration_source_manager.h"
 
+#include <memory>
+
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"

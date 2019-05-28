@@ -31,6 +31,7 @@
 
 #include <list>
 #include <set>
+#include <memory>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/client/connection_string.h"

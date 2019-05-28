@@ -31,6 +31,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include <string>
+#include <vector>
+#include <memory>
+
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/rpc/message.h"
 #include "mongo/stdx/memory.h"
@@ -42,9 +46,6 @@
 #include "mongo/transport/message_compressor_zstd.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/log.h"
-
-#include <string>
-#include <vector>
 
 namespace mongo {
 namespace {

@@ -31,6 +31,8 @@
 
 #include "mongo/db/storage/devnull/devnull_kv_engine.h"
 
+#include <memory>
+
 #include "mongo/db/snapshot_window_options.h"
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_record_store.h"
 #include "mongo/db/storage/record_store.h"

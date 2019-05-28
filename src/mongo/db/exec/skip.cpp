@@ -28,6 +28,9 @@
  */
 
 #include "mongo/db/exec/skip.h"
+
+#include <memory>
+
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/stdx/memory.h"

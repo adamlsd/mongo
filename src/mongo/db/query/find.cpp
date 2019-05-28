@@ -33,6 +33,8 @@
 
 #include "mongo/db/query/find.h"
 
+#include <memory>
+
 #include "mongo/base/error_codes.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"

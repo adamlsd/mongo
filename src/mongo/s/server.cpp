@@ -32,6 +32,7 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"

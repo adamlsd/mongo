@@ -31,6 +31,10 @@
 
 #include "mongo/transport/message_compressor_registry.h"
 
+#include <memory>
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
+
 #include "mongo/base/init.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/transport/message_compressor_noop.h"
@@ -38,9 +42,6 @@
 #include "mongo/transport/message_compressor_zlib.h"
 #include "mongo/transport/message_compressor_zstd.h"
 #include "mongo/util/options_parser/option_section.h"
-
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/split.hpp>
 
 namespace mongo {
 namespace {

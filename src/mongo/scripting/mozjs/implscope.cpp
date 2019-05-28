@@ -33,6 +33,8 @@
 
 #include "mongo/scripting/mozjs/implscope.h"
 
+#include <memory>
+
 #include <js/CharacterEncoding.h>
 #include <jscustomallocator.h>
 #include <jsfriendapi.h>

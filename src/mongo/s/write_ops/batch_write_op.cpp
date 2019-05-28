@@ -32,6 +32,7 @@
 #include "mongo/s/write_ops/batch_write_op.h"
 
 #include <numeric>
+#include <memory>
 
 #include "mongo/base/error_codes.h"
 #include "mongo/db/operation_context.h"

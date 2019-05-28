@@ -33,6 +33,8 @@
 
 #include "mongo/client/async_client.h"
 
+#include <memory>
+
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/client/authenticate.h"
 #include "mongo/config.h"

@@ -31,6 +31,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 #include <algorithm>
 #include <vector>
 

@@ -31,6 +31,8 @@
 
 #include "mongo/executor/connection_pool_test_fixture.h"
 
+#include <memory>
+
 #include "mongo/stdx/memory.h"
 
 namespace mongo {

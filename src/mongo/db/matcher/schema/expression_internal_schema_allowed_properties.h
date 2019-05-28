@@ -32,6 +32,7 @@
 #include <pcrecpp.h>
 #include <utility>
 #include <vector>
+#include <memory>
 
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_with_placeholder.h"

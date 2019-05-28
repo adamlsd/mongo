@@ -32,6 +32,7 @@
 #include "mongo/db/storage/encryption_hooks.h"
 
 #include <boost/filesystem/path.hpp>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/db/service_context.h"

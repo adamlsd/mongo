@@ -46,6 +46,7 @@
 #include <map>
 #include <signal.h>
 #include <vector>
+#include <memory>
 
 #ifdef _WIN32
 #include <io.h>

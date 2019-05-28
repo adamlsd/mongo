@@ -31,6 +31,8 @@
 
 #include "mongo/db/matcher/expression_where.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"

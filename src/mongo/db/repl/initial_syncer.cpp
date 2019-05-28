@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <memory>
 
 #include "mongo/base/counter.h"
 #include "mongo/base/status.h"

@@ -33,6 +33,8 @@
 
 #include "mongo/db/repl/vote_requester.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/db/repl/repl_set_request_votes_args.h"
 #include "mongo/db/repl/scatter_gather_runner.h"

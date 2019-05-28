@@ -31,13 +31,14 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/storage/biggie/biggie_record_store.h"
+
 #include <cstring>
 #include <memory>
 #include <utility>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/storage/biggie/biggie_record_store.h"
 #include "mongo/db/storage/biggie/biggie_recovery_unit.h"
 #include "mongo/db/storage/biggie/biggie_visibility_manager.h"
 #include "mongo/db/storage/biggie/store.h"

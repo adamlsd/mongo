@@ -34,6 +34,8 @@
 
 #include "mongo/s/client/shard_factory.h"
 
+#include <memory>
+
 #include "mongo/base/status_with.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/client/remote_command_targeter.h"

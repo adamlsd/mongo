@@ -31,6 +31,8 @@
 
 #include "mongo/s/query/document_source_merge_cursors.h"
 
+#include <memory>
+
 #include "mongo/client/remote_command_targeter_factory_mock.h"
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/json.h"

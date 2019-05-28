@@ -34,6 +34,7 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_index.h"
 
 #include <set>
+#include <memory>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/db/catalog/index_catalog_entry.h"

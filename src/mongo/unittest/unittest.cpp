@@ -36,6 +36,7 @@
 #include <iostream>
 #include <map>
 #include <functional>
+#include <memory>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/init.h"

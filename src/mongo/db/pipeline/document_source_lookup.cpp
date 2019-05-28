@@ -31,6 +31,8 @@
 
 #include "mongo/db/pipeline/document_source_lookup.h"
 
+#include <memory>
+
 #include "mongo/base/init.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_algo.h"

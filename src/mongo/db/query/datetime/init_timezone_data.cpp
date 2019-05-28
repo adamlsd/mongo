@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include <timelib.h>
 
 #include "mongo/base/init.h"

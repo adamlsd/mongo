@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <set>
+#include <memory>
 
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database_holder.h"

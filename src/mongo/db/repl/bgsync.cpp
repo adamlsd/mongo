@@ -33,6 +33,8 @@
 
 #include "mongo/db/repl/bgsync.h"
 
+#include <memory>
+
 #include "mongo/base/counter.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/util/bson_extract.h"

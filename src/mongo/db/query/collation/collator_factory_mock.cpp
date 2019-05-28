@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/collation/collator_factory_mock.h"
 
+#include <memory>
+
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"

@@ -35,6 +35,7 @@
 
 #include <boost/optional.hpp>
 #include <vector>
+#include <memory>
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/database.h"

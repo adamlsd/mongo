@@ -30,6 +30,7 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <memory>
 
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/rpc/op_msg.h"

@@ -34,6 +34,7 @@
 #include "mongo/db/exec/sort_key_generator.h"
 
 #include <vector>
+#include <memory>
 
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"

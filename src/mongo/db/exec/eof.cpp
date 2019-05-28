@@ -31,6 +31,8 @@
 
 #include "mongo/db/exec/eof.h"
 
+#include <memory>
+
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/stdx/memory.h"
 

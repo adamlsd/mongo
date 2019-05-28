@@ -29,6 +29,8 @@
 
 #include "mongo/executor/async_timer_mock.h"
 
+#include <memory>
+
 #include "mongo/base/system_error.h"
 #include "mongo/stdx/memory.h"
 

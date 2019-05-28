@@ -30,6 +30,7 @@
 #pragma once
 
 #include <list>
+#include <memory>
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/logical_time.h"

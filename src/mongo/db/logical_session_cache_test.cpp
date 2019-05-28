@@ -31,6 +31,8 @@
 
 #include "mongo/db/logical_session_cache_impl.h"
 
+#include <memory>
+
 #include "mongo/bson/oid.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session_for_test.h"

@@ -35,6 +35,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/db/concurrency/flow_control_ticketholder.h"
 #include "mongo/db/namespace_string.h"

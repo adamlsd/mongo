@@ -34,6 +34,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonmisc.h"

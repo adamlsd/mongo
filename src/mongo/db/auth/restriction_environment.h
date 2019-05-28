@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/client.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/transport/session.h"

@@ -30,6 +30,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 
 #include "mongo/db/repl/optime.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"

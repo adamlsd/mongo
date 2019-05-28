@@ -31,6 +31,8 @@
 
 #include "mongo/db/fts/fts_query_impl.h"
 
+#include <memory>
+
 #include "mongo/db/fts/fts_query_parser.h"
 #include "mongo/db/fts/fts_spec.h"
 #include "mongo/db/fts/fts_tokenizer.h"

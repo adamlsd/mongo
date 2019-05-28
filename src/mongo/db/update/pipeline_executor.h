@@ -33,6 +33,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <memory>
 
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/pipeline.h"

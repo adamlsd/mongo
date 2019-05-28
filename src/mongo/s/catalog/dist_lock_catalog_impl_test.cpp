@@ -30,6 +30,7 @@
 #include "mongo/platform/basic.h"
 
 #include <utility>
+#include <memory>
 
 #include "mongo/bson/json.h"
 #include "mongo/client/remote_command_targeter_mock.h"

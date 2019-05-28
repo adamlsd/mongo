@@ -33,6 +33,8 @@
 
 #include "mongo/db/cursor_manager.h"
 
+#include <memory>
+
 #include "mongo/base/data_cursor.h"
 #include "mongo/base/init.h"
 #include "mongo/db/audit.h"

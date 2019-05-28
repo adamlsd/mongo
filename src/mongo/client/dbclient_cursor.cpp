@@ -37,6 +37,8 @@
 
 #include "mongo/client/dbclient_cursor.h"
 
+#include <memory>
+
 #include "mongo/client/connpool.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbmessage.h"

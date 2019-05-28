@@ -38,6 +38,7 @@
 #include <limits>
 #include <signal.h>
 #include <string>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"

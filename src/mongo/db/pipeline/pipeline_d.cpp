@@ -33,6 +33,8 @@
 
 #include "mongo/db/pipeline/pipeline_d.h"
 
+#include <memory>
+
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"

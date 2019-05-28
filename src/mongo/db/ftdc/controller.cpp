@@ -33,6 +33,8 @@
 
 #include "mongo/db/ftdc/controller.h"
 
+#include <memory>
+
 #include "mongo/db/client.h"
 #include "mongo/db/ftdc/collector.h"
 #include "mongo/db/ftdc/util.h"

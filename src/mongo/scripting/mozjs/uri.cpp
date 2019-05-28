@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <memory>
 
 #include "mongo/client/mongo_uri.h"
 #include "mongo/scripting/mozjs/implscope.h"

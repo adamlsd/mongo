@@ -34,6 +34,7 @@
 #include "mongo/s/client/shard_registry.h"
 
 #include <set>
+#include <memory>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/util/bson_extract.h"

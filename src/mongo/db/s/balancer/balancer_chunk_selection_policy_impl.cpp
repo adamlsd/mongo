@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj_comparator_interface.h"

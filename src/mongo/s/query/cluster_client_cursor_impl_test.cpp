@@ -31,6 +31,8 @@
 
 #include "mongo/s/query/cluster_client_cursor_impl.h"
 
+#include <memory>
+
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/service_context_test_fixture.h"

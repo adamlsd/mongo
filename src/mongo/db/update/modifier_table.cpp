@@ -31,6 +31,7 @@
 
 #include <string>
 #include <utility>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/base/simple_string_data_comparator.h"

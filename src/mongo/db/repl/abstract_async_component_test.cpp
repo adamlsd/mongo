@@ -29,6 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/db/repl/abstract_async_component.h"
 #include "mongo/db/repl/task_executor_mock.h"

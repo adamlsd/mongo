@@ -32,6 +32,8 @@
 
 #include "mongo/db/keys_collection_manager.h"
 
+#include <memory>
+
 #include "mongo/db/key_generator.h"
 #include "mongo/db/keys_collection_cache.h"
 #include "mongo/db/keys_collection_client.h"

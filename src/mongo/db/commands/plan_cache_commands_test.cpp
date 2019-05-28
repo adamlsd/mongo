@@ -34,6 +34,7 @@
 #include "mongo/db/commands/plan_cache_commands.h"
 
 #include <algorithm>
+#include <memory>
 
 #include "mongo/db/json.h"
 #include "mongo/db/operation_context_noop.h"

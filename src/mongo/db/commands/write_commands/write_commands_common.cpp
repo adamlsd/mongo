@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"

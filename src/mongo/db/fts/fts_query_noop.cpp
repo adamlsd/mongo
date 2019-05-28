@@ -31,6 +31,8 @@
 
 #include "mongo/db/fts/fts_query_noop.h"
 
+#include <memory>
+
 #include "mongo/stdx/memory.h"
 
 namespace mongo {

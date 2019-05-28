@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/base/string_data.h"
 #include "mongo/db/update/array_culling_node.h"
 #include "mongo/stdx/memory.h"

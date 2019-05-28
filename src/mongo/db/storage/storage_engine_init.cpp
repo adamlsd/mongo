@@ -34,6 +34,7 @@
 #include "mongo/db/storage/storage_engine_init.h"
 
 #include <map>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"

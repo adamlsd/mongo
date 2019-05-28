@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/query_request.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"

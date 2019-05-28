@@ -31,6 +31,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 #include <functional>
 
 #include "mongo/base/status.h"

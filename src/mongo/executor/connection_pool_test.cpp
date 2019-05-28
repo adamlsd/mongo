@@ -29,12 +29,13 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/executor/connection_pool_test_fixture.h"
+
 #include <algorithm>
 #include <random>
 #include <stack>
 #include <tuple>
-
-#include "mongo/executor/connection_pool_test_fixture.h"
+#include <memory>
 
 #include "mongo/executor/connection_pool.h"
 #include "mongo/stdx/future.h"

@@ -29,6 +29,8 @@
 
 #include "mongo/db/exec/and_sorted.h"
 
+#include <memory>
+
 #include "mongo/db/exec/and_common.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"

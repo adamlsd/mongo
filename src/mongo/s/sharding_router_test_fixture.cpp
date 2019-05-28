@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <memory>
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/client/remote_command_targeter_factory_mock.h"

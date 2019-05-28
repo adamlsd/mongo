@@ -33,6 +33,8 @@
 
 #include "mongo/db/exec/cached_plan.h"
 
+#include <memory>
+
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/multi_plan.h"

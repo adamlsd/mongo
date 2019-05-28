@@ -31,6 +31,8 @@
 
 #include "mongo/scripting/mozjs/code.h"
 
+#include <memory>
+
 #include "mongo/scripting/mozjs/implscope.h"
 #include "mongo/scripting/mozjs/objectwrapper.h"
 #include "mongo/scripting/mozjs/valuereader.h"

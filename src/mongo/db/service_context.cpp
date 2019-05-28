@@ -378,7 +378,6 @@ ServiceContext::ConstructorActionRegisterer::ConstructorActionRegisterer(
     if (!destructor)
         destructor = [](ServiceContext*) {};
     _registerer.emplace(std::move(name),
-                        std::move(prereqs),
                         [this, constructor, destructor](InitializerContext* context) {
                             _iter = registeredConstructorActions().emplace(
                                 registeredConstructorActions().end(),
@@ -389,7 +388,8 @@ ServiceContext::ConstructorActionRegisterer::ConstructorActionRegisterer(
                         [this](DeinitializerContext* context) {
                             registeredConstructorActions().erase(_iter);
                             return Status::OK();
-                        });
+                        },
+                        std::move(prereqs));
 }
 
 ServiceContext::UniqueServiceContext ServiceContext::make() {

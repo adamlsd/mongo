@@ -30,11 +30,3 @@
 #pragma once
 
 #include <list>
-
-namespace mongo {
-namespace stdx {
-
-using std::list;
-
-}  // namespace stdx
-}  // namespace mongo

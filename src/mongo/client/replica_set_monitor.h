@@ -89,6 +89,9 @@ public:
     SemiFuture<HostAndPort> getHostOrRefresh(const ReadPreferenceSetting& readPref,
                                              Milliseconds maxWait = kDefaultFindHostTimeout);
 
+    SemiFuture<std::vector<HostAndPort>> getHostsOrRefresh(
+        const ReadPreferenceSetting& readPref, Milliseconds maxWait = kDefaultFindHostTimeout);
+
     /**
      * Returns the host we think is the current master or uasserts.
      *
@@ -154,9 +157,10 @@ public:
     bool contains(const HostAndPort& server) const;
 
     /**
-     * Writes information about our cached view of the set to a BSONObjBuilder.
+     * Writes information about our cached view of the set to a BSONObjBuilder. If
+     * forFTDC, trim to minimize its size for full-time diagnostic data capture.
      */
-    void appendInfo(BSONObjBuilder& b) const;
+    void appendInfo(BSONObjBuilder& b, bool forFTDC = false) const;
 
     /**
      * Returns true if the monitor knows a usable primary from it's interal view.
@@ -256,6 +260,9 @@ public:
     void runScanForMockReplicaSet();
 
 private:
+    Future<std::vector<HostAndPort>> _getHostsOrRefresh(const ReadPreferenceSetting& readPref,
+                                                        Milliseconds maxWait);
+
     /**
      * Schedules a refresh via the task executor. (Task is automatically canceled in the d-tor.)
      */

@@ -124,6 +124,10 @@ public:
         return {};
     }
 
+    boost::optional<Timestamp> getOplogNeededForCrashRecovery() const override {
+        return boost::none;
+    }
+
     // List of idents removed using dropIdent().
     std::vector<std::string> droppedIdents;
 

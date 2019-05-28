@@ -73,12 +73,21 @@ public:
 
     void update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                 const NamespaceString& ns,
-                std::vector<BSONObj>&& queries,
-                std::vector<BSONObj>&& updates,
+                BatchedObjects&& batch,
                 const WriteConcernOptions& wc,
                 bool upsert,
                 bool multi,
                 boost::optional<OID>) final {
+        MONGO_UNREACHABLE;
+    }
+
+    WriteResult updateWithResult(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                 const NamespaceString& ns,
+                                 BatchedObjects&& batch,
+                                 const WriteConcernOptions& wc,
+                                 bool upsert,
+                                 bool multi,
+                                 boost::optional<OID> targetEpoch) final override {
         MONGO_UNREACHABLE;
     }
 
@@ -128,6 +137,11 @@ public:
     }
 
     std::unique_ptr<Pipeline, PipelineDeleter> attachCursorSourceToPipeline(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx, Pipeline* pipeline) override {
+        MONGO_UNREACHABLE;
+    }
+
+    std::unique_ptr<Pipeline, PipelineDeleter> attachCursorSourceToPipelineForLocalRead(
         const boost::intrusive_ptr<ExpressionContext>& expCtx, Pipeline* pipeline) override {
         MONGO_UNREACHABLE;
     }

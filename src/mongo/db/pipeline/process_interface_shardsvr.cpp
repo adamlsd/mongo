@@ -132,8 +132,7 @@ void MongoInterfaceShardServer::insert(const boost::intrusive_ptr<ExpressionCont
 
 void MongoInterfaceShardServer::update(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                        const NamespaceString& ns,
-                                       std::vector<BSONObj>&& queries,
-                                       std::vector<BSONObj>&& updates,
+                                       BatchedObjects&& batch,
                                        const WriteConcernOptions& wc,
                                        bool upsert,
                                        bool multi,
@@ -141,12 +140,7 @@ void MongoInterfaceShardServer::update(const boost::intrusive_ptr<ExpressionCont
     BatchedCommandResponse response;
     BatchWriteExecStats stats;
 
-    BatchedCommandRequest updateCommand(buildUpdateOp(ns,
-                                                      std::move(queries),
-                                                      std::move(updates),
-                                                      upsert,
-                                                      multi,
-                                                      expCtx->bypassDocumentValidation));
+    BatchedCommandRequest updateCommand(buildUpdateOp(expCtx, ns, std::move(batch), upsert, multi));
 
     // If applicable, attach a write concern to the batched command request.
     attachWriteConcern(&updateCommand, wc);
@@ -203,7 +197,7 @@ unique_ptr<Pipeline, PipelineDeleter> MongoInterfaceShardServer::attachCursorSou
     // this function, to be sure the collection didn't become sharded between the time we checked
     // whether it's sharded and the time we took the lock.
 
-    return MongoInterfaceStandalone::attachCursorSourceToPipeline(expCtx, pipeline.release());
+    return attachCursorSourceToPipelineForLocalRead(expCtx, pipeline.release());
 }
 
 }  // namespace mongo

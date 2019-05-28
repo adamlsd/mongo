@@ -74,6 +74,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/session_catalog',
+        '$BUILD_DIR/mongo/db/sessions_collection',
     ],
 )
 
@@ -481,6 +482,19 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/server_options_core',
     ],
+)
+
+env.CppUnitTest(
+    target='cluster_commands_helpers_test',
+    source=[
+        'append_raw_responses_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_mock',
+        'shard_server_test_fixture',
+        'sharding_router_api',
+    ]
 )
 
 env.CppUnitTest(

@@ -24,7 +24,8 @@ TestData.skipCheckDBHashes = true;
     const rs0_opts = {nodes: [{}, {}]};
     // Start the participant replSet with one node as a priority 0 node to avoid flip flopping.
     const rs1_opts = {nodes: [{}, {rsConfig: {priority: 0}}]};
-    const st = new ShardingTest({shards: {rs0: rs0_opts, rs1: rs1_opts}, mongos: 1});
+    const st = new ShardingTest(
+        {shards: {rs0: rs0_opts, rs1: rs1_opts}, mongos: 1, causallyConsistent: true});
 
     // Create a sharded collection:
     // shard0: [-inf, 0)
@@ -33,10 +34,8 @@ TestData.skipCheckDBHashes = true;
     st.ensurePrimaryShard('test', st.shard0.name);
     assert.commandWorked(st.s0.adminCommand({shardCollection: 'test.user', key: {x: 1}}));
     assert.commandWorked(st.s0.adminCommand({split: 'test.user', middle: {x: 0}}));
-    // TODO (SERVER-40594): Remove _waitForDelete once the range deleter doesn't block step
-    // down if it enters a prepare conflict retry loop.
-    assert.commandWorked(st.s0.adminCommand(
-        {moveChunk: 'test.user', find: {x: 0}, to: st.shard1.name, _waitForDelete: true}));
+    assert.commandWorked(
+        st.s0.adminCommand({moveChunk: 'test.user', find: {x: 0}, to: st.shard1.name}));
 
     const testDB = st.s0.getDB('test');
     assert.commandWorked(testDB.runCommand({insert: 'user', documents: [{x: -10}, {x: 10}]}));
@@ -105,17 +104,24 @@ TestData.skipCheckDBHashes = true;
     // Once the coordinator has gone down, do a majority write on the participant while there is a
     // prepared transaction. This will ensure that the stable timestamp is able to advance since
     // this write must be in the committed snapshot.
-    assert.commandWorked(participantPrimaryConn.getDB("dummy").getCollection("dummy").insert(
-        {dummy: 2}, {writeConcern: {w: "majority"}}));
+    const session = participantPrimaryConn.startSession();
+    const sessionDB = session.getDatabase("dummy");
+    const sessionColl = sessionDB.getCollection("dummy");
+    session.resetOperationTime_forTesting();
+    assert.commandWorked(sessionColl.insert({dummy: 2}, {writeConcern: {w: "majority"}}));
+    assert.neq(session.getOperationTime(), null);
+    assert.neq(session.getClusterTime(), null);
     jsTest.log("Successfully completed majority write on participant");
 
     // Confirm that a majority read on the secondary includes the dummy write. This would mean that
     // the stable timestamp also advanced on the secondary.
+    // In order to do this read with readConcern majority, we must use afterClusterTime with causal
+    // consistency enabled.
     const participantSecondaryConn = participantReplSetTest.getSecondary();
     const secondaryDB = participantSecondaryConn.getDB("dummy");
     const res = secondaryDB.runCommand({
         find: "dummy",
-        readConcern: {level: "majority"},
+        readConcern: {level: "majority", afterClusterTime: session.getOperationTime()},
     });
     assert.eq(res.cursor.firstBatch.length, 1);
 

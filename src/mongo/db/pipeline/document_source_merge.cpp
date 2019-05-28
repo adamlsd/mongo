@@ -348,7 +348,7 @@ std::unique_ptr<DocumentSourceMerge::LiteParsed> DocumentSourceMerge::LiteParsed
     PrivilegeVector privileges{{ResourcePattern::forExactNamespace(targetNss), actions}};
 
     return std::make_unique<DocumentSourceMerge::LiteParsed>(std::move(targetNss),
-                                                              std::move(privileges));
+                                                             std::move(privileges));
 }
 
 DocumentSourceMerge::DocumentSourceMerge(NamespaceString outputNs,

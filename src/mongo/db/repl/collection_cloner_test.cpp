@@ -529,13 +529,13 @@ TEST_F(CollectionClonerTest,
         });
 
     collectionCloner = std::make_unique<CollectionCloner>(&_executorProxy,
-                                                           dbWorkThreadPool.get(),
-                                                           target,
-                                                           nss,
-                                                           options,
-                                                           setStatusCallback(),
-                                                           storageInterface.get(),
-                                                           defaultBatchSize);
+                                                          dbWorkThreadPool.get(),
+                                                          target,
+                                                          nss,
+                                                          options,
+                                                          setStatusCallback(),
+                                                          storageInterface.get(),
+                                                          defaultBatchSize);
 
     ASSERT_OK(collectionCloner->startup());
 
@@ -1136,16 +1136,16 @@ TEST_F(CollectionClonerTest, CollectionClonerResetsOnCompletionCallbackFunctionA
     Status result = getDetectableErrorStatus();
     collectionCloner =
         std::make_unique<CollectionCloner>(&getExecutor(),
-                                            dbWorkThreadPool.get(),
-                                            target,
-                                            nss,
-                                            options,
-                                            [&result, sharedCallbackData](const Status& status) {
-                                                log() << "setting result to " << status;
-                                                result = status;
-                                            },
-                                            storageInterface.get(),
-                                            defaultBatchSize);
+                                           dbWorkThreadPool.get(),
+                                           target,
+                                           nss,
+                                           options,
+                                           [&result, sharedCallbackData](const Status& status) {
+                                               log() << "setting result to " << status;
+                                               result = status;
+                                           },
+                                           storageInterface.get(),
+                                           defaultBatchSize);
 
     ASSERT_OK(collectionCloner->startup());
     ASSERT_TRUE(collectionCloner->isActive());

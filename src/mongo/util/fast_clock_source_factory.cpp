@@ -44,7 +44,7 @@ std::unique_ptr<ClockSource> FastClockSourceFactory::create(Milliseconds granula
     // For now, assume there is no built-in fast wall clock so instead
     // create a background-thread-based timer.
     return std::make_unique<BackgroundThreadClockSource>(std::make_unique<SystemClockSource>(),
-                                                          granularity);
+                                                         granularity);
 }
 
 }  // namespace mongo

@@ -29,8 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <memory>
 #include <functional>
+#include <memory>
 
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/namespace_string.h"

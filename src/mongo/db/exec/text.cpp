@@ -29,8 +29,8 @@
 
 #include "mongo/db/exec/text.h"
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/db/exec/fetch.h"
 #include "mongo/db/exec/filter.h"
@@ -122,7 +122,8 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* opCtx,
     if (wantTextScore) {
         // We use a TEXT_OR stage to get the union of the results from the index scans and then
         // compute their text scores. This is a blocking operation.
-        auto textScorer = std::make_unique<TextOrStage>(opCtx, _params.spec, ws, filter, collection);
+        auto textScorer =
+            std::make_unique<TextOrStage>(opCtx, _params.spec, ws, filter, collection);
 
         textScorer->addChildren(std::move(indexScanList));
 
@@ -139,8 +140,8 @@ unique_ptr<PlanStage> TextStage::buildTextTree(OperationContext* opCtx,
         // add our own FETCH stage to satisfy the requirement of the TEXT_MATCH stage that its
         // WorkingSetMember inputs have fetched data.
         const MatchExpression* emptyFilter = nullptr;
-        auto fetchStage =
-            std::make_unique<FetchStage>(opCtx, ws, textSearcher.release(), emptyFilter, collection);
+        auto fetchStage = std::make_unique<FetchStage>(
+            opCtx, ws, textSearcher.release(), emptyFilter, collection);
 
         textMatchStage = std::make_unique<TextMatchStage>(
             opCtx, std::move(fetchStage), _params.query, _params.spec, ws);

@@ -33,8 +33,8 @@
 
 #include "mongo/s/sharding_initialization.h"
 
-#include <string>
 #include <memory>
+#include <string>
 
 #include "mongo/base/status.h"
 #include "mongo/db/audit.h"
@@ -90,10 +90,10 @@ std::unique_ptr<ShardingCatalogClient> makeCatalogClient(ServiceContext* service
     auto distLockCatalog = std::make_unique<DistLockCatalogImpl>();
     auto distLockManager =
         std::make_unique<ReplSetDistLockManager>(service,
-                                                  distLockProcessId,
-                                                  std::move(distLockCatalog),
-                                                  ReplSetDistLockManager::kDistLockPingInterval,
-                                                  ReplSetDistLockManager::kDistLockExpirationTime);
+                                                 distLockProcessId,
+                                                 std::move(distLockCatalog),
+                                                 ReplSetDistLockManager::kDistLockPingInterval,
+                                                 ReplSetDistLockManager::kDistLockExpirationTime);
 
     return std::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
 }
@@ -102,13 +102,13 @@ std::unique_ptr<executor::TaskExecutor> makeShardingFixedTaskExecutor(
     std::unique_ptr<NetworkInterface> net) {
     auto executor =
         std::make_unique<ThreadPoolTaskExecutor>(std::make_unique<ThreadPool>([] {
-                                                      ThreadPool::Options opts;
-                                                      opts.poolName = "Sharding-Fixed";
-                                                      opts.maxThreads =
-                                                          ThreadPool::Options::kUnlimited;
-                                                      return opts;
-                                                  }()),
-                                                  std::move(net));
+                                                     ThreadPool::Options opts;
+                                                     opts.poolName = "Sharding-Fixed";
+                                                     opts.maxThreads =
+                                                         ThreadPool::Options::kUnlimited;
+                                                     return opts;
+                                                 }()),
+                                                 std::move(net));
 
     return std::make_unique<executor::ShardingTaskExecutor>(std::move(executor));
 }
@@ -214,11 +214,10 @@ Status initializeGlobalShardingState(OperationContext* opCtx,
         connPoolOptions.hostTimeout = newHostTimeout;
     }
 
-    auto network =
-        executor::makeNetworkInterface("ShardRegistry",
-                                       std::make_unique<ShardingNetworkConnectionHook>(),
-                                       hookBuilder(),
-                                       connPoolOptions);
+    auto network = executor::makeNetworkInterface("ShardRegistry",
+                                                  std::make_unique<ShardingNetworkConnectionHook>(),
+                                                  hookBuilder(),
+                                                  connPoolOptions);
     auto networkPtr = network.get();
     auto executorPool = makeShardingTaskExecutorPool(
         std::move(network), hookBuilder, connPoolOptions, taskExecutorPoolSize);

@@ -31,9 +31,9 @@
 
 #include "mongo/transport/message_compressor_registry.h"
 
-#include <memory>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/stdx/memory.h"

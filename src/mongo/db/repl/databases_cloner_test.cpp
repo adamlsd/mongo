@@ -328,11 +328,11 @@ protected:
 
     std::unique_ptr<DatabasesCloner> makeDummyDatabasesCloner() {
         return std::make_unique<DatabasesCloner>(&getStorage(),
-                                                  &getExecutor(),
-                                                  &getDbWorkThreadPool(),
-                                                  HostAndPort{"local:1234"},
-                                                  [](const BSONObj&) { return true; },
-                                                  [](const Status&) {});
+                                                 &getExecutor(),
+                                                 &getDbWorkThreadPool(),
+                                                 HostAndPort{"local:1234"},
+                                                 [](const BSONObj&) { return true; },
+                                                 [](const Status&) {});
     }
 
 private:

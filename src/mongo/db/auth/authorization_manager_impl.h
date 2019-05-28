@@ -31,9 +31,9 @@
 
 #include "mongo/db/auth/authorization_manager.h"
 
+#include <functional>
 #include <memory>
 #include <string>
-#include <functional>
 
 #include "mongo/base/secure_allocator.h"
 #include "mongo/base/status.h"

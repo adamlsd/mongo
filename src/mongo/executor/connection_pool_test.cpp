@@ -32,10 +32,10 @@
 #include "mongo/executor/connection_pool_test_fixture.h"
 
 #include <algorithm>
+#include <memory>
 #include <random>
 #include <stack>
 #include <tuple>
-#include <memory>
 
 #include "mongo/executor/connection_pool.h"
 #include "mongo/stdx/future.h"

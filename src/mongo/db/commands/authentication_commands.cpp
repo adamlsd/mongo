@@ -33,9 +33,9 @@
 
 #include "mongo/db/commands/authentication_commands.h"
 
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/mutable/algorithm.h"

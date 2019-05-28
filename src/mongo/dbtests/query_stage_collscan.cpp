@@ -104,8 +104,8 @@ public:
 
         // Make a scan and have the runner own it.
         unique_ptr<WorkingSet> ws = std::make_unique<WorkingSet>();
-        unique_ptr<PlanStage> ps =
-            std::make_unique<CollectionScan>(&_opCtx, collection, params, ws.get(), filterExpr.get());
+        unique_ptr<PlanStage> ps = std::make_unique<CollectionScan>(
+            &_opCtx, collection, params, ws.get(), filterExpr.get());
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_opCtx, std::move(ws), std::move(ps), collection, PlanExecutor::NO_YIELD);

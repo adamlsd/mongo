@@ -31,9 +31,9 @@
 
 #include "mongo/transport/transport_layer_manager.h"
 
-#include <memory>
-#include <limits>
 #include <iostream>
+#include <limits>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/db/server_options.h"
@@ -147,8 +147,7 @@ std::unique_ptr<TransportLayer> TransportLayerManager::createWithConfig(
 
     if (config->serviceExecutor == "adaptive") {
         auto reactor = transportLayerASIO->getReactor(TransportLayer::kIngress);
-        ctx->setServiceExecutor(
-            std::make_unique<ServiceExecutorAdaptive>(ctx, std::move(reactor)));
+        ctx->setServiceExecutor(std::make_unique<ServiceExecutorAdaptive>(ctx, std::move(reactor)));
     } else if (config->serviceExecutor == "synchronous") {
         ctx->setServiceExecutor(std::make_unique<ServiceExecutorSynchronous>(ctx));
     }

@@ -33,8 +33,8 @@
 
 #include <boost/optional/optional.hpp>
 #include <fstream>
-#include <stdlib.h>
 #include <memory>
+#include <stdlib.h>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/init.h"

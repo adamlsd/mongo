@@ -279,17 +279,15 @@ Status initializeSharding(OperationContext* opCtx) {
     auto targeterFactory = std::make_unique<RemoteCommandTargeterFactoryImpl>();
     auto targeterFactoryPtr = targeterFactory.get();
 
-    ShardFactory::BuilderCallable setBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable setBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
-    ShardFactory::BuilderCallable masterBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable masterBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
     ShardFactory::BuildersMap buildersMap{
         {ConnectionString::SET, std::move(setBuilder)},
@@ -402,8 +400,7 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
 
     initWireSpec();
 
-    serviceContext->setServiceEntryPoint(
-        std::make_unique<ServiceEntryPointMongos>(serviceContext));
+    serviceContext->setServiceEntryPoint(std::make_unique<ServiceEntryPointMongos>(serviceContext));
 
     auto tl =
         transport::TransportLayerManager::createWithConfig(&serverGlobalParams, serviceContext);
@@ -505,8 +502,8 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
     LogicalSessionCache::set(
         serviceContext,
         std::make_unique<LogicalSessionCacheImpl>(std::make_unique<ServiceLiaisonMongos>(),
-                                                   std::make_unique<SessionsCollectionSharded>(),
-                                                   RouterSessionCatalog::reapSessionsOlderThan));
+                                                  std::make_unique<SessionsCollectionSharded>(),
+                                                  RouterSessionCatalog::reapSessionsOlderThan));
 
     status = serviceContext->getServiceExecutor()->start();
     if (!status.isOK()) {

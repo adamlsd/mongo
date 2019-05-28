@@ -77,7 +77,8 @@ bool QueuedDataStage::isEOF() {
 
 unique_ptr<PlanStageStats> QueuedDataStage::getStats() {
     _commonStats.isEOF = isEOF();
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_QUEUED_DATA);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_QUEUED_DATA);
     ret->specific = std::make_unique<MockStats>(_specificStats);
     return ret;
 }

@@ -31,10 +31,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/client.h"

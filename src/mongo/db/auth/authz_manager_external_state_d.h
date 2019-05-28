@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <string>
 #include <functional>
+#include <string>
 
 #include "mongo/base/status.h"
 #include "mongo/db/auth/authz_manager_external_state_local.h"

@@ -29,10 +29,10 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/shim.h"
 #include "mongo/base/status.h"

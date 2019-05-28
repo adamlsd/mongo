@@ -161,7 +161,8 @@ public:
         auto keyGenStage = std::make_unique<SortKeyGeneratorStage>(
             &_opCtx, queuedDataStage.release(), ws.get(), params.pattern, nullptr);
 
-        auto sortStage = std::make_unique<SortStage>(&_opCtx, params, ws.get(), keyGenStage.release());
+        auto sortStage =
+            std::make_unique<SortStage>(&_opCtx, params, ws.get(), keyGenStage.release());
 
         auto fetchStage =
             std::make_unique<FetchStage>(&_opCtx, ws.get(), sortStage.release(), nullptr, coll);
@@ -560,7 +561,8 @@ public:
         auto keyGenStage = std::make_unique<SortKeyGeneratorStage>(
             &_opCtx, queuedDataStage.release(), ws.get(), params.pattern, nullptr);
 
-        auto sortStage = std::make_unique<SortStage>(&_opCtx, params, ws.get(), keyGenStage.release());
+        auto sortStage =
+            std::make_unique<SortStage>(&_opCtx, params, ws.get(), keyGenStage.release());
 
         auto fetchStage =
             std::make_unique<FetchStage>(&_opCtx, ws.get(), sortStage.release(), nullptr, coll);

@@ -405,12 +405,12 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
 
             // Add a SortKeyGeneratorStage if there is a $meta sortKey projection.
             if (canonicalQuery->getProj()->wantSortKey()) {
-                root =
-                    std::make_unique<SortKeyGeneratorStage>(opCtx,
-                                                       root.release(),
-                                                       ws,
-                                                       canonicalQuery->getQueryRequest().getSort(),
-                                                       canonicalQuery->getCollator());
+                root = std::make_unique<SortKeyGeneratorStage>(
+                    opCtx,
+                    root.release(),
+                    ws,
+                    canonicalQuery->getQueryRequest().getSort(),
+                    canonicalQuery->getCollator());
             }
 
             // Stuff the right data into the params depending on what proj impl we use.
@@ -418,12 +418,13 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
                 canonicalQuery->getProj()->wantIndexKey() ||
                 canonicalQuery->getProj()->wantSortKey() ||
                 canonicalQuery->getProj()->hasDottedFieldPath()) {
-                root = std::make_unique<ProjectionStageDefault>(opCtx,
-                                                           canonicalQuery->getProj()->getProjObj(),
-                                                           ws,
-                                                           std::move(root),
-                                                           *canonicalQuery->root(),
-                                                           canonicalQuery->getCollator());
+                root = std::make_unique<ProjectionStageDefault>(
+                    opCtx,
+                    canonicalQuery->getProj()->getProjObj(),
+                    ws,
+                    std::move(root),
+                    *canonicalQuery->root(),
+                    canonicalQuery->getCollator());
             } else {
                 root = std::make_unique<ProjectionStageSimple>(
                     opCtx, canonicalQuery->getProj()->getProjObj(), ws, std::move(root));
@@ -474,12 +475,12 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
                 // 'decisionWorks' is used to determine whether the existing cache entry should
                 // be evicted, and the query replanned.
                 root = std::make_unique<CachedPlanStage>(opCtx,
-                                                    collection,
-                                                    ws,
-                                                    canonicalQuery.get(),
-                                                    plannerParams,
-                                                    cs->decisionWorks,
-                                                    rawRoot);
+                                                         collection,
+                                                         ws,
+                                                         canonicalQuery.get(),
+                                                         plannerParams,
+                                                         cs->decisionWorks,
+                                                         rawRoot);
                 return PrepareExecutionResult(
                     std::move(canonicalQuery), std::move(querySolution), std::move(root));
             }
@@ -490,8 +491,8 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
         SubplanStage::canUseSubplanning(*canonicalQuery)) {
         LOG(2) << "Running query as sub-queries: " << redact(canonicalQuery->toStringShort());
 
-        root =
-            std::make_unique<SubplanStage>(opCtx, collection, ws, plannerParams, canonicalQuery.get());
+        root = std::make_unique<SubplanStage>(
+            opCtx, collection, ws, plannerParams, canonicalQuery.get());
         return PrepareExecutionResult(std::move(canonicalQuery), nullptr, std::move(root));
     }
 
@@ -546,7 +547,8 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
     } else {
         // Many solutions. Create a MultiPlanStage to pick the best, update the cache,
         // and so on. The working set will be shared by all candidate plans.
-        auto multiPlanStage = std::make_unique<MultiPlanStage>(opCtx, collection, canonicalQuery.get());
+        auto multiPlanStage =
+            std::make_unique<MultiPlanStage>(opCtx, collection, canonicalQuery.get());
 
         for (size_t ix = 0; ix < solutions.size(); ++ix) {
             if (solutions[ix]->cacheData.get()) {
@@ -809,11 +811,11 @@ StatusWith<unique_ptr<PlanStage>> applyProjection(OperationContext* opCtx,
     }
 
     return {std::make_unique<ProjectionStageDefault>(opCtx,
-                                                proj,
-                                                ws,
-                                                std::unique_ptr<PlanStage>(root.release()),
-                                                *cq->root(),
-                                                cq->getCollator())};
+                                                     proj,
+                                                     ws,
+                                                     std::unique_ptr<PlanStage>(root.release()),
+                                                     *cq->root(),
+                                                     cq->getCollator())};
 }
 
 }  // namespace
@@ -1252,8 +1254,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
         // Treat collections that do not exist as empty collections. Note that the explain reporting
         // machinery always assumes that the root stage for a count operation is a CountStage, so in
         // this case we put a CountStage on top of an EOFStage.
-        unique_ptr<PlanStage> root =
-            std::make_unique<CountStage>(opCtx, collection, limit, skip, ws.get(), new EOFStage(opCtx));
+        unique_ptr<PlanStage> root = std::make_unique<CountStage>(
+            opCtx, collection, limit, skip, ws.get(), new EOFStage(opCtx));
         return PlanExecutor::make(opCtx, std::move(ws), std::move(root), nss, yieldPolicy);
     }
 

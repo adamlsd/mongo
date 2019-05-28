@@ -31,9 +31,9 @@
 
 #include "mongo/db/sessions_collection.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
-#include <functional>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/client/dbclient_base.h"

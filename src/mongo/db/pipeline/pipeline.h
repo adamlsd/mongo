@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include <functional>
 #include <list>
 #include <vector>
-#include <functional>
 
 #include <boost/intrusive_ptr.hpp>
 

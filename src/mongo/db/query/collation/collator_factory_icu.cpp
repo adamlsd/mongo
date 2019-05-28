@@ -757,7 +757,7 @@ StatusWith<std::unique_ptr<CollatorInterface>> CollatorFactoryICU::makeFromBSON(
     }
 
     auto mongoCollator = std::make_unique<CollatorInterfaceICU>(std::move(parsedSpec.getValue()),
-                                                                 std::move(icuCollator));
+                                                                std::move(icuCollator));
     return {std::move(mongoCollator)};
 }
 

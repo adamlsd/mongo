@@ -260,9 +260,9 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
             invariant(_children.empty());
             _children.emplace_back(
                 std::make_unique<MultiPlanStage>(getOpCtx(),
-                                                  collection(),
-                                                  branchResult->canonicalQuery.get(),
-                                                  MultiPlanStage::CachingMode::SometimesCache));
+                                                 collection(),
+                                                 branchResult->canonicalQuery.get(),
+                                                 MultiPlanStage::CachingMode::SometimesCache));
             ON_BLOCK_EXIT([&] {
                 invariant(_children.size() == 1);  // Make sure nothing else was added to _children.
                 _children.pop_back();

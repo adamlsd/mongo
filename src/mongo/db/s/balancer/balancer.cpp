@@ -34,8 +34,8 @@
 #include "mongo/db/s/balancer/balancer.h"
 
 #include <algorithm>
-#include <string>
 #include <memory>
+#include <string>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobjbuilder.h"

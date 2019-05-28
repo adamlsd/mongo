@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/base/init.h"
 #include "mongo/db/jsobj.h"

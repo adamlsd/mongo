@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <memory>
 #include <functional>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/key_generator.h"

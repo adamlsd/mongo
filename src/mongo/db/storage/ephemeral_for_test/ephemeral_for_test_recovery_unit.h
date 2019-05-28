@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/recovery_unit.h"

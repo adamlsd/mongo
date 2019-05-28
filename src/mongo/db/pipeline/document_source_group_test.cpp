@@ -32,9 +32,9 @@
 #include <boost/intrusive_ptr.hpp>
 #include <deque>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonmisc.h"

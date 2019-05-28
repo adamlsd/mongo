@@ -73,7 +73,7 @@ CollectionScan::CollectionScan(OperationContext* opCtx,
     if (params.maxTs) {
         _endConditionBSON = BSON("$gte" << *(params.maxTs));
         _endCondition = std::make_unique<GTEMatchExpression>(repl::OpTime::kTimestampFieldName,
-                                                              _endConditionBSON.firstElement());
+                                                             _endConditionBSON.firstElement());
     }
 }
 

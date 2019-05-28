@@ -55,7 +55,7 @@ std::unique_ptr<RemoteCommandTargeter> RemoteCommandTargeterFactoryImpl::create(
             return std::make_unique<RemoteCommandTargeterStandalone>(connStr.getServers().front());
         case ConnectionString::SET:
             return std::make_unique<RemoteCommandTargeterRS>(connStr.getSetName(),
-                                                              connStr.getServers());
+                                                             connStr.getServers());
         // These connections should never be seen
         case ConnectionString::INVALID:
         case ConnectionString::LOCAL:

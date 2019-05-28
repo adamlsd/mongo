@@ -37,11 +37,11 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stack>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/init.h"

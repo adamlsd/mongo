@@ -36,9 +36,9 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <signal.h>
 #include <string>
-#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
@@ -309,8 +309,7 @@ ExitCode _initAndListen(int listenPort) {
 
     logProcessDetails();
 
-    serviceContext->setServiceEntryPoint(
-        std::make_unique<ServiceEntryPointMongod>(serviceContext));
+    serviceContext->setServiceEntryPoint(std::make_unique<ServiceEntryPointMongod>(serviceContext));
 
     if (!storageGlobalParams.repair) {
         auto tl =
@@ -815,8 +814,8 @@ void setUpReplication(ServiceContext* serviceContext) {
 
     auto consistencyMarkers =
         std::make_unique<repl::ReplicationConsistencyMarkersImpl>(storageInterface);
-    auto recovery = std::make_unique<repl::ReplicationRecoveryImpl>(storageInterface,
-                                                                     consistencyMarkers.get());
+    auto recovery =
+        std::make_unique<repl::ReplicationRecoveryImpl>(storageInterface, consistencyMarkers.get());
     repl::ReplicationProcess::set(
         serviceContext,
         std::make_unique<repl::ReplicationProcess>(

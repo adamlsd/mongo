@@ -33,8 +33,8 @@
 
 #include "mongo/db/exec/sort_key_generator.h"
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"

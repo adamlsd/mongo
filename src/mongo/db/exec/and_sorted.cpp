@@ -229,7 +229,8 @@ PlanStage::StageState AndSortedStage::moveTowardTargetRecordId(WorkingSetID* out
 unique_ptr<PlanStageStats> AndSortedStage::getStats() {
     _commonStats.isEOF = isEOF();
 
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_AND_SORTED);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_AND_SORTED);
     ret->specific = std::make_unique<AndSortedStats>(_specificStats);
     for (size_t i = 0; i < _children.size(); ++i) {
         ret->children.emplace_back(_children[i]->getStats());

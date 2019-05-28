@@ -44,9 +44,9 @@
  */
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
-#include <functional>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/random.h"

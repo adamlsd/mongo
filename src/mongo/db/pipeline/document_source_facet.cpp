@@ -129,7 +129,7 @@ std::unique_ptr<DocumentSourceFacet::LiteParsed> DocumentSourceFacet::LiteParsed
     }
 
     return std::make_unique<DocumentSourceFacet::LiteParsed>(std::move(liteParsedPipelines),
-                                                              std::move(requiredPrivileges));
+                                                             std::move(requiredPrivileges));
 }
 
 stdx::unordered_set<NamespaceString> DocumentSourceFacet::LiteParsed::getInvolvedNamespaces()

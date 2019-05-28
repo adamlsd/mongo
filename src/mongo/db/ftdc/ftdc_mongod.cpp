@@ -53,10 +53,10 @@ void registerMongoDCollectors(FTDCController* controller) {
         // CollectionStats
         controller->addPeriodicCollector(
             std::make_unique<FTDCSimpleInternalCommandCollector>("collStats",
-                                                                  "local.oplog.rs.stats",
-                                                                  "local",
-                                                                  BSON("collStats"
-                                                                       << "oplog.rs")));
+                                                                 "local.oplog.rs.stats",
+                                                                 "local",
+                                                                 BSON("collStats"
+                                                                      << "oplog.rs")));
     }
 }
 

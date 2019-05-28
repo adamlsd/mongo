@@ -32,8 +32,8 @@
 #include "mongo/s/config_server_test_fixture.h"
 
 #include <algorithm>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/status_with.h"
 #include "mongo/client/remote_command_targeter_factory_mock.h"

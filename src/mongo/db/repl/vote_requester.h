@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <vector>
-#include <functional>
 
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/repl/optime.h"

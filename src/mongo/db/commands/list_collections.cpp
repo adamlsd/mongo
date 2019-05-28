@@ -29,8 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/bson/bsonmisc.h"

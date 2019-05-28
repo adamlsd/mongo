@@ -36,10 +36,10 @@
 #include <asio.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <vector>
-#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/base/initializer_context.h"

@@ -30,8 +30,8 @@
 #pragma once
 
 #include <boost/optional.hpp>
-#include <string>
 #include <functional>
+#include <string>
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/ordering.h"

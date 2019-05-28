@@ -29,10 +29,10 @@
 
 #pragma once
 
-#include <map>
-#include <string>
 #include <functional>
+#include <map>
 #include <memory>
+#include <string>
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"

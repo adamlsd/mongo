@@ -77,7 +77,7 @@ public:
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<ElemMatchObjectMatchExpression> e =
             std::make_unique<ElemMatchObjectMatchExpression>(path(),
-                                                              _sub->shallowClone().release());
+                                                             _sub->shallowClone().release());
         if (getTag()) {
             e->setTag(getTag()->clone());
         }

@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/catalog_cache.h"

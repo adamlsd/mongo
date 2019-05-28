@@ -30,10 +30,10 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
-#include <memory>
 
 #include "mongo/base/string_data.h"
 #include "mongo/db/update/update_leaf_node.h"

@@ -137,10 +137,9 @@ TEST(SortKeyGeneratorTest, SortKeyGenerationForArraysRespectsCompoundOrdering) {
 DEATH_TEST(SortKeyGeneratorTest,
            SortPatternComponentWithStringIsFatal,
            "Invariant failure elt.type() == BSONType::Object") {
-    MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
-        std::make_unique<SortKeyGenerator>(BSON("a"
-                                                 << "foo"),
-                                            nullptr);
+    MONGO_COMPILER_VARIABLE_UNUSED auto ignored = std::make_unique<SortKeyGenerator>(BSON("a"
+                                                                                          << "foo"),
+                                                                                     nullptr);
 }
 
 DEATH_TEST(SortKeyGeneratorTest,
@@ -148,10 +147,10 @@ DEATH_TEST(SortKeyGeneratorTest,
            "Invariant failure elt.embeddedObject().nFields() == 1") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
         std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
-                                                             << "textScore"
-                                                             << "extra"
-                                                             << 1)),
-                                            nullptr);
+                                                            << "textScore"
+                                                            << "extra"
+                                                            << 1)),
+                                           nullptr);
 }
 
 DEATH_TEST(SortKeyGeneratorTest,
@@ -159,8 +158,8 @@ DEATH_TEST(SortKeyGeneratorTest,
            "Invariant failure metaElem.fieldNameStringData() == \"$meta\"_sd") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
         std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$unknown"
-                                                             << "textScore")),
-                                            nullptr);
+                                                            << "textScore")),
+                                           nullptr);
 }
 
 DEATH_TEST(SortKeyGeneratorTest,
@@ -168,16 +167,16 @@ DEATH_TEST(SortKeyGeneratorTest,
            "Invariant failure metaElem.valueStringData() == \"randVal\"_sd") {
     MONGO_COMPILER_VARIABLE_UNUSED auto ignored =
         std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
-                                                             << "unknown")),
-                                            nullptr);
+                                                            << "unknown")),
+                                           nullptr);
 }
 
 DEATH_TEST(SortKeyGeneratorTest,
            NoMetadataWhenPatternHasMetaTextScoreIsFatal,
            "Invariant failure metadata") {
     auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
-                                                                           << "textScore")),
-                                                          nullptr);
+                                                                          << "textScore")),
+                                                         nullptr);
     uassertStatusOK(sortKeyGen->getSortKey(BSONObj{}, nullptr).getStatus());
 }
 
@@ -185,15 +184,15 @@ DEATH_TEST(SortKeyGeneratorTest,
            NoMetadataWhenPatternHasMetaRandValIsFatal,
            "Invariant failure metadata") {
     auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
-                                                                           << "randVal")),
-                                                          nullptr);
+                                                                          << "randVal")),
+                                                         nullptr);
     uassertStatusOK(sortKeyGen->getSortKey(BSONObj{}, nullptr).getStatus());
 }
 
 TEST(SortKeyGeneratorTest, CanGenerateKeysForTextScoreMetaSort) {
     auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
-                                                                           << "textScore")),
-                                                          nullptr);
+                                                                          << "textScore")),
+                                                         nullptr);
     SortKeyGenerator::Metadata metadata;
     metadata.textScore = 1.5;
     auto sortKey = sortKeyGen->getSortKey(BSONObj{}, &metadata);
@@ -203,8 +202,8 @@ TEST(SortKeyGeneratorTest, CanGenerateKeysForTextScoreMetaSort) {
 
 TEST(SortKeyGeneratorTest, CanGenerateKeysForRandValMetaSort) {
     auto sortKeyGen = std::make_unique<SortKeyGenerator>(BSON("a" << BSON("$meta"
-                                                                           << "randVal")),
-                                                          nullptr);
+                                                                          << "randVal")),
+                                                         nullptr);
     SortKeyGenerator::Metadata metadata;
     metadata.randVal = 0.3;
     auto sortKey = sortKeyGen->getSortKey(BSONObj{}, &metadata);

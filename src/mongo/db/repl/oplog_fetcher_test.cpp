@@ -209,17 +209,17 @@ void _checkDefaultCommandObjectFields(BSONObj cmdObj) {
 
 std::unique_ptr<OplogFetcher> OplogFetcherTest::makeOplogFetcher(ReplSetConfig config) {
     return std::make_unique<OplogFetcher>(&getExecutor(),
-                                           lastFetched,
-                                           source,
-                                           nss,
-                                           config,
-                                           0,
-                                           -1,
-                                           true,
-                                           dataReplicatorExternalState.get(),
-                                           enqueueDocumentsFn,
-                                           [](Status) {},
-                                           defaultBatchSize);
+                                          lastFetched,
+                                          source,
+                                          nss,
+                                          config,
+                                          0,
+                                          -1,
+                                          true,
+                                          dataReplicatorExternalState.get(),
+                                          enqueueDocumentsFn,
+                                          [](Status) {},
+                                          defaultBatchSize);
 }
 
 BSONObj concatenate(BSONObj a, const BSONObj& b) {

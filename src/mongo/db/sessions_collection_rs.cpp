@@ -32,8 +32,8 @@
 #include "mongo/db/sessions_collection_rs.h"
 
 #include <boost/optional.hpp>
-#include <utility>
 #include <memory>
+#include <utility>
 
 #include "mongo/client/authenticate.h"
 #include "mongo/client/connection_string.h"

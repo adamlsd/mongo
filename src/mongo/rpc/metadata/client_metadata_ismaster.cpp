@@ -31,8 +31,8 @@
 
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 
-#include <string>
 #include <memory>
+#include <string>
 
 #include "mongo/base/init.h"
 #include "mongo/base/status.h"

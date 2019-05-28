@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"

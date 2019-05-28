@@ -29,9 +29,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 #include <set>
 #include <string>
-#include <memory>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/key_generator.h"

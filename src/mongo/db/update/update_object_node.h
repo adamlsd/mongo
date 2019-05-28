@@ -30,10 +30,10 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
-#include <memory>
 
 #include "mongo/base/clonable_ptr.h"
 #include "mongo/bson/bsonelement.h"

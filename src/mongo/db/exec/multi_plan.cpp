@@ -421,7 +421,8 @@ QuerySolution* MultiPlanStage::bestSolution() {
 
 unique_ptr<PlanStageStats> MultiPlanStage::getStats() {
     _commonStats.isEOF = isEOF();
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_MULTI_PLAN);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_MULTI_PLAN);
     ret->specific = std::make_unique<MultiPlanStats>(_specificStats);
     for (auto&& child : _children) {
         ret->children.emplace_back(child->getStats());

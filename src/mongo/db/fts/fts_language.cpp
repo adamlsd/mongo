@@ -29,8 +29,8 @@
 
 #include "mongo/db/fts/fts_language.h"
 
-#include <string>
 #include <memory>
+#include <string>
 
 #include "mongo/base/init.h"
 #include "mongo/db/fts/fts_basic_phrase_matcher.h"

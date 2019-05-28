@@ -296,11 +296,11 @@ void RollbackImplTest::setUp() {
     _remoteOplog = std::make_unique<OplogInterfaceMock>();
     _listener = std::make_unique<Listener>(this);
     _rollback = std::make_unique<RollbackImplForTest>(_localOplog.get(),
-                                                       _remoteOplog.get(),
-                                                       _storageInterface,
-                                                       _replicationProcess.get(),
-                                                       _coordinator,
-                                                       _listener.get());
+                                                      _remoteOplog.get(),
+                                                      _storageInterface,
+                                                      _replicationProcess.get(),
+                                                      _coordinator,
+                                                      _listener.get());
 
     createOplog(_opCtx.get());
     serverGlobalParams.clusterRole = ClusterRole::None;

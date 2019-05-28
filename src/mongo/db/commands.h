@@ -30,9 +30,9 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/counter.h"
 #include "mongo/base/init.h"

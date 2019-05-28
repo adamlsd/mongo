@@ -31,9 +31,9 @@
 
 #include "mongo/rpc/legacy_request_builder.h"
 
+#include <memory>
 #include <tuple>
 #include <utility>
-#include <memory>
 
 #include "mongo/client/read_preference.h"
 #include "mongo/db/dbmessage.h"

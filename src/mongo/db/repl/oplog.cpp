@@ -34,9 +34,9 @@
 #include "mongo/db/repl/oplog.h"
 
 #include <deque>
+#include <memory>
 #include <set>
 #include <vector>
-#include <memory>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/action_set.h"

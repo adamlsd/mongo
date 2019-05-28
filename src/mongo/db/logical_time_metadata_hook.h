@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/stdx/memory.h"

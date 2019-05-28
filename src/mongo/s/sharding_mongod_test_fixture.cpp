@@ -32,8 +32,8 @@
 #include "mongo/s/sharding_mongod_test_fixture.h"
 
 #include <algorithm>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/status_with.h"
@@ -194,17 +194,15 @@ std::unique_ptr<ShardRegistry> ShardingMongodTestFixture::makeShardRegistry(
     auto targeterFactoryPtr = targeterFactory.get();
     _targeterFactory = targeterFactoryPtr;
 
-    ShardFactory::BuilderCallable setBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable setBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
-    ShardFactory::BuilderCallable masterBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable masterBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
     ShardFactory::BuildersMap buildersMap{{ConnectionString::SET, std::move(setBuilder)},
                                           {ConnectionString::MASTER, std::move(masterBuilder)}};

@@ -31,8 +31,8 @@
 
 #include <boost/optional.hpp>
 #include <limits>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/string_data.h"
 #include "mongo/db/update/modifier_node.h"

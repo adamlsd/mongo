@@ -30,9 +30,9 @@
 #pragma once
 
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"

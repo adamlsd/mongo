@@ -78,8 +78,7 @@ const auto getInstance = ServiceContext::declareDecoration<ShardingInitializatio
 auto makeEgressHooksList(ServiceContext* service) {
     auto unshardedHookList = std::make_unique<rpc::EgressMetadataHookList>();
     unshardedHookList->addHook(std::make_unique<rpc::LogicalTimeMetadataHook>(service));
-    unshardedHookList->addHook(
-        std::make_unique<rpc::ShardingEgressMetadataHookForMongod>(service));
+    unshardedHookList->addHook(std::make_unique<rpc::ShardingEgressMetadataHookForMongod>(service));
 
     return unshardedHookList;
 }
@@ -373,17 +372,15 @@ void initializeGlobalShardingStateForMongoD(OperationContext* opCtx,
     auto targeterFactory = std::make_unique<RemoteCommandTargeterFactoryImpl>();
     auto targeterFactoryPtr = targeterFactory.get();
 
-    ShardFactory::BuilderCallable setBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable setBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
-    ShardFactory::BuilderCallable masterBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable masterBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
     ShardFactory::BuilderCallable localBuilder = [](const ShardId& shardId,
                                                     const ConnectionString& connStr) {

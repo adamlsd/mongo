@@ -32,8 +32,8 @@
 #include <algorithm>
 #include <boost/filesystem.hpp>
 #include <iostream>
-#include <string>
 #include <memory>
+#include <string>
 
 #include "mongo/base/init.h"
 #include "mongo/bson/bson_validate.h"

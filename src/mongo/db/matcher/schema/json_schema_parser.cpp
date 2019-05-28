@@ -262,8 +262,7 @@ StatusWithMatchExpression parsePattern(StringData path,
 
     // JSON Schema does not allow regex flags to be specified.
     constexpr auto emptyFlags = "";
-    auto expr =
-        std::make_unique<RegexMatchExpression>(path, pattern.valueStringData(), emptyFlags);
+    auto expr = std::make_unique<RegexMatchExpression>(path, pattern.valueStringData(), emptyFlags);
 
     return makeRestriction(BSONType::String, path, std::move(expr), typeExpr);
 }
@@ -668,8 +667,7 @@ StatusWithMatchExpression parseNumProperties(StringData path,
         return {std::move(expr)};
     }
 
-    auto objectMatch =
-        std::make_unique<InternalSchemaObjectMatchExpression>(path, std::move(expr));
+    auto objectMatch = std::make_unique<InternalSchemaObjectMatchExpression>(path, std::move(expr));
 
     return makeRestriction(BSONType::Object, path, std::move(objectMatch), typeExpr);
 }
@@ -1547,8 +1545,8 @@ StatusWithMatchExpression _parse(const boost::intrusive_ptr<ExpressionContext>& 
     } else if (encryptElem) {
         // The presence of the encrypt keyword implies the restriction that the field must be
         // of type BinData.
-        typeExpr = std::make_unique<InternalSchemaTypeExpression>(
-            path, MatcherTypeSet(BSONType::BinData));
+        typeExpr =
+            std::make_unique<InternalSchemaTypeExpression>(path, MatcherTypeSet(BSONType::BinData));
     }
 
     auto andExpr = std::make_unique<AndMatchExpression>();

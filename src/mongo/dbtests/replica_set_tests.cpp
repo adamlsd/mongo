@@ -58,7 +58,7 @@ protected:
         auto consistencyMarkers =
             std::make_unique<repl::ReplicationConsistencyMarkersImpl>(_storageInterface.get());
         auto recovery = std::make_unique<repl::ReplicationRecoveryImpl>(_storageInterface.get(),
-                                                                         consistencyMarkers.get());
+                                                                        consistencyMarkers.get());
         _replicationProcess = std::make_unique<repl::ReplicationProcess>(
             _storageInterface.get(), std::move(consistencyMarkers), std::move(recovery));
         _replCoordExternalState = std::make_unique<repl::ReplicationCoordinatorExternalStateImpl>(

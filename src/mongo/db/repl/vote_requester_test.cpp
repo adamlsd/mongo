@@ -29,8 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <memory>
 #include <functional>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/db/commands.h"

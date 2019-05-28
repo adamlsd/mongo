@@ -31,8 +31,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <memory>
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 #include "mongo/client/remote_command_retry_scheduler.h"

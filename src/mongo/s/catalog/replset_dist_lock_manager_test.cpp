@@ -31,9 +31,9 @@
 
 #include <boost/optional.hpp>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/bson/json.h"
 #include "mongo/s/balancer_configuration.h"
@@ -82,10 +82,10 @@ protected:
         std::unique_ptr<DistLockCatalog> distLockCatalog) override {
         invariant(distLockCatalog);
         return std::make_unique<ReplSetDistLockManager>(getServiceContext(),
-                                                         _processID,
-                                                         std::move(distLockCatalog),
-                                                         kPingInterval,
-                                                         kLockExpiration);
+                                                        _processID,
+                                                        std::move(distLockCatalog),
+                                                        kPingInterval,
+                                                        kLockExpiration);
     }
 
     std::unique_ptr<ShardingCatalogClient> makeShardingCatalogClient(

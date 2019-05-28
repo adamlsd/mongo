@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <vector>
 #include <functional>
+#include <vector>
 
 #include "mongo/executor/task_executor.h"
 #include "mongo/stdx/mutex.h"

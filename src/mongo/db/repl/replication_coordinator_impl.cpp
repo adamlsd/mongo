@@ -36,8 +36,8 @@
 #include "mongo/db/repl/replication_coordinator_impl.h"
 
 #include <algorithm>
-#include <limits>
 #include <functional>
+#include <limits>
 
 #include "mongo/base/status.h"
 #include "mongo/client/fetcher.h"
@@ -752,7 +752,7 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
             initialSyncerCopy = std::make_shared<InitialSyncer>(
                 createInitialSyncerOptions(this, _externalState.get()),
                 std::make_unique<DataReplicatorExternalStateInitialSync>(this,
-                                                                          _externalState.get()),
+                                                                         _externalState.get()),
                 _externalState->getDbWorkThreadPool(),
                 _storage,
                 _replicationProcess,

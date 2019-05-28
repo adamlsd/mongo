@@ -98,7 +98,8 @@ public:
         for (int i = 0; i < 2 * N; ++i) {
             WorkingSet ws;
 
-            unique_ptr<PlanStage> skip = std::make_unique<SkipStage>(_opCtx, i, &ws, getMS(_opCtx, &ws));
+            unique_ptr<PlanStage> skip =
+                std::make_unique<SkipStage>(_opCtx, i, &ws, getMS(_opCtx, &ws));
             ASSERT_EQUALS(max(0, N - i), countResults(skip.get()));
 
             unique_ptr<PlanStage> limit =

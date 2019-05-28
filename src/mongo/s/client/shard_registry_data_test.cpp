@@ -29,8 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <utility>
 #include <memory>
+#include <utility>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"

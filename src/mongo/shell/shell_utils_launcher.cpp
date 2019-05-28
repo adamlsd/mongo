@@ -44,9 +44,9 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <signal.h>
 #include <vector>
-#include <memory>
 
 #ifdef _WIN32
 #include <io.h>

@@ -29,8 +29,8 @@
 
 #include "mongo/db/exec/text_match.h"
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set.h"
@@ -64,7 +64,8 @@ bool TextMatchStage::isEOF() {
 std::unique_ptr<PlanStageStats> TextMatchStage::getStats() {
     _commonStats.isEOF = isEOF();
 
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_TEXT_MATCH);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_TEXT_MATCH);
     ret->specific = std::make_unique<TextMatchStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
 

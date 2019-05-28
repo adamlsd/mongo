@@ -34,8 +34,8 @@
 #include <boost/filesystem.hpp>
 #include <future>
 #include <iostream>
-#include <snappy.h>
 #include <memory>
+#include <snappy.h>
 
 #include "mongo/db/free_mon/free_mon_controller.h"
 #include "mongo/db/free_mon/free_mon_storage.h"

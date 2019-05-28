@@ -123,11 +123,11 @@ void ReplCoordTest::init() {
     StorageInterface::set(service, std::unique_ptr<StorageInterface>(_storageInterface));
     ASSERT_TRUE(_storageInterface == StorageInterface::get(service));
 
-    ReplicationProcess::set(service,
-                            std::make_unique<ReplicationProcess>(
-                                _storageInterface,
-                                std::make_unique<ReplicationConsistencyMarkersMock>(),
-                                std::make_unique<ReplicationRecoveryMock>()));
+    ReplicationProcess::set(
+        service,
+        std::make_unique<ReplicationProcess>(_storageInterface,
+                                             std::make_unique<ReplicationConsistencyMarkersMock>(),
+                                             std::make_unique<ReplicationRecoveryMock>()));
     auto replicationProcess = ReplicationProcess::get(service);
 
     // PRNG seed for tests.
@@ -150,13 +150,13 @@ void ReplCoordTest::init() {
         std::make_unique<executor::ThreadPoolTaskExecutor>(std::move(pool), std::move(net));
     _replExec = replExec.get();
     _repl = std::make_unique<ReplicationCoordinatorImpl>(service,
-                                                          _settings,
-                                                          std::move(externalState),
-                                                          std::move(replExec),
-                                                          std::move(topo),
-                                                          replicationProcess,
-                                                          _storageInterface,
-                                                          seed);
+                                                         _settings,
+                                                         std::move(externalState),
+                                                         std::move(replExec),
+                                                         std::move(topo),
+                                                         replicationProcess,
+                                                         _storageInterface,
+                                                         seed);
     service->setFastClockSource(std::make_unique<executor::NetworkInterfaceMockClockSource>(_net));
     service->setPreciseClockSource(
         std::make_unique<executor::NetworkInterfaceMockClockSource>(_net));

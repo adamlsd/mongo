@@ -93,20 +93,20 @@ public:
     }
 };
 
-#define COMMON_EXECUTOR_TEST(TEST_NAME)                                         \
-    class CET_##TEST_NAME : public CommonTaskExecutorTestFixture {              \
-    public:                                                                     \
-        CET_##TEST_NAME(ExecutorFactory makeExecutor)                           \
-            : CommonTaskExecutorTestFixture(std::move(makeExecutor)) {}         \
-                                                                                \
-    private:                                                                    \
-        void _doTest() override;                                                \
-        static const CetRegistrationAgent _agent;                               \
-    };                                                                          \
-    const CetRegistrationAgent CET_##TEST_NAME::_agent(                         \
-        #TEST_NAME, [](ExecutorFactory makeExecutor) {                          \
+#define COMMON_EXECUTOR_TEST(TEST_NAME)                                        \
+    class CET_##TEST_NAME : public CommonTaskExecutorTestFixture {             \
+    public:                                                                    \
+        CET_##TEST_NAME(ExecutorFactory makeExecutor)                          \
+            : CommonTaskExecutorTestFixture(std::move(makeExecutor)) {}        \
+                                                                               \
+    private:                                                                   \
+        void _doTest() override;                                               \
+        static const CetRegistrationAgent _agent;                              \
+    };                                                                         \
+    const CetRegistrationAgent CET_##TEST_NAME::_agent(                        \
+        #TEST_NAME, [](ExecutorFactory makeExecutor) {                         \
             return std::make_unique<CET_##TEST_NAME>(std::move(makeExecutor)); \
-        });                                                                     \
+        });                                                                    \
     void CET_##TEST_NAME::_doTest()
 
 auto makeSetStatusClosure(Status* target) {

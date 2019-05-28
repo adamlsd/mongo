@@ -34,8 +34,8 @@
 #include "initial_syncer.h"
 
 #include <algorithm>
-#include <utility>
 #include <memory>
+#include <utility>
 
 #include "mongo/base/counter.h"
 #include "mongo/base/status.h"
@@ -1487,17 +1487,17 @@ Status InitialSyncer::_scheduleLastOplogEntryFetcher_inlock(Fetcher::CallbackFn 
 
     _lastOplogEntryFetcher =
         std::make_unique<Fetcher>(_exec,
-                                   _syncSource,
-                                   _opts.remoteOplogNS.db().toString(),
-                                   query,
-                                   callback,
-                                   ReadPreferenceSetting::secondaryPreferredMetadata(),
-                                   RemoteCommandRequest::kNoTimeout /* find network timeout */,
-                                   RemoteCommandRequest::kNoTimeout /* getMore network timeout */,
-                                   RemoteCommandRetryScheduler::makeRetryPolicy(
-                                       numInitialSyncOplogFindAttempts.load(),
-                                       executor::RemoteCommandRequest::kNoTimeout,
-                                       RemoteCommandRetryScheduler::kAllRetriableErrors));
+                                  _syncSource,
+                                  _opts.remoteOplogNS.db().toString(),
+                                  query,
+                                  callback,
+                                  ReadPreferenceSetting::secondaryPreferredMetadata(),
+                                  RemoteCommandRequest::kNoTimeout /* find network timeout */,
+                                  RemoteCommandRequest::kNoTimeout /* getMore network timeout */,
+                                  RemoteCommandRetryScheduler::makeRetryPolicy(
+                                      numInitialSyncOplogFindAttempts.load(),
+                                      executor::RemoteCommandRequest::kNoTimeout,
+                                      RemoteCommandRetryScheduler::kAllRetriableErrors));
     Status scheduleStatus = _lastOplogEntryFetcher->schedule();
     if (!scheduleStatus.isOK()) {
         _lastOplogEntryFetcher.reset();

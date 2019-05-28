@@ -31,9 +31,9 @@
 
 #include <array>
 #include <cmath>
+#include <memory>
 #include <string>
 #include <utility>
-#include <memory>
 
 #include "mongo/config.h"
 #include "mongo/stdx/memory.h"

@@ -33,9 +33,9 @@
 
 #include "mongo/s/catalog_cache_test_fixture.h"
 
+#include <memory>
 #include <set>
 #include <vector>
-#include <memory>
 
 #include "mongo/client/remote_command_targeter_factory_mock.h"
 #include "mongo/client/remote_command_targeter_mock.h"

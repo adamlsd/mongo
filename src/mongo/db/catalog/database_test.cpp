@@ -29,8 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <memory>
 #include <boost/optional/optional_io.hpp>
+#include <memory>
 
 #include <pcrecpp.h>
 

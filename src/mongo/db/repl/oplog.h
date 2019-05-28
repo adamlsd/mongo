@@ -29,9 +29,9 @@
 
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"

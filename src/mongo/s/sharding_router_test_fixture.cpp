@@ -32,8 +32,8 @@
 #include "mongo/s/sharding_router_test_fixture.h"
 
 #include <algorithm>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/client/remote_command_targeter_factory_mock.h"
@@ -153,17 +153,15 @@ ShardingTestFixture::ShardingTestFixture() {
     _configTargeter = configTargeter.get();
     _targeterFactory->addTargeterToReturn(configCS, std::move(configTargeter));
 
-    ShardFactory::BuilderCallable setBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable setBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
-    ShardFactory::BuilderCallable masterBuilder =
-        [targeterFactoryPtr](const ShardId& shardId, const ConnectionString& connStr) {
-            return std::make_unique<ShardRemote>(
-                shardId, connStr, targeterFactoryPtr->create(connStr));
-        };
+    ShardFactory::BuilderCallable masterBuilder = [targeterFactoryPtr](
+        const ShardId& shardId, const ConnectionString& connStr) {
+        return std::make_unique<ShardRemote>(shardId, connStr, targeterFactoryPtr->create(connStr));
+    };
 
     ShardFactory::BuildersMap buildersMap{
         {ConnectionString::SET, std::move(setBuilder)},

@@ -30,8 +30,8 @@
 #pragma once
 
 #include <list>
-#include <set>
 #include <memory>
+#include <set>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/client/connection_string.h"

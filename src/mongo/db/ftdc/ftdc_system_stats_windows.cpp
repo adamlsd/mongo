@@ -33,9 +33,9 @@
 
 #include "mongo/db/ftdc/ftdc_system_stats.h"
 
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"

@@ -205,7 +205,8 @@ unique_ptr<PlanStageStats> MergeSortStage::getStats() {
 
     _specificStats.sortPattern = _pattern;
 
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_SORT_MERGE);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_SORT_MERGE);
     ret->specific = std::make_unique<MergeSortStats>(_specificStats);
     for (size_t i = 0; i < _children.size(); ++i) {
         ret->children.emplace_back(_children[i]->getStats());

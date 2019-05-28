@@ -31,8 +31,8 @@
 
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_btree_impl.h"
 
-#include <set>
 #include <memory>
+#include <set>
 
 #include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_recovery_unit.h"

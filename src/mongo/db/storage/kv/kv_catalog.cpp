@@ -31,8 +31,8 @@
 
 #include "mongo/db/storage/kv/kv_catalog.h"
 
-#include <stdlib.h>
 #include <memory>
+#include <stdlib.h>
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/bson/util/builder.h"

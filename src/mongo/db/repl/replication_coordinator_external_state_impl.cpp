@@ -33,9 +33,9 @@
 
 #include "mongo/db/repl/replication_coordinator_external_state_impl.h"
 
-#include <string>
 #include <functional>
 #include <memory>
+#include <string>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/oid.h"
@@ -230,15 +230,14 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     // interface. During steady state replication, there is no need to log details on every batch
     // we apply (recovery); or track missing documents that are fetched from the sync source
     // (initial sync).
-    _oplogApplier =
-        std::make_unique<OplogApplierImpl>(_oplogApplierTaskExecutor.get(),
-                                            _oplogBuffer.get(),
-                                            &noopOplogApplierObserver,
-                                            replCoord,
-                                            _replicationProcess->getConsistencyMarkers(),
-                                            _storageInterface,
-                                            OplogApplier::Options(),
-                                            _writerPool.get());
+    _oplogApplier = std::make_unique<OplogApplierImpl>(_oplogApplierTaskExecutor.get(),
+                                                       _oplogBuffer.get(),
+                                                       &noopOplogApplierObserver,
+                                                       replCoord,
+                                                       _replicationProcess->getConsistencyMarkers(),
+                                                       _storageInterface,
+                                                       OplogApplier::Options(),
+                                                       _writerPool.get());
 
     invariant(!_bgSync);
     _bgSync =

@@ -35,8 +35,8 @@
 
 #include <array>
 #include <cmath>
-#include <utility>
 #include <memory>
+#include <utility>
 
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobj.h"

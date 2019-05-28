@@ -173,7 +173,8 @@ void CountScan::doReattachToOperationContext() {
 }
 
 unique_ptr<PlanStageStats> CountScan::getStats() {
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_COUNT_SCAN);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_COUNT_SCAN);
 
     unique_ptr<CountScanStats> countStats = std::make_unique<CountScanStats>(_specificStats);
     countStats->keyPattern = _specificStats.keyPattern.getOwned();

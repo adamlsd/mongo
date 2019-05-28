@@ -30,9 +30,9 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <functional>
 #include <memory>
 #include <vector>
-#include <functional>
 
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/namespace_string.h"

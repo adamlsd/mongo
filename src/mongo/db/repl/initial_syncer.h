@@ -31,9 +31,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <memory>
-#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"

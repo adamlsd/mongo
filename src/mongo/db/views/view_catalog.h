@@ -29,12 +29,12 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
 #include <tuple>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"

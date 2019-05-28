@@ -32,8 +32,8 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/version.hpp>
-#include <iostream>
 #include <functional>
+#include <iostream>
 
 #include "mongo/config.h"
 #include "mongo/db/client.h"

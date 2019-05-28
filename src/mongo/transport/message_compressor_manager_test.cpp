@@ -31,9 +31,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/rpc/message.h"

@@ -271,9 +271,9 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
     // Move locks into loader, so it now controls their lifetime.
     auto loader =
         std::make_unique<CollectionBulkLoaderImpl>(Client::releaseCurrent(),
-                                                    std::move(opCtx),
-                                                    std::move(autoColl),
-                                                    options.capped ? BSONObj() : idIndexSpec);
+                                                   std::move(opCtx),
+                                                   std::move(autoColl),
+                                                   options.capped ? BSONObj() : idIndexSpec);
 
     status = loader->init(options.capped ? std::vector<BSONObj>() : secondaryIndexSpecs);
     if (!status.isOK()) {

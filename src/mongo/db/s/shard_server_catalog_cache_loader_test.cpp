@@ -98,8 +98,7 @@ void ShardServerCatalogCacheLoaderTest::setUp() {
 
     // Create mock remote and real shard loader, retaining a pointer to the mock remote loader so
     // that unit tests can manipulate it to return certain responses.
-    std::unique_ptr<CatalogCacheLoaderMock> mockLoader =
-        std::make_unique<CatalogCacheLoaderMock>();
+    std::unique_ptr<CatalogCacheLoaderMock> mockLoader = std::make_unique<CatalogCacheLoaderMock>();
     _remoteLoaderMock = mockLoader.get();
     _shardLoader = std::make_unique<ShardServerCatalogCacheLoader>(std::move(mockLoader));
 

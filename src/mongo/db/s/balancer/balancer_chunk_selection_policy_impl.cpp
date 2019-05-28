@@ -34,8 +34,8 @@
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy_impl.h"
 
 #include <algorithm>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj_comparator_interface.h"

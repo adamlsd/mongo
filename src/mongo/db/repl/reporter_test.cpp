@@ -159,10 +159,10 @@ void ReporterTest::setUp() {
 
     reporter =
         std::make_unique<Reporter>(_executorProxy.get(),
-                                    [this]() { return prepareReplSetUpdatePositionCommandFn(); },
-                                    HostAndPort("h1"),
-                                    Milliseconds(1000),
-                                    Milliseconds(5000));
+                                   [this]() { return prepareReplSetUpdatePositionCommandFn(); },
+                                   HostAndPort("h1"),
+                                   Milliseconds(1000),
+                                   Milliseconds(5000));
     launchExecutorThread();
 
     if (triggerAtSetUp()) {

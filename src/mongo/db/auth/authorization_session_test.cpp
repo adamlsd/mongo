@@ -586,7 +586,7 @@ TEST_F(AuthorizationSessionTest, AcquireUserObtainsAndValidatesAuthenticationRes
         RestrictionEnvironment::set(
             session,
             std::make_unique<RestrictionEnvironment>(SockAddr(clientSource, 5555, AF_UNSPEC),
-                                                      SockAddr(serverAddress, 27017, AF_UNSPEC)));
+                                                     SockAddr(serverAddress, 27017, AF_UNSPEC)));
         ASSERT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
     };
 
@@ -594,7 +594,7 @@ TEST_F(AuthorizationSessionTest, AcquireUserObtainsAndValidatesAuthenticationRes
         RestrictionEnvironment::set(
             session,
             std::make_unique<RestrictionEnvironment>(SockAddr(clientSource, 5555, AF_UNSPEC),
-                                                      SockAddr(serverAddress, 27017, AF_UNSPEC)));
+                                                     SockAddr(serverAddress, 27017, AF_UNSPEC)));
         ASSERT_NOT_OK(authzSession->addAndAuthorizeUser(_opCtx.get(), UserName("spencer", "test")));
     };
 

@@ -81,8 +81,8 @@ std::unique_ptr<TestConnectionHook<Val, Req, Rep>> makeTestHook(Val&& validateFu
                                                                 Req&& requestFunc,
                                                                 Rep&& replyFunc) {
     return std::make_unique<TestConnectionHook<Val, Req, Rep>>(std::forward<Val>(validateFunc),
-                                                                std::forward<Req>(requestFunc),
-                                                                std::forward<Rep>(replyFunc));
+                                                               std::forward<Req>(requestFunc),
+                                                               std::forward<Rep>(replyFunc));
 }
 
 }  // namespace executor

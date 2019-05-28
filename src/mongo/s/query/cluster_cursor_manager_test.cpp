@@ -31,8 +31,8 @@
 
 #include "mongo/s/query/cluster_cursor_manager.h"
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/db/logical_session_cache.h"
 #include "mongo/db/logical_session_cache_noop.h"

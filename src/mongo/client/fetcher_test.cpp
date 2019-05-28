@@ -1038,14 +1038,14 @@ TEST_F(FetcherTest, FetcherAppliesRetryPolicyToFirstCommandButNotToGetMoreReques
         {ErrorCodes::BadValue, ErrorCodes::InternalError});
 
     fetcher = std::make_unique<Fetcher>(&getExecutor(),
-                                         source,
-                                         "db",
-                                         findCmdObj,
-                                         makeCallback(),
-                                         rpc::makeEmptyMetadata(),
-                                         executor::RemoteCommandRequest::kNoTimeout,
-                                         executor::RemoteCommandRequest::kNoTimeout,
-                                         std::move(policy));
+                                        source,
+                                        "db",
+                                        findCmdObj,
+                                        makeCallback(),
+                                        rpc::makeEmptyMetadata(),
+                                        executor::RemoteCommandRequest::kNoTimeout,
+                                        executor::RemoteCommandRequest::kNoTimeout,
+                                        std::move(policy));
 
     callbackHook = appendGetMoreRequest;
 

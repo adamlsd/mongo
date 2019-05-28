@@ -86,7 +86,8 @@ PlanStage::StageState EnsureSortedStage::doWork(WorkingSetID* out) {
 
 unique_ptr<PlanStageStats> EnsureSortedStage::getStats() {
     _commonStats.isEOF = isEOF();
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_ENSURE_SORTED);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_ENSURE_SORTED);
     ret->specific = std::make_unique<EnsureSortedStats>(_specificStats);
     ret->children.emplace_back(child()->getStats());
     return ret;

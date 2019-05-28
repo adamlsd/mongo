@@ -30,8 +30,8 @@
 #include "mongo/db/exec/text_or.h"
 
 #include <map>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/exec/filter.h"

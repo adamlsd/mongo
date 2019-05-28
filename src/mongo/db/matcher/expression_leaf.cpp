@@ -32,8 +32,8 @@
 #include "mongo/db/matcher/expression_leaf.h"
 
 #include <cmath>
-#include <pcrecpp.h>
 #include <memory>
+#include <pcrecpp.h>
 
 #include "mongo/bson/bsonelement_comparator.h"
 #include "mongo/bson/bsonmisc.h"

@@ -29,8 +29,8 @@
 
 #pragma once
 
-#include <memory>
 #include <functional>
+#include <memory>
 
 namespace mongo {
 

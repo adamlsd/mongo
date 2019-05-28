@@ -30,8 +30,8 @@
 #pragma once
 
 #include <deque>
-#include <memory>
 #include <functional>
+#include <memory>
 
 #include "mongo/base/status.h"
 #include "mongo/bson/bsonobj.h"

@@ -33,9 +33,9 @@
 
 #include "mongo/scripting/mozjs/jsthread.h"
 
-#include <vm/PosixNSPR.h>
 #include <cstdio>
 #include <memory>
+#include <vm/PosixNSPR.h>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/scripting/mozjs/implscope.h"

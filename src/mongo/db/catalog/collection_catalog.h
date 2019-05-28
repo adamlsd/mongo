@@ -29,10 +29,10 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <set>
 #include <unordered_map>
-#include <functional>
 
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"

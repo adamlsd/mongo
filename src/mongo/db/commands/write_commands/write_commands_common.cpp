@@ -32,9 +32,9 @@
 #include "mongo/db/commands/write_commands/write_commands_common.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"

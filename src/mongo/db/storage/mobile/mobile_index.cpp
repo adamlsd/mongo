@@ -387,13 +387,13 @@ public:
         MobileSession* session = MobileRecoveryUnit::get(opCtx)->getSession(opCtx);
 
         _stmt = std::make_unique<SqliteStatement>(*session,
-                                                   "SELECT key, value FROM \"",
-                                                   _index.getIdent(),
-                                                   "\" WHERE key ",
-                                                   (_isForward ? ">=" : "<="),
-                                                   " ? ORDER BY key ",
-                                                   (_isForward ? "ASC" : "DESC"),
-                                                   ";");
+                                                  "SELECT key, value FROM \"",
+                                                  _index.getIdent(),
+                                                  "\" WHERE key ",
+                                                  (_isForward ? ">=" : "<="),
+                                                  " ? ORDER BY key ",
+                                                  (_isForward ? "ASC" : "DESC"),
+                                                  ";");
     }
 
     virtual ~CursorBase() {}

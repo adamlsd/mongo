@@ -33,8 +33,8 @@
 
 #include "mongo/db/storage/mobile/mobile_record_store.h"
 
-#include <sqlite3.h>
 #include <memory>
+#include <sqlite3.h>
 
 #include "mongo/base/static_assert.h"
 #include "mongo/db/catalog/collection_options.h"
@@ -65,15 +65,15 @@ public:
 
         MobileSession* session = MobileRecoveryUnit::get(_opCtx)->getSession(_opCtx);
         _stmt = std::make_unique<SqliteStatement>(*session,
-                                                   "SELECT rec_id, data from \"",
-                                                   ident,
-                                                   "\" ",
-                                                   "WHERE rec_id ",
-                                                   (forward ? ">" : "<"),
-                                                   " ? ",
-                                                   "ORDER BY rec_id ",
-                                                   (forward ? "ASC" : "DESC"),
-                                                   ";");
+                                                  "SELECT rec_id, data from \"",
+                                                  ident,
+                                                  "\" ",
+                                                  "WHERE rec_id ",
+                                                  (forward ? ">" : "<"),
+                                                  " ? ",
+                                                  "ORDER BY rec_id ",
+                                                  (forward ? "ASC" : "DESC"),
+                                                  ";");
 
         _startIdNum = (forward ? RecordId::min().repr() : RecordId::max().repr());
         _savedId = RecordId(_startIdNum);

@@ -34,8 +34,8 @@
 #include "mongo/db/commands/run_aggregate.h"
 
 #include <boost/optional.hpp>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/database.h"

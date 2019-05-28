@@ -161,7 +161,8 @@ unique_ptr<PlanStageStats> DistinctScan::getStats() {
         _specificStats.indexBounds = _bounds.toBSON();
     }
 
-    unique_ptr<PlanStageStats> ret = std::make_unique<PlanStageStats>(_commonStats, STAGE_DISTINCT_SCAN);
+    unique_ptr<PlanStageStats> ret =
+        std::make_unique<PlanStageStats>(_commonStats, STAGE_DISTINCT_SCAN);
     ret->specific = std::make_unique<DistinctScanStats>(_specificStats);
     return ret;
 }

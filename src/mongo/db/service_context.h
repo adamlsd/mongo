@@ -31,8 +31,8 @@
 
 #include <boost/optional.hpp>
 #include <functional>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/global_initializer_registerer.h"
 #include "mongo/db/logical_session_id.h"

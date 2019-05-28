@@ -29,11 +29,11 @@
 
 #pragma once
 
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"

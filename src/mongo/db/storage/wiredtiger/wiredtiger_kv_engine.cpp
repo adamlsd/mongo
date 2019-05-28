@@ -664,8 +664,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
             setStableTimestamp(_recoveryTimestamp, false);
         }
 
-        _checkpointThread =
-            std::make_unique<WiredTigerCheckpointThread>(this, _sessionCache.get());
+        _checkpointThread = std::make_unique<WiredTigerCheckpointThread>(this, _sessionCache.get());
         _checkpointThread->go();
     }
 

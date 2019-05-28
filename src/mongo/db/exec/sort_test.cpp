@@ -55,8 +55,7 @@ public:
     SortStageTest() {
         getServiceContext()->setFastClockSource(std::make_unique<ClockSourceMock>());
         _opCtx = makeOperationContext();
-        CollatorFactoryInterface::set(getServiceContext(),
-                                      std::make_unique<CollatorFactoryMock>());
+        CollatorFactoryInterface::set(getServiceContext(), std::make_unique<CollatorFactoryMock>());
     }
 
     OperationContext* getOpCtx() {

@@ -30,8 +30,8 @@
 #include "mongo/platform/basic.h"
 
 #include <boost/intrusive_ptr.hpp>
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/json.h"

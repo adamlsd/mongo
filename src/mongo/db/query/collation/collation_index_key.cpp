@@ -31,8 +31,8 @@
 
 #include "mongo/db/query/collation/collation_index_key.h"
 
-#include <stack>
 #include <memory>
+#include <stack>
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"

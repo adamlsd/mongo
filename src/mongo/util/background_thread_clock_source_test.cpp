@@ -53,8 +53,8 @@ public:
     }
 
     void setUpRealClocks(Milliseconds granularity) {
-        _btcs = std::make_unique<BackgroundThreadClockSource>(
-            std::make_unique<SystemClockSource>(), granularity);
+        _btcs = std::make_unique<BackgroundThreadClockSource>(std::make_unique<SystemClockSource>(),
+                                                              granularity);
     }
 
     void tearDown() override {

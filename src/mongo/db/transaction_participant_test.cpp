@@ -3827,7 +3827,7 @@ class MultiEntryOplogTxnParticipantTest : public TxnParticipantTest {
         auto service = opCtx()->getServiceContext();
         repl::ReplicationCoordinator::set(
             service,
-            stdx::make_unique<repl::ReplicationCoordinatorMock>(service, createReplSettings()));
+            std::make_unique<repl::ReplicationCoordinatorMock>(service, createReplSettings()));
         repl::setOplogCollectionName(service);
         repl::createOplog(opCtx());
 

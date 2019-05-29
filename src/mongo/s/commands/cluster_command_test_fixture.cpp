@@ -69,7 +69,7 @@ void ClusterCommandTestFixture::setUp() {
     LogicalSessionCache::set(getServiceContext(), std::make_unique<LogicalSessionCacheNoop>());
 
     // Set up a tick source for transaction metrics.
-    auto tickSource = stdx::make_unique<TickSourceMock<Microseconds>>();
+    auto tickSource = std::make_unique<TickSourceMock<Microseconds>>();
     tickSource->reset(1);
     getServiceContext()->setTickSource(std::move(tickSource));
 

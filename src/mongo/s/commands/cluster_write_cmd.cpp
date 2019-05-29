@@ -300,7 +300,7 @@ bool handleWouldChangeOwningShardError(OperationContext* opCtx,
         response->setN(response->getN() + 1);
 
         if (upsertedId) {
-            auto upsertDetail = stdx::make_unique<BatchedUpsertDetail>();
+            auto upsertDetail = std::make_unique<BatchedUpsertDetail>();
             upsertDetail->setIndex(0);
             upsertDetail->setUpsertedID(upsertedId.get());
             response->addToUpsertDetails(upsertDetail.release());

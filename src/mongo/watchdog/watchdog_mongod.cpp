@@ -34,6 +34,7 @@
 #include "mongo/watchdog/watchdog_mongod.h"
 
 #include <boost/filesystem.hpp>
+#include <memory>
 
 #include "mongo/base/init.h"
 #include "mongo/config.h"
@@ -42,7 +43,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/clock_source_mock.h"

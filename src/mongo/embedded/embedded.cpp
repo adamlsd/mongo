@@ -309,7 +309,7 @@ ServiceContext* initialize(const char* yaml_config) {
 
     // Set up the logical session cache
     LogicalSessionCache::set(serviceContext,
-                             stdx::make_unique<LogicalSessionCacheImpl>(
+                             std::make_unique<LogicalSessionCacheImpl>(
                                  std::make_unique<ServiceLiaisonMongod>(),
                                  std::make_shared<SessionsCollectionStandalone>(),
                                  [](OperationContext*, SessionsCollection&, Date_t) {

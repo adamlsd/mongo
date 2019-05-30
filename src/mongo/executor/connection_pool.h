@@ -40,6 +40,7 @@
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/util/functional.h"
 #include "mongo/util/future.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/out_of_line_executor.h"
@@ -76,9 +77,9 @@ public:
     using GetConnectionCallback = unique_function<void(StatusWith<ConnectionHandle>)>;
 
     static constexpr Milliseconds kDefaultHostTimeout = Milliseconds(300000);  // 5mins
-    static const size_t kDefaultMaxConns;
-    static const size_t kDefaultMinConns;
-    static const size_t kDefaultMaxConnecting;
+    static constexpr size_t kDefaultMaxConns = std::numeric_limits<size_t>::max();
+    static constexpr size_t kDefaultMinConns = 1;
+    static constexpr size_t kDefaultMaxConnecting = 2;
     static constexpr Milliseconds kDefaultRefreshRequirement = Milliseconds(60000);  // 1min
     static constexpr Milliseconds kDefaultRefreshTimeout = Milliseconds(20000);      // 20secs
 
@@ -155,9 +156,9 @@ public:
                     const std::function<transport::Session::TagMask(transport::Session::TagMask)>&
                         mutateFunc) override;
 
-    Future<ConnectionHandle> get(const HostAndPort& hostAndPort,
-                                 transport::ConnectSSLMode sslMode,
-                                 Milliseconds timeout);
+    SemiFuture<ConnectionHandle> get(const HostAndPort& hostAndPort,
+                                     transport::ConnectSSLMode sslMode,
+                                     Milliseconds timeout);
     void get_forTest(const HostAndPort& hostAndPort,
                      Milliseconds timeout,
                      GetConnectionCallback cb);
@@ -294,8 +295,8 @@ protected:
      * Making these protected makes the definitions available to override in
      * children.
      */
-    using SetupCallback = std::function<void(ConnectionInterface*, Status)>;
-    using RefreshCallback = std::function<void(ConnectionInterface*, Status)>;
+    using SetupCallback = unique_function<void(ConnectionInterface*, Status)>;
+    using RefreshCallback = unique_function<void(ConnectionInterface*, Status)>;
 
     /**
      * Sets up the connection. This should include connection + auth + any

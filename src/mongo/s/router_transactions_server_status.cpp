@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,32 +27,32 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/platform/basic.h"
 
-#include "mongo/s/sharding_egress_metadata_hook.h"
+#include "mongo/db/commands/server_status.h"
+#include "mongo/s/router_transactions_metrics.h"
+#include "mongo/s/router_transactions_stats_gen.h"
+#include "mongo/s/transaction_router.h"
 
 namespace mongo {
-namespace rpc {
+namespace {
 
-class ShardingEgressMetadataHookForMongod final : public ShardingEgressMetadataHook {
+class RouterTransactionsSSS final : public ServerStatusSection {
 public:
-    using ShardingEgressMetadataHook::ShardingEgressMetadataHook;
+    RouterTransactionsSSS() : ServerStatusSection("transactions") {}
 
-private:
-    void _saveGLEStats(const BSONObj& metadata, StringData hostString) override;
+    bool includeByDefault() const override {
+        return true;
+    }
 
-    repl::OpTime _getConfigServerOpTime() override;
+    BSONObj generateSection(OperationContext* opCtx,
+                            const BSONElement& configElement) const override {
+        RouterTransactionsStats stats;
+        RouterTransactionsMetrics::get(opCtx)->updateStats(&stats);
+        return stats.toBSON();
+    }
 
-    Status _advanceConfigOpTimeFromShard(OperationContext* opCtx,
-                                         const ShardId& shardId,
-                                         const BSONObj& metadataObj) override;
-};
+} routerTransactionsSSS;
 
-/**
- * Updates the ShardRegistry's stored notion of the config server optime based on the
- * ConfigServerMetadata decoration attached to the OperationContext.
- */
-void advanceConfigOpTimeFromRequestMetadata(OperationContext* opCtx);
-
-}  // namespace rpc
+}  // namespace
 }  // namespace mongo

@@ -434,8 +434,6 @@ BSONObj UpdateStage::applyUpdateOpsForInsert(OperationContext* opCtx,
         }
         requiredPaths.keepShortest(&idFieldRef);
         uassertStatusOK(driver->populateDocumentWithQueryFields(*cq, requiredPaths, *doc));
-        if (driver->type() == UpdateDriver::UpdateType::kReplacement)
-            stats->fastmodinsert = true;
     } else {
         fassert(17354, CanonicalQuery::isSimpleIdQuery(query));
         BSONElement idElt = query[idFieldName];
@@ -920,7 +918,6 @@ void UpdateStage::recordUpdateStatsInOpDebug(const UpdateStats* updateStats, OpD
     opDebug->additiveMetrics.nMatched = updateStats->nMatched;
     opDebug->additiveMetrics.nModified = updateStats->nModified;
     opDebug->upsert = updateStats->inserted;
-    opDebug->fastmodinsert = updateStats->fastmodinsert;
 }
 
 UpdateResult UpdateStage::makeUpdateResult(const UpdateStats* updateStats) {

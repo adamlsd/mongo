@@ -116,7 +116,7 @@ struct MockMongoInterface final : public StubMongoProcessInterface {
     // For tests of transactions that involve multiple oplog entries.
     std::unique_ptr<TransactionHistoryIteratorBase> createTransactionHistoryIterator(
         repl::OpTime time) const {
-        auto iterator = stdx::make_unique<MockTransactionHistoryIterator>();
+        auto iterator = std::make_unique<MockTransactionHistoryIterator>();
 
         // Simulate a lookup on the oplog timestamp by manually advancing the iterator until we
         // reach the desired timestamp.
@@ -1120,7 +1120,7 @@ TEST_F(ChangeStreamStageTest, TransactionWithMultipleOplogEntries) {
     invariant(dynamic_cast<DocumentSourceChangeStreamTransform*>(transform) != nullptr);
 
     // Populate the MockTransactionHistoryEditor in reverse chronological order.
-    getExpCtx()->mongoProcessInterface = stdx::make_unique<MockMongoInterface>(
+    getExpCtx()->mongoProcessInterface = std::make_unique<MockMongoInterface>(
         std::vector<FieldPath>{},
         std::vector<repl::OplogEntry>{transactionEntry2, transactionEntry1});
 
@@ -1249,7 +1249,7 @@ TEST_F(ChangeStreamStageTest, PreparedTransactionWithMultipleOplogEntries) {
     invariant(dynamic_cast<DocumentSourceChangeStreamTransform*>(transform) != nullptr);
 
     // Populate the MockTransactionHistoryEditor in reverse chronological order.
-    getExpCtx()->mongoProcessInterface = stdx::make_unique<MockMongoInterface>(
+    getExpCtx()->mongoProcessInterface = std::make_unique<MockMongoInterface>(
         std::vector<FieldPath>{},
         std::vector<repl::OplogEntry>{commitEntry, transactionEntry2, transactionEntry1});
 

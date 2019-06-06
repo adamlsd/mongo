@@ -107,8 +107,7 @@ public:
      */
     using RemoteCommandCallbackFn = std::function<void(const RemoteCommandCallbackArgs&)>;
 
-    using RemoteCommandOnAnyCallbackFn =
-        stdx::function<void(const RemoteCommandOnAnyCallbackArgs&)>;
+    using RemoteCommandOnAnyCallbackFn = std::function<void(const RemoteCommandOnAnyCallbackArgs&)>;
 
     /**
      * Destroys the task executor. Implicitly performs the equivalent of shutdown() and join()

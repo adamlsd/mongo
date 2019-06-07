@@ -55,7 +55,6 @@
 #include "mongo/platform/random.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
-#include "mongo/util/startup_test.h"
 
 namespace mongo {
 

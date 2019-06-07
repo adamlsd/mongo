@@ -1,5 +1,4 @@
-/**
- *    Copyright (C) 2018-present MongoDB, Inc.
+/** *    Copyright (C) 2018-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -35,7 +34,6 @@
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_noop.h"
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
@@ -127,7 +125,6 @@ public:
                             boost::optional<OplogSlot> abortOplogEntryOpTime) override;
     bool onTransactionAbortThrowsException = false;
     bool transactionAborted = false;
-    std::function<void()> onTransactionAbortFn = []() {};
 
     repl::OpTime onDropCollection(OperationContext* opCtx,
                                   const NamespaceString& collectionName,
@@ -190,7 +187,6 @@ void OpObserverMock::onTransactionAbort(OperationContext* opCtx,
             "onTransactionAbort() failed",
             !onTransactionAbortThrowsException);
     transactionAborted = true;
-    onTransactionAbortFn();
 }
 
 repl::OpTime OpObserverMock::onDropCollection(OperationContext* opCtx,
@@ -3803,6 +3799,5 @@ TEST_F(TxnParticipantTest, ExitPreparePromiseIsFulfilledOnAbortPreparedTransacti
     // ready.
     ASSERT_TRUE(txnParticipant.onExitPrepare().isReady());
 }
-
 }  // namespace
 }  // namespace mongo

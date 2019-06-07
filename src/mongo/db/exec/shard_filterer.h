@@ -27,30 +27,25 @@
  *    it in the license file.
  */
 
-#include "mongo/util/startup_test.h"
+#pragma once
+
+#include "mongo/db/matcher/matchable.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/s/shard_key_pattern.h"
 
 namespace mongo {
-std::vector<StartupTest*>* StartupTest::tests = 0;
-bool StartupTest::running = false;
 
-StartupTest::StartupTest() {
-    registerTest(this);
-}
+/**
+ * Interface for doing shard filtering, to be used by both the find and agg execution trees.
+ */
+class ShardFilterer {
+public:
+    enum class DocumentBelongsResult { kDoesNotBelong, kBelongs, kNoShardKey };
 
-StartupTest::~StartupTest() {}
+    virtual ~ShardFilterer() = default;
 
-void StartupTest::registerTest(StartupTest* t) {
-    if (tests == 0)
-        tests = new std::vector<StartupTest*>();
-    tests->push_back(t);
-}
-
-void StartupTest::runTests() {
-    running = true;
-    for (std::vector<StartupTest*>::const_iterator i = tests->begin(); i != tests->end(); i++) {
-        (*i)->run();
-    }
-    running = false;
-}
-
+    virtual DocumentBelongsResult documentBelongsToMe(const MatchableDocument&) const = 0;
+    virtual bool isCollectionSharded() const = 0;
+    virtual const KeyPattern& getKeyPattern() const = 0;
+};
 }  // namespace mongo

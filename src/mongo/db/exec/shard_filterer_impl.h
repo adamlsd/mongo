@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,47 +27,31 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/transport/session.h"
-
-#include "mongo/platform/atomic_word.h"
-#include "mongo/transport/transport_layer.h"
-#include "mongo/util/net/ssl_types.h"
+#include "mongo/db/exec/shard_filterer.h"
+#include "mongo/db/matcher/matchable.h"
+#include "mongo/db/s/scoped_collection_metadata.h"
 
 namespace mongo {
-namespace transport {
 
-namespace {
+class ShardFiltererImpl : public ShardFilterer {
+public:
+    ShardFiltererImpl(ScopedCollectionMetadata md);
 
-AtomicWord<unsigned long long> sessionIdCounter(0);
+    DocumentBelongsResult documentBelongsToMe(const MatchableDocument& doc) const override;
 
-}  // namespace
+    bool isCollectionSharded() const override {
+        return _metadata->isSharded();
+    }
 
-Session::Session() : _id(sessionIdCounter.addAndFetch(1)), _tags(kPending) {}
+    const KeyPattern& getKeyPattern() const override {
+        invariant(_keyPattern);
+        return _keyPattern->getKeyPattern();
+    }
 
-void Session::setTags(TagMask tagsToSet) {
-    mutateTags([tagsToSet](TagMask originalTags) { return (originalTags | tagsToSet); });
-}
-
-void Session::unsetTags(TagMask tagsToUnset) {
-    mutateTags([tagsToUnset](TagMask originalTags) { return (originalTags & ~tagsToUnset); });
-}
-
-void Session::mutateTags(const std::function<TagMask(TagMask)>& mutateFunc) {
-    TagMask oldValue, newValue;
-    do {
-        oldValue = _tags.load();
-        newValue = mutateFunc(oldValue);
-
-        // Any change to the session tags automatically clears kPending status.
-        newValue &= ~kPending;
-    } while (!_tags.compareAndSwap(&oldValue, newValue));
-}
-
-Session::TagMask Session::getTags() const {
-    return _tags.load();
-}
-
-}  // namespace transport
+private:
+    ScopedCollectionMetadata _metadata;
+    boost::optional<ShardKeyPattern> _keyPattern;
+};
 }  // namespace mongo

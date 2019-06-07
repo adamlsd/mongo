@@ -27,44 +27,35 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/platform/basic.h"
 
-#include <vector>
+#include "mongo/db/exec/shard_filterer_impl.h"
+
+#include "mongo/db/matcher/matchable.h"
+#include "mongo/db/s/scoped_collection_metadata.h"
 
 namespace mongo {
 
-/*
-   The idea here is to let all initialization of global variables (classes inheriting from
-   StartupTest) complete before we run the tests -- otherwise order of initilization being arbitrary
-   may mess us up. The app's main() function should call runTests().
+ShardFiltererImpl::ShardFiltererImpl(ScopedCollectionMetadata md) : _metadata(std::move(md)) {
+    if (_metadata->isSharded()) {
+        _keyPattern = ShardKeyPattern(_metadata->getKeyPattern());
+    }
+}
 
-   To define a unit test, inherit from this and implement run. instantiate one object for the new
-   class as a global.
-
-   These tests are ran on *every* startup of mongod, so they have to be very lightweight.  But it is
-   a good quick check for a bad build.
-*/
-class StartupTest {
-public:
-    static void runTests();
-
-    static bool testsInProgress() {
-        return running;
+ShardFilterer::DocumentBelongsResult ShardFiltererImpl::documentBelongsToMe(
+    const MatchableDocument& doc) const {
+    if (!_metadata->isSharded()) {
+        return DocumentBelongsResult::kBelongs;
     }
 
-protected:
-    StartupTest();
-    virtual ~StartupTest();
+    BSONObj shardKey = _keyPattern->extractShardKeyFromMatchable(doc);
 
-private:
-    static std::vector<StartupTest*>* tests;
-    static bool running;
+    if (shardKey.isEmpty()) {
+        return DocumentBelongsResult::kNoShardKey;
+    }
 
-    static void registerTest(StartupTest* t);
-
-    // assert if fails
-    virtual void run() = 0;
-};
-
+    return _metadata->keyBelongsToMe(shardKey) ? DocumentBelongsResult::kBelongs
+                                               : DocumentBelongsResult::kDoesNotBelong;
+}
 
 }  // namespace mongo

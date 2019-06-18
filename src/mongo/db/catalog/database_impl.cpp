@@ -686,7 +686,11 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     auto& catalog = CollectionCatalog::get(opCtx);
     auto uuid = ownedCollection->uuid().get();
     catalog.registerCollection(uuid, std::move(ownedCatalogEntry), std::move(ownedCollection));
-    opCtx->recoveryUnit()->onRollback([uuid, &catalog] { catalog.deregisterCollection(uuid); });
+    opCtx->recoveryUnit()->onRollback([uuid, &catalog] {
+        auto[removedColl, removedCatalogEntry] = catalog.deregisterCollection(uuid);
+        removedColl.reset();
+        removedCatalogEntry.reset();
+    });
 
     BSONObj fullIdIndexSpec;
 

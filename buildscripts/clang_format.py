@@ -10,6 +10,7 @@
 
 import difflib
 import glob
+from io import StringIO
 import os
 import re
 import shutil
@@ -235,9 +236,10 @@ class ClangFormat(object):
         with open(file_name, 'rb') as original_text:
             original_file = original_text.read().decode('utf-8')
 
-        with open(file_name, 'rb') as original_text2:
+            original_text.seek(0)
+
             # Get formatted file as clang-format would format the file
-            formatted_file = callo([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=original_text2)
+            formatted_file = callo([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=original_text)
 
         if original_file != formatted_file:
             if print_diff:
@@ -249,7 +251,7 @@ class ClangFormat(object):
                 with self.print_lock:
                     print("ERROR: Found diff for " + file_name)
                     print("To fix formatting errors, run {0} --assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp") +
-                          " --style=file -i < {1} > {1}.tmp; mv {1}.tmp {1}".format(self.path, file_name))
+                          " --style=file < {1} > {1}.tmp; mv {1}.tmp {1}".format(self.path, file_name))
                     for line in result:
                         print(line.rstrip())
 
@@ -268,7 +270,7 @@ class ClangFormat(object):
 
         # Update the file with clang-format
         formatted = True
-        with open(file_name) as source_stream:
+        with open(file_name, 'rb') as source_stream:
             try:
                 reformatted_text = subprocess.check_output([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=source_stream)
             except CalledProcessError:

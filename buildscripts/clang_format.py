@@ -168,18 +168,26 @@ class ClangFormat(object):
                 for i, _ in enumerate(programs):
                     programs[i] += '.exe'
 
-            for program in programs:
-                self.path = spawn.find_executable(program)
-
-                if self.path:
+            if sys.platform != "win32":
+                toolchain_path = "/opt/mongodbtoolchain/v3/bin/clang-format"
+                if os.path.exists(toolchain_path):
+                    self.path = toolchain.path
                     if not self._validate_version():
                         self.path = None
-                    else:
-                        break
+
+            if self.path is None:
+                for program in programs:
+                    self.path = spawn.find_executable(program)
+
+                    if self.path:
+                        if not self._validate_version():
+                            self.path = None
+                        else:
+                            break
 
         # If Windows, try to grab it from Program Files
         # Check both native Program Files and WOW64 version
-        if sys.platform == "win32":
+        if self.path is None and sys.platform == "win32":
             programfiles = [
                 os.environ["ProgramFiles"],
                 os.environ["ProgramFiles(x86)"],

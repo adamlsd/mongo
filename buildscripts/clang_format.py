@@ -171,7 +171,7 @@ class ClangFormat(object):
             if sys.platform != "win32":
                 toolchain_path = "/opt/mongodbtoolchain/v3/bin/clang-format"
                 if os.path.exists(toolchain_path):
-                    self.path = toolchain.path
+                    self.path = toolchain_path
                     if not self._validate_version():
                         self.path = None
 

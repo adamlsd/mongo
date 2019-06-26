@@ -168,6 +168,7 @@ class ClangFormat(object):
                 for i, _ in enumerate(programs):
                     programs[i] += '.exe'
 
+            # Check for the binary in the expected toolchain directory on non-windows systems.
             if sys.platform != "win32":
                 toolchain_path = "/opt/mongodbtoolchain/v3/bin/clang-format"
                 if os.path.exists(toolchain_path):
@@ -277,6 +278,11 @@ class ClangFormat(object):
             return True
 
         # Update the file with clang-format
+        # We have to tell `clang-format` to format on standard input due to its file type
+        # determiner.  `--assume-filename` doesn't work directly on files, but only on standard
+        # input.  Thus we have to open the file as the subprocess's standard input. Then we record
+        # that formatted standard output back into the file.  We can't use the `-i` option, due to
+        # the fact that `clang-format` believes that many of our C++ headers are Objective-C code.
         formatted = True
         with open(file_name, 'rb') as source_stream:
             try:
@@ -323,7 +329,7 @@ def _lint_files(clang_format, files):
     lint_clean = parallel.parallel_process([os.path.abspath(f) for f in files], clang_format.lint)
 
     if not lint_clean:
-        print("ERROR: Source Code does not match required source formatting style")
+        print("ERROR: Source code does not match required source formatting style")
         sys.exit(1)
 
 

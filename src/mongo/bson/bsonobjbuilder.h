@@ -719,12 +719,8 @@ public:
         _doneCalled = true;
     }
 
-    static std::string numStr(int i) {
-        if (i >= 0 && i < 100 && numStrsReady)
-            return numStrs[i];
-        StringBuilder o;
-        o << i;
-        return o.str();
+    static std::string numStr(const int i) {
+        return std::to_string(i);
     }
 
     /** Stream oriented way to add field names and values. */
@@ -811,9 +807,6 @@ private:
     BSONObjBuilderValueStream _s;
     BSONSizeTracker* _tracker;
     bool _doneCalled;
-
-    static const std::string numStrs[100];  // cache of 0 to 99 inclusive
-    static bool numStrsReady;               // for static init safety
 };
 
 class BSONArrayBuilder {

@@ -154,10 +154,11 @@ private:
     void* _ptr = _buf;
 };
 
+namespace bson_builder_detail {
 template <class BufferAllocator>
-class _BufBuilder {
+class BasicBufBuilder {
 public:
-    _BufBuilder(int initsize = 512) : size(initsize) {
+    BasicBufBuilder(int initsize = 512) : size(initsize) {
         if (size > 0) {
             _buf.malloc(size);
         }
@@ -349,9 +350,10 @@ private:
 
     friend class StringBuilderImpl<BufferAllocator>;
 };
+}  // namespace bson_builder_detail
 
-typedef _BufBuilder<SharedBufferAllocator> BufBuilder;
-MONGO_STATIC_ASSERT(std::is_move_constructible<BufBuilder>::value);
+typedef bson_builder_detail::BasicBufBuilder<SharedBufferAllocator> BufBuilder;
+MONGO_STATIC_ASSERT(std::is_move_constructible_v<BufBuilder>);
 
 /** The StackBufBuilder builds smaller datasets on the stack instead of using malloc.
       this can be significantly faster for small bufs.  However, you can not release() the
@@ -360,9 +362,9 @@ MONGO_STATIC_ASSERT(std::is_move_constructible<BufBuilder>::value);
       nothing bad would happen.  In fact in some circumstances this might make sense, say,
       embedded in some other object.
 */
-class StackBufBuilder : public _BufBuilder<StackAllocator> {
+class StackBufBuilder : public bson_builder_detail::BasicBufBuilder<StackAllocator> {
 public:
-    StackBufBuilder() : _BufBuilder<StackAllocator>(StackAllocator::SZ) {}
+    StackBufBuilder() : bson_builder_detail::BasicBufBuilder<StackAllocator>(StackAllocator::SZ) {}
     void release() = delete;  // not allowed. not implemented.
 };
 MONGO_STATIC_ASSERT(!std::is_move_constructible<StackBufBuilder>::value);
@@ -495,7 +497,6 @@ public:
     }
 
 private:
-    _BufBuilder<Allocator> _buf;
     template <typename T>
     StringBuilderImpl& appendIntegral(T val, int maxSize) {
         MONGO_STATIC_ASSERT(!std::is_same<T, char>());  // char shouldn't append as number.
@@ -520,13 +521,15 @@ private:
         _buf.l = prev + z;
         return *this;
     }
+
+    bson_builder_detail::BasicBufBuilder<Allocator> _buf;
 };
 
 typedef StringBuilderImpl<SharedBufferAllocator> StringBuilder;
 typedef StringBuilderImpl<StackAllocator> StackStringBuilder;
 
-extern template class _BufBuilder<SharedBufferAllocator>;
-extern template class _BufBuilder<StackAllocator>;
+extern template class bson_builder_detail::BasicBufBuilder<SharedBufferAllocator>;
+extern template class bson_builder_detail::BasicBufBuilder<StackAllocator>;
 extern template class StringBuilderImpl<SharedBufferAllocator>;
 extern template class StringBuilderImpl<StackAllocator>;
 

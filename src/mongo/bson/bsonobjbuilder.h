@@ -691,11 +691,21 @@ public:
         Intended use case: append a field if not already there.
     */
     BSONObj asTempObj() {
-        BSONObj temp(_done(), BSONObj::LargeSizeTrait{});
-        _b.setlen(_b.len() - 1);  // next append should overwrite the EOO
-        _b.reserveBytes(1);       // Rereserve room for the real EOO
-        _doneCalled = false;
-        return temp;
+        const char* const buffer = _done();
+
+        // None of the code which resets this builder to the not-done state is expected to throw.
+        // If it does, that would be a violation of our expectations.
+        [this]() noexcept->void {
+            // Immediately after the buffer for the ephemeral space created by the call to `_done()`
+            // is ready, reset our state to not-done.
+            _doneCalled = false;
+
+            _b.setlen(_b.len() - 1);  // next append should overwrite the EOO
+            _b.reserveBytes(1);       // Rereserve room for the real EOO
+        }
+        ();
+
+        return BSONObj(buffer, BSONObj::LargeSizeTrait());
     }
 
     /** Make it look as if "done" has been called, so that our destructor is a no-op. Do
@@ -777,8 +787,6 @@ private:
         if (_doneCalled)
             return _b.buf() + _offset;
 
-        _doneCalled = true;
-
         // TODO remove this or find some way to prevent it from failing. Since this is intended
         // for use with BSON() literal queries, it is less likely to result in oversized BSON.
         _s.endField();
@@ -791,6 +799,9 @@ private:
         DataView(data).write(tagLittleEndian(size));
         if (_tracker)
             _tracker->got(size);
+
+        // Only set `_doneCalled` to true when all functions which could throw haven't thrown.
+        _doneCalled = true;
         return data;
     }
 

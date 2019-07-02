@@ -67,8 +67,7 @@ class BSONObjBuilder {
 
 public:
     /** @param initsize this is just a hint as to the final size of the object */
-    BSONObjBuilder(int initsize = 512)
-        : _b(_buf), _buf(initsize), _offset(0), _s(this), _tracker(nullptr), _doneCalled(false) {
+    BSONObjBuilder(int initsize = 512) : _b(_buf), _buf(initsize), _s(this) {
         // Skip over space for the object length. The length is filled in by _done.
         _b.skip(sizeof(int));
 
@@ -81,12 +80,7 @@ public:
      *  example.
      */
     BSONObjBuilder(BufBuilder& baseBuilder)
-        : _b(baseBuilder),
-          _buf(0),
-          _offset(baseBuilder.len()),
-          _s(this),
-          _tracker(nullptr),
-          _doneCalled(false) {
+        : _b(baseBuilder), _buf(0), _offset(baseBuilder.len()), _s(this) {
         // Skip over space for the object length, which is filled in by _done. We don't need a
         // holder since we are a sub-builder, and some parent builder has already made the
         // reservation.
@@ -101,12 +95,7 @@ public:
     struct ResumeBuildingTag {};
 
     BSONObjBuilder(ResumeBuildingTag, BufBuilder& existingBuilder, std::size_t offset = 0)
-        : _b(existingBuilder),
-          _buf(0),
-          _offset(offset),
-          _s(this),
-          _tracker(nullptr),
-          _doneCalled(false) {
+        : _b(existingBuilder), _buf(0), _offset(offset), _s(this) {
         invariant(_b.len() - offset >= BSONObj::kMinBSONLength);
         _b.setlen(_b.len() - 1);  // get rid of the previous EOO.
         // Reserve space for our EOO.
@@ -116,10 +105,8 @@ public:
     BSONObjBuilder(const BSONSizeTracker& tracker)
         : _b(_buf),
           _buf(tracker.getSize()),
-          _offset(0),
           _s(this),
-          _tracker(const_cast<BSONSizeTracker*>(&tracker)),
-          _doneCalled(false) {
+          _tracker(const_cast<BSONSizeTracker*>(&tracker)) {
         // See the comments in the first constructor for details.
         _b.skip(sizeof(int));
 
@@ -134,8 +121,7 @@ public:
      * able to avoid copying and will just reuse the buffer. Therefore, you should try to std::move
      * into this constructor where possible.
      */
-    BSONObjBuilder(BSONObj prefix)
-        : _b(_buf), _buf(0), _offset(0), _s(this), _tracker(nullptr), _doneCalled(false) {
+    BSONObjBuilder(BSONObj prefix) : _b(_buf), _buf(0), _s(this) {
         // If prefix wasn't owned or we don't have exclusive access to it, we must copy.
         if (!prefix.isOwned() || prefix.sharedBuffer().isShared()) {
             _b.grow(prefix.objsize());  // Make sure we won't need to realloc().
@@ -807,10 +793,10 @@ private:
 
     BufBuilder& _b;
     BufBuilder _buf;
-    int _offset;
+    int _offset = 0;
     BSONObjBuilderValueStream _s;
-    BSONSizeTracker* _tracker;
-    bool _doneCalled;
+    BSONSizeTracker* _tracker = nullptr;
+    bool _doneCalled = false;
 
     static const std::string numStrs[100];  // cache of 0 to 99 inclusive
     static bool numStrsReady;               // for static init safety

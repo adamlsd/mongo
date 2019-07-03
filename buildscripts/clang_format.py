@@ -497,7 +497,7 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
         for diff_file in diff_files:
             # If the file was deleted in the commit we are reformatting, we need to delete it again
             if diff_file in deleted_files:
-                repo.git_rm([diff_file])
+                repo.git_rm(["--ignore-unmatch", diff_file])
                 continue
 
             # The file has been added or modified, continue as normal

@@ -507,7 +507,7 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
             if root_dir and not os.path.exists(root_dir):
                 os.makedirs(root_dir)
 
-            with open(diff_file, "w+") as new_file:
+            with open(diff_file, "w+", encoding="utf-8") as new_file:
                 new_file.write(file_contents)
 
             repo.git_add([diff_file])

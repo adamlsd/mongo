@@ -513,7 +513,7 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
             repo.git_add([diff_file])
 
         # Create a new commit onto clang-formatted branch
-        repo.git_commit(["--reuse-message=%s" % previous_commit, "--no-gpg-sign" ])
+        repo.git_commit(["--reuse-message=%s" % previous_commit, "--no-gpg-sign", "--allow-empty"])
 
         previous_commit_base = repo.git_rev_parse(["HEAD"])
 

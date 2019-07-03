@@ -10,6 +10,7 @@
 
 import difflib
 import glob
+from io import StringIO
 import os
 import re
 import shutil
@@ -41,8 +42,9 @@ from buildscripts.linter import parallel  # pylint: disable=wrong-import-positio
 #
 
 # Expected version of clang-format
-CLANG_FORMAT_VERSION = "3.8.0"
-CLANG_FORMAT_SHORT_VERSION = "3.8"
+CLANG_FORMAT_VERSION = "7.0.1"
+CLANG_FORMAT_SHORT_VERSION = "7.0"
+CLANG_FORMAT_SHORTER_VERSION = "70"
 
 # Name of clang-format as a binary
 CLANG_FORMAT_PROGNAME = "clang-format"
@@ -59,9 +61,9 @@ CLANG_FORMAT_SOURCE_TAR_BASE = string.Template("clang+llvm-$version-$tar_path/bi
 
 
 ##############################################################################
-def callo(args):
+def callo(args, **kwargs):
     """Call a program, and capture its output."""
-    return subprocess.check_output(args).decode('utf-8')
+    return subprocess.check_output(args, **kwargs).decode('utf-8')
 
 
 def get_tar_path(version, tar_path):
@@ -158,6 +160,7 @@ class ClangFormat(object):
             programs = [
                 CLANG_FORMAT_PROGNAME + "-" + CLANG_FORMAT_VERSION,
                 CLANG_FORMAT_PROGNAME + "-" + CLANG_FORMAT_SHORT_VERSION,
+                CLANG_FORMAT_PROGNAME + CLANG_FORMAT_SHORTER_VERSION,
                 CLANG_FORMAT_PROGNAME,
             ]
 
@@ -165,18 +168,27 @@ class ClangFormat(object):
                 for i, _ in enumerate(programs):
                     programs[i] += '.exe'
 
-            for program in programs:
-                self.path = spawn.find_executable(program)
-
-                if self.path:
+            # Check for the binary in the expected toolchain directory on non-windows systems.
+            if sys.platform != "win32":
+                toolchain_path = "/opt/mongodbtoolchain/v3/bin/clang-format"
+                if os.path.exists(toolchain_path):
+                    self.path = toolchain_path
                     if not self._validate_version():
                         self.path = None
-                    else:
-                        break
+
+            if self.path is None:
+                for program in programs:
+                    self.path = spawn.find_executable(program)
+
+                    if self.path:
+                        if not self._validate_version():
+                            self.path = None
+                        else:
+                            break
 
         # If Windows, try to grab it from Program Files
         # Check both native Program Files and WOW64 version
-        if sys.platform == "win32":
+        if self.path is None and sys.platform == "win32":
             programfiles = [
                 os.environ["ProgramFiles"],
                 os.environ["ProgramFiles(x86)"],
@@ -233,8 +245,10 @@ class ClangFormat(object):
         with open(file_name, 'rb') as original_text:
             original_file = original_text.read().decode('utf-8')
 
-        # Get formatted file as clang-format would format the file
-        formatted_file = callo([self.path, "--style=file", file_name])
+            original_text.seek(0)
+
+            # Get formatted file as clang-format would format the file
+            formatted_file = callo([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=original_text)
 
         if original_file != formatted_file:
             if print_diff:
@@ -245,8 +259,8 @@ class ClangFormat(object):
                 # Take a lock to ensure diffs do not get mixed when printed to the screen
                 with self.print_lock:
                     print("ERROR: Found diff for " + file_name)
-                    print("To fix formatting errors, run %s --style=file -i %s" % (self.path,
-                                                                                   file_name))
+                    print("To fix formatting errors, run {0} --assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp") +
+                          " --style=file < {1} > {1}.tmp; mv {1}.tmp {1}".format(self.path, file_name))
                     for line in result:
                         print(line.rstrip())
 
@@ -264,7 +278,21 @@ class ClangFormat(object):
             return True
 
         # Update the file with clang-format
-        formatted = not subprocess.call([self.path, "--style=file", "-i", file_name])
+        # We have to tell `clang-format` to format on standard input due to its file type
+        # determiner.  `--assume-filename` doesn't work directly on files, but only on standard
+        # input.  Thus we have to open the file as the subprocess's standard input. Then we record
+        # that formatted standard output back into the file.  We can't use the `-i` option, due to
+        # the fact that `clang-format` believes that many of our C++ headers are Objective-C code.
+        formatted = True
+        with open(file_name, 'rb') as source_stream:
+            try:
+                reformatted_text = subprocess.check_output([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=source_stream)
+            except CalledProcessError:
+                formatted = False
+
+        if formatted:
+            with open(file_name, "wb") as output_stream:
+                output_stream.write(reformatted_text)
 
         # Version 3.8 generates files like foo.cpp~RF83372177.TMP when it formats foo.cpp
         # on Windows, we must clean these up
@@ -275,15 +303,13 @@ class ClangFormat(object):
 
         return formatted
 
-
 FILES_RE = re.compile('\\.(h|hpp|ipp|cpp|js)$')
 
 
 def is_interesting_file(file_name):
     """Return true if this file should be checked."""
-    return ((file_name.startswith("jstests") or file_name.startswith("src"))
-            and not file_name.startswith("src/third_party/")
-            and not file_name.startswith("src/mongo/gotools/")) and FILES_RE.search(file_name)
+    return (file_name.startswith("jstests") or
+            file_name.startswith("src") and not file_name.startswith("src/third_party/") and not file_name.startswith("src/mongo/gotools/")) and FILES_RE.search(file_name)
 
 
 def get_list_from_lines(lines):
@@ -303,7 +329,7 @@ def _lint_files(clang_format, files):
     lint_clean = parallel.parallel_process([os.path.abspath(f) for f in files], clang_format.lint)
 
     if not lint_clean:
-        print("ERROR: Code Style does not match coding style")
+        print("ERROR: Source code does not match required source formatting style")
         sys.exit(1)
 
 

@@ -40,7 +40,6 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/authenticate.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
@@ -60,6 +59,7 @@
 #include "mongo/db/repl/isself.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point_service.h"
@@ -155,8 +155,7 @@ struct Cloner::Fun {
 
                 WriteUnitOfWork wunit(opCtx);
                 const bool createDefaultIndexes = true;
-                CollectionOptions collectionOptions;
-                uassertStatusOK(collectionOptions.parse(
+                CollectionOptions collectionOptions = uassertStatusOK(CollectionOptions::parse(
                     from_options, CollectionOptions::ParseKind::parseForCommand));
                 auto indexSpec = fixIndexSpec(to_collection.db().toString(), from_id_index);
                 invariant(
@@ -371,9 +370,8 @@ void Cloner::copyIndexes(OperationContext* opCtx,
             opCtx->checkForInterrupt();
 
             WriteUnitOfWork wunit(opCtx);
-            CollectionOptions collectionOptions;
-            uassertStatusOK(
-                collectionOptions.parse(from_opts, CollectionOptions::ParseKind::parseForCommand));
+            CollectionOptions collectionOptions = uassertStatusOK(
+                CollectionOptions::parse(from_opts, CollectionOptions::ParseKind::parseForCommand));
             const bool createDefaultIndexes = true;
             invariant(db->userCreateNS(opCtx,
                                        to_collection,
@@ -412,6 +410,7 @@ void Cloner::copyIndexes(OperationContext* opCtx,
     auto indexInfoObjs = uassertStatusOK(
         indexer.init(opCtx, collection, prunedIndexesToBuild, MultiIndexBlock::kNoopOnInitFn));
     uassertStatusOK(indexer.insertAllDocumentsInCollection(opCtx, collection));
+    uassertStatusOK(indexer.checkConstraints(opCtx));
 
     WriteUnitOfWork wunit(opCtx);
     uassertStatusOK(indexer.commit(
@@ -490,8 +489,8 @@ bool Cloner::copyCollection(OperationContext* opCtx,
             opCtx->checkForInterrupt();
 
             WriteUnitOfWork wunit(opCtx);
-            CollectionOptions collectionOptions;
-            uassertStatusOK(collectionOptions.parse(options, optionsParser));
+            CollectionOptions collectionOptions =
+                uassertStatusOK(CollectionOptions::parse(options, optionsParser));
             const bool createDefaultIndexes = true;
             Status status =
                 db->userCreateNS(opCtx, nss, collectionOptions, createDefaultIndexes, idIndexSpec);
@@ -537,10 +536,10 @@ StatusWith<std::vector<BSONObj>> Cloner::filterCollectionsForClone(
 
         BSONElement collectionOptions = collection["options"];
         if (collectionOptions.isABSONObj()) {
-            auto parseOptionsStatus = CollectionOptions().parse(
+            auto statusWithCollectionOptions = CollectionOptions::parse(
                 collectionOptions.Obj(), CollectionOptions::ParseKind::parseForCommand);
-            if (!parseOptionsStatus.isOK()) {
-                return parseOptionsStatus;
+            if (!statusWithCollectionOptions.isOK()) {
+                return statusWithCollectionOptions.getStatus();
             }
         }
 
@@ -557,10 +556,6 @@ StatusWith<std::vector<BSONObj>> Cloner::filterCollectionsForClone(
                 LOG(2) << "\t\t not cloning because system collection";
                 continue;
             }
-        }
-        if (!ns.isNormal()) {
-            LOG(2) << "\t\t not cloning because has $ ";
-            continue;
         }
 
         finalCollections.push_back(collection.getOwned());
@@ -590,74 +585,67 @@ Status Cloner::createCollectionsForDb(
         const NamespaceString nss(dbName, params.collectionName);
 
         uassertStatusOK(userAllowedCreateNS(dbName, params.collectionName));
-        Status status =
-            writeConflictRetry(opCtx, "createCollection", nss.ns(), [&] {
-                opCtx->checkForInterrupt();
-                WriteUnitOfWork wunit(opCtx);
+        Status status = writeConflictRetry(opCtx, "createCollection", nss.ns(), [&] {
+            opCtx->checkForInterrupt();
+            WriteUnitOfWork wunit(opCtx);
 
-                Collection* collection = db->getCollection(opCtx, nss);
-                if (collection) {
-                    if (!params.shardedColl) {
-                        // If the collection is unsharded then we want to fail when a collection
-                        // we're trying to create already exists.
-                        return Status(ErrorCodes::NamespaceExists,
-                                      str::stream() << "unsharded collection with same namespace "
-                                                    << nss.ns()
-                                                    << " already exists.");
-                    }
-
-                    // If the collection is sharded and a collection with the same name already
-                    // exists on the target, we check if the existing collection's options and
-                    // UUID match those of the one we're trying to create. If they do, we treat
-                    // the create as a no-op; if they don't match, we return an error.
-                    auto existingOpts =
-                        collection->getCatalogEntry()->getCollectionOptions(opCtx).toBSON();
-                    UnorderedFieldsBSONObjComparator bsonCmp;
-
-                    optionsBuilder.append(params.collectionInfo["info"]["uuid"]);
-                    auto options = optionsBuilder.obj();
-
-                    if (bsonCmp.evaluate(existingOpts == options)) {
-                        return Status::OK();
-                    }
-
-                    return Status(
-                        ErrorCodes::InvalidOptions,
-                        str::stream()
-                            << "sharded collection with same namespace "
-                            << nss.ns()
-                            << " already exists, but options don't match. Existing options are "
-                            << existingOpts
-                            << " and new options are "
-                            << options);
+            Collection* collection = db->getCollection(opCtx, nss);
+            if (collection) {
+                if (!params.shardedColl) {
+                    // If the collection is unsharded then we want to fail when a collection
+                    // we're trying to create already exists.
+                    return Status(ErrorCodes::NamespaceExists,
+                                  str::stream() << "unsharded collection with same namespace "
+                                                << nss.ns()
+                                                << " already exists.");
                 }
 
-                // If the collection does not already exist and is sharded, we create a new
-                // collection on the target shard with the UUID of the original collection and
-                // copy the options and secondary indexes. If the collection does not already
-                // exist and is unsharded, we create a new collection with its own UUID and
-                // copy the options and secondary indexes of the original collection.
+                // If the collection is sharded and a collection with the same name already
+                // exists on the target, we check if the existing collection's UUID matches
+                // that of the one we're trying to create. If it does, we treat the create
+                // as a no-op; if it doesn't match, we return an error.
+                auto existingOpts =
+                    DurableCatalog::get(opCtx)->getCollectionOptions(opCtx, collection->ns());
+                const UUID clonedUUID =
+                    uassertStatusOK(UUID::parse(params.collectionInfo["info"]["uuid"]));
 
-                if (params.shardedColl) {
-                    optionsBuilder.append(params.collectionInfo["info"]["uuid"]);
-                }
+                if (clonedUUID == existingOpts.uuid)
+                    return Status::OK();
 
-                const bool createDefaultIndexes = true;
-                auto options = optionsBuilder.obj();
+                return Status(
+                    ErrorCodes::InvalidOptions,
+                    str::stream() << "sharded collection with same namespace " << nss.ns()
+                                  << " already exists, but UUIDs don't match. Existing UUID is "
+                                  << existingOpts.uuid
+                                  << " and new UUID is "
+                                  << clonedUUID);
+            }
 
-                CollectionOptions collectionOptions;
-                uassertStatusOK(collectionOptions.parse(
-                    options, CollectionOptions::ParseKind::parseForStorage));
-                auto indexSpec = fixIndexSpec(nss.db().toString(), params.idIndexSpec);
-                Status createStatus = db->userCreateNS(
-                    opCtx, nss, collectionOptions, createDefaultIndexes, indexSpec);
-                if (!createStatus.isOK()) {
-                    return createStatus;
-                }
+            // If the collection does not already exist and is sharded, we create a new
+            // collection on the target shard with the UUID of the original collection and
+            // copy the options and secondary indexes. If the collection does not already
+            // exist and is unsharded, we create a new collection with its own UUID and
+            // copy the options and secondary indexes of the original collection.
 
-                wunit.commit();
-                return Status::OK();
-            });
+            if (params.shardedColl) {
+                optionsBuilder.append(params.collectionInfo["info"]["uuid"]);
+            }
+
+            const bool createDefaultIndexes = true;
+            auto options = optionsBuilder.obj();
+
+            CollectionOptions collectionOptions = uassertStatusOK(
+                CollectionOptions::parse(options, CollectionOptions::ParseKind::parseForStorage));
+            auto indexSpec = fixIndexSpec(nss.db().toString(), params.idIndexSpec);
+            Status createStatus =
+                db->userCreateNS(opCtx, nss, collectionOptions, createDefaultIndexes, indexSpec);
+            if (!createStatus.isOK()) {
+                return createStatus;
+            }
+
+            wunit.commit();
+            return Status::OK();
+        });
 
         // Break early if one of the creations fails.
         if (!status.isOK()) {

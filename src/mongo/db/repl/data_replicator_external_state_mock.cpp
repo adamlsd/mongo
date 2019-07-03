@@ -49,7 +49,10 @@ public:
                      OplogBuffer* oplogBuffer,
                      Observer* observer,
                      DataReplicatorExternalStateMock* externalState)
-        : OplogApplier(executor, oplogBuffer, observer),
+        : OplogApplier(executor,
+                       oplogBuffer,
+                       observer,
+                       OplogApplier::Options(OplogApplication::Mode::kSecondary)),
           _observer(observer),
           _externalState(externalState) {}
 

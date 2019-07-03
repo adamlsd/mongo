@@ -43,7 +43,6 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/background.h"
 #include "mongo/db/catalog/collection_catalog.h"
-#include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_catalog_helper.h"
 #include "mongo/db/catalog/collection_impl.h"
 #include "mongo/db/catalog/collection_options.h"
@@ -65,7 +64,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/top.h"
-#include "mongo/db/storage/kv/kv_storage_engine.h"
+#include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
@@ -97,12 +96,6 @@ Status validateDBNameForWindows(StringData dbname) {
     return Status::OK();
 }
 }  // namespace
-
-void uassertNamespaceNotIndex(StringData ns, StringData caller) {
-    uassert(17320,
-            str::stream() << "cannot do " << caller << " on namespace with a $ in it: " << ns,
-            NamespaceString::normal(ns));
-}
 
 Status DatabaseImpl::validateDBName(StringData dbname) {
     if (dbname.size() <= 0)
@@ -171,8 +164,7 @@ void DatabaseImpl::init(OperationContext* const opCtx) const {
 void DatabaseImpl::clearTmpCollections(OperationContext* opCtx) const {
     invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_IX));
 
-    CollectionCatalog::CollectionInfoFn callback = [&](const Collection* collection,
-                                                       const CollectionCatalogEntry* catalogEntry) {
+    CollectionCatalog::CollectionInfoFn callback = [&](const Collection* collection) {
         try {
             WriteUnitOfWork wuow(opCtx);
             Status status = dropCollection(opCtx, collection->ns(), {});
@@ -189,10 +181,9 @@ void DatabaseImpl::clearTmpCollections(OperationContext* opCtx) const {
         return true;
     };
 
-    CollectionCatalog::CollectionInfoFn predicate =
-        [&](const Collection* collection, const CollectionCatalogEntry* catalogEntry) {
-            return catalogEntry->getCollectionOptions(opCtx).temp;
-        };
+    CollectionCatalog::CollectionInfoFn predicate = [&](const Collection* collection) {
+        return DurableCatalog::get(opCtx)->getCollectionOptions(opCtx, collection->ns()).temp;
+    };
 
     catalog::forEachCollectionFromDb(opCtx, name(), MODE_X, callback, predicate);
 }
@@ -248,24 +239,19 @@ void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, dou
     long long objects = 0;
     long long size = 0;
     long long storageSize = 0;
-    long long numExtents = 0;
     long long indexes = 0;
     long long indexSize = 0;
 
     invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_IS));
 
     catalog::forEachCollectionFromDb(
-        opCtx,
-        name(),
-        MODE_IS,
-        [&](const Collection* collection, const CollectionCatalogEntry* catalogEntry) -> bool {
+        opCtx, name(), MODE_IS, [&](const Collection* collection) -> bool {
             nCollections += 1;
             objects += collection->numRecords(opCtx);
             size += collection->dataSize(opCtx);
 
             BSONObjBuilder temp;
             storageSize += collection->getRecordStore()->storageSize(opCtx, &temp);
-            numExtents += temp.obj()["numExtents"].numberInt();  // XXX
 
             indexes += collection->getIndexCatalog()->numIndexesTotal(opCtx);
             indexSize += collection->getIndexSize(opCtx);
@@ -281,9 +267,9 @@ void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, dou
     output->append("avgObjSize", objects == 0 ? 0 : double(size) / double(objects));
     output->appendNumber("dataSize", size / scale);
     output->appendNumber("storageSize", storageSize / scale);
-    output->appendNumber("numExtents", numExtents);
     output->appendNumber("indexes", indexes);
     output->appendNumber("indexSize", indexSize / scale);
+    output->appendNumber("totalSize", (storageSize + indexSize) / scale);
     output->appendNumber("scaleFactor", scale);
 
     if (!opCtx->getServiceContext()->getStorageEngine()->isEphemeral()) {
@@ -364,8 +350,6 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
 
     auto uuid = collection->uuid();
     auto uuidString = uuid ? uuid.get().toString() : "no UUID";
-
-    uassertNamespaceNotIndex(nss.toString(), "dropCollection");
 
     // Make sure no indexes builds are in progress.
     // Use massert() to be consistent with IndexCatalog::dropAllIndexes().
@@ -464,7 +448,7 @@ void DatabaseImpl::_dropCollectionIndexes(OperationContext* opCtx,
     LOG(1) << "dropCollection: " << nss << " - dropAllIndexes start";
     collection->getIndexCatalog()->dropAllIndexes(opCtx, true);
 
-    invariant(collection->getCatalogEntry()->getTotalIndexCount(opCtx) == 0);
+    invariant(DurableCatalog::get(opCtx)->getTotalIndexCount(opCtx, nss) == 0);
     LOG(1) << "dropCollection: " << nss << " - dropAllIndexes done";
 }
 
@@ -474,17 +458,13 @@ Status DatabaseImpl::_finishDropCollection(OperationContext* opCtx,
     UUID uuid = *collection->uuid();
     log() << "Finishing collection drop for " << nss << " (" << uuid << ").";
 
-    auto storageEngine =
-        checked_cast<KVStorageEngine*>(opCtx->getServiceContext()->getStorageEngine());
-    auto status = storageEngine->getCatalog()->dropCollection(opCtx, nss);
+    auto status = DurableCatalog::get(opCtx)->dropCollection(opCtx, nss);
     if (!status.isOK())
         return status;
 
-    auto[removedColl, removedCatalogEntry] =
-        CollectionCatalog::get(opCtx).deregisterCollection(uuid);
+    auto removedColl = CollectionCatalog::get(opCtx).deregisterCollection(uuid);
     opCtx->recoveryUnit()->registerChange(
-        CollectionCatalog::get(opCtx).makeFinishDropCollectionChange(
-            std::move(removedColl), std::move(removedCatalogEntry), uuid));
+        CollectionCatalog::get(opCtx).makeFinishDropCollectionChange(std::move(removedColl), uuid));
 
     return Status::OK();
 }
@@ -533,9 +513,7 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
 
     Top::get(opCtx->getServiceContext()).collectionDropped(fromNss);
 
-    auto storageEngine =
-        checked_cast<KVStorageEngine*>(opCtx->getServiceContext()->getStorageEngine());
-    Status status = storageEngine->getCatalog()->renameCollection(opCtx, fromNss, toNss, stayTemp);
+    Status status = DurableCatalog::get(opCtx)->renameCollection(opCtx, fromNss, toNss, stayTemp);
 
     // Set the namespace of 'collToRename' from within the CollectionCatalog. This is necessary
     // because
@@ -569,21 +547,15 @@ void DatabaseImpl::_checkCanCreateCollection(OperationContext* opCtx,
     massert(17399,
             str::stream() << "Cannot create collection " << nss << " - collection already exists.",
             getCollection(opCtx, nss) == nullptr);
-    uassertNamespaceNotIndex(nss.ns(), "createCollection");
 
     uassert(14037,
             "can't create user databases on a --configsvr instance",
             serverGlobalParams.clusterRole != ClusterRole::ConfigServer || nss.isOnInternalDb());
 
-    // This check only applies for actual collections, not indexes or other types of ns.
-    uassert(17381,
-            str::stream() << "fully qualified namespace " << nss << " is too long "
-                          << "(max is "
-                          << NamespaceString::MaxNsCollectionLen
-                          << " bytes)",
-            !nss.isNormal() || nss.size() <= NamespaceString::MaxNsCollectionLen);
+    uassert(17316,
+            str::stream() << "cannot create a collection with an empty name on db: " << nss.db(),
+            !nss.coll().empty());
 
-    uassert(17316, "cannot create a blank collection", nss.coll() > nullptr);
     uassert(28838, "cannot create a non-capped oplog collection", options.capped || !nss.isOplog());
     uassert(ErrorCodes::DatabaseDropPending,
             str::stream() << "Cannot create collection " << nss
@@ -662,18 +634,14 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     log() << "createCollection: " << nss << " with " << (generatedUUID ? "generated" : "provided")
           << " UUID: " << optionsWithUUID.uuid.get() << " and options: " << options.toBSON();
 
-    // Create CollectionCatalogEntry
-    auto storageEngine =
-        checked_cast<KVStorageEngine*>(opCtx->getServiceContext()->getStorageEngine());
-    auto statusWithCatalogEntry = storageEngine->getCatalog()->createCollection(
-        opCtx, nss, optionsWithUUID, true /*allocateDefaultSpace*/);
-    massertStatusOK(statusWithCatalogEntry.getStatus());
-    std::unique_ptr<CollectionCatalogEntry> ownedCatalogEntry =
-        std::move(statusWithCatalogEntry.getValue());
-
     // Create Collection object
-    std::unique_ptr<Collection> ownedCollection =
-        Collection::Factory::get(opCtx)->make(opCtx, ownedCatalogEntry.get());
+    auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
+    auto statusWithRecordStore = storageEngine->getCatalog()->createCollection(
+        opCtx, nss, optionsWithUUID, true /*allocateDefaultSpace*/);
+    massertStatusOK(statusWithRecordStore.getStatus());
+    std::unique_ptr<RecordStore> rs = std::move(statusWithRecordStore.getValue());
+    std::unique_ptr<Collection> ownedCollection = Collection::Factory::get(opCtx)->make(
+        opCtx, nss, optionsWithUUID.uuid.get(), std::move(rs));
     auto collection = ownedCollection.get();
     ownedCollection->init(opCtx);
 
@@ -685,12 +653,8 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
 
     auto& catalog = CollectionCatalog::get(opCtx);
     auto uuid = ownedCollection->uuid().get();
-    catalog.registerCollection(uuid, std::move(ownedCatalogEntry), std::move(ownedCollection));
-    opCtx->recoveryUnit()->onRollback([uuid, &catalog] {
-        auto[removedColl, removedCatalogEntry] = catalog.deregisterCollection(uuid);
-        removedColl.reset();
-        removedCatalogEntry.reset();
-    });
+    catalog.registerCollection(uuid, std::move(ownedCollection));
+    opCtx->recoveryUnit()->onRollback([uuid, &catalog] { catalog.deregisterCollection(uuid); });
 
     BSONObj fullIdIndexSpec;
 
@@ -734,20 +698,14 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
     OperationContext* opCtx, StringData collectionNameModel) {
     invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
 
-    // There must be at least one percent sign within the first MaxNsCollectionLen characters of the
-    // generated namespace after accounting for the database name prefix and dot separator:
-    //     <db>.<truncated collection model name>
-    auto maxModelLength = NamespaceString::MaxNsCollectionLen - (_name.length() + 1);
-    auto model = collectionNameModel.substr(0, maxModelLength);
-    auto numPercentSign = std::count(model.begin(), model.end(), '%');
+    // There must be at least one percent sign in the collection name model.
+    auto numPercentSign = std::count(collectionNameModel.begin(), collectionNameModel.end(), '%');
     if (numPercentSign == 0) {
         return Status(ErrorCodes::FailedToParse,
                       str::stream() << "Cannot generate collection name for temporary collection: "
                                        "model for collection name "
                                     << collectionNameModel
-                                    << " must contain at least one percent sign within first "
-                                    << maxModelLength
-                                    << " characters.");
+                                    << " must contain at least one percent sign.");
     }
 
     if (!_uniqueCollectionNamespacePseudoRandom) {
@@ -771,7 +729,7 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
 
     auto numGenerationAttempts = numPercentSign * charsToChooseFrom.size() * 100U;
     for (decltype(numGenerationAttempts) i = 0; i < numGenerationAttempts; ++i) {
-        auto collectionName = model.toString();
+        auto collectionName = collectionNameModel.toString();
         std::transform(collectionName.begin(),
                        collectionName.end(),
                        collectionName.begin(),

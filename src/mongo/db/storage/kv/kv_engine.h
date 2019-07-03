@@ -107,7 +107,7 @@ public:
 
     /**
      * The create and drop methods on KVEngine are not transactional. Transactional semantics
-     * are provided by the KVStorageEngine code that calls these. For example, drop will be
+     * are provided by the StorageEngine code that calls these. For example, drop will be
      * called if a create is rolled back. A higher-level drop operation will only propagate to a
      * drop call on the KVEngine once the WUOW commits. Therefore drops will never be rolled
      * back and it is safe to immediately reclaim storage.
@@ -141,6 +141,7 @@ public:
     }
 
     virtual Status createSortedDataInterface(OperationContext* opCtx,
+                                             const CollectionOptions& collOptions,
                                              StringData ident,
                                              const IndexDescriptor* desc) = 0;
 
@@ -155,11 +156,12 @@ public:
      *        share a table. Sharing indexes belonging to different databases is forbidden.
      */
     virtual Status createGroupedSortedDataInterface(OperationContext* opCtx,
+                                                    const CollectionOptions& collOptions,
                                                     StringData ident,
                                                     const IndexDescriptor* desc,
                                                     KVPrefix prefix) {
         invariant(prefix == KVPrefix::kNotPrefixed);
-        return createSortedDataInterface(opCtx, ident, desc);
+        return createSortedDataInterface(opCtx, collOptions, ident, desc);
     }
 
     virtual int64_t getIdentSize(OperationContext* opCtx, StringData ident) = 0;
@@ -329,16 +331,16 @@ public:
     virtual void setOldestTimestamp(Timestamp newOldestTimestamp, bool force) {}
 
     /**
-     * See 'StorageEngine::getCacheOverflowTableInsertCount'
+     * See `StorageEngine::isCacheUnderPressure()`
      */
-    virtual int64_t getCacheOverflowTableInsertCount(OperationContext* opCtx) const {
-        return 0;
+    virtual bool isCacheUnderPressure(OperationContext* opCtx) const {
+        return false;
     }
 
     /**
-     * See 'StorageEngine::setCacheOverflowTableInsertCountForTest()'
+     * See 'StorageEngine::setCachePressureForTest()'
      */
-    virtual void setCacheOverflowTableInsertCountForTest(int insertCount) {}
+    virtual void setCachePressureForTest(int pressure) {}
 
     /**
      * See `StorageEngine::supportsRecoverToStableTimestamp`

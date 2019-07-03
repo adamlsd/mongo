@@ -70,6 +70,8 @@ using Pattern = InternalSchemaAllowedPropertiesMatchExpression::Pattern;
 
 namespace {
 
+using findBSONTypeAliasFun = std::function<boost::optional<BSONType>(StringData)>;
+
 // Explicitly unsupported JSON Schema keywords.
 const std::set<StringData> unsupportedKeywords{
     "$ref"_sd, "$schema"_sd, "default"_sd, "definitions"_sd, "format"_sd, "id"_sd,
@@ -149,9 +151,9 @@ StatusWith<std::unique_ptr<InternalSchemaTypeExpression>> parseType(
     StringData path,
     StringData keywordName,
     BSONElement typeElt,
-    const StringMap<BSONType>& aliasMap) {
+    const findBSONTypeAliasFun& aliasMapFind) {
 
-    auto typeSet = JSONSchemaParser::parseTypeSet(typeElt, aliasMap);
+    auto typeSet = JSONSchemaParser::parseTypeSet(typeElt, aliasMapFind);
     if (!typeSet.isOK()) {
         return typeSet.getStatus();
     }
@@ -1311,16 +1313,6 @@ Status translateEncryptionKeywords(StringMap<BSONElement>& keywordMap,
     auto encryptElt = keywordMap[JSONSchemaParser::kSchemaEncryptKeyword];
     auto encryptMetadataElt = keywordMap[JSONSchemaParser::kSchemaEncryptMetadataKeyword];
 
-    if ((encryptElt || encryptMetadataElt) && expCtx->maxFeatureCompatibilityVersion &&
-        expCtx->maxFeatureCompatibilityVersion <
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
-        return Status(ErrorCodes::QueryFeatureNotAllowed,
-                      str::stream() << "The featureCompatiblityVersion must be 4.2 to use "
-                                       "encryption keywords in $jsonSchema. See "
-                                    << feature_compatibility_version_documentation::kUpgradeLink
-                                    << ".");
-    }
-
     if (encryptElt && encryptMetadataElt) {
         return Status(ErrorCodes::FailedToParse,
                       str::stream() << "Cannot specify both $jsonSchema keywords '"
@@ -1506,17 +1498,17 @@ StatusWithMatchExpression _parse(const boost::intrusive_ptr<ExpressionContext>& 
 
     std::unique_ptr<InternalSchemaTypeExpression> typeExpr;
     if (typeElem) {
-        auto parseTypeResult = parseType(path,
-                                         JSONSchemaParser::kSchemaTypeKeyword,
-                                         typeElem,
-                                         MatcherTypeSet::kJsonSchemaTypeAliasMap);
-        if (!parseTypeResult.isOK()) {
-            return parseTypeResult.getStatus();
+        auto parsed = parseType(path,
+                                JSONSchemaParser::kSchemaTypeKeyword,
+                                typeElem,
+                                MatcherTypeSet::findJsonSchemaTypeAlias);
+        if (!parsed.isOK()) {
+            return parsed.getStatus();
         }
-        typeExpr = std::move(parseTypeResult.getValue());
+        typeExpr = std::move(parsed.getValue());
     } else if (bsonTypeElem) {
-        auto parseBsonTypeResult =
-            parseType(path, JSONSchemaParser::kSchemaBsonTypeKeyword, bsonTypeElem, kTypeAliasMap);
+        auto parseBsonTypeResult = parseType(
+            path, JSONSchemaParser::kSchemaBsonTypeKeyword, bsonTypeElem, findBSONTypeAlias);
         if (!parseBsonTypeResult.isOK()) {
             return parseBsonTypeResult.getStatus();
         }
@@ -1572,8 +1564,8 @@ StatusWithMatchExpression _parse(const boost::intrusive_ptr<ExpressionContext>& 
 }
 }  // namespace
 
-StatusWith<MatcherTypeSet> JSONSchemaParser::parseTypeSet(BSONElement typeElt,
-                                                          const StringMap<BSONType>& aliasMap) {
+StatusWith<MatcherTypeSet> JSONSchemaParser::parseTypeSet(
+    BSONElement typeElt, const findBSONTypeAliasFun& aliasMapFind) {
     if (typeElt.type() != BSONType::String && typeElt.type() != BSONType::Array) {
         return {Status(ErrorCodes::TypeMismatch,
                        str::stream() << "$jsonSchema keyword '" << typeElt.fieldNameStringData()
@@ -1615,7 +1607,7 @@ StatusWith<MatcherTypeSet> JSONSchemaParser::parseTypeSet(BSONElement typeElt,
         }
     }
 
-    return MatcherTypeSet::fromStringAliases(std::move(aliases), aliasMap);
+    return MatcherTypeSet::fromStringAliases(std::move(aliases), aliasMapFind);
 }
 
 StatusWithMatchExpression JSONSchemaParser::parse(

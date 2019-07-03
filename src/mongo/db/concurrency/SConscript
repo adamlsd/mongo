@@ -79,17 +79,19 @@ env.Benchmark(
     ])
 
 env.CppUnitTest(
-    target='lock_manager_test',
-    source=['d_concurrency_test.cpp',
-            'fast_map_noalloc_test.cpp',
-            'lock_manager_test.cpp',
-            'lock_state_test.cpp',
-            'lock_stats_test.cpp',
+    target='db_concurrency_test',
+    source=[
+        'd_concurrency_test.cpp',
+        'fast_map_noalloc_test.cpp',
+        'lock_manager_test.cpp',
+        'lock_state_test.cpp',
+        'lock_stats_test.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/util/clock_source_mock',
         '$BUILD_DIR/mongo/util/progress_meter',
         'lock_manager',
         'write_conflict_exception',

@@ -42,6 +42,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/background.h"
 #include "mongo/db/catalog/collection_options.h"
+#include "mongo/db/catalog/index_build_block.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/record_id.h"
@@ -295,7 +296,7 @@ public:
 
 private:
     struct IndexToBuild {
-        std::unique_ptr<IndexCatalog::IndexBuildBlockInterface> block;
+        std::unique_ptr<IndexBuildBlock> block;
 
         IndexAccessMethod* real = nullptr;        // owned elsewhere
         const MatchExpression* filterExpression;  // might be NULL, owned elsewhere
@@ -338,6 +339,9 @@ private:
     // Set to true when no work remains to be done, the object can safely destruct without leaving
     // incorrect state set anywhere.
     bool _buildIsCleanedUp = true;
+
+    // Duplicate key constraints should be checked at least once in the MultiIndexBlock.
+    bool _constraintsChecked = false;
 
     // Protects member variables of this class declared below.
     mutable stdx::mutex _mutex;

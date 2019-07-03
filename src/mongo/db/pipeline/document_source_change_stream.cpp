@@ -214,15 +214,27 @@ DocumentSourceChangeStream::ChangeStreamType DocumentSourceChangeStream::getChan
 }
 
 std::string DocumentSourceChangeStream::getNsRegexForChangeStream(const NamespaceString& nss) {
+    auto regexEscape = [](const std::string& source) {
+        std::string result = "";
+        std::string escapes = "*+|()^?[]./\\$";
+        for (const char& c : source) {
+            if (escapes.find(c) != std::string::npos) {
+                result.append("\\");
+            }
+            result += c;
+        }
+        return result;
+    };
+
     auto type = getChangeStreamType(nss);
     switch (type) {
         case ChangeStreamType::kSingleCollection:
             // Match the target namespace exactly.
-            return "^" + nss.ns() + "$";
+            return "^" + regexEscape(nss.ns()) + "$";
         case ChangeStreamType::kSingleDatabase:
             // Match all namespaces that start with db name, followed by ".", then NOT followed by
             // '$' or 'system.'
-            return "^" + nss.db() + "\\." + kRegexAllCollections;
+            return "^" + regexEscape(nss.db().toString()) + "\\." + kRegexAllCollections;
         case ChangeStreamType::kAllChangesForCluster:
             // Match all namespaces that start with any db name other than admin, config, or local,
             // followed by ".", then NOT followed by '$' or 'system.'.
@@ -329,7 +341,7 @@ list<intrusive_ptr<DocumentSource>> buildPipeline(const intrusive_ptr<Expression
     list<intrusive_ptr<DocumentSource>> stages;
     boost::optional<Timestamp> startFrom;
     intrusive_ptr<DocumentSource> resumeStage = nullptr;
-    bool ignoreFirstInvalidate = false;
+    boost::optional<ResumeTokenData> startAfterInvalidate;
     bool showMigrationEvents = spec.getShowMigrationEvents();
     uassert(31123,
             "Change streams from mongos may not show migration events.",
@@ -345,9 +357,11 @@ list<intrusive_ptr<DocumentSource>> buildPipeline(const intrusive_ptr<Expression
         ResumeToken token = resumeAfter ? resumeAfter.get() : startAfter.get();
         ResumeTokenData tokenData = token.getData();
 
-        // If resuming from an "invalidate" using "startAfter", set this bit to indicate to the
-        // DocumentSourceCheckInvalidate stage that a second invalidate should not be generated.
-        ignoreFirstInvalidate = startAfter && tokenData.fromInvalidate;
+        // If resuming from an "invalidate" using "startAfter", pass along the resume token data to
+        // DocumentSourceCheckInvalidate to signify that another invalidate should not be generated.
+        if (startAfter && tokenData.fromInvalidate) {
+            startAfterInvalidate = tokenData;
+        }
 
         uassert(ErrorCodes::InvalidResumeToken,
                 "Attempting to resume a change stream using 'resumeAfter' is not allowed from an "
@@ -420,7 +434,7 @@ list<intrusive_ptr<DocumentSource>> buildPipeline(const intrusive_ptr<Expression
 
     // The resume stage must come after the check invalidate stage so that the former can determine
     // whether the event that matches the resume token should be followed by an "invalidate" event.
-    stages.push_back(DocumentSourceCheckInvalidate::create(expCtx, ignoreFirstInvalidate));
+    stages.push_back(DocumentSourceCheckInvalidate::create(expCtx, startAfterInvalidate));
     if (resumeStage) {
         stages.push_back(resumeStage);
     }

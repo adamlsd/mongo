@@ -269,6 +269,13 @@ void EncryptedDBClientBase::encrypt(mozjs::MozJSImplScope* scope,
                    scope->getProto<mozjs::DBRefInfo>().getJSClass() == jsclass) {
             uasserted(ErrorCodes::BadValue, "Second parameter cannot be MinKey, MaxKey, or DBRef");
         } else {
+            if (scope->getProto<mozjs::BinDataInfo>().getJSClass() == jsclass) {
+                mozjs::ObjectWrapper o(cx, args.get(1));
+                auto binType = BinDataType(o.getNumberInt(mozjs::InternedString::type));
+                uassert(ErrorCodes::BadValue,
+                        "Cannot encrypt BinData subtype 2.",
+                        binType != BinDataType::ByteArrayDeprecated);
+            }
             if (scope->getProto<mozjs::NumberDecimalInfo>().getJSClass() == jsclass) {
                 uassert(ErrorCodes::BadValue,
                         "Cannot deterministically encrypt NumberDecimal type objects.",
@@ -640,8 +647,8 @@ std::unique_ptr<DBClientBase> createEncryptedDBClientBase(std::unique_ptr<DBClie
         // Because we cannot add a schemaMap object through the command line, we set the
         // schemaMap object in ClientSideFLEOptions to be null so we know to always use
         // remote schemas.
-        encryptionOptions = ClientSideFLEOptions(
-            encryptedShellGlobalParams.keyVaultNamespace, std::move(kmsProviders), BSONObj());
+        encryptionOptions = ClientSideFLEOptions(encryptedShellGlobalParams.keyVaultNamespace,
+                                                 std::move(kmsProviders));
     } else {
         uassert(ErrorCodes::BadValue,
                 "Collection object must be passed to Field Level Encryption Options",
@@ -652,7 +659,9 @@ std::unique_ptr<DBClientBase> createEncryptedDBClientBase(std::unique_ptr<DBClie
 
         // IDL does not perform a deep copy of BSONObjs when parsing, so we must get an
         // owned copy of the schemaMap.
-        encryptionOptions.setSchemaMap(encryptionOptions.getSchemaMap().getOwned());
+        if (encryptionOptions.getSchemaMap()) {
+            encryptionOptions.setSchemaMap(encryptionOptions.getSchemaMap().get().getOwned());
+        }
 
         // This logic tries to extract the client from the args. If the connection object is defined
         // in the ClientSideFLEOptions struct, then the client will extract it and set itself to be

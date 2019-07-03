@@ -47,7 +47,6 @@
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog.h"
-#include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
@@ -75,6 +74,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/rollback_gen.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/storage/durable_catalog.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/str.h"
@@ -423,9 +423,8 @@ StatusWith<size_t> StorageInterfaceImpl::getOplogMaxSize(OperationContext* opCtx
     if (!collectionResult.isOK()) {
         return collectionResult.getStatus();
     }
-    auto collection = collectionResult.getValue();
 
-    const auto options = collection->getCatalogEntry()->getCollectionOptions(opCtx);
+    const auto options = DurableCatalog::get(opCtx)->getCollectionOptions(opCtx, nss);
     if (!options.capped)
         return {ErrorCodes::BadValue, str::stream() << nss.ns() << " isn't capped"};
 
@@ -1199,18 +1198,6 @@ boost::optional<Timestamp> StorageInterfaceImpl::getLastStableRecoveryTimestamp(
     }
 
     return ret;
-}
-
-boost::optional<Timestamp> StorageInterfaceImpl::getLastStableCheckpointTimestampDeprecated(
-    ServiceContext* serviceCtx) const {
-    if (serviceCtx->getStorageEngine()->isEphemeral()) {
-        return boost::none;
-    }
-
-    // A persisted storage engine will set its recovery timestamp to its last stable checkpoint.
-    // (Reporting last stable checkpoint in replication will be removed in v4.4 (SERVER-36194). The
-    // storage layer has already removed the direct API support.)
-    return getLastStableRecoveryTimestamp(serviceCtx);
 }
 
 bool StorageInterfaceImpl::supportsDocLocking(ServiceContext* serviceCtx) const {

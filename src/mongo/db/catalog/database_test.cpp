@@ -36,7 +36,7 @@
 
 #include "mongo/bson/util/builder.h"
 #include "mongo/db/catalog/collection_catalog.h"
-#include "mongo/db/catalog/collection_catalog_entry.h"
+#include "mongo/db/catalog/index_build_block.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -57,6 +57,7 @@
 #include "mongo/db/repl/storage_interface_mock.h"
 #include "mongo/db/s/op_observer_sharding_impl.h"
 #include "mongo/db/service_context_d_test_fixture.h"
+#include "mongo/db/storage/durable_catalog.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/scopeguard.h"
 
@@ -304,8 +305,8 @@ void _testDropCollectionThrowsExceptionIfThereAreIndexesInProgress(OperationCont
                 << "ns"
                 << nss.ns());
 
-        auto indexBuildBlock =
-            indexCatalog->createIndexBuildBlock(opCtx, indexInfoObj, IndexBuildMethod::kHybrid);
+        auto indexBuildBlock = std::make_unique<IndexBuildBlock>(
+            indexCatalog, collection->ns(), indexInfoObj, IndexBuildMethod::kHybrid);
         {
             WriteUnitOfWork wuow(opCtx);
             ASSERT_OK(indexBuildBlock->init(opCtx, collection));
@@ -369,8 +370,8 @@ TEST_F(DatabaseTest, RenameCollectionPreservesUuidOfSourceCollectionAndUpdatesUu
         auto toCollection = db->getCollection(opCtx, toNss);
         ASSERT_TRUE(toCollection);
 
-        auto catalogEntry = toCollection->getCatalogEntry();
-        auto toCollectionOptions = catalogEntry->getCollectionOptions(opCtx);
+        auto toCollectionOptions =
+            DurableCatalog::get(opCtx)->getCollectionOptions(opCtx, toCollection->ns());
 
         auto toUuid = toCollectionOptions.uuid;
         ASSERT_TRUE(toUuid);
@@ -392,18 +393,8 @@ TEST_F(DatabaseTest,
             ErrorCodes::FailedToParse,
             db->makeUniqueCollectionNamespace(_opCtx.get(), "CollectionModelWithoutPercentSign"));
 
-        // Generated namespace has to satisfy namespace length constraints so we will reject
-        // any collection model where the first substituted percent sign will not be in the
-        // generated namespace. See NamespaceString::MaxNsCollectionLen.
-        auto dbPrefix = _nss.db() + ".";
-        auto modelTooLong =
-            (StringBuilder() << dbPrefix
-                             << std::string('x',
-                                            NamespaceString::MaxNsCollectionLen - dbPrefix.size())
-                             << "%")
-                .str();
-        ASSERT_EQUALS(ErrorCodes::FailedToParse,
-                      db->makeUniqueCollectionNamespace(_opCtx.get(), modelTooLong));
+        std::string longCollModel(8192, '%');
+        ASSERT_OK(db->makeUniqueCollectionNamespace(_opCtx.get(), StringData(longCollModel)));
     });
 }
 

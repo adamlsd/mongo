@@ -1219,10 +1219,6 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTimeAndWallTime(
     _opTimeWaiterList.signalIf_inlock(
         [opTime](Waiter* waiter) { return waiter->opTime <= opTime; });
 
-    if (opTime.isNull()) {
-        return;
-    }
-
     // Update the local snapshot before updating the stable timestamp on the storage engine. New
     // transactions reading from the local snapshot should start before the oldest timestamp is
     // advanced to avoid races.
@@ -1230,6 +1226,10 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTimeAndWallTime(
 
     // Notify the oplog waiters after updating the local snapshot.
     signalOplogWaiters();
+
+    if (opTime.isNull()) {
+        return;
+    }
 
     // Add the new applied optime to the list of stable optime candidates and then set the last
     // stable optime. Stable optimes are used to determine the last optime that it is safe to revert
@@ -2307,7 +2307,7 @@ HostAndPort ReplicationCoordinatorImpl::getMyHostAndPort() const {
 
 int ReplicationCoordinatorImpl::_getMyId_inlock() const {
     const MemberConfig& self = _rsConfig.getMemberAt(_selfIndex);
-    return self.getId();
+    return self.getId().getData();
 }
 
 Status ReplicationCoordinatorImpl::resyncData(OperationContext* opCtx, bool waitUntilCompleted) {
@@ -2362,7 +2362,6 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
             static_cast<unsigned>(time(nullptr) - serverGlobalParams.started),
             _getCurrentCommittedSnapshotOpTimeAndWallTime_inlock(),
             initialSyncProgress,
-            _storage->getLastStableCheckpointTimestampDeprecated(_service),
             _storage->getLastStableRecoveryTimestamp(_service)},
         response,
         &result);

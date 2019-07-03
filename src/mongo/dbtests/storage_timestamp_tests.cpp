@@ -74,8 +74,8 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/session.h"
 #include "mongo/db/session_catalog_mongod.h"
-#include "mongo/db/storage/kv/kv_storage_engine.h"
 #include "mongo/db/storage/snapshot_manager.h"
+#include "mongo/db/storage/storage_engine_impl.h"
 #include "mongo/db/transaction_participant.h"
 #include "mongo/db/transaction_participant_gen.h"
 #include "mongo/dbtests/dbtests.h"
@@ -269,6 +269,7 @@ public:
         }
 
         ASSERT_OK(indexer.insertAllDocumentsInCollection(_opCtx, coll));
+        ASSERT_OK(indexer.checkConstraints(_opCtx));
 
         {
             WriteUnitOfWork wuow(_opCtx);
@@ -307,11 +308,11 @@ public:
         return optRecord.get().data.toBson();
     }
 
-    BSONCollectionCatalogEntry::MetaData getMetaDataAtTime(KVCatalog* kvCatalog,
+    BSONCollectionCatalogEntry::MetaData getMetaDataAtTime(DurableCatalog* durableCatalog,
                                                            NamespaceString ns,
                                                            const Timestamp& ts) {
         OneOffRead oor(_opCtx, ts);
-        return kvCatalog->getMetaData(_opCtx, ns);
+        return durableCatalog->getMetaData(_opCtx, ns);
     }
 
     StatusWith<BSONObj> doAtomicApplyOps(const std::string& dbName,
@@ -454,23 +455,22 @@ public:
     }
 
     /**
-     * Asserts that the given collection is in (or not in) the KVCatalog's list of idents at the
+     * Asserts that the given collection is in (or not in) the DurableCatalog's list of idents at
+     * the
      * provided timestamp.
      */
     void assertNamespaceInIdents(NamespaceString nss, Timestamp ts, bool shouldExpect) {
         OneOffRead oor(_opCtx, ts);
-        KVCatalog* kvCatalog =
-            static_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine())
-                ->getCatalog();
+        auto durableCatalog = DurableCatalog::get(_opCtx);
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS);
 
-        // getCollectionIdent() returns the ident for the given namespace in the KVCatalog.
+        // getCollectionIdent() returns the ident for the given namespace in the DurableCatalog.
         // getAllIdents() actually looks in the RecordStore for a list of all idents, and is thus
         // versioned by timestamp. We can expect a namespace to have a consistent ident across
         // timestamps, provided the collection does not get renamed.
-        auto expectedIdent = kvCatalog->getCollectionIdent(nss);
-        auto idents = kvCatalog->getAllIdents(_opCtx);
+        auto expectedIdent = durableCatalog->getCollectionIdent(nss);
+        auto idents = durableCatalog->getAllIdents(_opCtx);
         auto found = std::find(idents.begin(), idents.end(), expectedIdent);
 
         if (shouldExpect) {
@@ -484,10 +484,10 @@ public:
     /**
      * Use `ts` = Timestamp::min to observe all indexes.
      */
-    std::string getNewIndexIdentAtTime(KVCatalog* kvCatalog,
+    std::string getNewIndexIdentAtTime(DurableCatalog* durableCatalog,
                                        std::vector<std::string>& origIdents,
                                        Timestamp ts) {
-        auto ret = getNewIndexIdentsAtTime(kvCatalog, origIdents, ts);
+        auto ret = getNewIndexIdentsAtTime(durableCatalog, origIdents, ts);
         ASSERT_EQ(static_cast<std::size_t>(1), ret.size()) << " Num idents: " << ret.size();
         return ret[0];
     }
@@ -495,14 +495,14 @@ public:
     /**
      * Use `ts` = Timestamp::min to observe all indexes.
      */
-    std::vector<std::string> getNewIndexIdentsAtTime(KVCatalog* kvCatalog,
+    std::vector<std::string> getNewIndexIdentsAtTime(DurableCatalog* durableCatalog,
                                                      std::vector<std::string>& origIdents,
                                                      Timestamp ts) {
         OneOffRead oor(_opCtx, ts);
 
         // Find the collection and index ident by performing a set difference on the original
         // idents and the current idents.
-        std::vector<std::string> identsWithColl = kvCatalog->getAllIdents(_opCtx);
+        std::vector<std::string> identsWithColl = durableCatalog->getAllIdents(_opCtx);
         std::sort(origIdents.begin(), origIdents.end());
         std::sort(identsWithColl.begin(), identsWithColl.end());
         std::vector<std::string> idxIdents;
@@ -518,10 +518,11 @@ public:
         return idxIdents;
     }
 
-    std::string getDroppedIndexIdent(KVCatalog* kvCatalog, std::vector<std::string>& origIdents) {
+    std::string getDroppedIndexIdent(DurableCatalog* durableCatalog,
+                                     std::vector<std::string>& origIdents) {
         // Find the collection and index ident by performing a set difference on the original
         // idents and the current idents.
-        std::vector<std::string> identsWithColl = kvCatalog->getAllIdents(_opCtx);
+        std::vector<std::string> identsWithColl = durableCatalog->getAllIdents(_opCtx);
         std::sort(origIdents.begin(), origIdents.end());
         std::sort(identsWithColl.begin(), identsWithColl.end());
         std::vector<std::string> collAndIdxIdents;
@@ -535,11 +536,11 @@ public:
         return collAndIdxIdents[0];
     }
 
-    std::vector<std::string> _getIdentDifference(KVCatalog* kvCatalog,
+    std::vector<std::string> _getIdentDifference(DurableCatalog* durableCatalog,
                                                  std::vector<std::string>& origIdents) {
         // Find the ident difference by performing a set difference on the original idents and the
         // current idents.
-        std::vector<std::string> identsWithColl = kvCatalog->getAllIdents(_opCtx);
+        std::vector<std::string> identsWithColl = durableCatalog->getAllIdents(_opCtx);
         std::sort(origIdents.begin(), origIdents.end());
         std::sort(identsWithColl.begin(), identsWithColl.end());
         std::vector<std::string> collAndIdxIdents;
@@ -551,9 +552,9 @@ public:
         return collAndIdxIdents;
     }
     std::tuple<std::string, std::string> getNewCollectionIndexIdent(
-        KVCatalog* kvCatalog, std::vector<std::string>& origIdents) {
+        DurableCatalog* durableCatalog, std::vector<std::string>& origIdents) {
         // Find the collection and index ident difference.
-        auto collAndIdxIdents = _getIdentDifference(kvCatalog, origIdents);
+        auto collAndIdxIdents = _getIdentDifference(durableCatalog, origIdents);
 
         ASSERT(collAndIdxIdents.size() == 1 || collAndIdxIdents.size() == 2);
         if (collAndIdxIdents.size() == 1) {
@@ -571,13 +572,13 @@ public:
     /**
      * Note: expectedNewIndexIdents should include the _id index.
      */
-    void assertRenamedCollectionIdentsAtTimestamp(KVCatalog* kvCatalog,
+    void assertRenamedCollectionIdentsAtTimestamp(DurableCatalog* durableCatalog,
                                                   std::vector<std::string>& origIdents,
                                                   size_t expectedNewIndexIdents,
                                                   Timestamp timestamp) {
         OneOffRead oor(_opCtx, timestamp);
         // Find the collection and index ident difference.
-        auto collAndIdxIdents = _getIdentDifference(kvCatalog, origIdents);
+        auto collAndIdxIdents = _getIdentDifference(durableCatalog, origIdents);
         size_t newNssIdents, newIdxIdents;
         newNssIdents = newIdxIdents = 0;
         for (const auto& ident : collAndIdxIdents) {
@@ -596,13 +597,13 @@ public:
             << ") differ from actual new index idents (" << newIdxIdents << ")";
     }
 
-    void assertIdentsExistAtTimestamp(KVCatalog* kvCatalog,
+    void assertIdentsExistAtTimestamp(DurableCatalog* durableCatalog,
                                       const std::string& collIdent,
                                       const std::string& indexIdent,
                                       Timestamp timestamp) {
         OneOffRead oor(_opCtx, timestamp);
 
-        auto allIdents = kvCatalog->getAllIdents(_opCtx);
+        auto allIdents = durableCatalog->getAllIdents(_opCtx);
         if (collIdent.size() > 0) {
             // Index build test does not pass in a collection ident.
             ASSERT(std::find(allIdents.begin(), allIdents.end(), collIdent) != allIdents.end());
@@ -614,12 +615,12 @@ public:
         }
     }
 
-    void assertIdentsMissingAtTimestamp(KVCatalog* kvCatalog,
+    void assertIdentsMissingAtTimestamp(DurableCatalog* durableCatalog,
                                         const std::string& collIdent,
                                         const std::string& indexIdent,
                                         Timestamp timestamp) {
         OneOffRead oor(_opCtx, timestamp);
-        auto allIdents = kvCatalog->getAllIdents(_opCtx);
+        auto allIdents = durableCatalog->getAllIdents(_opCtx);
         if (collIdent.size() > 0) {
             // Index build test does not pass in a collection ident.
             ASSERT(std::find(allIdents.begin(), allIdents.end(), collIdent) == allIdents.end());
@@ -651,16 +652,18 @@ public:
                              Timestamp ts,
                              bool shouldBeMultikey,
                              const MultikeyPaths& expectedMultikeyPaths) {
-        auto catalog = collection->getCatalogEntry();
+        DurableCatalog* durableCatalog = DurableCatalog::get(opCtx);
 
         OneOffRead oor(_opCtx, ts);
 
         MultikeyPaths actualMultikeyPaths;
         if (!shouldBeMultikey) {
-            ASSERT_FALSE(catalog->isIndexMultikey(opCtx, indexName, &actualMultikeyPaths))
+            ASSERT_FALSE(durableCatalog->isIndexMultikey(
+                opCtx, collection->ns(), indexName, &actualMultikeyPaths))
                 << "index " << indexName << " should not be multikey at timestamp " << ts;
         } else {
-            ASSERT(catalog->isIndexMultikey(opCtx, indexName, &actualMultikeyPaths))
+            ASSERT(durableCatalog->isIndexMultikey(
+                opCtx, collection->ns(), indexName, &actualMultikeyPaths))
                 << "index " << indexName << " should be multikey at timestamp " << ts;
         }
 
@@ -694,9 +697,9 @@ public:
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
 
-        const std::uint32_t docsToInsert = 10;
+        const std::int32_t docsToInsert = 10;
         const LogicalTime firstInsertTime = _clock->reserveTicks(docsToInsert);
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             BSONObjBuilder result;
             ASSERT_OK(applyOps(
                 _opCtx,
@@ -724,7 +727,7 @@ public:
                 &result));
         }
 
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
 
             BSONObj result;
@@ -747,28 +750,28 @@ public:
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
 
-        const std::uint32_t docsToInsert = 10;
+        const std::int32_t docsToInsert = 10;
         const LogicalTime firstInsertTime = _clock->reserveTicks(docsToInsert);
 
         BSONObjBuilder oplogEntryBuilder;
 
         // Populate the "ts" field with an array of all the grouped inserts' timestamps.
         BSONArrayBuilder tsArrayBuilder(oplogEntryBuilder.subarrayStart("ts"));
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             tsArrayBuilder.append(firstInsertTime.addTicks(idx).asTimestamp());
         }
         tsArrayBuilder.done();
 
         // Populate the "t" (term) field with an array of all the grouped inserts' terms.
         BSONArrayBuilder tArrayBuilder(oplogEntryBuilder.subarrayStart("t"));
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             tArrayBuilder.append(1LL);
         }
         tArrayBuilder.done();
 
         // Populate the "o" field with an array of all the grouped inserts.
         BSONArrayBuilder oArrayBuilder(oplogEntryBuilder.subarrayStart("o"));
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             oArrayBuilder.append(BSON("_id" << idx));
         }
         oArrayBuilder.done();
@@ -781,7 +784,7 @@ public:
         ASSERT_OK(repl::SyncTail::syncApply(
             _opCtx, oplogEntry, repl::OplogApplication::Mode::kSecondary, boost::none));
 
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
 
             BSONObj result;
@@ -1383,7 +1386,7 @@ public:
             nullptr,  // replication coordinator. not required for multiApply().
             _consistencyMarkers,
             storageInterface,
-            {},
+            repl::OplogApplier::Options(repl::OplogApplication::Mode::kSecondary),
             writerPool.get());
         ASSERT_EQUALS(op2.getOpTime(), unittest::assertGet(oplogApplier.multiApply(_opCtx, ops)));
 
@@ -1481,7 +1484,7 @@ public:
         DoNothingOplogApplierObserver observer;
         auto storageInterface = repl::StorageInterface::get(_opCtx);
         auto writerPool = repl::OplogApplier::makeWriterPool();
-        repl::OplogApplier::Options options;
+        repl::OplogApplier::Options options(repl::OplogApplication::Mode::kInitialSync);
         options.allowNamespaceNotFoundErrorsOnCrudOps = true;
         options.missingDocumentSourceForInitialSync = HostAndPort("localhost", 123);
 
@@ -1580,6 +1583,90 @@ public:
             _opCtx, autoColl.getCollection(), indexName, pastTime.asTimestamp(), true, {{0}});
         assertMultikeyPaths(
             _opCtx, autoColl.getCollection(), indexName, insertTime.asTimestamp(), true, {{0}});
+    }
+};
+
+class PrimarySetsMultikeyInsideMultiDocumentTransaction : public StorageTimestampTest {
+
+public:
+    void run() {
+        auto service = _opCtx->getServiceContext();
+        auto sessionCatalog = SessionCatalog::get(service);
+        sessionCatalog->reset_forTest();
+        MongoDSessionCatalog::onStepUp(_opCtx);
+
+        NamespaceString nss("unittests.PrimarySetsMultikeyInsideMultiDocumentTransaction");
+        reset(nss);
+
+        auto indexName = "a_1";
+        auto indexSpec =
+            BSON("name" << indexName << "ns" << nss.ns() << "key" << BSON("a" << 1) << "v"
+                        << static_cast<int>(kIndexVersion));
+        auto doc = BSON("_id" << 1 << "a" << BSON_ARRAY(1 << 2));
+
+        {
+            AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
+            ASSERT_OK(dbtests::createIndexFromSpec(_opCtx, nss.ns(), indexSpec));
+        }
+
+        auto presentTs = _clock->getClusterTime().asTimestamp();
+
+        // This test does not run a real ReplicationCoordinator, so must advance the snapshot
+        // manager manually.
+        auto storageEngine = cc().getServiceContext()->getStorageEngine();
+        storageEngine->getSnapshotManager()->setLocalSnapshot(presentTs);
+
+        const auto beforeTxnTime = _clock->reserveTicks(1);
+        auto beforeTxnTs = beforeTxnTime.asTimestamp();
+        auto commitEntryTs = beforeTxnTime.addTicks(1).asTimestamp();
+
+        unittest::log() << "Present TS: " << presentTs;
+        unittest::log() << "Before transaction TS: " << beforeTxnTs;
+        unittest::log() << "Commit entry TS: " << commitEntryTs;
+
+        const auto sessionId = makeLogicalSessionIdForTest();
+        _opCtx->setLogicalSessionId(sessionId);
+        _opCtx->setTxnNumber(1);
+
+        // Check out the session.
+        MongoDOperationContextSession ocs(_opCtx);
+
+        auto txnParticipant = TransactionParticipant::get(_opCtx);
+        ASSERT(txnParticipant);
+
+        txnParticipant.beginOrContinue(
+            _opCtx, *_opCtx->getTxnNumber(), false /* autocommit */, true /* startTransaction */);
+        txnParticipant.unstashTransactionResources(_opCtx, "insert");
+        {
+            // Insert a document that will set the index as multikey.
+            AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
+            insertDocument(autoColl.getCollection(), InsertStatement(doc));
+        }
+
+        txnParticipant.commitUnpreparedTransaction(_opCtx);
+        txnParticipant.stashTransactionResources(_opCtx);
+
+        AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
+        auto coll = autoColl.getCollection();
+
+        // Make sure the transaction committed and its writes were timestamped correctly.
+        assertDocumentAtTimestamp(coll, beforeTxnTs, BSONObj());
+        assertDocumentAtTimestamp(coll, presentTs, BSONObj());
+        assertDocumentAtTimestamp(coll, commitEntryTs, doc);
+        assertDocumentAtTimestamp(coll, nullTs, doc);
+
+        // Make sure the multikey write was timestamped correctly. For correctness, the timestamp of
+        // the write that sets the multikey flag to true should be less than or equal to the first
+        // write that made the index multikey, which, in this case, is the commit timestamp of the
+        // transaction. In other words, it is not incorrect to assign a timestamp that is too early,
+        // but it is incorrect to assign a timestamp that is too late. In this specific case, we
+        // expect the write to be timestamped at the logical clock tick directly preceding the
+        // commit time.
+        assertMultikeyPaths(_opCtx, coll, indexName, presentTs, false /* shouldBeMultikey */, {{}});
+        assertMultikeyPaths(
+            _opCtx, coll, indexName, beforeTxnTs, true /* shouldBeMultikey */, {{0}});
+        assertMultikeyPaths(
+            _opCtx, coll, indexName, commitEntryTs, true /* shouldBeMultikey */, {{0}});
     }
 };
 
@@ -1734,7 +1821,7 @@ public:
 /**
  * This KVDropDatabase test only exists in this file for historical reasons, the final phase of
  * timestamping `dropDatabase` side-effects no longer applies. The purpose of this test is to
- * exercise the `KVStorageEngine::dropDatabase` method.
+ * exercise the `StorageEngine::dropDatabase` method.
  */
 template <bool SimulatePrimary>
 class KVDropDatabase : public StorageTimestampTest {
@@ -1745,14 +1832,13 @@ public:
             _opCtx->getServiceContext(),
             std::make_unique<repl::DropPendingCollectionReaper>(storageInterface));
 
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
 
         // Declare the database to be in a "synced" state, i.e: in steady-state replication.
         Timestamp syncTime = _clock->reserveTicks(1).asTimestamp();
         invariant(!syncTime.isNull());
-        kvStorageEngine->setInitialDataTimestamp(syncTime);
+        storageEngine->setInitialDataTimestamp(syncTime);
 
         // This test drops collections piece-wise instead of having the "drop database" algorithm
         // perform this walk. Defensively operate on a separate DB from the other tests to ensure
@@ -1772,7 +1858,7 @@ public:
 
             // Save the pre-state idents so we can capture the specific idents related to collection
             // creation.
-            std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
+            std::vector<std::string> origIdents = durableCatalog->getAllIdents(_opCtx);
             const auto& nss = std::get<0>(tuple);
 
             // Non-replicated namespaces are wrapped in an unreplicated writes block. This has the
@@ -1788,7 +1874,8 @@ public:
             // Bind the local values to the variables in the parent scope.
             auto& collIdent = std::get<1>(tuple);
             auto& indexIdent = std::get<2>(tuple);
-            std::tie(collIdent, indexIdent) = getNewCollectionIndexIdent(kvCatalog, origIdents);
+            std::tie(collIdent, indexIdent) =
+                getNewCollectionIndexIdent(durableCatalog, origIdents);
         }
 
         AutoGetCollection coll(_opCtx, nss, LockMode::MODE_X);
@@ -1806,11 +1893,11 @@ public:
 
         // If the storage engine is managing drops internally, the ident should not be visible after
         // a drop.
-        if (kvStorageEngine->supportsPendingDrops()) {
-            assertIdentsMissingAtTimestamp(kvCatalog, collIdent, indexIdent, postRenameTime);
+        if (storageEngine->supportsPendingDrops()) {
+            assertIdentsMissingAtTimestamp(durableCatalog, collIdent, indexIdent, postRenameTime);
         } else {
             // The namespace has changed, but the ident still exists as-is after the rename.
-            assertIdentsExistAtTimestamp(kvCatalog, collIdent, indexIdent, postRenameTime);
+            assertIdentsExistAtTimestamp(durableCatalog, collIdent, indexIdent, postRenameTime);
         }
 
         const Timestamp dropTime = _clock->reserveTicks(1).asTimestamp();
@@ -1824,12 +1911,12 @@ public:
 
         // Assert that the idents do not exist.
         assertIdentsMissingAtTimestamp(
-            kvCatalog, sysProfileIdent, sysProfileIndexIdent, Timestamp::max());
-        assertIdentsMissingAtTimestamp(kvCatalog, collIdent, indexIdent, Timestamp::max());
+            durableCatalog, sysProfileIdent, sysProfileIndexIdent, Timestamp::max());
+        assertIdentsMissingAtTimestamp(durableCatalog, collIdent, indexIdent, Timestamp::max());
 
         // dropDatabase must not timestamp the final write. The collection and index should seem
         // to have never existed.
-        assertIdentsMissingAtTimestamp(kvCatalog, collIdent, indexIdent, syncTime);
+        assertIdentsMissingAtTimestamp(durableCatalog, collIdent, indexIdent, syncTime);
     }
 };
 
@@ -1858,9 +1945,8 @@ public:
             ASSERT_OK(_coordinatorMock->setFollowerMode({repl::MemberState::MS::RS_SECONDARY}));
         }
 
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
 
         NamespaceString nss("unittests.timestampIndexBuilds");
         reset(nss);
@@ -1880,7 +1966,7 @@ public:
 
         // Save the pre-state idents so we can capture the specific ident related to index
         // creation.
-        std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
+        std::vector<std::string> origIdents = durableCatalog->getAllIdents(_opCtx);
 
         // Build an index on `{a: 1}`. This index will be multikey.
         MultiIndexBlock indexer;
@@ -1919,6 +2005,7 @@ public:
         // Inserting all the documents has the side-effect of setting internal state on the index
         // builder that the index is multikey.
         ASSERT_OK(indexer.insertAllDocumentsInCollection(_opCtx, autoColl.getCollection()));
+        ASSERT_OK(indexer.checkConstraints(_opCtx));
 
         {
             WriteUnitOfWork wuow(_opCtx);
@@ -1945,22 +2032,24 @@ public:
         const Timestamp afterIndexBuild = _clock->reserveTicks(1).asTimestamp();
 
         const std::string indexIdent =
-            getNewIndexIdentAtTime(kvCatalog, origIdents, Timestamp::min());
-        assertIdentsMissingAtTimestamp(kvCatalog, "", indexIdent, beforeIndexBuild.asTimestamp());
+            getNewIndexIdentAtTime(durableCatalog, origIdents, Timestamp::min());
+        assertIdentsMissingAtTimestamp(
+            durableCatalog, "", indexIdent, beforeIndexBuild.asTimestamp());
 
         // Assert that the index entry exists after init and `ready: false`.
-        assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, afterIndexInit.asTimestamp());
+        assertIdentsExistAtTimestamp(durableCatalog, "", indexIdent, afterIndexInit.asTimestamp());
         {
-            ASSERT_FALSE(getIndexMetaData(
-                             getMetaDataAtTime(kvCatalog, nss, afterIndexInit.asTimestamp()), "a_1")
-                             .ready);
+            ASSERT_FALSE(
+                getIndexMetaData(
+                    getMetaDataAtTime(durableCatalog, nss, afterIndexInit.asTimestamp()), "a_1")
+                    .ready);
         }
 
         // After the build completes, assert that the index is `ready: true` and multikey.
-        assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, afterIndexBuild);
+        assertIdentsExistAtTimestamp(durableCatalog, "", indexIdent, afterIndexBuild);
         {
             auto indexMetaData =
-                getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, afterIndexBuild), "a_1");
+                getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, afterIndexBuild), "a_1");
             ASSERT(indexMetaData.ready);
             ASSERT(indexMetaData.multikey);
 
@@ -2100,6 +2189,8 @@ public:
             ASSERT_TRUE(buildingIndex->indexBuildInterceptor()->areAllWritesApplied(_opCtx));
         }
 
+        ASSERT_OK(indexer.checkConstraints(_opCtx));
+
         {
             WriteUnitOfWork wuow(_opCtx);
             ASSERT_OK(indexer.commit(
@@ -2124,9 +2215,8 @@ public:
 class TimestampMultiIndexBuilds : public StorageTimestampTest {
 public:
     void run() {
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
 
         NamespaceString nss("unittests.timestampMultiIndexBuilds");
         reset(nss);
@@ -2147,7 +2237,7 @@ public:
 
             // Save the pre-state idents so we can capture the specific ident related to index
             // creation.
-            origIdents = kvCatalog->getAllIdents(_opCtx);
+            origIdents = durableCatalog->getAllIdents(_opCtx);
         }
 
         DBDirectClient client(_opCtx);
@@ -2184,34 +2274,35 @@ public:
         // The idents are created and persisted with the "ready: false" write. There should be two
         // new index idents visible at this time.
         const std::vector<std::string> indexes =
-            getNewIndexIdentsAtTime(kvCatalog, origIdents, indexCreateInitTs);
+            getNewIndexIdentsAtTime(durableCatalog, origIdents, indexCreateInitTs);
         ASSERT_EQ(static_cast<std::size_t>(2), indexes.size()) << " Num idents: " << indexes.size();
 
         ASSERT_FALSE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, indexCreateInitTs), "a_1").ready);
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexCreateInitTs), "a_1")
+                .ready);
         ASSERT_FALSE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, indexCreateInitTs), "b_1").ready);
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexCreateInitTs), "b_1")
+                .ready);
 
         // Assert the `a_1` index becomes ready at the next oplog entry time.
         ASSERT_TRUE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, indexAComplete), "a_1").ready);
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexAComplete), "a_1").ready);
         ASSERT_FALSE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, indexAComplete), "b_1").ready);
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexAComplete), "b_1").ready);
 
         // Assert the `b_1` index becomes ready at the last oplog entry time.
         ASSERT_TRUE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, indexBComplete), "a_1").ready);
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexBComplete), "a_1").ready);
         ASSERT_TRUE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, indexBComplete), "b_1").ready);
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexBComplete), "b_1").ready);
     }
 };
 
 class TimestampMultiIndexBuildsDuringRename : public StorageTimestampTest {
 public:
     void run() {
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
 
         NamespaceString nss("unittests.timestampMultiIndexBuildsDuringRename");
         reset(nss);
@@ -2251,7 +2342,7 @@ public:
 
         // Save the pre-state idents so we can capture the specific ident related to index
         // creation.
-        std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
+        std::vector<std::string> origIdents = durableCatalog->getAllIdents(_opCtx);
 
         // Rename collection.
         BSONObj renameResult;
@@ -2291,26 +2382,27 @@ public:
         // We expect one new collection ident and one new index ident (the _id index) during this
         // rename.
         assertRenamedCollectionIdentsAtTimestamp(
-            kvCatalog, origIdents, /*expectedNewIndexIdents*/ 1, indexCreateInitTs);
+            durableCatalog, origIdents, /*expectedNewIndexIdents*/ 1, indexCreateInitTs);
 
         // We expect one new collection ident and three new index idents (including the _id index)
         // after this rename. The a_1 and b_1 index idents are created and persisted with the
         // "ready: true" write.
         assertRenamedCollectionIdentsAtTimestamp(
-            kvCatalog, origIdents, /*expectedNewIndexIdents*/ 3, indexBComplete);
+            durableCatalog, origIdents, /*expectedNewIndexIdents*/ 3, indexBComplete);
 
         // Assert the `a_1` index becomes ready at the next oplog entry time.
         ASSERT_TRUE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, renamedNss, indexAComplete), "a_1")
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, renamedNss, indexAComplete), "a_1")
                 .ready);
-        assertIndexMetaDataMissing(getMetaDataAtTime(kvCatalog, renamedNss, indexAComplete), "b_1");
+        assertIndexMetaDataMissing(getMetaDataAtTime(durableCatalog, renamedNss, indexAComplete),
+                                   "b_1");
 
         // Assert the `b_1` index becomes ready at the last oplog entry time.
         ASSERT_TRUE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, renamedNss, indexBComplete), "a_1")
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, renamedNss, indexBComplete), "a_1")
                 .ready);
         ASSERT_TRUE(
-            getIndexMetaData(getMetaDataAtTime(kvCatalog, renamedNss, indexBComplete), "b_1")
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, renamedNss, indexBComplete), "b_1")
                 .ready);
     }
 };
@@ -2318,9 +2410,8 @@ public:
 class TimestampIndexDrops : public StorageTimestampTest {
 public:
     void run() {
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
 
         NamespaceString nss("unittests.timestampIndexDrops");
         reset(nss);
@@ -2343,7 +2434,7 @@ public:
 
         // Save the pre-state idents so we can capture the specific ident related to index
         // creation.
-        std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
+        std::vector<std::string> origIdents = durableCatalog->getAllIdents(_opCtx);
 
         std::vector<Timestamp> afterCreateTimestamps;
         std::vector<std::string> indexIdents;
@@ -2355,15 +2446,17 @@ public:
             afterCreateTimestamps.push_back(_clock->reserveTicks(1).asTimestamp());
 
             // Add the new ident to the vector and reset the current idents.
-            indexIdents.push_back(getNewIndexIdentAtTime(kvCatalog, origIdents, Timestamp::min()));
-            origIdents = kvCatalog->getAllIdents(_opCtx);
+            indexIdents.push_back(
+                getNewIndexIdentAtTime(durableCatalog, origIdents, Timestamp::min()));
+            origIdents = durableCatalog->getAllIdents(_opCtx);
         }
 
         // Ensure each index is visible at the correct timestamp, and not before.
         for (size_t i = 0; i < indexIdents.size(); i++) {
             auto beforeTs = (i == 0) ? beforeIndexBuild : afterCreateTimestamps[i - 1];
-            assertIdentsMissingAtTimestamp(kvCatalog, "", indexIdents[i], beforeTs);
-            assertIdentsExistAtTimestamp(kvCatalog, "", indexIdents[i], afterCreateTimestamps[i]);
+            assertIdentsMissingAtTimestamp(durableCatalog, "", indexIdents[i], beforeTs);
+            assertIdentsExistAtTimestamp(
+                durableCatalog, "", indexIdents[i], afterCreateTimestamps[i]);
         }
 
         const LogicalTime beforeDropTs = _clock->getClusterTime();
@@ -2383,10 +2476,10 @@ public:
         for (size_t i = 0; i < nIdents; i++) {
             OneOffRead oor(_opCtx, beforeDropTs.addTicks(i + 1).asTimestamp());
 
-            auto ident = getDroppedIndexIdent(kvCatalog, origIdents);
+            auto ident = getDroppedIndexIdent(durableCatalog, origIdents);
             indexIdents.erase(std::remove(indexIdents.begin(), indexIdents.end(), ident));
 
-            origIdents = kvCatalog->getAllIdents(_opCtx);
+            origIdents = durableCatalog->getAllIdents(_opCtx);
         }
         ASSERT_EQ(indexIdents.size(), 0ul) << "Dropped idents should match created idents";
     }
@@ -2473,7 +2566,12 @@ public:
         auto storageInterface = repl::StorageInterface::get(_opCtx);
         auto writerPool = repl::OplogApplier::makeWriterPool(1);
         repl::SyncTail syncTail(
-            nullptr, _consistencyMarkers, storageInterface, applyOperationFn, writerPool.get());
+            nullptr,
+            _consistencyMarkers,
+            storageInterface,
+            applyOperationFn,
+            writerPool.get(),
+            repl::OplogApplier::Options(repl::OplogApplication::Mode::kSecondary));
         auto lastOpTime = unittest::assertGet(syncTail.multiApply(_opCtx, {insertOp}));
         ASSERT_EQ(insertOp.getOpTime(), lastOpTime);
 
@@ -2536,13 +2634,12 @@ public:
             const auto startBuildTs = beforeBuildTime.addTicks(1).asTimestamp();
 
             // Grab the existing idents to identify the ident created by the index build.
-            auto kvStorageEngine =
-                dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-            KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+            auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+            auto durableCatalog = storageEngine->getCatalog();
             std::vector<std::string> origIdents;
             {
                 AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS);
-                origIdents = kvCatalog->getAllIdents(_opCtx);
+                origIdents = durableCatalog->getAllIdents(_opCtx);
             }
 
             auto indexSpec = BSON("createIndexes" << nss.coll() << "ns" << nss.ns() << "v"
@@ -2565,15 +2662,16 @@ public:
 
             AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS);
             const std::string indexIdent =
-                getNewIndexIdentAtTime(kvCatalog, origIdents, Timestamp::min());
+                getNewIndexIdentAtTime(durableCatalog, origIdents, Timestamp::min());
             assertIdentsMissingAtTimestamp(
-                kvCatalog, "", indexIdent, beforeBuildTime.asTimestamp());
-            assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, startBuildTs);
+                durableCatalog, "", indexIdent, beforeBuildTime.asTimestamp());
+            assertIdentsExistAtTimestamp(durableCatalog, "", indexIdent, startBuildTs);
 
             // On a primary, the index build should start and finish at `startBuildTs` because it is
             // built in the foreground.
             ASSERT_TRUE(
-                getIndexMetaData(getMetaDataAtTime(kvCatalog, nss, startBuildTs), "field_1").ready);
+                getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, startBuildTs), "field_1")
+                    .ready);
         }
     }
 };
@@ -2581,9 +2679,8 @@ public:
 class ViewCreationSeparateTransaction : public StorageTimestampTest {
 public:
     void run() {
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
 
         const NamespaceString backingCollNss("unittests.backingColl");
         reset(backingCollNss);
@@ -2615,12 +2712,12 @@ public:
         {
             Lock::GlobalRead read(_opCtx);
             auto systemViewsMd = getMetaDataAtTime(
-                kvCatalog, systemViewsNss, Timestamp(systemViewsCreateTs.asULL() - 1));
+                durableCatalog, systemViewsNss, Timestamp(systemViewsCreateTs.asULL() - 1));
             ASSERT_EQ("", systemViewsMd.ns)
                 << systemViewsNss
                 << " incorrectly exists before creation. CreateTs: " << systemViewsCreateTs;
 
-            systemViewsMd = getMetaDataAtTime(kvCatalog, systemViewsNss, systemViewsCreateTs);
+            systemViewsMd = getMetaDataAtTime(durableCatalog, systemViewsNss, systemViewsCreateTs);
             ASSERT_EQ(systemViewsNss.ns(), systemViewsMd.ns);
 
             AutoGetCollection autoColl(_opCtx, systemViewsNss, LockMode::MODE_IS);
@@ -2682,15 +2779,14 @@ public:
         ASSERT_EQ(indexOp.getObject()["name"].str(), "user_1_db_1");
         ASSERT_GT(indexOp.getTimestamp(), futureTs) << op.toBSON();
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS);
-        auto kvStorageEngine =
-            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
-        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
-        auto indexIdent = kvCatalog->getIndexIdent(_opCtx, nss, "user_1_db_1");
-        assertIdentsMissingAtTimestamp(kvCatalog, "", indexIdent, pastTs);
-        assertIdentsMissingAtTimestamp(kvCatalog, "", indexIdent, presentTs);
-        assertIdentsMissingAtTimestamp(kvCatalog, "", indexIdent, futureTs);
-        assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, indexCreateTs);
-        assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, nullTs);
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
+        auto indexIdent = durableCatalog->getIndexIdent(_opCtx, nss, "user_1_db_1");
+        assertIdentsMissingAtTimestamp(durableCatalog, "", indexIdent, pastTs);
+        assertIdentsMissingAtTimestamp(durableCatalog, "", indexIdent, presentTs);
+        assertIdentsMissingAtTimestamp(durableCatalog, "", indexIdent, futureTs);
+        assertIdentsExistAtTimestamp(durableCatalog, "", indexIdent, indexCreateTs);
+        assertIdentsExistAtTimestamp(durableCatalog, "", indexIdent, nullTs);
     }
 };
 
@@ -3495,6 +3591,7 @@ public:
         add<InitialSyncSetIndexMultikeyOnInsert>();
         add<PrimarySetIndexMultikeyOnInsert>();
         add<PrimarySetIndexMultikeyOnInsertUnreplicated>();
+        add<PrimarySetsMultikeyInsideMultiDocumentTransaction>();
         add<InitializeMinValid>();
         add<SetMinValidInitialSyncFlag>();
         add<SetMinValidToAtLeast>();

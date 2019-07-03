@@ -200,8 +200,14 @@ bool handleCursorCommand(OperationContext* opCtx,
         }
 
         if (PlanExecutor::ADVANCED != state) {
-            uassertStatusOK(WorkingSetCommon::getMemberObjectStatus(next).withContext(
-                "PlanExecutor error during aggregation"));
+            // We should always have a valid status member object at this point.
+            auto status = WorkingSetCommon::getMemberObjectStatus(next);
+            invariant(!status.isOK());
+            warning() << "Aggregate command executor error: " << PlanExecutor::statestr(state)
+                      << ", status: " << status
+                      << ", stats: " << redact(Explain::getWinningPlanStats(exec));
+
+            uassertStatusOK(status.withContext("PlanExecutor error during aggregation"));
         }
 
         // If adding this object will cause us to exceed the message size limit, then we stash it
@@ -212,9 +218,7 @@ bool handleCursorCommand(OperationContext* opCtx,
             break;
         }
 
-        // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the PBRT until the
-        // former is removed in a future release.
-        responseBuilder.setLatestOplogTimestamp(exec->getLatestOplogTimestamp());
+        // If this executor produces a postBatchResumeToken, add it to the cursor response.
         responseBuilder.setPostBatchResumeToken(exec->getPostBatchResumeToken());
         responseBuilder.append(next);
     }
@@ -225,9 +229,6 @@ bool handleCursorCommand(OperationContext* opCtx,
         // For empty batches, or in the case where the final result was added to the batch rather
         // than being stashed, we update the PBRT to ensure that it is the most recent available.
         if (!stashedResult) {
-            // TODO SERVER-38539: We need to set both the latestOplogTimestamp and the PBRT until
-            // the former is removed in a future release.
-            responseBuilder.setLatestOplogTimestamp(exec->getLatestOplogTimestamp());
             responseBuilder.setPostBatchResumeToken(exec->getPostBatchResumeToken());
         }
         // If a time limit was set on the pipeline, remaining time is "rolled over" to the
@@ -787,6 +788,15 @@ Status runAggregate(OperationContext* opCtx,
         if (ctx && ctx->getCollection()) {
             ctx->getCollection()->infoCache()->notifyOfQuery(opCtx, stats.indexesUsed);
         }
+    }
+
+    // The aggregation pipeline may change the namespace of the curop and we need to set it back to
+    // the original namespace to correctly report command stats. One example when the namespace can
+    // be changed is when the pipeline contains an $out stage, which executes an internal command to
+    // create a temp collection, changing the curop namespace to the name of this temp collection.
+    {
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        curOp->setNS_inlock(origNss.ns());
     }
 
     // Any code that needs the cursor pinned must be inside the try block, above.

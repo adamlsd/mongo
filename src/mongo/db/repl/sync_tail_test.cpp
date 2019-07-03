@@ -36,7 +36,6 @@
 
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
@@ -407,7 +406,8 @@ DEATH_TEST_F(SyncTailTest, MultiApplyAbortsWhenNoOperationsAreGiven, "!ops.empty
                       getConsistencyMarkers(),
                       getStorageInterface(),
                       noopApplyOperationFn,
-                      writerPool.get());
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     syncTail.multiApply(_opCtx.get(), {}).getStatus().ignore();
 }
 
@@ -432,8 +432,12 @@ bool _testOplogEntryIsForCappedCollection(OperationContext* opCtx,
     auto op = makeInsertDocumentOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss, BSON("a" << 1));
     ASSERT_FALSE(op.isForCappedCollection);
 
-    SyncTail syncTail(
-        nullptr, consistencyMarkers, storageInterface, applyOperationFn, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      consistencyMarkers,
+                      storageInterface,
+                      applyOperationFn,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     auto lastOpTime = unittest::assertGet(syncTail.multiApply(opCtx, {op}));
     ASSERT_EQUALS(op.getOpTime(), lastOpTime);
 
@@ -468,7 +472,12 @@ TEST_F(SyncTailTest, MultiSyncApplyUsesSyncApplyToApplyOperation) {
 
     MultiApplier::OperationPtrs ops = {&op};
     WorkerMultikeyPathInfo pathInfo;
-    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
+    SyncTail syncTail(nullptr,
+                      nullptr,
+                      nullptr,
+                      {},
+                      nullptr,
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, &syncTail, &pathInfo));
     // Collection should be created after SyncTail::syncApply() processes operation.
     ASSERT_TRUE(AutoGetCollectionForReadCommand(_opCtx.get(), nss).getCollection());
@@ -591,8 +600,12 @@ private:
 };
 
 TEST_F(MultiOplogEntrySyncTailTest, MultiApplyUnpreparedTransactionSeparate) {
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     // Apply a batch with only the first operation.  This should result in the first oplog entry
     // being put in the oplog and updating the transaction table, but not actually being applied
@@ -645,7 +658,7 @@ TEST_F(MultiOplogEntrySyncTailTest, MultiApplyUnpreparedTransactionSeparate) {
 TEST_F(MultiOplogEntrySyncTailTest, MultiApplyUnpreparedTransactionAllAtOnce) {
     // Skipping writes to oplog proves we're testing the code path which does not rely on reading
     // the oplog.
-    OplogApplier::Options applierOpts;
+    OplogApplier::Options applierOpts(OplogApplication::Mode::kSecondary);
     applierOpts.skipWritesToOplog = true;
     SyncTail syncTail(nullptr,
                       getConsistencyMarkers(),
@@ -704,8 +717,12 @@ TEST_F(MultiOplogEntrySyncTailTest, MultiApplyUnpreparedTransactionTwoBatches) {
                                                                   StmtId(4),
                                                                   insertOps.back().getOpTime());
 
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     // Insert the first entry in its own batch.  This should result in the oplog entry being written
     // but the entry should not be applied as it is part of a pending transaction.
@@ -836,8 +853,12 @@ TEST_F(MultiOplogEntrySyncTailTest, MultiApplyTwoTransactionsOneBatch) {
                                                                    StmtId(2),
                                                                    insertOps2.back().getOpTime());
 
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     // Note the insert counter so we can check it later.  It is necessary to use opCounters as
     // inserts are idempotent so we will not detect duplicate inserts just by checking inserts in
@@ -949,8 +970,12 @@ private:
 };
 
 TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyPreparedTransactionSteadyState) {
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     // Apply a batch with the insert operations.  This should result in the oplog entries
     // being put in the oplog and updating the transaction table, but not actually being applied
@@ -999,8 +1024,12 @@ TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyPreparedTransactionStea
 }
 
 TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyAbortPreparedTransactionCheckTxnTable) {
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     // Apply a batch with the insert operations.  This should result in the oplog entries
     // being put in the oplog and updating the transaction table, but not actually being applied
@@ -1154,8 +1183,12 @@ TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyPreparedTransactionReco
 }
 
 TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplySingleApplyOpsPreparedTransaction) {
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     const auto expectedStartOpTime = _singlePrepareApplyOp->getOpTime();
 
@@ -1187,8 +1220,12 @@ TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplySingleApplyOpsPreparedT
 }
 
 TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyEmptyApplyOpsPreparedTransaction) {
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     auto emptyPrepareApplyOp = makeCommandOplogEntryWithSessionInfoAndStmtId(
         {Timestamp(Seconds(1), 3), 1LL},
@@ -1228,8 +1265,12 @@ TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyEmptyApplyOpsPreparedTr
 }
 
 TEST_F(MultiOplogEntryPreparedTransactionTest, MultiApplyAbortSingleApplyOpsPreparedTransaction) {
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, _writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      _writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     const auto expectedStartOpTime = _singlePrepareApplyOp->getOpTime();
     // Apply a batch with only the prepare applyOps. This should result in the prepare being put in
@@ -1347,7 +1388,12 @@ TEST_F(MultiOplogEntryPreparedTransactionTest,
 void testWorkerMultikeyPaths(OperationContext* opCtx,
                              const OplogEntry& op,
                              unsigned long numPaths) {
-    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
+    SyncTail syncTail(nullptr,
+                      nullptr,
+                      nullptr,
+                      {},
+                      nullptr,
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     WorkerMultikeyPathInfo pathInfo;
     MultiApplier::OperationPtrs ops = {&op};
     ASSERT_OK(multiSyncApply(opCtx, &ops, &syncTail, &pathInfo));
@@ -1403,7 +1449,12 @@ TEST_F(SyncTailTest, MultiSyncApplyAddsMultipleWorkerMultikeyPathInfo) {
         auto opA = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, docA);
         auto docB = BSON("_id" << 2 << "b" << BSON_ARRAY(6 << 7));
         auto opB = makeInsertDocumentOplogEntry({Timestamp(Seconds(5), 0), 1LL}, nss, docB);
-        SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
+        SyncTail syncTail(nullptr,
+                          nullptr,
+                          nullptr,
+                          {},
+                          nullptr,
+                          OplogApplier::Options(OplogApplication::Mode::kSecondary));
         WorkerMultikeyPathInfo pathInfo;
         MultiApplier::OperationPtrs ops = {&opA, &opB};
         ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, &syncTail, &pathInfo));
@@ -1446,7 +1497,12 @@ TEST_F(SyncTailTest, MultiSyncApplyFailsWhenCollectionCreationTriesToMakeUUID) {
     NamespaceString nss("foo." + _agent.getSuiteName() + "_" + _agent.getTestName());
 
     auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
-    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
+    SyncTail syncTail(nullptr,
+                      nullptr,
+                      nullptr,
+                      {},
+                      nullptr,
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     MultiApplier::OperationPtrs ops = {&op};
     ASSERT_EQUALS(ErrorCodes::InvalidOptions,
                   multiSyncApply(_opCtx.get(), &ops, &syncTail, nullptr));
@@ -1930,7 +1986,7 @@ DEATH_TEST_F(SyncTailTest,
             return Status::OK();
         };
     auto writerPool = OplogApplier::makeWriterPool();
-    OplogApplier::Options options;
+    OplogApplier::Options options(OplogApplication::Mode::kSecondary);
     SyncTail syncTail(nullptr,  // observer. not required by oplogApplication().
                       _consistencyMarkers.get(),
                       getStorageInterface(),
@@ -2549,8 +2605,12 @@ TEST_F(SyncTailTxnTableTest, SimpleWriteWithTxn) {
                                    date);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp}));
 
     checkTxnTable(sessionInfo, {Timestamp(1, 0), 1}, date);
@@ -2580,8 +2640,12 @@ TEST_F(SyncTailTxnTableTest, WriteWithTxnMixedWithDirectWriteToTxnTable) {
                                    Date_t::now());
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, deleteOp}));
 
     ASSERT_FALSE(docExists(
@@ -2624,8 +2688,12 @@ TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectDeleteToTxnTa
                                     date);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, deleteOp, insertOp2}));
 
     checkTxnTable(sessionInfo, {Timestamp(3, 0), 2}, date);
@@ -2656,8 +2724,12 @@ TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectUpdateToTxnTa
                                    Date_t::now());
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, updateOp}));
 
     checkTxnTable(sessionInfo, newWriteOpTime, date);
@@ -2716,8 +2788,12 @@ TEST_F(SyncTailTxnTableTest, RetryableWriteThenMultiStatementTxnWriteOnSameSessi
                                                       txnInsertOpTime);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {retryableInsertOp, txnInsertOp, txnCommitOp}));
 
@@ -2782,8 +2858,12 @@ TEST_F(SyncTailTxnTableTest, MultiStatementTxnWriteThenRetryableWriteOnSameSessi
                                             date);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
 
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {txnInsertOp, txnCommitOp, retryableInsertOp}));
 
@@ -2846,8 +2926,12 @@ TEST_F(SyncTailTxnTableTest, MultiApplyUpdatesTheTransactionTable) {
         {Timestamp(Seconds(7), 0), 1LL}, ns3, BSON("_id" << 0), info);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(
         _opCtx.get(),
         {opSingle, opDiffTxnSmaller, opDiffTxnLarger, opSameTxnSooner, opSameTxnLater, opNoTxn}));
@@ -2920,8 +3004,12 @@ TEST_F(SyncTailTxnTableTest, SessionMigrationNoOpEntriesShouldUpdateTxnTable) {
                                                 outerInsertDate);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOplog}));
 
     checkTxnTable(insertSessionInfo, {Timestamp(40, 0), 1}, outerInsertDate);
@@ -2943,8 +3031,12 @@ TEST_F(SyncTailTxnTableTest, PreImageNoOpEntriesShouldNotUpdateTxnTable) {
                                                   preImageDate);
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {preImageOplog}));
 
     ASSERT_FALSE(docExists(_opCtx.get(),
@@ -2968,8 +3060,12 @@ TEST_F(SyncTailTxnTableTest, NonMigrateNoOpEntriesShouldNotUpdateTxnTable) {
                                 Date_t::now());
 
     auto writerPool = OplogApplier::makeWriterPool();
-    SyncTail syncTail(
-        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    SyncTail syncTail(nullptr,
+                      getConsistencyMarkers(),
+                      getStorageInterface(),
+                      multiSyncApply,
+                      writerPool.get(),
+                      OplogApplier::Options(OplogApplication::Mode::kSecondary));
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {oplog}));
 
     ASSERT_FALSE(docExists(

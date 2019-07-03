@@ -328,6 +328,8 @@ public:
         /**
          * If this session is not holding stashed locks in txnResourceStash (transaction is active),
          * reports the current state of the session using the provided builder.
+         *
+         * The Client lock for the given OperationContext must be held when calling this method.
          */
         void reportUnstashedState(OperationContext* opCtx, BSONObjBuilder* builder) const;
 
@@ -566,12 +568,8 @@ public:
          * match.
          */
         void onWriteOpCompletedOnPrimary(OperationContext* opCtx,
-                                         TxnNumber txnNumber,
                                          std::vector<StmtId> stmtIdsWritten,
-                                         const repl::OpTime& lastStmtIdWriteOpTime,
-                                         Date_t lastStmtIdWriteDate,
-                                         boost::optional<DurableTxnStateEnum> txnState,
-                                         boost::optional<repl::OpTime> startOpTime);
+                                         const SessionTxnRecord& sessionTxnRecord);
 
         /**
          * Called after an entry for the specified session and transaction has been written to the
@@ -583,10 +581,8 @@ public:
          * the one specified.
          */
         void onMigrateCompletedOnPrimary(OperationContext* opCtx,
-                                         TxnNumber txnNumber,
                                          std::vector<StmtId> stmtIdsWritten,
-                                         const repl::OpTime& lastStmtIdWriteOpTime,
-                                         Date_t oplogLastStmtIdWriteDate);
+                                         const SessionTxnRecord& sessionTxnRecord);
 
         /**
          * Checks whether the given statementId for the specified transaction has already executed
@@ -677,10 +673,7 @@ public:
     private:
         boost::optional<repl::OpTime> _checkStatementExecuted(StmtId stmtId) const;
 
-        UpdateRequest _makeUpdateRequest(const repl::OpTime& newLastWriteOpTime,
-                                         Date_t newLastWriteDate,
-                                         boost::optional<DurableTxnStateEnum> newState,
-                                         boost::optional<repl::OpTime> startOpTime) const;
+        UpdateRequest _makeUpdateRequest(const SessionTxnRecord& sessionTxnRecord) const;
 
         void _registerUpdateCacheOnCommit(OperationContext* opCtx,
                                           std::vector<StmtId> stmtIdsWritten,
@@ -712,6 +705,9 @@ public:
         void _abortActiveTransaction(OperationContext* opCtx,
                                      TransactionState::StateSet expectedStates,
                                      bool writeOplog);
+
+        // Aborts a prepared transaction.
+        void _abortActivePreparedTransaction(OperationContext* opCtx);
 
         // Releases stashed transaction resources to abort the transaction on the session.
         void _abortTransactionOnSession(OperationContext* opCtx);

@@ -82,8 +82,9 @@ std::size_t OplogApplier::calculateBatchLimitBytes(OperationContext* opCtx,
 
 OplogApplier::OplogApplier(executor::TaskExecutor* executor,
                            OplogBuffer* oplogBuffer,
-                           Observer* observer)
-    : _executor(executor), _oplogBuffer(oplogBuffer), _observer(observer) {}
+                           Observer* observer,
+                           const OplogApplier::Options& options)
+    : _executor(executor), _oplogBuffer(oplogBuffer), _observer(observer), _options(options) {}
 
 OplogBuffer* OplogApplier::getBuffer() const {
     return _oplogBuffer;

@@ -387,13 +387,6 @@ SyncTail::SyncTail(OplogApplier::Observer* observer,
       _writerPool(writerPool),
       _options(options) {}
 
-SyncTail::SyncTail(OplogApplier::Observer* observer,
-                   ReplicationConsistencyMarkers* consistencyMarkers,
-                   StorageInterface* storageInterface,
-                   MultiSyncApplyFunc func,
-                   ThreadPool* writerPool)
-    : SyncTail(observer, consistencyMarkers, storageInterface, func, writerPool, {}) {}
-
 SyncTail::~SyncTail() {}
 
 const OplogApplier::Options& SyncTail::getOptions() const {
@@ -847,6 +840,12 @@ inline bool isCommitApplyOps(const OplogEntry& entry) {
         !entry.isPartialTransaction() && !entry.getObject().getBoolField("prepare");
 }
 
+// Returns whether a commitTransaction oplog entry is a part of a prepared transaction.
+inline bool isPreparedCommit(const OplogEntry& entry) {
+    return entry.getCommandType() == OplogEntry::CommandType::kCommitTransaction;
+}
+
+
 void SyncTail::shutdown() {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     _inShutdown = true;
@@ -1022,15 +1021,17 @@ Status multiSyncApply(OperationContext* opCtx,
     // Explicitly start future read transactions without a timestamp.
     opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNoTimestamp);
 
+    // When querying indexes, we return the record matching the key if it exists, or an adjacent
+    // document. This means that it is possible for us to hit a prepare conflict if we query for an
+    // incomplete key and an adjacent key is prepared.
+    // We ignore prepare conflicts on secondaries because they may encounter prepare conflicts that
+    // did not occur on the primary.
+    opCtx->recoveryUnit()->setPrepareConflictBehavior(
+        PrepareConflictBehavior::kIgnoreConflictsAllowWrites);
+
     ApplierHelpers::stableSortByNamespace(ops);
 
-    // Assume we are recovering if oplog writes are disabled in the options.
-    // Assume we are in initial sync if we have a host for fetching missing documents.
-    const auto oplogApplicationMode = st->getOptions().skipWritesToOplog
-        ? OplogApplication::Mode::kRecovering
-        : (st->getOptions().missingDocumentSourceForInitialSync
-               ? OplogApplication::Mode::kInitialSync
-               : OplogApplication::Mode::kSecondary);
+    const auto oplogApplicationMode = st->getOptions().mode;
 
     ApplierHelpers::InsertGroup insertGroup(ops, opCtx, oplogApplicationMode);
 
@@ -1199,8 +1200,8 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
                         // messing up the state of the opCtx.  In particular we do not want to
                         // set the ReadSource to kLastApplied.
                         ReadSourceScope readSourceScope(opCtx);
-                        derivedOps->emplace_back(
-                            readTransactionOperationsFromOplogChain(opCtx, op, partialTxnList));
+                        derivedOps->emplace_back(readTransactionOperationsFromOplogChain(
+                            opCtx, op, partialTxnList, boost::none));
                         partialTxnList.clear();
                     }
                     // Transaction entries cannot have different session updates.
@@ -1222,6 +1223,31 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
                                                     << "Unable to extract operations from applyOps "
                                                     << redact(op.toBSON())));
             }
+            continue;
+        }
+
+        // If we see a commitTransaction command that is a part of a prepared transaction during
+        // initial sync, find the prepare oplog entry, extract applyOps operations, and fill writers
+        // with the extracted operations.
+        if (isPreparedCommit(op) && (_options.mode == OplogApplication::Mode::kInitialSync)) {
+            auto logicalSessionId = op.getSessionId();
+            auto& partialTxnList = partialTxnOps[*logicalSessionId];
+
+            {
+                // Traverse the oplog chain with its own snapshot and read timestamp.
+                ReadSourceScope readSourceScope(opCtx);
+
+                // Get the previous oplog entry, which should be a prepare oplog entry.
+                const auto prevOplogEntry = getPreviousOplogEntry(opCtx, op);
+                invariant(prevOplogEntry.shouldPrepare());
+
+                // Extract the operations from the applyOps entry.
+                auto commitOplogEntryOpTime = op.getOpTime();
+                derivedOps->emplace_back(readTransactionOperationsFromOplogChain(
+                    opCtx, prevOplogEntry, partialTxnList, commitOplogEntryOpTime.getTimestamp()));
+            }
+
+            _fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
             continue;
         }
 
@@ -1279,6 +1305,7 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
     invariant(!ops.empty());
 
     LOG(2) << "replication batch size is " << ops.size();
+
     // Stop all readers until we're done. This also prevents doc-locking engines from deleting old
     // entries from the oplog until we finish writing.
     Lock::ParallelBatchWriterMode pbwm(opCtx->lockState());

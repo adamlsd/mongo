@@ -60,7 +60,10 @@ public:
 };
 
 OplogApplierMock::OplogApplierMock(OplogBuffer* oplogBuffer)
-    : OplogApplier(nullptr, oplogBuffer, nullptr) {}
+    : OplogApplier(nullptr,
+                   oplogBuffer,
+                   nullptr,
+                   OplogApplier::Options(OplogApplication::Mode::kSecondary)) {}
 
 void OplogApplierMock::_run(OplogBuffer* oplogBuffer) {}
 

@@ -511,7 +511,25 @@ void Refresher::scheduleNetworkRequests(WithLock withLock) {
         if (ns.step != Refresher::NextStep::CONTACT_HOST)
             break;
 
-        scheduleIsMaster(ns.host, withLock);
+        // cancel any scheduled isMaster calls that haven't yet been called
+        Node* node = _set->findOrCreateNode(ns.host);
+        if (node->scheduledIsMasterHandle) {
+            _set->executor->cancel(node->scheduledIsMasterHandle);
+        }
+
+        // ensure that the call to isMaster is scheduled at most every 500ms
+        if (_set->executor && (_set->executor->now() < node->nextPossibleIsMasterCall) &&
+            !_set->isMocked) {
+            // schedule a new call
+            node->scheduledIsMasterHandle = uassertStatusOK(_set->executor->scheduleWorkAt(
+                node->nextPossibleIsMasterCall,
+                [ *this, host = ns.host ](const CallbackArgs& cbArgs) mutable {
+                    stdx::lock_guard lk(_set->mutex);
+                    scheduleIsMaster(host, lk);
+                }));
+        } else {
+            scheduleIsMaster(ns.host, withLock);
+        }
     }
 
     DEV _set->checkInvariants();
@@ -544,7 +562,6 @@ void Refresher::scheduleIsMaster(const HostAndPort& host, WithLock withLock) {
                                                   nullptr,
                                                   Milliseconds(int64_t(socketTimeoutSecs * 1000)));
     request.sslMode = _set->setUri.getSSLMode();
-
     auto status =
         _set->executor
             ->scheduleRemoteCommand(
@@ -669,6 +686,14 @@ void Refresher::receivedIsMaster(const HostAndPort& from,
     if (!reply.ok) {
         failedHost(from, {ErrorCodes::CommandFailed, "Failed to execute 'ismaster' command"});
         return;
+    }
+
+    // ensure that isMaster calls occur at most 500ms after the previous call ended
+    if (_set->executor) {
+        Node* node = _set->findNode(from);
+        if (node) {
+            node->nextPossibleIsMasterCall = _set->executor->now() + Milliseconds(500);
+        }
     }
 
     if (reply.setName != _set->name) {
@@ -1116,6 +1141,7 @@ std::vector<HostAndPort> SetState::getMatchingHosts(const ReadPreferenceSetting&
                 }
             }
 
+            std::vector<const Node*> allMatchingNodes;
             BSONForEach(tagElem, criteria.tags.getTagBSON()) {
                 uassert(16358, "Tags should be a BSON object", tagElem.isABSONObj());
                 BSONObj tag = tagElem.Obj();
@@ -1126,14 +1152,6 @@ std::vector<HostAndPort> SetState::getMatchingHosts(const ReadPreferenceSetting&
                         matchNode(nodes[i])) {
                         matchingNodes.push_back(&nodes[i]);
                     }
-                }
-
-                // don't do more complicated selection if not needed
-                if (matchingNodes.empty()) {
-                    continue;
-                }
-                if (matchingNodes.size() == 1) {
-                    return {matchingNodes.front()->host};
                 }
 
                 // Only consider nodes that satisfy the minOpTime
@@ -1150,45 +1168,50 @@ std::vector<HostAndPort> SetState::getMatchingHosts(const ReadPreferenceSetting&
                             break;
                         }
                     }
-
-                    if (matchingNodes.size() == 1) {
-                        return {matchingNodes.front()->host};
-                    }
                 }
 
-                // If there are multiple nodes satisfying the minOpTime, next order by latency
-                // and don't consider hosts further than a threshold from the closest.
-                std::sort(matchingNodes.begin(), matchingNodes.end(), compareLatencies);
-                for (size_t i = 1; i < matchingNodes.size(); i++) {
-                    int64_t distance =
-                        matchingNodes[i]->latencyMicros - matchingNodes[0]->latencyMicros;
-                    if (distance >= latencyThresholdMicros) {
-                        // this node and all remaining ones are too far away
-                        matchingNodes.erase(matchingNodes.begin() + i, matchingNodes.end());
-                        break;
-                    }
-                }
-
-                std::vector<HostAndPort> hosts;
-                std::transform(matchingNodes.begin(),
-                               matchingNodes.end(),
-                               std::back_inserter(hosts),
-                               [](const auto& node) { return node->host; });
-
-                // Note that the host list is only deterministic (or random) for the first node.
-                // The rest of the list is in matchingNodes order (latency) with one element swapped
-                // for the first element.
-                if (auto bestHostIdx = ReplicaSetMonitor::useDeterministicHostSelection
-                        ? roundRobin++ % hosts.size()
-                        : rand.nextInt32(hosts.size())) {
-                    using std::swap;
-                    swap(hosts[0], hosts[bestHostIdx]);
-                }
-
-                return hosts;
+                allMatchingNodes.insert(
+                    allMatchingNodes.end(), matchingNodes.begin(), matchingNodes.end());
             }
 
-            return {};
+            // don't do more complicated selection if not needed
+            if (allMatchingNodes.empty()) {
+                return {};
+            }
+            if (allMatchingNodes.size() == 1) {
+                return {allMatchingNodes.front()->host};
+            }
+
+            // If there are multiple nodes satisfying the minOpTime, next order by latency
+            // and don't consider hosts further than a threshold from the closest.
+            std::sort(allMatchingNodes.begin(), allMatchingNodes.end(), compareLatencies);
+            for (size_t i = 1; i < allMatchingNodes.size(); i++) {
+                int64_t distance =
+                    allMatchingNodes[i]->latencyMicros - allMatchingNodes[0]->latencyMicros;
+                if (distance >= latencyThresholdMicros) {
+                    // this node and all remaining ones are too far away
+                    allMatchingNodes.erase(allMatchingNodes.begin() + i, allMatchingNodes.end());
+                    break;
+                }
+            }
+
+            std::vector<HostAndPort> hosts;
+            std::transform(allMatchingNodes.begin(),
+                           allMatchingNodes.end(),
+                           std::back_inserter(hosts),
+                           [](const auto& node) { return node->host; });
+
+            // Note that the host list is only deterministic (or random) for the first node.
+            // The rest of the list is in matchingNodes order (latency) with one element swapped
+            // for the first element.
+            if (auto bestHostIdx = ReplicaSetMonitor::useDeterministicHostSelection
+                    ? roundRobin++ % hosts.size()
+                    : rand.nextInt32(hosts.size())) {
+                using std::swap;
+                swap(hosts[0], hosts[bestHostIdx]);
+            }
+
+            return hosts;
         }
 
         default:

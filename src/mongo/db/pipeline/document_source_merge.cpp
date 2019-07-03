@@ -34,6 +34,7 @@
 #include "mongo/db/pipeline/document_source_merge.h"
 
 #include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <map>
 
 #include "mongo/db/curop_failpoint_helpers.h"
@@ -370,10 +371,6 @@ boost::intrusive_ptr<DocumentSource> DocumentSourceMerge::create(
     uassert(ErrorCodes::InvalidOptions,
             "{} cannot be used with a 'linearizable' read concern level"_format(kStageName),
             readConcernLevel != repl::ReadConcernLevel::kLinearizableReadConcern);
-
-    uassert(51180,
-            "Cannot {} into special collection: '{}'"_format(kStageName, outputNs.coll()),
-            !outputNs.isSpecial());
 
     if (whenMatched == WhenMatched::kPipeline) {
         if (!letVariables) {

@@ -49,16 +49,13 @@
 namespace mongo {
 
 namespace {
-// TODO SERVER-36385: Completely remove the key size check in 4.4
-bool isLargeKeyDisallowed() {
-    return serverGlobalParams.featureCompatibility.getVersion() ==
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo40;
-}
-
 KeyString makeWildCardMultikeyMetadataKeyString(const BSONObj& indexKey) {
     const auto multikeyMetadataOrd = Ordering::make(BSON("" << 1 << "" << 1));
     const RecordId multikeyMetadataRecordId(RecordId::ReservedId::kWildcardMultikeyMetadataId);
-    return {KeyString::kLatestVersion, indexKey, multikeyMetadataOrd, multikeyMetadataRecordId};
+    return {KeyString::Version::kLatestVersion,
+            indexKey,
+            multikeyMetadataOrd,
+            multikeyMetadataRecordId};
 }
 }
 
@@ -84,21 +81,14 @@ Status RecordStoreValidateAdaptor::validate(const RecordId& recordId,
         return status;
     }
 
-    std::unique_ptr<IndexCatalog::IndexIterator> it =
-        _indexCatalog->getIndexIterator(_opCtx, false);
-
-    while (it->more()) {
-        const IndexDescriptor* descriptor = it->next()->descriptor();
-        const std::string indexName = descriptor->indexName();
-        int indexNumber = _indexConsistency->getIndexNumber(indexName);
-        ValidateResults curRecordResults;
-
+    for (auto& it : _indexConsistency->getIndexInfo()) {
+        IndexInfo& indexInfo = it.second;
+        const IndexDescriptor* descriptor = indexInfo.descriptor;
         const IndexAccessMethod* iam = _indexCatalog->getEntry(descriptor)->accessMethod();
 
         if (descriptor->isPartial()) {
             const IndexCatalogEntry* ice = _indexCatalog->getEntry(descriptor);
             if (!ice->getFilterExpression()->matchesBSON(recordBson)) {
-                (*_indexNsResultsMap)[indexName] = curRecordResults;
                 continue;
             }
         }
@@ -118,34 +108,22 @@ Status RecordStoreValidateAdaptor::validate(const RecordId& recordId,
                 {multikeyMetadataKeys.begin(), multikeyMetadataKeys.end()},
                 multikeyPaths)) {
             std::string msg = str::stream() << "Index " << descriptor->indexName()
-                                            << " is not multi-key, but a multikey path "
-                                            << " is present in document " << recordId;
+                                            << " is not multi-key but has more than one"
+                                            << " key in document " << recordId;
+            ValidateResults& curRecordResults = (*_indexNsResultsMap)[descriptor->indexName()];
             curRecordResults.errors.push_back(msg);
             curRecordResults.valid = false;
         }
 
         for (const auto& key : multikeyMetadataKeys) {
             _indexConsistency->addMultikeyMetadataPath(makeWildCardMultikeyMetadataKeyString(key),
-                                                       indexNumber);
+                                                       &indexInfo);
         }
-
-        const auto& pattern = descriptor->keyPattern();
-        const Ordering ord = Ordering::make(pattern);
-        bool largeKeyDisallowed = isLargeKeyDisallowed();
 
         for (const auto& key : documentKeySet) {
-            if (largeKeyDisallowed &&
-                key.objsize() >= static_cast<int64_t>(KeyString::TypeBits::kMaxKeyBytes)) {
-                // Index keys >= 1024 bytes are not indexed.
-                _indexConsistency->addLongIndexKey(indexNumber);
-                continue;
-            }
-
-            // We want to use the latest version of KeyString here.
-            KeyString ks(KeyString::kLatestVersion, key, ord, recordId);
-            _indexConsistency->addDocKey(ks, indexNumber, recordId, key);
+            indexInfo.ks->resetToKey(key, indexInfo.ord, recordId);
+            _indexConsistency->addDocKey(*indexInfo.ks, &indexInfo, recordId, key);
         }
-        (*_indexNsResultsMap)[indexName] = curRecordResults;
     }
     return status;
 }
@@ -155,28 +133,28 @@ void RecordStoreValidateAdaptor::traverseIndex(const IndexAccessMethod* iam,
                                                ValidateResults* results,
                                                int64_t* numTraversedKeys) {
     auto indexName = descriptor->indexName();
-    int indexNumber = _indexConsistency->getIndexNumber(indexName);
+    IndexInfo* indexInfo = &_indexConsistency->getIndexInfo(indexName);
     int64_t numKeys = 0;
 
     const auto& key = descriptor->keyPattern();
     const Ordering ord = Ordering::make(key);
-    KeyString::Version version = KeyString::kLatestVersion;
-    std::unique_ptr<KeyString> prevIndexKeyString = nullptr;
     bool isFirstEntry = true;
 
     std::unique_ptr<SortedDataInterface::Cursor> cursor = iam->newCursor(_opCtx, true);
+    // We want to use the latest version of KeyString here.
+    const KeyString::Version version = KeyString::Version::kLatestVersion;
+    std::unique_ptr<KeyString> indexKeyString = std::make_unique<KeyString>(version);
+    std::unique_ptr<KeyString> prevIndexKeyString = std::make_unique<KeyString>(version);
+
     // Seeking to BSONObj() is equivalent to seeking to the first entry of an index.
     for (auto indexEntry = cursor->seek(BSONObj(), true); indexEntry; indexEntry = cursor->next()) {
+        indexKeyString->resetToKey(indexEntry->key, ord, indexEntry->loc);
 
-        // We want to use the latest version of KeyString here.
-        std::unique_ptr<KeyString> indexKeyString =
-            std::make_unique<KeyString>(version, indexEntry->key, ord, indexEntry->loc);
         // Ensure that the index entries are in increasing or decreasing order.
         if (!isFirstEntry && *indexKeyString < *prevIndexKeyString) {
             if (results && results->valid) {
                 results->errors.push_back(
-                    "one or more indexes are not in strictly ascending or descending "
-                    "order");
+                    "one or more indexes are not in strictly ascending or descending order");
             }
 
             if (results) {
@@ -189,20 +167,20 @@ void RecordStoreValidateAdaptor::traverseIndex(const IndexAccessMethod* iam,
         if (descriptor->getIndexType() == IndexType::INDEX_WILDCARD &&
             indexEntry->loc == kWildcardMultikeyMetadataRecordId) {
             _indexConsistency->removeMultikeyMetadataPath(
-                makeWildCardMultikeyMetadataKeyString(indexEntry->key), indexNumber);
+                makeWildCardMultikeyMetadataKeyString(indexEntry->key), indexInfo);
             numKeys++;
             continue;
         }
 
         _indexConsistency->addIndexKey(
-            *indexKeyString, indexNumber, indexEntry->loc, indexEntry->key);
+            *indexKeyString, indexInfo, indexEntry->loc, indexEntry->key);
 
         numKeys++;
         isFirstEntry = false;
         prevIndexKeyString.swap(indexKeyString);
     }
 
-    if (results && _indexConsistency->getMultikeyMetadataPathCount(indexNumber) > 0) {
+    if (results && _indexConsistency->getMultikeyMetadataPathCount(indexInfo) > 0) {
         results->errors.push_back(
             str::stream() << "Index '" << descriptor->indexName()
                           << "' has one or more missing multikey metadata index keys");
@@ -271,20 +249,18 @@ void RecordStoreValidateAdaptor::validateIndexKeyCount(const IndexDescriptor* id
                                                        int64_t numRecs,
                                                        ValidateResults& results) {
     const std::string indexName = idx->indexName();
-    int indexNumber = _indexConsistency->getIndexNumber(indexName);
-    int64_t numIndexedKeys = _indexConsistency->getNumKeys(indexNumber);
-    int64_t numLongKeys = _indexConsistency->getNumLongKeys(indexNumber);
-    auto totalKeys = numLongKeys + numIndexedKeys;
+    IndexInfo* indexInfo = &_indexConsistency->getIndexInfo(indexName);
+    auto numTotalKeys = indexInfo->numKeys;
 
     bool hasTooFewKeys = false;
-    bool noErrorOnTooFewKeys = !failIndexKeyTooLongParam() && (_level != kValidateFull);
+    bool noErrorOnTooFewKeys = (_level != kValidateFull);
 
-    if (idx->isIdIndex() && totalKeys != numRecs) {
-        hasTooFewKeys = totalKeys < numRecs ? true : hasTooFewKeys;
-        std::string msg = str::stream() << "number of _id index entries (" << numIndexedKeys
+    if (idx->isIdIndex() && numTotalKeys != numRecs) {
+        hasTooFewKeys = numTotalKeys < numRecs ? true : hasTooFewKeys;
+        std::string msg = str::stream() << "number of _id index entries (" << numTotalKeys
                                         << ") does not match the number of documents in the index ("
-                                        << numRecs - numLongKeys << ")";
-        if (noErrorOnTooFewKeys && (numIndexedKeys < numRecs)) {
+                                        << numRecs << ")";
+        if (noErrorOnTooFewKeys && (numTotalKeys < numRecs)) {
             results.warnings.push_back(msg);
         } else {
             results.errors.push_back(msg);
@@ -297,21 +273,21 @@ void RecordStoreValidateAdaptor::validateIndexKeyCount(const IndexDescriptor* id
     // produce an index key per array entry) and not $** indexes which can produce index keys for
     // multiple paths within a single document.
     if (results.valid && !idx->isMultikey(_opCtx) &&
-        idx->getIndexType() != IndexType::INDEX_WILDCARD && totalKeys > numRecs) {
+        idx->getIndexType() != IndexType::INDEX_WILDCARD && numTotalKeys > numRecs) {
         std::string err = str::stream()
             << "index " << idx->indexName() << " is not multi-key, but has more entries ("
-            << numIndexedKeys << ") than documents in the index (" << numRecs - numLongKeys << ")";
+            << numTotalKeys << ") than documents in the index (" << numRecs << ")";
         results.errors.push_back(err);
         results.valid = false;
     }
     // Ignore any indexes with a special access method. If an access method name is given, the
     // index may be a full text, geo or special index plugin with different semantics.
     if (results.valid && !idx->isSparse() && !idx->isPartial() && !idx->isIdIndex() &&
-        idx->getAccessMethodName() == "" && totalKeys < numRecs) {
+        idx->getAccessMethodName() == "" && numTotalKeys < numRecs) {
         hasTooFewKeys = true;
         std::string msg = str::stream()
             << "index " << idx->indexName() << " is not sparse or partial, but has fewer entries ("
-            << numIndexedKeys << ") than documents in the index (" << numRecs - numLongKeys << ")";
+            << numTotalKeys << ") than documents in the index (" << numRecs << ")";
         if (noErrorOnTooFewKeys) {
             results.warnings.push_back(msg);
         } else {
@@ -322,10 +298,8 @@ void RecordStoreValidateAdaptor::validateIndexKeyCount(const IndexDescriptor* id
 
     if ((_level != kValidateFull) && hasTooFewKeys) {
         std::string warning = str::stream()
-            << "index " << idx->indexName()
-            << " has fewer keys than records. This may be the result of currently or "
-               "previously running the server with the failIndexKeyTooLong parameter set to "
-               "false. Please re-run the validate command with {full: true}";
+            << "index " << idx->indexName() << " has fewer keys than records."
+            << " Please re-run the validate command with {full: true}";
         results.warnings.push_back(warning);
     }
 }

@@ -97,11 +97,6 @@ public:
              MultiSyncApplyFunc func,
              ThreadPool* writerPool,
              const OplogApplier::Options& options);
-    SyncTail(OplogApplier::Observer* observer,
-             ReplicationConsistencyMarkers* consistencyMarkers,
-             StorageInterface* storageInterface,
-             MultiSyncApplyFunc func,
-             ThreadPool* writerPool);
     virtual ~SyncTail();
 
     /**

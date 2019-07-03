@@ -741,10 +741,8 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             str::stream() << "Internal parameter(s) [" << AggregationRequest::kNeedsMergeName
                           << ", "
                           << AggregationRequest::kFromMongosName
-                          << ", "
-                          << AggregationRequest::kMergeByPBRTName
                           << "] cannot be set to 'true' when sent to mongos",
-            !request.needsMerge() && !request.isFromMongos() && !request.mergeByPBRT());
+            !request.needsMerge() && !request.isFromMongos());
     auto executionNsRoutingInfoStatus =
         sharded_agg_helpers::getExecutionNsRoutingInfo(opCtx, namespaces.executionNss);
     boost::optional<CachedCollectionRoutingInfo> routingInfo;
@@ -789,8 +787,7 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     // 3. Does not need to run on all shards.
     // 4. Doesn't need transformation via DocumentSource::serialize().
     if (routingInfo && !routingInfo->cm() && !mustRunOnAll &&
-        litePipe.allowedToForwardFromMongos() && litePipe.allowedToPassthroughFromMongos() &&
-        !involvesShardedCollections) {
+        litePipe.allowedToPassthroughFromMongos() && !involvesShardedCollections) {
         const auto primaryShardId = routingInfo->db().primary()->getId();
         return aggPassthrough(
             opCtx, namespaces, primaryShardId, request, litePipe, privileges, result);
@@ -955,7 +952,7 @@ Status ClusterAggregate::retryOnViewError(OperationContext* opCtx,
     result->resetToEmpty();
 
     if (auto txnRouter = TransactionRouter::get(opCtx)) {
-        txnRouter->onViewResolutionError(opCtx, requestedNss);
+        txnRouter.onViewResolutionError(opCtx, requestedNss);
     }
 
     // We pass both the underlying collection namespace and the view namespace here. The

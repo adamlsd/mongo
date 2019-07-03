@@ -52,6 +52,7 @@
 #include "mongo/db/index_builds_coordinator.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_metadata.h"
@@ -59,6 +60,7 @@
 #include "mongo/db/s/database_sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/view_catalog.h"
+#include "mongo/platform/compiler.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -259,7 +261,8 @@ boost::optional<CommitQuorumOptions> parseAndGetCommitQuorum(OperationContext* o
         // Retrieve the default commit quorum if one wasn't passed in, which consists of all
         // data-bearing nodes.
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-        int numDataBearingMembers = replCoord->getConfig().getNumDataBearingMembers();
+        int numDataBearingMembers =
+            replCoord->isReplEnabled() ? replCoord->getConfig().getNumDataBearingMembers() : 1;
         return CommitQuorumOptions(numDataBearingMembers);
     }
 }
@@ -358,7 +361,7 @@ Database* getOrCreateDatabase(OperationContext* opCtx, StringData dbName, Lock::
  */
 void checkDatabaseShardingState(OperationContext* opCtx, Database* db) {
     auto& dss = DatabaseShardingState::get(db);
-    auto dssLock = DatabaseShardingState::DSSLock::lock(opCtx, &dss);
+    auto dssLock = DatabaseShardingState::DSSLock::lockShared(opCtx, &dss);
     dss.checkDbVersion(opCtx, dssLock);
 }
 
@@ -417,6 +420,8 @@ bool runCreateIndexes(OperationContext* opCtx,
 
     auto specs = uassertStatusOK(
         parseAndValidateIndexSpecs(opCtx, ns, cmdObj, serverGlobalParams.featureCompatibility));
+
+    MONGO_COMPILER_VARIABLE_UNUSED auto commitQuorum = parseAndGetCommitQuorum(opCtx, cmdObj);
 
     Status validateTTL = validateTTLOptions(opCtx, cmdObj);
     uassertStatusOK(validateTTL);
@@ -705,8 +710,18 @@ bool runCreateIndexesWithCoordinator(OperationContext* opCtx,
                                     << " ( "
                                     << *collectionUUID
                                     << " )");
+
+        // Set last op on error to provide the client with a specific optime to read the state of
+        // the server when the createIndexes command failed.
+        repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+
         throw;
     }
+
+    // IndexBuildsCoordinator may write the createIndexes oplog entry on a different thread.
+    // The current client's last op should be synchronized with the oplog to ensure consistent
+    // getLastError results as the previous non-IndexBuildsCoordinator behavior.
+    repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
 
     result.append(kNumIndexesBeforeFieldName, stats.numIndexesBefore);
     result.append(kNumIndexesAfterFieldName, stats.numIndexesAfter);

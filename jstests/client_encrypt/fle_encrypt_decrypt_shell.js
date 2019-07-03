@@ -50,7 +50,12 @@ load('jstests/ssl/libs/ssl_helpers.js');
         UUID(),
         ISODate(),
         new Date('December 17, 1995 03:24:00'),
-        BinData(2, '1234'),
+        BinData(0, '1234'),
+        BinData(1, '1234'),
+        BinData(3, '1234'),
+        BinData(4, '1234'),
+        BinData(5, '1234'),
+        BinData(6, '1234'),
         new Timestamp(1, 2),
         new ObjectId(),
         new DBPointer("mongo", new ObjectId()),
@@ -67,7 +72,8 @@ load('jstests/ssl/libs/ssl_helpers.js');
         Code("function() { return true; }")
     ];
 
-    const failTestCases = [null, undefined, MinKey(), MaxKey(), DBRef("test", "test", "test")];
+    const failTestCases =
+        [null, undefined, MinKey(), MaxKey(), DBRef("test", "test", "test"), BinData(2, '1234')];
 
     const shell = Mongo(conn.host, clientSideFLEOptions);
     const keyVault = shell.getKeyVault();
@@ -91,18 +97,21 @@ load('jstests/ssl/libs/ssl_helpers.js');
                 fail = [...failTestCases, ...failDeterministic];
             }
 
+            const clientEncrypt = shell.getClientEncryption();
             for (const passTestCase of pass) {
-                const encPassTestCase = shell.encrypt(keyId, passTestCase, encryptionAlgorithm);
-                assert.eq(passTestCase, shell.decrypt(encPassTestCase));
+                const encPassTestCase =
+                    clientEncrypt.encrypt(keyId, passTestCase, encryptionAlgorithm);
+                assert.eq(passTestCase, clientEncrypt.decrypt(encPassTestCase));
 
                 if (encryptionAlgorithm === deterministicAlgorithm) {
                     assert.eq(encPassTestCase,
-                              shell.encrypt(keyId, passTestCase, encryptionAlgorithm));
+                              clientEncrypt.encrypt(keyId, passTestCase, encryptionAlgorithm));
                 }
             }
 
             for (const failTestCase of fail) {
-                assert.throws(shell.encrypt, [keyId, failTestCase, encryptionAlgorithm]);
+                assert.throws(() =>
+                                  clientEncrypt.encrypt(keyId, failTestCase, encryptionAlgorithm));
             }
         }
     }

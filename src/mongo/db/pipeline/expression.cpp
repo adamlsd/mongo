@@ -1204,7 +1204,7 @@ Value ExpressionDateFromParts::serialize(bool explain) const {
 }
 
 bool ExpressionDateFromParts::evaluateNumberWithDefault(const Document& root,
-                                                        intrusive_ptr<Expression> field,
+                                                        const Expression* field,
                                                         StringData fieldName,
                                                         long long defaultValue,
                                                         long long* returnValue,
@@ -1232,14 +1232,39 @@ bool ExpressionDateFromParts::evaluateNumberWithDefault(const Document& root,
     return true;
 }
 
+bool ExpressionDateFromParts::evaluateNumberWithDefaultAndBounds(const Document& root,
+                                                                 const Expression* field,
+                                                                 StringData fieldName,
+                                                                 long long defaultValue,
+                                                                 long long* returnValue,
+                                                                 Variables* variables) const {
+    bool result =
+        evaluateNumberWithDefault(root, field, fieldName, defaultValue, returnValue, variables);
+
+    uassert(31034,
+            str::stream() << "'" << fieldName << "'"
+                          << " must evaluate to a value in the range ["
+                          << kMinValueForDatePart
+                          << ", "
+                          << kMaxValueForDatePart
+                          << "]; value "
+                          << *returnValue
+                          << " is not in range",
+            !result ||
+                (*returnValue >= kMinValueForDatePart && *returnValue <= kMaxValueForDatePart));
+
+    return result;
+}
+
 Value ExpressionDateFromParts::evaluate(const Document& root, Variables* variables) const {
     long long hour, minute, second, millisecond;
 
-    if (!evaluateNumberWithDefault(root, _hour, "hour"_sd, 0, &hour, variables) ||
-        !evaluateNumberWithDefault(root, _minute, "minute"_sd, 0, &minute, variables) ||
-        !evaluateNumberWithDefault(root, _second, "second"_sd, 0, &second, variables) ||
+    if (!evaluateNumberWithDefaultAndBounds(root, _hour.get(), "hour"_sd, 0, &hour, variables) ||
+        !evaluateNumberWithDefaultAndBounds(
+            root, _minute.get(), "minute"_sd, 0, &minute, variables) ||
+        !evaluateNumberWithDefault(root, _second.get(), "second"_sd, 0, &second, variables) ||
         !evaluateNumberWithDefault(
-            root, _millisecond, "millisecond"_sd, 0, &millisecond, variables)) {
+            root, _millisecond.get(), "millisecond"_sd, 0, &millisecond, variables)) {
         // One of the evaluated inputs in nullish.
         return Value(BSONNULL);
     }
@@ -1254,9 +1279,10 @@ Value ExpressionDateFromParts::evaluate(const Document& root, Variables* variabl
     if (_year) {
         long long year, month, day;
 
-        if (!evaluateNumberWithDefault(root, _year, "year"_sd, 1970, &year, variables) ||
-            !evaluateNumberWithDefault(root, _month, "month"_sd, 1, &month, variables) ||
-            !evaluateNumberWithDefault(root, _day, "day"_sd, 1, &day, variables)) {
+        if (!evaluateNumberWithDefault(root, _year.get(), "year"_sd, 1970, &year, variables) ||
+            !evaluateNumberWithDefaultAndBounds(
+                root, _month.get(), "month"_sd, 1, &month, variables) ||
+            !evaluateNumberWithDefaultAndBounds(root, _day.get(), "day"_sd, 1, &day, variables)) {
             // One of the evaluated inputs in nullish.
             return Value(BSONNULL);
         }
@@ -1276,13 +1302,22 @@ Value ExpressionDateFromParts::evaluate(const Document& root, Variables* variabl
         long long isoWeekYear, isoWeek, isoDayOfWeek;
 
         if (!evaluateNumberWithDefault(
-                root, _isoWeekYear, "isoWeekYear"_sd, 1970, &isoWeekYear, variables) ||
-            !evaluateNumberWithDefault(root, _isoWeek, "isoWeek"_sd, 1, &isoWeek, variables) ||
-            !evaluateNumberWithDefault(
-                root, _isoDayOfWeek, "isoDayOfWeek"_sd, 1, &isoDayOfWeek, variables)) {
+                root, _isoWeekYear.get(), "isoWeekYear"_sd, 1970, &isoWeekYear, variables) ||
+            !evaluateNumberWithDefaultAndBounds(
+                root, _isoWeek.get(), "isoWeek"_sd, 1, &isoWeek, variables) ||
+            !evaluateNumberWithDefaultAndBounds(
+                root, _isoDayOfWeek.get(), "isoDayOfWeek"_sd, 1, &isoDayOfWeek, variables)) {
             // One of the evaluated inputs in nullish.
             return Value(BSONNULL);
         }
+
+        uassert(31095,
+                str::stream() << "'isoWeekYear' must evaluate to an integer in the range " << 0
+                              << " to "
+                              << 9999
+                              << ", found "
+                              << isoWeekYear,
+                isoWeekYear >= 0 && isoWeekYear <= 9999);
 
         return Value(timeZone->createFromIso8601DateParts(
             isoWeekYear, isoWeek, isoDayOfWeek, hour, minute, second, millisecond));
@@ -1988,20 +2023,6 @@ intrusive_ptr<ExpressionFieldPath> ExpressionFieldPath::parse(
         const StringData varName = fieldPath.substr(0, fieldPath.find('.'));
         Variables::uassertValidNameForUserRead(varName);
         auto varId = vps.getVariable(varName);
-        // $$NOW and $$CLUSTER_TIME are available only in 4.2 and up.
-        // The check should be removed when 4.2 becomes the last stable version.
-        if (varId == Variables::kNowId || varId == Variables::kClusterTimeId) {
-            uassert(ErrorCodes::QueryFeatureNotAllowed,
-                    str::stream()
-                        << "'$$"
-                        << varName
-                        << "' is not allowed in the current feature compatibility version. See "
-                        << feature_compatibility_version_documentation::kCompatibilityLink
-                        << " for more information.",
-                    !expCtx->maxFeatureCompatibilityVersion ||
-                        (ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42 <=
-                         *expCtx->maxFeatureCompatibilityVersion));
-        }
         return new ExpressionFieldPath(expCtx, fieldPath.toString(), varId);
     } else {
         return new ExpressionFieldPath(expCtx,
@@ -4946,10 +4967,7 @@ Value ExpressionRound::evaluate(const Document& root, Variables* variables) cons
         root, _children, getOpName(), Decimal128::kRoundTiesToEven, &std::round, variables);
 }
 
-REGISTER_EXPRESSION_WITH_MIN_VERSION(
-    round,
-    ExpressionRound::parse,
-    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+REGISTER_EXPRESSION(round, ExpressionRound::parse);
 const char* ExpressionRound::getOpName() const {
     return "$round";
 }
@@ -4962,24 +4980,6 @@ Value ExpressionTrunc::evaluate(const Document& root, Variables* variables) cons
 intrusive_ptr<Expression> ExpressionTrunc::parse(const intrusive_ptr<ExpressionContext>& expCtx,
                                                  BSONElement elem,
                                                  const VariablesParseState& vps) {
-    // In version 4.2 we added new arguments. In all previous versions the expression existed but
-    // only supported a single argument.
-    const bool newArgumentsAllowed =
-        (!expCtx->maxFeatureCompatibilityVersion ||
-         (*expCtx->maxFeatureCompatibilityVersion >=
-          ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42));
-    uassert(
-        ErrorCodes::QueryFeatureNotAllowed,
-        // TODO SERVER-31968 we would like to include the current version and the required minimum
-        // version in this error message, but using FeatureCompatibilityVersion::toString() would
-        // introduce a dependency cycle.
-        str::stream()
-            << elem.fieldNameStringData()
-            << " with >1 argument is not allowed in the current feature compatibility version. See "
-            << feature_compatibility_version_documentation::kCompatibilityLink
-            << " for more information.",
-        // Allow non-arrays since they will be rejected anyway by the parser below.
-        elem.type() != BSONType::Array || elem.Array().size() <= 1 || newArgumentsAllowed);
     return ExpressionRangedArity<ExpressionTrunc, 1, 2>::parse(expCtx, elem, vps);
 }
 
@@ -5562,14 +5562,14 @@ private:
         targetType result;
 
         // Reject any strings in hex format. This check is needed because the
-        // parseNumberFromStringWithBase call below allows an input hex string prefixed by '0x' when
+        // NumberParser::parse call below allows an input hex string prefixed by '0x' when
         // parsing to a double.
         uassert(ErrorCodes::ConversionFailure,
                 str::stream() << "Illegal hexadecimal input in $convert with no onError value: "
                               << stringValue,
                 !stringValue.startsWith("0x"));
 
-        Status parseStatus = parseNumberFromStringWithBase(stringValue, base, &result);
+        Status parseStatus = NumberParser().base(base)(stringValue, &result);
         uassert(ErrorCodes::ConversionFailure,
                 str::stream() << "Failed to parse number '" << stringValue
                               << "' in $convert with no onError value: "
@@ -6067,10 +6067,7 @@ void ExpressionRegex::_doAddDependencies(DepsTracker* deps) const {
 
 /* -------------------------- ExpressionRegexFind ------------------------------ */
 
-REGISTER_EXPRESSION_WITH_MIN_VERSION(
-    regexFind,
-    ExpressionRegexFind::parse,
-    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+REGISTER_EXPRESSION(regexFind, ExpressionRegexFind::parse);
 boost::intrusive_ptr<Expression> ExpressionRegexFind::parse(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     BSONElement expr,
@@ -6091,10 +6088,7 @@ Value ExpressionRegexFind::evaluate(const Document& root, Variables* variables) 
 
 /* -------------------------- ExpressionRegexFindAll ------------------------------ */
 
-REGISTER_EXPRESSION_WITH_MIN_VERSION(
-    regexFindAll,
-    ExpressionRegexFindAll::parse,
-    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+REGISTER_EXPRESSION(regexFindAll, ExpressionRegexFindAll::parse);
 boost::intrusive_ptr<Expression> ExpressionRegexFindAll::parse(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     BSONElement expr,
@@ -6155,10 +6149,7 @@ Value ExpressionRegexFindAll::evaluate(const Document& root, Variables* variable
 
 /* -------------------------- ExpressionRegexMatch ------------------------------ */
 
-REGISTER_EXPRESSION_WITH_MIN_VERSION(
-    regexMatch,
-    ExpressionRegexMatch::parse,
-    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
+REGISTER_EXPRESSION(regexMatch, ExpressionRegexMatch::parse);
 boost::intrusive_ptr<Expression> ExpressionRegexMatch::parse(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     BSONElement expr,

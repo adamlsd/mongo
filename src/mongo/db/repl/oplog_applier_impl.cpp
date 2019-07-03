@@ -42,7 +42,7 @@ OplogApplierImpl::OplogApplierImpl(executor::TaskExecutor* executor,
                                    StorageInterface* storageInterface,
                                    const OplogApplier::Options& options,
                                    ThreadPool* writerPool)
-    : OplogApplier(executor, oplogBuffer, observer),
+    : OplogApplier(executor, oplogBuffer, observer, options),
       _replCoord(replCoord),
       _syncTail(
           observer, consistencyMarkers, storageInterface, multiSyncApply, writerPool, options),

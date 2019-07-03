@@ -114,7 +114,6 @@ const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
                                         {"coordinateCommitTransaction", 1},
                                         {"delete", 1},
                                         {"distinct", 1},
-                                        {"doTxn", 1},
                                         {"find", 1},
                                         {"findandmodify", 1},
                                         {"findAndModify", 1},
@@ -129,7 +128,6 @@ const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
 const StringMap<int> txnAdminCommands = {{"abortTransaction", 1},
                                          {"commitTransaction", 1},
                                          {"coordinateCommitTransaction", 1},
-                                         {"doTxn", 1},
                                          {"prepareTransaction", 1}};
 
 }  // namespace
@@ -257,8 +255,8 @@ NamespaceStringOrUUID CommandHelpers::parseNsOrUUID(StringData dbname, const BSO
         // Ensure collection identifier is not a Command
         const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
         uassert(ErrorCodes::InvalidNamespace,
-                str::stream() << "Invalid collection name specified '" << nss.ns() << "'",
-                nss.isNormal());
+                str::stream() << "Invalid collection name specified '" << nss.ns(),
+                !(nss.ns().find('$') != std::string::npos && nss.ns() != "local.oplog.$main"));
         return nss;
     }
 }

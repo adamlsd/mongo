@@ -146,7 +146,7 @@ NamespaceString NamespaceString::makeDropPendingNamespace(const repl::OpTime& op
     ss << db() << "." << dropPendingNSPrefix;
     ss << opTime.getSecs() << "i" << opTime.getTimestamp().getInc() << "t" << opTime.getTerm();
     ss << "." << coll();
-    return NamespaceString(ss.stringData().substr(0, MaxNsCollectionLen));
+    return NamespaceString(ss.stringData());
 }
 
 StatusWith<repl::OpTime> NamespaceString::getDropPendingNamespaceOpTime() const {
@@ -175,51 +175,29 @@ StatusWith<repl::OpTime> NamespaceString::getDropPendingNamespaceOpTime() const 
     }
 
     long long seconds;
-    auto status = parseNumberFromString(opTimeStr.substr(0, incrementSeparatorIndex), &seconds);
+    auto status = NumberParser{}(opTimeStr.substr(0, incrementSeparatorIndex), &seconds);
     if (!status.isOK()) {
         return status.withContext(
             str::stream() << "Invalid timestamp seconds in drop-pending namespace: " << _ns);
     }
 
     unsigned int increment;
-    status =
-        parseNumberFromString(opTimeStr.substr(incrementSeparatorIndex + 1,
-                                               termSeparatorIndex - (incrementSeparatorIndex + 1)),
-                              &increment);
+    status = NumberParser{}(opTimeStr.substr(incrementSeparatorIndex + 1,
+                                             termSeparatorIndex - (incrementSeparatorIndex + 1)),
+                            &increment);
     if (!status.isOK()) {
         return status.withContext(
             str::stream() << "Invalid timestamp increment in drop-pending namespace: " << _ns);
     }
 
     long long term;
-    status = mongo::parseNumberFromString(opTimeStr.substr(termSeparatorIndex + 1), &term);
+    status = mongo::NumberParser{}(opTimeStr.substr(termSeparatorIndex + 1), &term);
     if (!status.isOK()) {
         return status.withContext(str::stream() << "Invalid term in drop-pending namespace: "
                                                 << _ns);
     }
 
     return repl::OpTime(Timestamp(Seconds(seconds), increment), term);
-}
-
-Status NamespaceString::checkLengthForRename(
-    const std::string::size_type longestIndexNameLength) const {
-    auto longestAllowed =
-        std::min(std::string::size_type(NamespaceString::MaxNsCollectionLen),
-                 std::string::size_type(NamespaceString::MaxNsLen - 2U /*strlen(".$")*/ -
-                                        longestIndexNameLength));
-    if (size() > longestAllowed) {
-        StringBuilder sb;
-        sb << "collection name length of " << size() << " exceeds maximum length of "
-           << longestAllowed << ", allowing for index names";
-        return Status(ErrorCodes::InvalidLength, sb.str());
-    }
-    return Status::OK();
-}
-
-NamespaceString NamespaceString::makeIndexNamespace(StringData indexName) const {
-    StringBuilder ss;
-    ss << coll() << ".$" << indexName;
-    return NamespaceString(db(), ss.stringData());
 }
 
 bool NamespaceString::isReplicated() const {

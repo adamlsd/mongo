@@ -51,7 +51,7 @@ AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode, 
       }()) {
     if (_db) {
         auto& dss = DatabaseShardingState::get(_db);
-        auto dssLock = DatabaseShardingState::DSSLock::lock(opCtx, &dss);
+        auto dssLock = DatabaseShardingState::DSSLock::lockShared(opCtx, &dss);
         dss.checkDbVersion(opCtx, dssLock);
     }
 }
@@ -184,7 +184,7 @@ AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx,
     }
 
     auto& dss = DatabaseShardingState::get(_db);
-    auto dssLock = DatabaseShardingState::DSSLock::lock(opCtx, &dss);
+    auto dssLock = DatabaseShardingState::DSSLock::lockShared(opCtx, &dss);
     dss.checkDbVersion(opCtx, dssLock);
 }
 
@@ -198,7 +198,9 @@ ConcealCollectionCatalogChangesBlock::~ConcealCollectionCatalogChangesBlock() {
     CollectionCatalog::get(_opCtx).onOpenCatalog(_opCtx);
 }
 
-ReadSourceScope::ReadSourceScope(OperationContext* opCtx)
+ReadSourceScope::ReadSourceScope(OperationContext* opCtx,
+                                 RecoveryUnit::ReadSource readSource,
+                                 boost::optional<Timestamp> provided)
     : _opCtx(opCtx), _originalReadSource(opCtx->recoveryUnit()->getTimestampReadSource()) {
 
     if (_originalReadSource == RecoveryUnit::ReadSource::kProvided) {
@@ -206,7 +208,7 @@ ReadSourceScope::ReadSourceScope(OperationContext* opCtx)
     }
 
     _opCtx->recoveryUnit()->abandonSnapshot();
-    _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kUnset);
+    _opCtx->recoveryUnit()->setTimestampReadSource(readSource, provided);
 }
 
 ReadSourceScope::~ReadSourceScope() {

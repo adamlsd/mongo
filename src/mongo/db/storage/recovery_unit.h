@@ -114,6 +114,8 @@ class RecoveryUnit {
     RecoveryUnit& operator=(const RecoveryUnit&) = delete;
 
 public:
+    void commitRegisteredChanges(boost::optional<Timestamp> commitTimestamp);
+    void abortRegisteredChanges();
     virtual ~RecoveryUnit() {}
 
     /**
@@ -444,7 +446,7 @@ public:
      * The registerChange() method may only be called when a WriteUnitOfWork is active, and
      * may not be called during commit or rollback.
      */
-    virtual void registerChange(Change* change) = 0;
+    virtual void registerChange(Change* change);
 
     /**
      * Registers a callback to be called if the current WriteUnitOfWork rolls back.
@@ -492,8 +494,113 @@ public:
 
     virtual void setOrderedCommit(bool orderedCommit) = 0;
 
+    /**
+     * State transitions:
+     *
+     *   /------------------------> Inactive <-----------------------------\
+     *   |                             |                                   |
+     *   |                             |                                   |
+     *   |              /--------------+--------------\                    |
+     *   |              |                             |                    | abandonSnapshot()
+     *   |              |                             |                    |
+     *   |   beginUOW() |                             | _txnOpen()         |
+     *   |              |                             |                    |
+     *   |              V                             V                    |
+     *   |    InactiveInUnitOfWork          ActiveNotInUnitOfWork ---------/
+     *   |              |                             |
+     *   |              |                             |
+     *   |   _txnOpen() |                             | beginUOW()
+     *   |              |                             |
+     *   |              \--------------+--------------/
+     *   |                             |
+     *   |                             |
+     *   |                             V
+     *   |                           Active
+     *   |                             |
+     *   |                             |
+     *   |              /--------------+--------------\
+     *   |              |                             |
+     *   |              |                             |
+     *   |   abortUOW() |                             | commitUOW()
+     *   |              |                             |
+     *   |              V                             V
+     *   |          Aborting                      Committing
+     *   |              |                             |
+     *   |              |                             |
+     *   |              |                             |
+     *   \--------------+-----------------------------/
+     *
+     */
+    enum class State {
+        kInactive,
+        kInactiveInUnitOfWork,
+        kActiveNotInUnitOfWork,
+        kActive,
+        kAborting,
+        kCommitting,
+    };
+    State getState_forTest() const;
+
+    std::string toString(State state) const {
+        switch (state) {
+            case State::kInactive:
+                return "Inactive";
+            case State::kInactiveInUnitOfWork:
+                return "InactiveInUnitOfWork";
+            case State::kActiveNotInUnitOfWork:
+                return "ActiveNotInUnitOfWork";
+            case State::kActive:
+                return "Active";
+            case State::kCommitting:
+                return "Committing";
+            case State::kAborting:
+                return "Aborting";
+        }
+        MONGO_UNREACHABLE;
+    }
+
 protected:
     RecoveryUnit() {}
+
+    /**
+     * Returns the current state.
+     */
+    State _getState() const {
+        return _state;
+    }
+
+    /**
+     * Transitions to new state.
+     */
+    void _setState(State newState) {
+        _state = newState;
+    }
+
+    /**
+     * Returns true if active.
+     */
+    bool _isActive() const {
+        return State::kActiveNotInUnitOfWork == _state || State::kActive == _state;
+    }
+
+    /**
+     * Returns true if currently managed by a WriteUnitOfWork.
+     */
+    bool _inUnitOfWork() const {
+        return State::kInactiveInUnitOfWork == _state || State::kActive == _state;
+    }
+
+    /**
+     * Returns true if currently running commit or rollback handlers
+     */
+    bool _isCommittingOrAborting() const {
+        return State::kCommitting == _state || State::kAborting == _state;
+    }
+
+private:
+    typedef std::vector<std::unique_ptr<Change>> Changes;
+    Changes _changes;
+    State _state = State::kInactive;
 };
 
 }  // namespace mongo

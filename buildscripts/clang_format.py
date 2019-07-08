@@ -51,9 +51,9 @@ CLANG_FORMAT_PROGNAME = "clang-format"
 
 # URL location of the "cached" copy of clang-format to download
 # for users which do not have clang-format installed
-CLANG_FORMAT_HTTP_LINUX_CACHE = "https://s3.amazonaws.com/boxes.10gen.com/build/clang-format-3.8-rhel55.tar.gz"
+CLANG_FORMAT_HTTP_LINUX_CACHE = "https://s3.amazonaws.com/boxes.10gen.com/build/clang-format-7.0.1-rhel70.tar.gz"
 
-CLANG_FORMAT_HTTP_DARWIN_CACHE = "https://s3.amazonaws.com/boxes.10gen.com/build/clang%2Bllvm-3.8.0-x86_64-apple-darwin.tar.xz"
+CLANG_FORMAT_HTTP_DARWIN_CACHE = "https://s3.amazonaws.com/boxes.10gen.com/build/clang-format-7.0.1-x86_64-apple-darwin.tar.gz"
 
 CLANG_FORMAT_TOOLCHAIN_PATH = "/opt/mongodbtoolchain/v3/bin/clang-format"
 

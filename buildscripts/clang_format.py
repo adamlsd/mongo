@@ -172,9 +172,8 @@ class ClangFormat(object):
 
             # Check for the binary in the expected toolchain directory on non-windows systems.
             if sys.platform != "win32":
-                toolchain_path = CLANG_FORMAT_TOOLCHAIN_PATH
-                if os.path.exists(toolchain_path):
-                    self.path = toolchain_path
+                if os.path.exists(CLANG_FORMAT_TOOLCHAIN_PATH):
+                    self.path = CLANG_FORMAT_TOOLCHAIN_PATH
                     if not self._validate_version():
                         self.path = None
 

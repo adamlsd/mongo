@@ -55,6 +55,8 @@ CLANG_FORMAT_HTTP_LINUX_CACHE = "https://s3.amazonaws.com/boxes.10gen.com/build/
 
 CLANG_FORMAT_HTTP_DARWIN_CACHE = "https://s3.amazonaws.com/boxes.10gen.com/build/clang%2Bllvm-3.8.0-x86_64-apple-darwin.tar.xz"
 
+CLANG_FORMAT_TOOLCHAIN_PATH = "/opt/mongodbtoolchain/v3/bin/clang-format"
+
 # Path in the tarball to the clang-format binary
 CLANG_FORMAT_SOURCE_TAR_BASE = string.Template("clang+llvm-$version-$tar_path/bin/" +
                                                CLANG_FORMAT_PROGNAME)
@@ -170,7 +172,7 @@ class ClangFormat(object):
 
             # Check for the binary in the expected toolchain directory on non-windows systems.
             if sys.platform != "win32":
-                toolchain_path = "/opt/mongodbtoolchain/v3/bin/clang-format"
+                toolchain_path = CLANG_FORMAT_TOOLCHAIN_PATH
                 if os.path.exists(toolchain_path):
                     self.path = toolchain_path
                     if not self._validate_version():

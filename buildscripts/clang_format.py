@@ -261,8 +261,7 @@ class ClangFormat(object):
                 # Take a lock to ensure diffs do not get mixed when printed to the screen
                 with self.print_lock:
                     print("ERROR: Found diff for " + file_name)
-                    print("To fix formatting errors, run {0} --assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp") +
-                          " --style=file < {1} > {1}.tmp; mv {1}.tmp {1}".format(self.path, file_name))
+                    print("To fix formatting errors, run `buildscripts/clang-format.py format`")
                     for line in result:
                         print(line.rstrip())
 
@@ -557,7 +556,6 @@ def main():
         elif command == "format":
             format_func(options.clang_format)
         elif command == "format-my":
-
             format_my_func(options.clang_format, args[2] if len(args) > 2 else "origin/master")
         elif command == "reformat-branch":
 

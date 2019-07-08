@@ -447,22 +447,20 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
             % (new_branch, new_branch))
 
     commits = get_list_from_lines(
-        repo.log(["--reverse", "--pretty=format:%H",
+        repo.git_log(["--reverse", "--no-show-signature", "--pretty=format:%H",
                   "%s..HEAD" % commit_prior_to_reformat]))
 
     previous_commit_base = commit_after_reformat
 
-    files_match = re.compile('\\.(h|cpp|js)$')
-
     # Go through all the commits the user made on the local branch and migrate to a new branch
     # that is based on post_reformat commits instead
     for commit_hash in commits:
-        repo.checkout(["--quiet", commit_hash])
+        repo.git_checkout(["--quiet", commit_hash])
 
         deleted_files = []
 
         # Format each of the files by checking out just a single commit from the user's branch
-        commit_files = get_list_from_lines(repo.diff(["HEAD~", "--name-only"]))
+        commit_files = get_list_from_lines(repo.git_diff(["HEAD~", "--name-only"]))
 
         for commit_file in commit_files:
 
@@ -473,7 +471,7 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
                 deleted_files.append(commit_file)
                 continue
 
-            if files_match.search(commit_file):
+            if is_interesting_file(commit_file):
                 clang_format.format(commit_file)
             else:
                 print("Skipping file '%s' since it is not a file clang_format should format" %
@@ -483,44 +481,44 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
         if not repo.is_working_tree_dirty():
             print("Commit %s needed no reformatting" % commit_hash)
         else:
-            repo.commit(["--all", "--amend", "--no-edit"])
+            repo.git_commit(["--all", "--amend", "--no-edit"])
 
         # Rebase our new commit on top the post-reformat commit
-        previous_commit = repo.rev_parse(["HEAD"])
+        previous_commit = repo.git_rev_parse(["HEAD"])
 
         # Checkout the new branch with the reformatted commits
         # Note: we will not name as a branch until we are done with all commits on the local branch
-        repo.checkout(["--quiet", previous_commit_base])
+        repo.git_checkout(["--quiet", previous_commit_base])
 
         # Copy each file from the reformatted commit on top of the post reformat
         diff_files = get_list_from_lines(
-            repo.diff(["%s~..%s" % (previous_commit, previous_commit), "--name-only"]))
+            repo.git_diff(["%s~..%s" % (previous_commit, previous_commit), "--name-only"]))
 
         for diff_file in diff_files:
             # If the file was deleted in the commit we are reformatting, we need to delete it again
             if diff_file in deleted_files:
-                repo.rm([diff_file])
+                repo.git_rm(["--ignore-unmatch", diff_file])
                 continue
 
             # The file has been added or modified, continue as normal
-            file_contents = repo.show(["%s:%s" % (previous_commit, diff_file)])
+            file_contents = repo.git_show(["%s:%s" % (previous_commit, diff_file)])
 
             root_dir = os.path.dirname(diff_file)
             if root_dir and not os.path.exists(root_dir):
                 os.makedirs(root_dir)
 
-            with open(diff_file, "w+") as new_file:
+            with open(diff_file, "w+", encoding="utf-8") as new_file:
                 new_file.write(file_contents)
 
-            repo.add([diff_file])
+            repo.git_add([diff_file])
 
         # Create a new commit onto clang-formatted branch
-        repo.commit(["--reuse-message=%s" % previous_commit])
+        repo.git_commit(["--reuse-message=%s" % previous_commit, "--no-gpg-sign", "--allow-empty"])
 
-        previous_commit_base = repo.rev_parse(["HEAD"])
+        previous_commit_base = repo.git_rev_parse(["HEAD"])
 
     # Create a new branch to mark the hashes we have been using
-    repo.checkout(["-b", new_branch])
+    repo.git_checkout(["-b", new_branch])
 
     print("reformat-branch is done running.\n")
     print("A copy of your branch has been made named '%s', and formatted with clang-format.\n" %

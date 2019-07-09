@@ -247,7 +247,7 @@ TransactionCoordinator::TransactionCoordinator(ServiceContext* serviceContext,
 
             return txn::deleteCoordinatorDoc(*_scheduler, _lsid, _txnNumber);
         })
-        .onCompletion([ this, deadlineFuture = std::move(deadlineFuture) ](Status s) mutable {
+        .onCompletion([this, deadlineFuture = std::move(deadlineFuture)](Status s) mutable {
             // Interrupt this coordinator's scheduler hierarchy and join the deadline task's future
             // in order to guarantee that there are no more threads running within the coordinator.
             _scheduler->shutdown(
@@ -328,8 +328,7 @@ void TransactionCoordinator::_done(Status status) {
     if (status == ErrorCodes::TransactionCoordinatorSteppingDown)
         status = Status(ErrorCodes::InterruptedDueToReplStateChange,
                         str::stream() << "Coordinator " << _lsid.getId() << ':' << _txnNumber
-                                      << " stopped due to: "
-                                      << status.reason());
+                                      << " stopped due to: " << status.reason());
 
     LOG(3) << "Two-phase commit for " << _lsid.getId() << ':' << _txnNumber << " completed with "
            << redact(status);

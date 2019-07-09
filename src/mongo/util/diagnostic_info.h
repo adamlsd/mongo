@@ -72,4 +72,4 @@ private:
 DiagnosticInfo takeDiagnosticInfo(const StringData& captureName);
 
 
-}  // namespace monogo
+}  // namespace mongo

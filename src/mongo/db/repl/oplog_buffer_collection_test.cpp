@@ -112,12 +112,9 @@ NamespaceString makeNamespace(const T& t, const char* suffix = "") {
 BSONObj makeOplogEntry(int t) {
     return BSON("ts" << Timestamp(t, t) << "ns"
                      << "a.a"
-                     << "v"
-                     << 2
-                     << "op"
+                     << "v" << 2 << "op"
                      << "i"
-                     << "o"
-                     << BSON("_id" << t << "a" << t));
+                     << "o" << BSON("_id" << t << "a" << t));
 }
 
 TEST_F(OplogBufferCollectionTest, DefaultNamespace) {
@@ -624,7 +621,9 @@ TEST_F(OplogBufferCollectionTest, PopAndPeekReturnDocumentsInOrder) {
 
     oplogBuffer.startup(_opCtx.get());
     const std::vector<BSONObj> oplog = {
-        makeOplogEntry(1), makeOplogEntry(2), makeOplogEntry(3),
+        makeOplogEntry(1),
+        makeOplogEntry(2),
+        makeOplogEntry(3),
     };
     ASSERT_EQUALS(oplogBuffer.getCount(), 0UL);
     oplogBuffer.pushAllNonBlocking(_opCtx.get(), oplog.begin(), oplog.end());
@@ -667,7 +666,9 @@ TEST_F(OplogBufferCollectionTest, LastObjectPushedReturnsNewestOplogEntry) {
 
     oplogBuffer.startup(_opCtx.get());
     const std::vector<BSONObj> oplog = {
-        makeOplogEntry(1), makeOplogEntry(2), makeOplogEntry(3),
+        makeOplogEntry(1),
+        makeOplogEntry(2),
+        makeOplogEntry(3),
     };
     ASSERT_EQUALS(oplogBuffer.getCount(), 0UL);
     oplogBuffer.pushAllNonBlocking(_opCtx.get(), oplog.begin(), oplog.end());
@@ -703,7 +704,9 @@ TEST_F(OplogBufferCollectionTest,
 
     oplogBuffer.startup(_opCtx.get());
     const std::vector<BSONObj> oplog = {
-        makeOplogEntry(3), makeOplogEntry(4), makeOplogEntry(5),
+        makeOplogEntry(3),
+        makeOplogEntry(4),
+        makeOplogEntry(5),
     };
     ASSERT_BSONOBJ_EQ(*oplogBuffer.lastObjectPushed(_opCtx.get()), secondDoc);
 
@@ -929,7 +932,12 @@ void _testPushSentinelsProperly(OperationContext* opCtx,
     OplogBufferCollection oplogBuffer(storageInterface, nss);
     oplogBuffer.startup(opCtx);
     const std::vector<BSONObj> oplog = {
-        BSONObj(), makeOplogEntry(1), BSONObj(), BSONObj(), makeOplogEntry(2), BSONObj(),
+        BSONObj(),
+        makeOplogEntry(1),
+        BSONObj(),
+        BSONObj(),
+        makeOplogEntry(2),
+        BSONObj(),
     };
     ASSERT_EQUALS(oplogBuffer.getCount(), 0UL);
     pushDocsFn(opCtx, &oplogBuffer, oplog);
@@ -1016,7 +1024,8 @@ DEATH_TEST_F(
 
     oplogBuffer.startup(_opCtx.get());
     const std::vector<BSONObj> oplog = {
-        makeOplogEntry(2), makeOplogEntry(1),
+        makeOplogEntry(2),
+        makeOplogEntry(1),
     };
     ASSERT_EQUALS(oplogBuffer.getCount(), 0UL);
     oplogBuffer.pushAllNonBlocking(_opCtx.get(), oplog.begin(), oplog.end());
@@ -1028,7 +1037,10 @@ TEST_F(OplogBufferCollectionTest, SentinelInMiddleIsReturnedInOrder) {
 
     oplogBuffer.startup(_opCtx.get());
     const std::vector<BSONObj> oplog = {
-        makeOplogEntry(1), makeOplogEntry(2), BSONObj(), makeOplogEntry(3),
+        makeOplogEntry(1),
+        makeOplogEntry(2),
+        BSONObj(),
+        makeOplogEntry(3),
     };
     ASSERT_EQUALS(oplogBuffer.getCount(), 0UL);
     oplogBuffer.pushEvenIfFull(_opCtx.get(), oplog[0]);
@@ -1149,7 +1161,12 @@ TEST_F(OplogBufferCollectionTest, MultipleSentinelsAreReturnedInOrder) {
 
     oplogBuffer.startup(_opCtx.get());
     const std::vector<BSONObj> oplog = {
-        BSONObj(), makeOplogEntry(1), BSONObj(), BSONObj(), makeOplogEntry(2), BSONObj(),
+        BSONObj(),
+        makeOplogEntry(1),
+        BSONObj(),
+        BSONObj(),
+        makeOplogEntry(2),
+        BSONObj(),
     };
     ASSERT_EQUALS(oplogBuffer.getCount(), 0UL);
     oplogBuffer.pushAllNonBlocking(_opCtx.get(), oplog.cbegin(), oplog.cend());

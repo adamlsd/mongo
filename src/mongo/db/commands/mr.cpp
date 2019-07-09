@@ -647,9 +647,7 @@ void State::appendResults(BSONObjBuilder& final) {
             BSONObj idKey = BSON("_id" << 1);
             if (!_db.runCommand("admin",
                                 BSON("splitVector" << _config.outputOptions.finalNamespace.ns()
-                                                   << "keyPattern"
-                                                   << idKey
-                                                   << "maxChunkSizeBytes"
+                                                   << "keyPattern" << idKey << "maxChunkSizeBytes"
                                                    << _config.splitInfo),
                                 res)) {
                 uasserted(15921, str::stream() << "splitVector failed: " << res);
@@ -737,8 +735,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
         if (!_db.runCommand("admin",
                             BSON("renameCollection" << _config.tempNamespace.ns() << "to"
                                                     << _config.outputOptions.finalNamespace.ns()
-                                                    << "stayTemp"
-                                                    << _config.shardedFirstPass),
+                                                    << "stayTemp" << _config.shardedFirstPass),
                             info)) {
             uasserted(10076, str::stream() << "rename failed: " << info);
         }
@@ -822,9 +819,7 @@ void State::insert(const NamespaceString& nss, const BSONObj& o) {
         uassert(
             ErrorCodes::PrimarySteppedDown,
             str::stream() << "no longer primary while inserting mapReduce result into collection: "
-                          << nss
-                          << ": "
-                          << redact(o),
+                          << nss << ": " << redact(o),
             repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(_opCtx, nss));
         assertCollectionNotNull(nss, autoColl);
 
@@ -871,10 +866,8 @@ void State::_insertToInc(BSONObj& o) {
         if (o.objsize() > BSONObjMaxUserSize) {
             uasserted(ErrorCodes::BadValue,
                       str::stream() << "object to insert too large for incremental collection"
-                                    << ". size in bytes: "
-                                    << o.objsize()
-                                    << ", max size: "
-                                    << BSONObjMaxUserSize);
+                                    << ". size in bytes: " << o.objsize()
+                                    << ", max size: " << BSONObjMaxUserSize);
         }
 
         // TODO: Consider whether to pass OpDebug for stats tracking under SERVER-23261.
@@ -923,8 +916,9 @@ State::~State() {
                                 _useIncremental ? _config.incLong : NamespaceString());
         } catch (...) {
             error() << "Unable to drop temporary collection created by mapReduce: "
-                    << _config.tempNamespace << ". This collection will be removed automatically "
-                                                "the next time the server starts up. "
+                    << _config.tempNamespace
+                    << ". This collection will be removed automatically "
+                       "the next time the server starts up. "
                     << exceptionToStatus();
         }
     }

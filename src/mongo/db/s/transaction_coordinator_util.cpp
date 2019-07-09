@@ -131,8 +131,7 @@ void persistParticipantListBlocking(OperationContext* opCtx,
             BSONObj sameParticipantList =
                 BSON("$and" << buildParticipantListMatchesConditions(participantList));
             entry.setQ(BSON(TransactionCoordinatorDocument::kIdFieldName
-                            << sessionInfo.toBSON()
-                            << "$or"
+                            << sessionInfo.toBSON() << "$or"
                             << BSON_ARRAY(noParticipantList << sameParticipantList)));
 
             // Update with participant list.
@@ -159,13 +158,9 @@ void persistParticipantListBlocking(OperationContext* opCtx,
             QUERY(TransactionCoordinatorDocument::kIdFieldName << sessionInfo.toBSON()));
         uasserted(51025,
                   str::stream() << "While attempting to write participant list "
-                                << buildParticipantListString(participantList)
-                                << " for "
-                                << lsid.getId()
-                                << ':'
-                                << txnNumber
-                                << ", found document with a different participant list: "
-                                << doc);
+                                << buildParticipantListString(participantList) << " for "
+                                << lsid.getId() << ':' << txnNumber
+                                << ", found document with a different participant list: " << doc);
     }
 
     // Throw any other error.
@@ -241,8 +236,7 @@ Future<PrepareVoteConsensus> sendPrepare(ServiceContext* service,
     prepareTransaction.setDbName(NamespaceString::kAdminDb);
     auto prepareObj = prepareTransaction.toBSON(
         BSON("lsid" << lsid.toBSON() << "txnNumber" << txnNumber << "autocommit" << false
-                    << WriteConcernOptions::kWriteConcernField
-                    << WriteConcernOptions::Majority));
+                    << WriteConcernOptions::kWriteConcernField << WriteConcernOptions::Majority));
 
     std::vector<Future<PrepareResponse>> responses;
 
@@ -263,7 +257,7 @@ Future<PrepareVoteConsensus> sendPrepare(ServiceContext* service,
                // Initial value
                PrepareVoteConsensus{int(participants.size())},
                // Aggregates an incoming response (next) with the existing aggregate value (result)
-               [&prepareScheduler = *prepareScheduler](PrepareVoteConsensus & result,
+               [&prepareScheduler = *prepareScheduler](PrepareVoteConsensus& result,
                                                        const PrepareResponse& next) {
                    result.registerVote(next);
 
@@ -318,18 +312,15 @@ void persistDecisionBlocking(OperationContext* opCtx,
                 sameDecision = BSON(TransactionCoordinatorDocument::kDecisionFieldName
                                     << BSON(TransactionCoordinatorDocument::kDecisionFieldName
                                             << "commit"
-                                            << "commitTimestamp"
-                                            << *commitTimestamp));
+                                            << "commitTimestamp" << *commitTimestamp));
             } else {
                 sameDecision =
                     BSON(TransactionCoordinatorDocument::kDecisionFieldName
                          << BSON(TransactionCoordinatorDocument::kDecisionFieldName << "abort"));
             }
             entry.setQ(BSON(TransactionCoordinatorDocument::kIdFieldName
-                            << sessionInfo.toBSON()
-                            << "$and"
-                            << buildParticipantListMatchesConditions(participantList)
-                            << "$or"
+                            << sessionInfo.toBSON() << "$and"
+                            << buildParticipantListMatchesConditions(participantList) << "$or"
                             << BSON_ARRAY(noDecision << sameDecision)));
 
             // Update with decision.
@@ -365,11 +356,8 @@ void persistDecisionBlocking(OperationContext* opCtx,
             QUERY(TransactionCoordinatorDocument::kIdFieldName << sessionInfo.toBSON()));
         uasserted(51026,
                   str::stream() << "While attempting to write decision "
-                                << (commitTimestamp ? "'commit'" : "'abort'")
-                                << " for"
-                                << lsid.getId()
-                                << ':'
-                                << txnNumber
+                                << (commitTimestamp ? "'commit'" : "'abort'") << " for"
+                                << lsid.getId() << ':' << txnNumber
                                 << ", either failed to find document for this lsid:txnNumber or "
                                    "document existed with a different participant list, decision "
                                    "or commitTimestamp: "
@@ -427,8 +415,7 @@ Future<void> sendCommit(ServiceContext* service,
     commitTransaction.setCommitTimestamp(commitTimestamp);
     auto commitObj = commitTransaction.toBSON(
         BSON("lsid" << lsid.toBSON() << "txnNumber" << txnNumber << "autocommit" << false
-                    << WriteConcernOptions::kWriteConcernField
-                    << WriteConcernOptions::Majority));
+                    << WriteConcernOptions::kWriteConcernField << WriteConcernOptions::Majority));
 
     std::vector<Future<void>> responses;
     for (const auto& participant : participants) {
@@ -446,8 +433,7 @@ Future<void> sendAbort(ServiceContext* service,
     abortTransaction.setDbName(NamespaceString::kAdminDb);
     auto abortObj = abortTransaction.toBSON(
         BSON("lsid" << lsid.toBSON() << "txnNumber" << txnNumber << "autocommit" << false
-                    << WriteConcernOptions::kWriteConcernField
-                    << WriteConcernOptions::Majority));
+                    << WriteConcernOptions::kWriteConcernField << WriteConcernOptions::Majority));
 
     std::vector<Future<void>> responses;
     for (const auto& participant : participants) {
@@ -577,12 +563,12 @@ Future<PrepareResponse> sendPrepareToShard(ServiceContext* service,
                 swPrepareResponse != ErrorCodes::TransactionCoordinatorSteppingDown &&
                 swPrepareResponse != ErrorCodes::TransactionCoordinatorReachedAbortDecision;
         },
-        [&scheduler, shardId, isLocalShard, commandObj = commandObj.getOwned() ] {
+        [&scheduler, shardId, isLocalShard, commandObj = commandObj.getOwned()] {
             LOG(3) << "Coordinator going to send command " << commandObj << " to "
                    << (isLocalShard ? " local " : "") << " shard " << shardId;
 
             return scheduler.scheduleRemoteCommand(shardId, kPrimaryReadPreference, commandObj)
-                .then([ shardId, commandObj = commandObj.getOwned() ](ResponseStatus response) {
+                .then([shardId, commandObj = commandObj.getOwned()](ResponseStatus response) {
                     auto status = getStatusFromCommandResult(response.data);
                     auto wcStatus = getWriteConcernStatusFromCommandResult(response.data);
 
@@ -599,8 +585,9 @@ Future<PrepareResponse> sendPrepareToShard(ServiceContext* service,
                             LOG(0) << "Coordinator shard received an OK response to "
                                       "prepareTransaction "
                                       "without a prepareTimestamp from shard "
-                                   << shardId << ", which is not expected behavior. "
-                                                 "Interpreting the response from "
+                                   << shardId
+                                   << ", which is not expected behavior. "
+                                      "Interpreting the response from "
                                    << shardId << " as a vote to abort";
                             return PrepareResponse{shardId, PrepareVote::kAbort, boost::none};
                         }
@@ -657,12 +644,12 @@ Future<void> sendDecisionToShard(ServiceContext* service,
             // coordinator-specific code.
             return !s.isOK() && s != ErrorCodes::TransactionCoordinatorSteppingDown;
         },
-        [&scheduler, shardId, isLocalShard, commandObj = commandObj.getOwned() ] {
+        [&scheduler, shardId, isLocalShard, commandObj = commandObj.getOwned()] {
             LOG(3) << "Coordinator going to send command " << commandObj << " to "
                    << (isLocalShard ? "local" : "") << " shard " << shardId;
 
             return scheduler.scheduleRemoteCommand(shardId, kPrimaryReadPreference, commandObj)
-                .then([ shardId, commandObj = commandObj.getOwned() ](ResponseStatus response) {
+                .then([shardId, commandObj = commandObj.getOwned()](ResponseStatus response) {
                     auto status = getStatusFromCommandResult(response.data);
                     auto wcStatus = getWriteConcernStatusFromCommandResult(response.data);
 

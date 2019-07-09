@@ -373,8 +373,7 @@ void CatalogCache::checkEpochOrThrow(const NamespaceString& nss,
     const auto itDb = _collectionsByDb.find(nss.db());
     uassert(StaleConfigInfo(nss, targetCollectionVersion, boost::none),
             str::stream() << "could not act as router for " << nss.ns()
-                          << ", no entry for database "
-                          << nss.db(),
+                          << ", no entry for database " << nss.db(),
             itDb != _collectionsByDb.end());
 
     auto itColl = itDb->second.find(nss.ns());
@@ -392,8 +391,7 @@ void CatalogCache::checkEpochOrThrow(const NamespaceString& nss,
     auto foundVersion = itColl->second->routingInfo->getVersion();
     uassert(StaleConfigInfo(nss, targetCollectionVersion, foundVersion),
             str::stream() << "could not act as router for " << nss.ns() << ", wanted "
-                          << targetCollectionVersion.toString()
-                          << ", but found "
+                          << targetCollectionVersion.toString() << ", but found "
                           << foundVersion.toString(),
             foundVersion.epoch() == targetCollectionVersion.epoch());
 }
@@ -472,8 +470,8 @@ void CatalogCache::_scheduleDatabaseRefresh(WithLock,
                            << "; current cached database info is "
                            << (dbEntry->dbt ? dbEntry->dbt->toBSON() : BSONObj());
 
-    const auto onRefreshCompleted =
-        [ this, t = Timer(), dbName, dbEntry ](const StatusWith<DatabaseType>& swDbt) {
+    const auto onRefreshCompleted = [this, t = Timer(), dbName, dbEntry](
+                                        const StatusWith<DatabaseType>& swDbt) {
         // TODO (SERVER-34164): Track and increment stats for database refreshes.
         if (!swDbt.isOK()) {
             LOG_CATALOG_REFRESH(0) << "Refresh for database " << dbName << " took " << t.millis()
@@ -517,8 +515,8 @@ void CatalogCache::_scheduleDatabaseRefresh(WithLock,
     };
 
     const auto updateCatalogCacheFn =
-        [ this, dbName, dbEntry, onRefreshFailed, onRefreshSucceeded, onRefreshCompleted ](
-            OperationContext * opCtx, StatusWith<DatabaseType> swDbt) noexcept {
+        [ this, dbName, dbEntry, onRefreshFailed, onRefreshSucceeded,
+          onRefreshCompleted ](OperationContext * opCtx, StatusWith<DatabaseType> swDbt) noexcept {
         onRefreshCompleted(swDbt);
         stdx::lock_guard<stdx::mutex> lg(_mutex);
         if (!swDbt.isOK()) {
@@ -557,8 +555,9 @@ void CatalogCache::_scheduleCollectionRefresh(WithLock lk,
     }
 
     // Invoked when one iteration of getChunksSince has completed, whether with success or error
-    const auto onRefreshCompleted = [ this, t = Timer(), nss, isIncremental, existingRoutingInfo ](
-        const Status& status, RoutingTableHistory* routingInfoAfterRefresh) {
+    const auto onRefreshCompleted = [this, t = Timer(), nss, isIncremental, existingRoutingInfo](
+                                        const Status& status,
+                                        RoutingTableHistory* routingInfoAfterRefresh) {
         if (isIncremental) {
             _stats.numActiveIncrementalRefreshes.subtractAndFetch(1);
         } else {
@@ -571,9 +570,10 @@ void CatalogCache::_scheduleCollectionRefresh(WithLock lk,
             LOG_CATALOG_REFRESH(0) << "Refresh for collection " << nss << " took " << t.millis()
                                    << " ms and failed" << causedBy(redact(status));
         } else if (routingInfoAfterRefresh) {
-            const int logLevel = (!existingRoutingInfo || (existingRoutingInfo &&
-                                                           routingInfoAfterRefresh->getVersion() !=
-                                                               existingRoutingInfo->getVersion()))
+            const int logLevel =
+                (!existingRoutingInfo ||
+                 (existingRoutingInfo &&
+                  routingInfoAfterRefresh->getVersion() != existingRoutingInfo->getVersion()))
                 ? 0
                 : 1;
             LOG_CATALOG_REFRESH(logLevel)

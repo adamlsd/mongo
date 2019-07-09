@@ -115,14 +115,11 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> RollBackLocalOperations
         auto result = _localOplogIterator->next();
         if (!result.isOK()) {
             return Status(ErrorCodes::NoMatchingDocument,
-                          str::stream() << "reached beginning of local oplog: {"
-                                        << "scanned: "
-                                        << _scanned
-                                        << ", theirTime: "
-                                        << getTimestamp(operation).toString()
-                                        << ", ourTime: "
-                                        << getTimestamp(_localOplogValue).toString()
-                                        << "}");
+                          str::stream()
+                              << "reached beginning of local oplog: {"
+                              << "scanned: " << _scanned
+                              << ", theirTime: " << getTimestamp(operation).toString()
+                              << ", ourTime: " << getTimestamp(_localOplogValue).toString() << "}");
         }
         _localOplogValue = result.getValue();
     }
@@ -190,11 +187,8 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> syncRollBackLocalOperat
     }
     return Status(ErrorCodes::NoMatchingDocument,
                   str::stream() << "reached beginning of remote oplog: {"
-                                << "them: "
-                                << remoteOplog.toString()
-                                << ", theirTime: "
-                                << theirTime.toString()
-                                << "}");
+                                << "them: " << remoteOplog.toString()
+                                << ", theirTime: " << theirTime.toString() << "}");
 }
 
 }  // namespace repl

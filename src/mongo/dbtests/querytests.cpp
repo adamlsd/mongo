@@ -57,9 +57,9 @@
 namespace {
 namespace QueryTests {
 
-using std::unique_ptr;
 using std::endl;
 using std::string;
+using std::unique_ptr;
 using std::vector;
 
 class Base {
@@ -234,8 +234,7 @@ public:
         bool ok = cl.runCommand("unittests",
                                 BSON("godinsert"
                                      << "querytests"
-                                     << "obj"
-                                     << BSONObj()),
+                                     << "obj" << BSONObj()),
                                 info);
         ASSERT(ok);
 
@@ -650,12 +649,7 @@ public:
         _client.runCommand("unittests",
                            BSON("create"
                                 << "querytests.TailableQueryOnId"
-                                << "capped"
-                                << true
-                                << "size"
-                                << 8192
-                                << "autoIndexId"
-                                << true),
+                                << "capped" << true << "size" << 8192 << "autoIndexId" << true),
                            info);
         insertA(ns, 0);
         insertA(ns, 1);
@@ -1512,11 +1506,7 @@ public:
         ASSERT(_client.runCommand("local",
                                   BSON("create"
                                        << "querytests.findingstart"
-                                       << "capped"
-                                       << true
-                                       << "size"
-                                       << 4096
-                                       << "autoIndexId"
+                                       << "capped" << true << "size" << 4096 << "autoIndexId"
                                        << false),
                                   info));
 
@@ -1579,11 +1569,7 @@ public:
         ASSERT(_client.runCommand("local",
                                   BSON("create"
                                        << "querytests.findingstart"
-                                       << "capped"
-                                       << true
-                                       << "size"
-                                       << 4096
-                                       << "autoIndexId"
+                                       << "capped" << true << "size" << 4096 << "autoIndexId"
                                        << false),
                                   info));
 
@@ -1651,11 +1637,7 @@ public:
         ASSERT(_client.runCommand("local",
                                   BSON("create"
                                        << "querytests.findingstart"
-                                       << "capped"
-                                       << true
-                                       << "size"
-                                       << 4096
-                                       << "autoIndexId"
+                                       << "capped" << true << "size" << 4096 << "autoIndexId"
                                        << false),
                                   info));
 
@@ -1749,10 +1731,7 @@ public:
         ASSERT(_client.runCommand("unittests",
                                   BSON("create"
                                        << "querytests.exhaust"
-                                       << "capped"
-                                       << true
-                                       << "size"
-                                       << 8192),
+                                       << "capped" << true << "size" << 8192),
                                   info));
         _client.insert(ns(), BSON("ts" << Timestamp(1000, 0)));
         Message message;

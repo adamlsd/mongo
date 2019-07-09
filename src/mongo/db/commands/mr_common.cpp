@@ -146,5 +146,5 @@ bool mrSupportsWriteConcern(const BSONObj& cmd) {
         return true;
     }
 }
-}
-}
+}  // namespace mr
+}  // namespace mongo

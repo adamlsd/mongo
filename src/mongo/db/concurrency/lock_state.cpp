@@ -328,8 +328,7 @@ void LockerImpl::reacquireTicket(OperationContext* opCtx) {
     } else {
         uassert(ErrorCodes::LockTimeout,
                 str::stream() << "Unable to acquire ticket with mode '" << _modeForTicket
-                              << "' within a max lock request timeout of '"
-                              << *_maxLockTimeout
+                              << "' within a max lock request timeout of '" << *_maxLockTimeout
                               << "' milliseconds.",
                 _acquireTicket(opCtx, _modeForTicket, Date_t::now() + *_maxLockTimeout));
     }

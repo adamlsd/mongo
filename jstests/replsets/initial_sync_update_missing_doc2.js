@@ -13,50 +13,51 @@
  */
 
 (function() {
-    load("jstests/replsets/libs/initial_sync_update_missing_doc.js");
-    load("jstests/libs/check_log.js");
+load("jstests/replsets/libs/initial_sync_update_missing_doc.js");
+load("jstests/libs/check_log.js");
 
-    var name = 'initial_sync_update_missing_doc2';
-    var replSet = new ReplSetTest({
-        name: name,
-        nodes: 1,
-    });
+var name = 'initial_sync_update_missing_doc2';
+var replSet = new ReplSetTest({
+    name: name,
+    nodes: 1,
+});
 
-    replSet.startSet();
-    replSet.initiate();
+replSet.startSet();
+replSet.initiate();
 
-    const primary = replSet.getPrimary();
-    const dbName = 'test';
+const primary = replSet.getPrimary();
+const dbName = 'test';
 
-    var coll = primary.getDB(dbName).getCollection(name);
-    assert.commandWorked(coll.insert({_id: 0, x: 1}));
+var coll = primary.getDB(dbName).getCollection(name);
+assert.commandWorked(coll.insert({_id: 0, x: 1}));
 
-    // Add a secondary node with priority: 0 and votes: 0 so that we prevent elections while
-    // it is syncing from the primary.
-    const secondaryConfig = {rsConfig: {votes: 0, priority: 0}};
-    const secondary = reInitiateSetWithSecondary(replSet, secondaryConfig);
+// Add a secondary node with priority: 0 and votes: 0 so that we prevent elections while
+// it is syncing from the primary.
+const secondaryConfig = {
+    rsConfig: {votes: 0, priority: 0}
+};
+const secondary = reInitiateSetWithSecondary(replSet, secondaryConfig);
 
-    // Update and remove document on primary.
-    assert.commandWorked(coll.update({_id: 0}, {x: 2}, {upsert: false}));
-    assert.commandWorked(coll.remove({_id: 0}, {justOne: true}));
+// Update and remove document on primary.
+assert.commandWorked(coll.update({_id: 0}, {x: 2}, {upsert: false}));
+assert.commandWorked(coll.remove({_id: 0}, {justOne: true}));
 
-    turnOffHangBeforeCopyingDatabasesFailPoint(secondary);
+turnOffHangBeforeCopyingDatabasesFailPoint(secondary);
 
-    // Re-insert deleted document on the sync source. The secondary should be able to fetch and
-    // insert this document after failing to apply the udpate.
-    assert.commandWorked(coll.insert({_id: 0, x: 3}));
+// Re-insert deleted document on the sync source. The secondary should be able to fetch and
+// insert this document after failing to apply the udpate.
+assert.commandWorked(coll.insert({_id: 0, x: 3}));
 
-    var res = assert.commandWorked(secondary.adminCommand({replSetGetStatus: 1}));
-    assert.eq(res.initialSyncStatus.fetchedMissingDocs, 0);
-    var firstOplogEnd = res.initialSyncStatus.initialSyncOplogEnd;
+var res = assert.commandWorked(secondary.adminCommand({replSetGetStatus: 1}));
+assert.eq(res.initialSyncStatus.fetchedMissingDocs, 0);
+var firstOplogEnd = res.initialSyncStatus.initialSyncOplogEnd;
 
-    // Temporarily increase log levels so that we can see the 'Inserted missing document' log line.
-    secondary.getDB('test').setLogLevel(1, 'replication');
-    turnOffHangBeforeGettingMissingDocFailPoint(primary, secondary, name, 1 /* numInserted */);
-    secondary.getDB('test').setLogLevel(0, 'replication');
+// Temporarily increase log levels so that we can see the 'Inserted missing document' log line.
+secondary.getDB('test').setLogLevel(1, 'replication');
+turnOffHangBeforeGettingMissingDocFailPoint(primary, secondary, name, 1 /* numInserted */);
+secondary.getDB('test').setLogLevel(0, 'replication');
 
-    finishAndValidate(replSet, name, firstOplogEnd, 1 /* numInserted */, 1 /* numCollections */);
+finishAndValidate(replSet, name, firstOplogEnd, 1 /* numInserted */, 1 /* numCollections */);
 
-    replSet.stopSet();
-
+replSet.stopSet();
 })();

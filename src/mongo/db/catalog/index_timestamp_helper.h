@@ -53,6 +53,6 @@ void setGhostCommitTimestampForWrite(OperationContext* opCtx, const NamespaceStr
  * uses the LogicalClock to timestamp operations.
  */
 void setGhostCommitTimestampForCatalogWrite(OperationContext* opCtx, const NamespaceString& nss);
-};
+};  // namespace IndexTimestampHelper
 
-}  // mongo
+}  // namespace mongo

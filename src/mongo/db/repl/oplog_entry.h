@@ -72,14 +72,14 @@ private:
 class OplogEntry : private OplogEntryBase {
 public:
     // Make field names accessible.
-    using OplogEntryBase::kDurableReplOperationFieldName;
-    using OplogEntryBase::kOperationSessionInfoFieldName;
     using OplogEntryBase::k_idFieldName;
+    using OplogEntryBase::kDurableReplOperationFieldName;
     using OplogEntryBase::kFromMigrateFieldName;
     using OplogEntryBase::kHashFieldName;
     using OplogEntryBase::kNssFieldName;
-    using OplogEntryBase::kObjectFieldName;
     using OplogEntryBase::kObject2FieldName;
+    using OplogEntryBase::kObjectFieldName;
+    using OplogEntryBase::kOperationSessionInfoFieldName;
     using OplogEntryBase::kOpTypeFieldName;
     using OplogEntryBase::kPostImageOpTimeFieldName;
     using OplogEntryBase::kPreImageOpTimeFieldName;
@@ -94,29 +94,29 @@ public:
     using OplogEntryBase::kVersionFieldName;
     using OplogEntryBase::kWallClockTimeFieldName;
     // Make serialize(), toBSON() and getters accessible.
-    using OplogEntryBase::serialize;
-    using OplogEntryBase::toBSON;
-    using OplogEntryBase::getOperationSessionInfo;
-    using OplogEntryBase::getSessionId;
-    using OplogEntryBase::getTxnNumber;
+    using OplogEntryBase::get_id;
     using OplogEntryBase::getDurableReplOperation;
-    using OplogEntryBase::getOpType;
+    using OplogEntryBase::getFromMigrate;
+    using OplogEntryBase::getHash;
     using OplogEntryBase::getNss;
-    using OplogEntryBase::getUuid;
     using OplogEntryBase::getObject;
     using OplogEntryBase::getObject2;
-    using OplogEntryBase::getUpsert;
-    using OplogEntryBase::getTimestamp;
-    using OplogEntryBase::getTerm;
-    using OplogEntryBase::getHash;
-    using OplogEntryBase::getVersion;
-    using OplogEntryBase::getFromMigrate;
-    using OplogEntryBase::get_id;
-    using OplogEntryBase::getWallClockTime;
-    using OplogEntryBase::getStatementId;
-    using OplogEntryBase::getPrevWriteOpTimeInTransaction;
-    using OplogEntryBase::getPreImageOpTime;
+    using OplogEntryBase::getOperationSessionInfo;
+    using OplogEntryBase::getOpType;
     using OplogEntryBase::getPostImageOpTime;
+    using OplogEntryBase::getPreImageOpTime;
+    using OplogEntryBase::getPrevWriteOpTimeInTransaction;
+    using OplogEntryBase::getSessionId;
+    using OplogEntryBase::getStatementId;
+    using OplogEntryBase::getTerm;
+    using OplogEntryBase::getTimestamp;
+    using OplogEntryBase::getTxnNumber;
+    using OplogEntryBase::getUpsert;
+    using OplogEntryBase::getUuid;
+    using OplogEntryBase::getVersion;
+    using OplogEntryBase::getWallClockTime;
+    using OplogEntryBase::serialize;
+    using OplogEntryBase::toBSON;
 
     enum class CommandType {
         kNotCommand,

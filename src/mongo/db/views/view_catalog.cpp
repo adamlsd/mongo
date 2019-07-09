@@ -117,8 +117,7 @@ Status ViewCatalog::_reloadIfNeeded(WithLock lk,
                 return Status(ErrorCodes::InvalidViewDefinition,
                               str::stream() << "View 'pipeline' entries must be objects, but "
                                             << viewName.toString()
-                                            << " has a pipeline element of type "
-                                            << stage.type());
+                                            << " has a pipeline element of type " << stage.type());
             }
         }
 

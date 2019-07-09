@@ -491,7 +491,7 @@ std::shared_ptr<SymmetricKey> EncryptedDBClientBase::getDataKey(const UUID& uuid
     auto ts_new = Date_t::now();
 
     if (_datakeyCache.hasKey(uuid)) {
-        auto[key, ts] = _datakeyCache.find(uuid)->second;
+        auto [key, ts] = _datakeyCache.find(uuid)->second;
         if (ts_new - ts < kCacheInvalidationTime) {
             return key;
         } else {

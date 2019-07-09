@@ -196,4 +196,4 @@ public:
     }
 
 } validateCmd;
-}
+}  // namespace mongo

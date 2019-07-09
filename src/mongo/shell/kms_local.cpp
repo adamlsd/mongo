@@ -142,7 +142,7 @@ public:
     }
 };
 
-}  // namspace
+}  // namespace
 
 MONGO_INITIALIZER(LocalKMSRegister)(::mongo::InitializerContext* context) {
     KMSServiceController::registerFactory(KMSProviderEnum::local,

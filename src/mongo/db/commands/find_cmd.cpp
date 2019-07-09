@@ -216,8 +216,8 @@ public:
                 } catch (DBException& error) {
                     if (error.code() == ErrorCodes::InvalidPipelineOperator) {
                         uasserted(ErrorCodes::InvalidPipelineOperator,
-                                  str::stream() << "Unsupported in view pipeline: "
-                                                << error.what());
+                                  str::stream()
+                                      << "Unsupported in view pipeline: " << error.what());
                     }
                     throw;
                 }
@@ -329,8 +329,7 @@ public:
                         str::stream() << "$_internalReadAtClusterTime value must not be greater"
                                          " than the last applied opTime. Requested clusterTime: "
                                       << targetClusterTime->toString()
-                                      << "; last applied opTime: "
-                                      << lastAppliedOpTime.toString(),
+                                      << "; last applied opTime: " << lastAppliedOpTime.toString(),
                         lastAppliedOpTime.getTimestamp() >= targetClusterTime);
 
                 // We aren't holding the global lock in intent mode, so it is possible for the
@@ -342,12 +341,12 @@ public:
                 invariant(!allCommittedTime.isNull());
 
                 uassert(ErrorCodes::InvalidOptions,
-                        str::stream() << "$_internalReadAtClusterTime value must not be greater"
-                                         " than the all-committed timestamp. Requested"
-                                         " clusterTime: "
-                                      << targetClusterTime->toString()
-                                      << "; all-committed timestamp: "
-                                      << allCommittedTime.toString(),
+                        str::stream()
+                            << "$_internalReadAtClusterTime value must not be greater"
+                               " than the all-committed timestamp. Requested"
+                               " clusterTime: "
+                            << targetClusterTime->toString()
+                            << "; all-committed timestamp: " << allCommittedTime.toString(),
                         allCommittedTime >= targetClusterTime);
 
                 // The $_internalReadAtClusterTime option causes any storage-layer cursors created

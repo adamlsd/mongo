@@ -165,8 +165,7 @@ auto makeDummyPrepareCommand(const LogicalSessionId& lsid, const TxnNumber& txnN
     prepareCmd.setDbName(NamespaceString::kAdminDb);
     auto prepareObj = prepareCmd.toBSON(
         BSON("lsid" << lsid.toBSON() << "txnNumber" << txnNumber << "autocommit" << false
-                    << WriteConcernOptions::kWriteConcernField
-                    << WriteConcernOptions::Majority));
+                    << WriteConcernOptions::kWriteConcernField << WriteConcernOptions::Majority));
 
 
     return prepareObj;
@@ -1335,8 +1334,7 @@ TEST_F(TransactionCoordinatorMetricsTest, SimpleTwoPhaseCommitRealCoordinator) {
     setGlobalFailPoint("hangBeforeWaitingForParticipantListWriteConcern",
                        BSON("mode"
                             << "alwaysOn"
-                            << "data"
-                            << BSON("useUninterruptibleSleep" << 1)));
+                            << "data" << BSON("useUninterruptibleSleep" << 1)));
     coordinator.runCommit(kTwoShardIdList);
     waitUntilCoordinatorDocIsPresent();
 
@@ -1380,8 +1378,7 @@ TEST_F(TransactionCoordinatorMetricsTest, SimpleTwoPhaseCommitRealCoordinator) {
     setGlobalFailPoint("hangBeforeWaitingForDecisionWriteConcern",
                        BSON("mode"
                             << "alwaysOn"
-                            << "data"
-                            << BSON("useUninterruptibleSleep" << 1)));
+                            << "data" << BSON("useUninterruptibleSleep" << 1)));
     // Respond to the second prepare request in a separate thread, because the coordinator will
     // hijack that thread to run its continuation.
     assertPrepareSentAndRespondWithSuccess();
@@ -1431,8 +1428,7 @@ TEST_F(TransactionCoordinatorMetricsTest, SimpleTwoPhaseCommitRealCoordinator) {
     setGlobalFailPoint("hangAfterDeletingCoordinatorDoc",
                        BSON("mode"
                             << "alwaysOn"
-                            << "data"
-                            << BSON("useUninterruptibleSleep" << 1)));
+                            << "data" << BSON("useUninterruptibleSleep" << 1)));
     // Respond to the second commit request in a separate thread, because the coordinator will
     // hijack that thread to run its continuation.
     assertCommitSentAndRespondWithSuccess();
@@ -1993,11 +1989,10 @@ TEST_F(TransactionCoordinatorMetricsTest, SlowLogLineIncludesTransactionParamete
     runSimpleTwoPhaseCommitWithCommitDecisionAndCaptureLogLines();
     BSONObjBuilder lsidBob;
     _lsid.serialize(&lsidBob);
-    ASSERT_EQUALS(
-        1,
-        countLogLinesContaining(str::stream() << "parameters:{ lsid: " << lsidBob.done().toString()
-                                              << ", txnNumber: "
-                                              << _txnNumber));
+    ASSERT_EQUALS(1,
+                  countLogLinesContaining(str::stream()
+                                          << "parameters:{ lsid: " << lsidBob.done().toString()
+                                          << ", txnNumber: " << _txnNumber));
 }
 
 TEST_F(TransactionCoordinatorMetricsTest,

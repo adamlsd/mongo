@@ -375,11 +375,11 @@ TEST_F(TxnParticipantTest, StashAndUnstashResources) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Perform initial unstash which sets up a WriteUnitOfWork.
@@ -1108,20 +1108,19 @@ TEST_F(TxnParticipantTest, CannotStartNewTransactionWhilePreparedTransactionInPr
         auto guard = makeGuard([&]() { OperationContextSession::checkOut(opCtx()); });
         // Try to start a new transaction while there is already a prepared transaction on the
         // session. This should fail with a PreparedTransactionInProgress error.
-        runFunctionFromDifferentOpCtx([
-            lsid = *opCtx()->getLogicalSessionId(),
-            txnNumberToStart = *opCtx()->getTxnNumber() + 1
-        ](OperationContext * newOpCtx) {
-            newOpCtx->setLogicalSessionId(lsid);
-            newOpCtx->setTxnNumber(txnNumberToStart);
+        runFunctionFromDifferentOpCtx(
+            [lsid = *opCtx()->getLogicalSessionId(),
+             txnNumberToStart = *opCtx()->getTxnNumber() + 1](OperationContext* newOpCtx) {
+                newOpCtx->setLogicalSessionId(lsid);
+                newOpCtx->setTxnNumber(txnNumberToStart);
 
-            MongoDOperationContextSession ocs(newOpCtx);
-            auto txnParticipant = TransactionParticipant::get(newOpCtx);
-            ASSERT_THROWS_CODE(
-                txnParticipant.beginOrContinue(newOpCtx, txnNumberToStart, false, true),
-                AssertionException,
-                ErrorCodes::PreparedTransactionInProgress);
-        });
+                MongoDOperationContextSession ocs(newOpCtx);
+                auto txnParticipant = TransactionParticipant::get(newOpCtx);
+                ASSERT_THROWS_CODE(
+                    txnParticipant.beginOrContinue(newOpCtx, txnNumberToStart, false, true),
+                    AssertionException,
+                    ErrorCodes::PreparedTransactionInProgress);
+            });
     }
 
     ASSERT_FALSE(txnParticipant.transactionIsAborted());
@@ -1232,11 +1231,11 @@ TEST_F(TxnParticipantTest, StashInNestedSessionIsANoop) {
 
     // Set the readConcern on the OperationContext.
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Perform initial unstash, which sets up a WriteUnitOfWork.
@@ -2626,11 +2625,11 @@ TEST_F(TransactionsMetricsTest, ReportStashedResources) {
                                                   std::move(clientMetadata.getValue()));
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Perform initial unstash which sets up a WriteUnitOfWork.
@@ -2713,11 +2712,11 @@ TEST_F(TransactionsMetricsTest, ReportUnstashedResources) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Perform initial unstash which sets up a WriteUnitOfWork.
@@ -3062,11 +3061,11 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterCommit) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
 
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
@@ -3102,11 +3101,11 @@ TEST_F(TransactionsMetricsTest, TestPreparedTransactionInfoForLogAfterCommit) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
 
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
@@ -3144,11 +3143,11 @@ TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogAfterAbort) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3185,11 +3184,11 @@ TEST_F(TransactionsMetricsTest, TestPreparedTransactionInfoForLogAfterAbort) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Prepare the transaction and extend the duration in the prepared state.
@@ -3223,11 +3222,11 @@ DEATH_TEST_F(TransactionsMetricsTest, TestTransactionInfoForLogWithNoLockerInfoS
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3247,11 +3246,11 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowCommit) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3285,11 +3284,11 @@ TEST_F(TransactionsMetricsTest, LogPreparedTransactionInfoAfterSlowCommit) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3322,11 +3321,11 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowAbort) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3365,11 +3364,11 @@ TEST_F(TransactionsMetricsTest, LogPreparedTransactionInfoAfterSlowAbort) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3411,11 +3410,11 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterExceptionInPrepare) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3458,11 +3457,11 @@ TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterSlowStashedAbort) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());
@@ -3543,11 +3542,11 @@ TEST_F(TxnParticipantTest, RollbackResetsInMemoryStateOfPreparedTransaction) {
     auto sessionCheckout = checkOutSession();
 
     repl::ReadConcernArgs readConcernArgs;
-    ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                              << "test"
-                                              << repl::ReadConcernArgs::kReadConcernFieldName
-                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                      << "snapshot"))));
+    ASSERT_OK(
+        readConcernArgs.initialize(BSON("find"
+                                        << "test" << repl::ReadConcernArgs::kReadConcernFieldName
+                                        << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                << "snapshot"))));
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     auto txnParticipant = TransactionParticipant::get(opCtx());

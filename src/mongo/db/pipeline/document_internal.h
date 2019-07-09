@@ -138,8 +138,9 @@ private:
 };
 // Real size is sizeof(ValueElement) + nameLen
 #pragma pack()
-MONGO_STATIC_ASSERT(sizeof(ValueElement) == (sizeof(Value) + sizeof(Position) + sizeof(unsigned) +
-                                             sizeof(int) + sizeof(char) + 1));
+MONGO_STATIC_ASSERT(sizeof(ValueElement) ==
+                    (sizeof(Value) + sizeof(Position) + sizeof(unsigned) + sizeof(int) +
+                     sizeof(char) + 1));
 
 class DocumentStorage;
 
@@ -716,4 +717,4 @@ private:
 
     friend class DocumentStorageIterator;
 };
-}
+}  // namespace mongo

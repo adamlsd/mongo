@@ -208,16 +208,16 @@ TEST_F(ViewCatalogFixture, CanCreateViewWithJSONSchemaPredicate) {
 
 TEST_F(ViewCatalogFixture, CanCreateViewWithLookupUsingPipelineSyntax) {
     const NamespaceString viewOn("db.coll");
-    ASSERT_OK(viewCatalog.createView(opCtx.get(),
-                                     NamespaceString("db.view"),
-                                     viewOn,
-                                     BSON_ARRAY(BSON("$lookup" << BSON("from"
-                                                                       << "fcoll"
-                                                                       << "as"
-                                                                       << "as"
-                                                                       << "pipeline"
-                                                                       << BSONArray()))),
-                                     emptyCollation));
+    ASSERT_OK(
+        viewCatalog.createView(opCtx.get(),
+                               NamespaceString("db.view"),
+                               viewOn,
+                               BSON_ARRAY(BSON("$lookup" << BSON("from"
+                                                                 << "fcoll"
+                                                                 << "as"
+                                                                 << "as"
+                                                                 << "pipeline" << BSONArray()))),
+                               emptyCollation));
 }
 
 TEST_F(ViewCatalogFixture, CreateViewWithPipelineFailsOnInvalidStageName) {

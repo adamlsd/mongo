@@ -101,4 +101,4 @@ private:
     IndexCatalog* _indexCatalog;
     ValidateResultsMap* _indexNsResultsMap;
 };
-}  // namespace
+}  // namespace mongo

@@ -338,8 +338,7 @@ Status checkIfTransactionOnCappedColl(OperationContext* opCtx, Collection* colle
         return {
             ErrorCodes::OperationNotSupportedInTransaction,
             str::stream()
-                << "Collection '"
-                << collection->ns()
+                << "Collection '" << collection->ns()
                 << "' is a capped collection. Transactions are not allowed on capped collections."};
     }
     return Status::OK();
@@ -365,8 +364,9 @@ bool insertBatchAndHandleErrors(OperationContext* opCtx,
         "hangDuringBatchInsert",
         [&wholeOp]() {
             log() << "batch insert - hangDuringBatchInsert fail point enabled for namespace "
-                  << wholeOp.getNamespace() << ". Blocking "
-                                               "until fail point is disabled.";
+                  << wholeOp.getNamespace()
+                  << ". Blocking "
+                     "until fail point is disabled.";
         },
         true,  // Check for interrupt periodically.
         wholeOp.getNamespace());
@@ -504,7 +504,6 @@ WriteResult performInserts(OperationContext* opCtx,
                     durationCount<Microseconds>(curOp.elapsedTimeExcludingPauses()),
                     curOp.isCommand(),
                     curOp.getReadWriteType());
-
     });
 
     {
@@ -861,7 +860,7 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
                      "until fail point is disabled.";
         },
         true  // Check for interrupt periodically.
-        );
+    );
     if (MONGO_FAIL_POINT(failAllRemoves)) {
         uasserted(ErrorCodes::InternalError, "failAllRemoves failpoint active!");
     }

@@ -154,7 +154,6 @@ private:
     void* _ptr = _buf;
 };
 
-namespace bson_builder_detail {
 template <class BufferAllocator>
 class BasicBufBuilder {
 public:
@@ -350,9 +349,8 @@ private:
 
     friend class StringBuilderImpl<BufferAllocator>;
 };
-}  // namespace bson_builder_detail
 
-typedef bson_builder_detail::BasicBufBuilder<SharedBufferAllocator> BufBuilder;
+typedef BasicBufBuilder<SharedBufferAllocator> BufBuilder;
 MONGO_STATIC_ASSERT(std::is_move_constructible_v<BufBuilder>);
 
 /** The StackBufBuilder builds smaller datasets on the stack instead of using malloc.
@@ -362,9 +360,9 @@ MONGO_STATIC_ASSERT(std::is_move_constructible_v<BufBuilder>);
       nothing bad would happen.  In fact in some circumstances this might make sense, say,
       embedded in some other object.
 */
-class StackBufBuilder : public bson_builder_detail::BasicBufBuilder<StackAllocator> {
+class StackBufBuilder : public BasicBufBuilder<StackAllocator> {
 public:
-    StackBufBuilder() : bson_builder_detail::BasicBufBuilder<StackAllocator>(StackAllocator::SZ) {}
+    StackBufBuilder() : BasicBufBuilder<StackAllocator>(StackAllocator::SZ) {}
     void release() = delete;  // not allowed. not implemented.
 };
 MONGO_STATIC_ASSERT(!std::is_move_constructible<StackBufBuilder>::value);
@@ -522,14 +520,14 @@ private:
         return *this;
     }
 
-    bson_builder_detail::BasicBufBuilder<Allocator> _buf;
+    BasicBufBuilder<Allocator> _buf;
 };
 
 typedef StringBuilderImpl<SharedBufferAllocator> StringBuilder;
 typedef StringBuilderImpl<StackAllocator> StackStringBuilder;
 
-extern template class bson_builder_detail::BasicBufBuilder<SharedBufferAllocator>;
-extern template class bson_builder_detail::BasicBufBuilder<StackAllocator>;
+extern template class BasicBufBuilder<SharedBufferAllocator>;
+extern template class BasicBufBuilder<StackAllocator>;
 extern template class StringBuilderImpl<SharedBufferAllocator>;
 extern template class StringBuilderImpl<StackAllocator>;
 

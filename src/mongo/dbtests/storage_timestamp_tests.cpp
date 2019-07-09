@@ -697,9 +697,9 @@ public:
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
 
-        const std::uint32_t docsToInsert = 10;
+        const std::int32_t docsToInsert = 10;
         const LogicalTime firstInsertTime = _clock->reserveTicks(docsToInsert);
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             BSONObjBuilder result;
             ASSERT_OK(applyOps(
                 _opCtx,
@@ -727,7 +727,7 @@ public:
                 &result));
         }
 
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
 
             BSONObj result;
@@ -750,28 +750,28 @@ public:
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
 
-        const std::uint32_t docsToInsert = 10;
+        const std::int32_t docsToInsert = 10;
         const LogicalTime firstInsertTime = _clock->reserveTicks(docsToInsert);
 
         BSONObjBuilder oplogEntryBuilder;
 
         // Populate the "ts" field with an array of all the grouped inserts' timestamps.
         BSONArrayBuilder tsArrayBuilder(oplogEntryBuilder.subarrayStart("ts"));
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             tsArrayBuilder.append(firstInsertTime.addTicks(idx).asTimestamp());
         }
         tsArrayBuilder.done();
 
         // Populate the "t" (term) field with an array of all the grouped inserts' terms.
         BSONArrayBuilder tArrayBuilder(oplogEntryBuilder.subarrayStart("t"));
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             tArrayBuilder.append(1LL);
         }
         tArrayBuilder.done();
 
         // Populate the "o" field with an array of all the grouped inserts.
         BSONArrayBuilder oArrayBuilder(oplogEntryBuilder.subarrayStart("o"));
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             oArrayBuilder.append(BSON("_id" << idx));
         }
         oArrayBuilder.done();
@@ -784,7 +784,7 @@ public:
         ASSERT_OK(repl::SyncTail::syncApply(
             _opCtx, oplogEntry, repl::OplogApplication::Mode::kSecondary, boost::none));
 
-        for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
+        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
 
             BSONObj result;
@@ -1386,10 +1386,9 @@ public:
             nullptr,  // replication coordinator. not required for multiApply().
             _consistencyMarkers,
             storageInterface,
-            {},
+            repl::OplogApplier::Options(repl::OplogApplication::Mode::kSecondary),
             writerPool.get());
-        ASSERT_EQUALS(op2.getOpTime(),
-                      unittest::assertGet(oplogApplier.multiApply(_opCtx, ops, boost::none)));
+        ASSERT_EQUALS(op2.getOpTime(), unittest::assertGet(oplogApplier.multiApply(_opCtx, ops)));
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
         assertMultikeyPaths(
@@ -1485,7 +1484,7 @@ public:
         DoNothingOplogApplierObserver observer;
         auto storageInterface = repl::StorageInterface::get(_opCtx);
         auto writerPool = repl::OplogApplier::makeWriterPool();
-        repl::OplogApplier::Options options;
+        repl::OplogApplier::Options options(repl::OplogApplication::Mode::kInitialSync);
         options.allowNamespaceNotFoundErrorsOnCrudOps = true;
         options.missingDocumentSourceForInitialSync = HostAndPort("localhost", 123);
 
@@ -1498,7 +1497,7 @@ public:
             storageInterface,
             options,
             writerPool.get());
-        auto lastTime = unittest::assertGet(oplogApplier.multiApply(_opCtx, ops, boost::none));
+        auto lastTime = unittest::assertGet(oplogApplier.multiApply(_opCtx, ops));
         ASSERT_EQ(lastTime.getTimestamp(), insertTime2.asTimestamp());
 
         // Wait for the index build to finish before making any assertions.
@@ -2567,8 +2566,13 @@ public:
         auto storageInterface = repl::StorageInterface::get(_opCtx);
         auto writerPool = repl::OplogApplier::makeWriterPool(1);
         repl::SyncTail syncTail(
-            nullptr, _consistencyMarkers, storageInterface, applyOperationFn, writerPool.get());
-        auto lastOpTime = unittest::assertGet(syncTail.multiApply(_opCtx, {insertOp}, boost::none));
+            nullptr,
+            _consistencyMarkers,
+            storageInterface,
+            applyOperationFn,
+            writerPool.get(),
+            repl::OplogApplier::Options(repl::OplogApplication::Mode::kSecondary));
+        auto lastOpTime = unittest::assertGet(syncTail.multiApply(_opCtx, {insertOp}));
         ASSERT_EQ(insertOp.getOpTime(), lastOpTime);
 
         joinGuard.dismiss();

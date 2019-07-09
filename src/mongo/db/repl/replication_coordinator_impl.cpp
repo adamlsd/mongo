@@ -69,6 +69,7 @@
 #include "mongo/db/repl/repl_set_request_votes_args.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator_impl_gen.h"
+#include "mongo/db/repl/replication_metrics.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/rslog.h"
 #include "mongo/db/repl/storage_interface.h"
@@ -464,16 +465,18 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
 
     _replicationProcess->getConsistencyMarkers()->initializeMinValidDocument(opCtx);
 
+    fassert(51240, _externalState->createLocalLastVoteCollection(opCtx));
+
     StatusWith<LastVote> lastVote = _externalState->loadLocalLastVoteDocument(opCtx);
     if (!lastVote.isOK()) {
-        if (lastVote.getStatus() == ErrorCodes::NoMatchingDocument) {
-            log() << "Did not find local voted for document at startup.";
-        } else {
-            severe() << "Error loading local voted for document at startup; "
-                     << lastVote.getStatus();
-            fassertFailedNoTrace(40367);
-        }
-    } else {
+        severe() << "Error loading local voted for document at startup; " << lastVote.getStatus();
+        fassertFailedNoTrace(40367);
+    }
+    if (lastVote.getValue().getTerm() == OpTime::kInitialTerm) {
+        // This log line is checked in unit tests.
+        log() << "Did not find local initialized voted for document at startup.";
+    }
+    {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         _topCoord->loadLastVote(lastVote.getValue());
     }
@@ -3809,6 +3812,7 @@ EventHandle ReplicationCoordinatorImpl::_updateTerm_inlock(
         }
         if (_topCoord->prepareForUnconditionalStepDown()) {
             log() << "stepping down from primary, because a new term has begun: " << term;
+            ReplicationMetrics::get(getServiceContext()).incrementNumStepDownsCausedByHigherTerm();
             return _stepDownStart();
         } else {
             LOG(2) << "Updated term but not triggering stepdown because we are already in the "

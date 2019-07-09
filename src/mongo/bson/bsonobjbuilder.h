@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <type_traits>
 
 #include "mongo/base/data_view.h"
 #include "mongo/base/parse_number.h"
@@ -48,8 +49,8 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/platform/decimal128.h"
-#include "mongo/stdx/type_traits.h"
 #include "mongo/util/decimal_counter.h"
+#include "mongo/util/if_constexpr.h"
 
 namespace mongo {
 
@@ -254,56 +255,28 @@ public:
         return *this;
     }
 
-    /** Append a boolean element */
-    BSONObjBuilder& append(StringData fieldName, bool val) {
-        _b.appendNum((char)Bool);
+    /** Append elements that have the BSONObjAppendFormat trait */
+    template <typename T, typename = std::enable_if_t<IsBSONObjAppendable<T>::value>>
+    BSONObjBuilder& append(StringData fieldName, const T& n) {
+        constexpr BSONType type = BSONObjAppendFormat<T>::value;
+        _b.appendNum(static_cast<char>(type));
         _b.appendStr(fieldName);
-        _b.appendNum((char)(val ? 1 : 0));
+        IF_CONSTEXPR(type == Bool) {
+            _b.appendNum(static_cast<char>(n));
+        }
+        else IF_CONSTEXPR(type == NumberInt) {
+            _b.appendNum(static_cast<int>(n));
+        }
+        else {
+            _b.appendNum(n);
+        }
         return *this;
     }
 
-    /** Append a 32 bit integer element */
-    BSONObjBuilder& append(StringData fieldName, int n) {
-        _b.appendNum((char)NumberInt);
-        _b.appendStr(fieldName);
-        _b.appendNum(n);
-        return *this;
-    }
-
-    /** Append a 32 bit unsigned element - cast to a signed int. */
-    BSONObjBuilder& append(StringData fieldName, unsigned n) {
-        return append(fieldName, (int)n);
-    }
-
-    /** Append a NumberDecimal */
-    BSONObjBuilder& append(StringData fieldName, Decimal128 n) {
-        _b.appendNum(static_cast<char>(NumberDecimal));
-        _b.appendStr(fieldName);
-        // Make sure we write data in a Little Endian conforming manner
-        _b.appendNum(n);
-        return *this;
-    }
-
-    /** Append a NumberLong */
-    BSONObjBuilder& append(StringData fieldName, long long n) {
-        _b.appendNum((char)NumberLong);
-        _b.appendStr(fieldName);
-        _b.appendNum(n);
-        return *this;
-    }
-
-    /**
-     * Append a NumberLong (if int64_t isn't the same as long long)
-     */
-    template <typename Int64_t,
-              typename = stdx::enable_if_t<std::is_same<Int64_t, int64_t>::value &&
-                                           !std::is_same<int64_t, long long>::value>>
-    BSONObjBuilder& append(StringData fieldName, Int64_t n) {
-        _b.appendNum((char)NumberLong);
-        _b.appendStr(fieldName);
-        _b.appendNum(n);
-        return *this;
-    }
+    template <typename T,
+              typename = std::enable_if_t<!IsBSONObjAppendable<T>::value && std::is_integral_v<T>>,
+              typename = void>
+    BSONObjBuilder& append(StringData fieldName, const T& n) = delete;
 
     /** appends a number.  if n < max(int)/2 then uses int, otherwise long long */
     BSONObjBuilder& appendIntOrLL(StringData fieldName, long long n) {
@@ -357,14 +330,6 @@ public:
             append(fieldName, llNumber);
         }
 
-        return *this;
-    }
-
-    /** Append a double element */
-    BSONObjBuilder& append(StringData fieldName, double n) {
-        _b.appendNum((char)NumberDouble);
-        _b.appendStr(fieldName);
-        _b.appendNum(n);
         return *this;
     }
 
@@ -705,14 +670,6 @@ public:
         _doneCalled = true;
     }
 
-    static std::string numStr(int i) {
-        if (i >= 0 && i < 100 && numStrsReady)
-            return numStrs[i];
-        StringBuilder o;
-        o << i;
-        return o.str();
-    }
-
     /** Stream oriented way to add field names and values. */
     BSONObjBuilderValueStream& operator<<(StringData name) {
         _s.endField(name);
@@ -795,11 +752,8 @@ private:
     BufBuilder _buf;
     int _offset = 0;
     BSONObjBuilderValueStream _s;
-    BSONSizeTracker* _tracker = nullptr;
-    bool _doneCalled = false;
-
-    static const std::string numStrs[100];  // cache of 0 to 99 inclusive
-    static bool numStrsReady;               // for static init safety
+    BSONSizeTracker* _tracker=nullptr;
+    bool _doneCalled=false;
 };
 
 class BSONArrayBuilder {
@@ -948,17 +902,22 @@ private:
 template <class T>
 inline BSONObjBuilder& BSONObjBuilder::append(StringData fieldName, const std::vector<T>& vals) {
     BSONObjBuilder arrBuilder(subarrayStart(fieldName));
-    for (unsigned int i = 0; i < vals.size(); ++i)
-        arrBuilder.append(numStr(i), vals[i]);
+    DecimalCounter<size_t> n;
+    for (unsigned int i = 0; i < vals.size(); ++i) {
+        arrBuilder.append(StringData{n}, vals[i]);
+        ++n;
+    }
     return *this;
 }
 
 template <class L>
 inline BSONObjBuilder& _appendIt(BSONObjBuilder& _this, StringData fieldName, const L& vals) {
     BSONObjBuilder arrBuilder;
-    int n = 0;
-    for (typename L::const_iterator i = vals.begin(); i != vals.end(); i++)
-        arrBuilder.append(BSONObjBuilder::numStr(n++), *i);
+    DecimalCounter<size_t> n;
+    for (typename L::const_iterator i = vals.begin(); i != vals.end(); i++) {
+        arrBuilder.append(StringData{n}, *i);
+        ++n;
+    }
     _this.appendArray(fieldName, arrBuilder.done());
     return _this;
 }

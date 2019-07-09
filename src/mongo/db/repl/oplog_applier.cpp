@@ -82,8 +82,9 @@ std::size_t OplogApplier::calculateBatchLimitBytes(OperationContext* opCtx,
 
 OplogApplier::OplogApplier(executor::TaskExecutor* executor,
                            OplogBuffer* oplogBuffer,
-                           Observer* observer)
-    : _executor(executor), _oplogBuffer(oplogBuffer), _observer(observer) {}
+                           Observer* observer,
+                           const OplogApplier::Options& options)
+    : _executor(executor), _oplogBuffer(oplogBuffer), _observer(observer), _options(options) {}
 
 OplogBuffer* OplogApplier::getBuffer() const {
     return _oplogBuffer;
@@ -232,7 +233,7 @@ StatusWith<OplogApplier::Operations> OplogApplier::getNextApplierBatch(
     while (_oplogBuffer->peek(opCtx, &op)) {
         auto entry = OplogEntry(op);
 
-        // Check for oplog version change. If it is absent, its value is one.
+        // Check for oplog version change.
         if (entry.getVersion() != OplogEntry::kOplogVersion) {
             std::string message = str::stream()
                 << "expected oplog version " << OplogEntry::kOplogVersion << " but found version "
@@ -289,11 +290,9 @@ StatusWith<OplogApplier::Operations> OplogApplier::getNextApplierBatch(
     return std::move(ops);
 }
 
-StatusWith<OpTime> OplogApplier::multiApply(OperationContext* opCtx,
-                                            Operations ops,
-                                            boost::optional<repl::OplogApplication::Mode> mode) {
+StatusWith<OpTime> OplogApplier::multiApply(OperationContext* opCtx, Operations ops) {
     _observer->onBatchBegin(ops);
-    auto lastApplied = _multiApply(opCtx, std::move(ops), mode);
+    auto lastApplied = _multiApply(opCtx, std::move(ops));
     _observer->onBatchEnd(lastApplied, {});
     return lastApplied;
 }

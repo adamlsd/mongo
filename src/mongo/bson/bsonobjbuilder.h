@@ -51,6 +51,7 @@
 #include "mongo/platform/decimal128.h"
 #include "mongo/util/decimal_counter.h"
 #include "mongo/util/if_constexpr.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -646,15 +647,14 @@ public:
 
         // None of the code which resets this builder to the not-done state is expected to throw.
         // If it does, that would be a violation of our expectations.
-        [this]() noexcept->void {
+        auto resetObjectState = makeGuard([this]() noexcept {
             // Immediately after the buffer for the ephemeral space created by the call to `_done()`
             // is ready, reset our state to not-done.
             _doneCalled = false;
 
             _b.setlen(_b.len() - 1);  // next append should overwrite the EOO
             _b.reserveBytes(1);       // Rereserve room for the real EOO
-        }
-        ();
+        });
 
         return BSONObj(buffer, BSONObj::LargeSizeTrait());
     }
@@ -752,8 +752,8 @@ private:
     BufBuilder _buf;
     int _offset = 0;
     BSONObjBuilderValueStream _s;
-    BSONSizeTracker* _tracker=nullptr;
-    bool _doneCalled=false;
+    BSONSizeTracker* _tracker = nullptr;
+    bool _doneCalled = false;
 };
 
 class BSONArrayBuilder {

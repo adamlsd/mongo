@@ -36,6 +36,7 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 #include <boost/optional.hpp>
 
@@ -350,7 +351,7 @@ private:
     friend class StringBuilderImpl<BufferAllocator>;
 };
 
-typedef BasicBufBuilder<SharedBufferAllocator> BufBuilder;
+using BufBuilder = BasicBufBuilder<SharedBufferAllocator>;
 MONGO_STATIC_ASSERT(std::is_move_constructible_v<BufBuilder>);
 
 /** The StackBufBuilder builds smaller datasets on the stack instead of using malloc.
@@ -523,8 +524,8 @@ private:
     BasicBufBuilder<Allocator> _buf;
 };
 
-typedef StringBuilderImpl<SharedBufferAllocator> StringBuilder;
-typedef StringBuilderImpl<StackAllocator> StackStringBuilder;
+using StringBuilder = StringBuilderImpl<SharedBufferAllocator>;
+using StackStringBuilder = StringBuilderImpl<StackAllocator>;
 
 extern template class BasicBufBuilder<SharedBufferAllocator>;
 extern template class BasicBufBuilder<StackAllocator>;

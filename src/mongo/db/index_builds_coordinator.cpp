@@ -315,21 +315,12 @@ void IndexBuildsCoordinator::abortDatabaseIndexBuilds(StringData db, const std::
     dbIndexBuilds->waitUntilNoIndexBuildsRemain(lk);
 }
 
-Future<void> IndexBuildsCoordinator::abortIndexBuildByName(
-    const NamespaceString& nss,
-    const std::vector<std::string>& indexNames,
-    const std::string& reason) {
-    // TODO: not yet implemented. Some code to make it compile.
-    auto pf = makePromiseFuture<void>();
-    auto promise = std::move(pf.promise);
-    return std::move(pf.future);
-}
-
 Future<void> IndexBuildsCoordinator::abortIndexBuildByBuildUUID(const UUID& buildUUID,
                                                                 const std::string& reason) {
-    // TODO: not yet implemented. Some code to make it compile.
+    _indexBuildsManager.abortIndexBuild(buildUUID, reason);
     auto pf = makePromiseFuture<void>();
     auto promise = std::move(pf.promise);
+    promise.setWith([] {});
     return std::move(pf.future);
 }
 

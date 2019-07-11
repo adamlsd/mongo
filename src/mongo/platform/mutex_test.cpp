@@ -27,26 +27,22 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#include "mongo/unittest/unittest.h"
 
-#include "mongo/base/init.h"
-#include "mongo/db/namespace_string.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
-
-#include <memory>
+#include "mongo/platform/mutex.h"
+#include "mongo/stdx/thread.h"
 
 namespace mongo {
-namespace {
+TEST(MongoMutexTest, BasicSingleThread) {
+    auto serviceContext = ServiceContext::make();
+    setGlobalServiceContext(std::move(serviceContext));
 
-bool initRsOplogBackgroundThread(StringData ns) {
-    return NamespaceString::oplog(ns);
+    Mutex m;
+    m.lock();
+    ASSERT(!m.try_lock());
+    m.unlock();
+    ASSERT(m.try_lock());
+    m.unlock();
 }
-
-MONGO_INITIALIZER(SetInitRsOplogBackgroundThreadCallback)(InitializerContext* context) {
-    WiredTigerKVEngine::setInitRsOplogBackgroundThreadCallback(initRsOplogBackgroundThread);
-    return Status::OK();
 }
-
-}  // namespace
-}  // namespace mongo

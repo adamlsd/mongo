@@ -199,27 +199,9 @@ public:
     void abortDatabaseIndexBuilds(StringData db, const std::string& reason);
 
     /**
-     * Aborts a given index build by name on the given collection.
-     *
-     * TODO: This is not yet implemented.
-     */
-    Future<void> abortIndexBuildByName(const NamespaceString& nss,
-                                       const std::vector<std::string>& indexNames,
-                                       const std::string& reason);
-
-    /**
      * Aborts a given index build by index build UUID.
-     *
-     * TODO: This is not yet implemented.
      */
     Future<void> abortIndexBuildByBuildUUID(const UUID& buildUUID, const std::string& reason);
-
-    /**
-     * Signal replica set member state changes that affect cross replica set index building.
-     */
-    virtual void signalChangeToPrimaryMode() = 0;
-    virtual void signalChangeToSecondaryMode() = 0;
-    virtual void signalChangeToInitialSyncMode() = 0;
 
     /**
      * TODO: This is not yet implemented.

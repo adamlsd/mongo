@@ -130,6 +130,14 @@ void ReplicationCoordinatorExternalStateMock::setLocalConfigDocument(
     _localRsConfigDocument = localConfigDocument;
 }
 
+Status ReplicationCoordinatorExternalStateMock::createLocalLastVoteCollection(
+    OperationContext* opCtx) {
+    if (!_localRsLastVoteDocument.isOK()) {
+        setLocalLastVoteDocument(LastVote{OpTime::kInitialTerm, -1});
+    }
+    return Status::OK();
+}
+
 StatusWith<LastVote> ReplicationCoordinatorExternalStateMock::loadLocalLastVoteDocument(
     OperationContext* opCtx) {
     return _localRsLastVoteDocument;
@@ -225,6 +233,10 @@ void ReplicationCoordinatorExternalStateMock::signalApplierToChooseNewSyncSource
 void ReplicationCoordinatorExternalStateMock::stopProducer() {}
 
 void ReplicationCoordinatorExternalStateMock::startProducerIfStopped() {}
+
+bool ReplicationCoordinatorExternalStateMock::tooStale() {
+    return false;
+}
 
 void ReplicationCoordinatorExternalStateMock::dropAllSnapshots() {}
 

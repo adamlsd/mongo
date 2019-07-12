@@ -414,29 +414,6 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
                                _storageInterface->waitForAllEarlierOplogWritesToBeVisible(opCtx);
                            });
 
-        // Update unique index format version for all non-replicated collections. It is possible
-        // for MongoDB to have a "clean startup", i.e., no non-local databases, but still have
-        // unique indexes on collections in the local database. On clean startup,
-        // setFeatureCompatibilityVersion (which updates the unique index format version of
-        // collections) is not called, so any pre-existing collections are upgraded here. We exclude
-        // ShardServers when updating indexes belonging to non-replicated collections on the primary
-        // because ShardServers are started up by default with featureCompatibilityVersion 4.0, so
-        // we don't want to update those indexes until the cluster's featureCompatibilityVersion is
-        // explicitly set to 4.2 by config server. The below unique index update for non-replicated
-        // collections only occurs on the primary; updates for unique indexes belonging to
-        // non-replicated collections are done on secondaries during InitialSync. When the config
-        // server sets the featureCompatibilityVersion to 4.2, the shard primary will update unique
-        // indexes belonging to all the collections. One special case here is if a shard is already
-        // in featureCompatibilityVersion 4.2 and a new node is started up with --shardsvr and added
-        // to that shard, the new node will still start up with featureCompatibilityVersion 4.0 and
-        // may need to have unique index version updated. Such indexes would be updated during
-        // InitialSync because the new node is a secondary.
-        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer &&
-            FeatureCompatibilityVersion::isCleanStartUp()) {
-            auto updateStatus = updateNonReplicatedUniqueIndexes(opCtx);
-            if (!updateStatus.isOK())
-                return updateStatus;
-        }
         FeatureCompatibilityVersion::setIfCleanStartup(opCtx, _storageInterface);
     } catch (const DBException& ex) {
         return ex.toStatus();
@@ -545,6 +522,37 @@ Status ReplicationCoordinatorExternalStateImpl::storeLocalConfigDocument(Operati
     }
 }
 
+Status ReplicationCoordinatorExternalStateImpl::createLocalLastVoteCollection(
+    OperationContext* opCtx) {
+    auto status = _storageInterface->createCollection(
+        opCtx, NamespaceString(lastVoteCollectionName), CollectionOptions());
+    if (!status.isOK() && status.code() != ErrorCodes::NamespaceExists) {
+        return {ErrorCodes::CannotCreateCollection,
+                str::stream() << "Failed to create local last vote collection. Ns: "
+                              << lastVoteCollectionName
+                              << " Error: "
+                              << status.toString()};
+    }
+
+    // Make sure there's always a last vote document.
+    try {
+        writeConflictRetry(
+            opCtx, "create initial replica set lastVote", lastVoteCollectionName, [opCtx] {
+                AutoGetCollection coll(opCtx, NamespaceString(lastVoteCollectionName), MODE_X);
+                BSONObj result;
+                bool exists = Helpers::getSingleton(opCtx, lastVoteCollectionName, result);
+                if (!exists) {
+                    LastVote lastVote{OpTime::kInitialTerm, -1};
+                    Helpers::putSingleton(opCtx, lastVoteCollectionName, lastVote.toBSON());
+                }
+            });
+    } catch (const DBException& ex) {
+        return ex.toStatus();
+    }
+
+    return Status::OK();
+}
+
 StatusWith<LastVote> ReplicationCoordinatorExternalStateImpl::loadLocalLastVoteDocument(
     OperationContext* opCtx) {
     try {
@@ -578,26 +586,24 @@ Status ReplicationCoordinatorExternalStateImpl::storeLocalLastVoteDocument(
                 // don't want to have this process interrupted due to us stepping down, since we
                 // want to be able to cast our vote for a new primary right away.
                 UninterruptibleLockGuard noInterrupt(opCtx->lockState());
-                Lock::DBLock dbWriteLock(opCtx, lastVoteDatabaseName, MODE_X);
+                AutoGetCollection coll(opCtx, NamespaceString(lastVoteCollectionName), MODE_IX);
+                WriteUnitOfWork wunit(opCtx);
 
-                // If there is no last vote document, we want to store one. Otherwise, we only want
-                // to replace it if the new last vote document would have a higher term. We both
-                // check the term of the current last vote document and insert the new document
-                // under the DBLock to synchronize the two operations.
+                // We only want to replace the last vote document if the new last vote document
+                // would have a higher term. We check the term of the current last vote document and
+                // insert the new document in a WriteUnitOfWork to synchronize the two operations.
+                // We have already ensured at startup time that there is an old document.
                 BSONObj result;
                 bool exists = Helpers::getSingleton(opCtx, lastVoteCollectionName, result);
-                if (!exists) {
-                    Helpers::putSingleton(opCtx, lastVoteCollectionName, lastVoteObj);
-                } else {
-                    StatusWith<LastVote> oldLastVoteDoc = LastVote::readFromLastVote(result);
-                    if (!oldLastVoteDoc.isOK()) {
-                        return oldLastVoteDoc.getStatus();
-                    }
-                    if (lastVote.getTerm() > oldLastVoteDoc.getValue().getTerm()) {
-                        Helpers::putSingleton(opCtx, lastVoteCollectionName, lastVoteObj);
-                    }
+                fassert(51241, exists);
+                StatusWith<LastVote> oldLastVoteDoc = LastVote::readFromLastVote(result);
+                if (!oldLastVoteDoc.isOK()) {
+                    return oldLastVoteDoc.getStatus();
                 }
-
+                if (lastVote.getTerm() > oldLastVoteDoc.getValue().getTerm()) {
+                    Helpers::putSingleton(opCtx, lastVoteCollectionName, lastVoteObj);
+                }
+                wunit.commit();
                 return Status::OK();
             });
 
@@ -812,6 +818,15 @@ void ReplicationCoordinatorExternalStateImpl::startProducerIfStopped() {
     if (_bgSync) {
         _bgSync->startProducerIfStopped();
     }
+}
+
+bool ReplicationCoordinatorExternalStateImpl::tooStale() {
+    LockGuard lk(_threadMutex);
+    if (_bgSync) {
+        return _bgSync->tooStale();
+    }
+
+    return false;
 }
 
 void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationContext* opCtx) {

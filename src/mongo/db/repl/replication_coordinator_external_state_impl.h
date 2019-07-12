@@ -81,6 +81,7 @@ public:
     OpTime onTransitionToPrimary(OperationContext* opCtx) override;
     virtual void forwardSlaveProgress();
     virtual bool isSelf(const HostAndPort& host, ServiceContext* service);
+    Status createLocalLastVoteCollection(OperationContext* opCtx) final;
     virtual StatusWith<BSONObj> loadLocalConfigDocument(OperationContext* opCtx);
     virtual Status storeLocalConfigDocument(OperationContext* opCtx, const BSONObj& config);
     virtual StatusWith<LastVote> loadLocalLastVoteDocument(OperationContext* opCtx);
@@ -95,6 +96,7 @@ public:
     virtual void signalApplierToChooseNewSyncSource();
     virtual void stopProducer();
     virtual void startProducerIfStopped();
+    virtual bool tooStale();
     void dropAllSnapshots() final;
     void updateCommittedSnapshot(const OpTime& newCommitPoint) final;
     void updateLocalSnapshot(const OpTime& optime) final;

@@ -133,7 +133,7 @@ void onConfigDeleteInvalidateCachedCollectionMetadataAndNotify(OperationContext*
     // Extract which collection entry is being deleted from the _id field.
     std::string deletedCollection;
     fassert(40479,
-            bsonExtractStringField(query, ShardCollectionType::ns.name(), &deletedCollection));
+            bsonExtractStringField(query, ShardCollectionType::kNssFieldName, &deletedCollection));
     const NamespaceString deletedNss(deletedCollection);
 
     // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit().
@@ -263,7 +263,7 @@ void ShardServerOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateE
             std::string coll;
             fassert(40477,
                     bsonExtractStringField(
-                        args.updateArgs.criteria, ShardCollectionType::ns.name(), &coll));
+                        args.updateArgs.criteria, ShardCollectionType::kNssFieldName, &coll));
             return NamespaceString(coll);
         }());
 
@@ -277,13 +277,13 @@ void ShardServerOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateE
             // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit()
             AutoGetCollection autoColl(opCtx, updatedNss, MODE_IX);
 
-            if (setField.hasField(ShardCollectionType::refreshing.name()) &&
+            if (setField.hasField(ShardCollectionType::kLastRefreshedCollectionVersionFieldName) &&
                 !setField.getBoolField("refreshing")) {
                 opCtx->recoveryUnit()->registerChange(
                     new CollectionVersionLogOpHandler(opCtx, updatedNss));
             }
 
-            if (setField.hasField(ShardCollectionType::enterCriticalSectionCounter.name())) {
+            if (setField.hasField(ShardCollectionType::kEnterCriticalSectionCounterFieldName)) {
                 // Force subsequent uses of the namespace to refresh the filtering metadata so they
                 // can synchronize with any work happening on the primary (e.g., migration critical
                 // section).
@@ -320,11 +320,9 @@ void ShardServerOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateE
 
             if (setField.hasField(ShardDatabaseType::enterCriticalSectionCounter.name())) {
                 AutoGetDb autoDb(opCtx, db, MODE_X);
-                if (autoDb.getDb()) {
-                    auto& dss = DatabaseShardingState::get(autoDb.getDb());
-                    auto dssLock = DatabaseShardingState::DSSLock::lockExclusive(opCtx, &dss);
-                    dss.setDbVersion(opCtx, boost::none, dssLock);
-                }
+                auto dss = DatabaseShardingState::get(opCtx, db);
+                auto dssLock = DatabaseShardingState::DSSLock::lockExclusive(opCtx, dss);
+                dss->setDbVersion(opCtx, boost::none, dssLock);
             }
         }
     }
@@ -368,11 +366,9 @@ void ShardServerOpObserver::onDelete(OperationContext* opCtx,
             bsonExtractStringField(documentKey, ShardDatabaseType::name.name(), &deletedDatabase));
 
         AutoGetDb autoDb(opCtx, deletedDatabase, MODE_X);
-        if (autoDb.getDb()) {
-            auto& dss = DatabaseShardingState::get(autoDb.getDb());
-            auto dssLock = DatabaseShardingState::DSSLock::lockExclusive(opCtx, &dss);
-            dss.setDbVersion(opCtx, boost::none, dssLock);
-        }
+        auto dss = DatabaseShardingState::get(opCtx, deletedDatabase);
+        auto dssLock = DatabaseShardingState::DSSLock::lockExclusive(opCtx, dss);
+        dss->setDbVersion(opCtx, boost::none, dssLock);
     }
 
     if (nss == NamespaceString::kServerConfigurationNamespace) {

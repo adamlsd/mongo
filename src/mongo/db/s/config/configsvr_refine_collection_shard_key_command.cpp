@@ -33,6 +33,10 @@
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/repl/repl_client_info.h"
+#include "mongo/db/s/shard_key_util.h"
+#include "mongo/s/catalog/dist_lock_manager.h"
+#include "mongo/s/grid.h"
 #include "mongo/s/request_types/refine_collection_shard_key_gen.h"
 #include "mongo/util/log.h"
 
@@ -49,18 +53,93 @@ public:
         using InvocationBase::InvocationBase;
 
         void typedRun(OperationContext* opCtx) {
+            const NamespaceString& nss = ns();
+
             uassert(ErrorCodes::IllegalOperation,
                     "_configsvrRefineCollectionShardKey can only be run on config servers",
                     serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
             uassert(ErrorCodes::InvalidOptions,
-                    str::stream()
-                        << "refineCollectionShardKey must be called with majority writeConcern",
+                    "refineCollectionShardKey must be called with majority writeConcern",
                     opCtx->getWriteConcern().wMode == WriteConcernOptions::kMajority);
 
             // Set the operation context read concern level to local for reads into the config
             // database.
             repl::ReadConcernArgs::get(opCtx) =
                 repl::ReadConcernArgs(repl::ReadConcernLevel::kLocalReadConcern);
+
+            const auto catalogClient = Grid::get(opCtx)->catalogClient();
+
+            // Acquire distlocks on the namespace's database and collection.
+            DistLockManager::ScopedDistLock dbDistLock(uassertStatusOK(
+                catalogClient->getDistLockManager()->lock(opCtx,
+                                                          nss.db(),
+                                                          "refineCollectionShardKey",
+                                                          DistLockManager::kDefaultLockTimeout)));
+            DistLockManager::ScopedDistLock collDistLock(uassertStatusOK(
+                catalogClient->getDistLockManager()->lock(opCtx,
+                                                          nss.ns(),
+                                                          "refineCollectionShardKey",
+                                                          DistLockManager::kDefaultLockTimeout)));
+
+            // Validate the given namespace is (i) sharded and (ii) has the same epoch as the router
+            // that received refineCollectionShardKey had in its routing table cache.
+            const auto collStatus =
+                catalogClient->getCollection(opCtx, nss, repl::ReadConcernLevel::kLocalReadConcern);
+
+            uassert(ErrorCodes::NamespaceNotSharded,
+                    str::stream() << "refineCollectionShardKey namespace " << nss.toString()
+                                  << " is not sharded",
+                    collStatus != ErrorCodes::NamespaceNotFound);
+
+            const auto collType = uassertStatusOK(collStatus).value;
+
+            uassert(ErrorCodes::StaleEpoch,
+                    str::stream()
+                        << "refineCollectionShardKey namespace "
+                        << nss.toString()
+                        << " has a different epoch than mongos had in its routing table cache",
+                    request().getEpoch() == collType.getEpoch());
+
+            const auto oldShardKeyPattern = ShardKeyPattern(collType.getKeyPattern());
+
+            // Validate the given shard key (i) extends the current shard key, (ii) has a "useful"
+            // index, and (iii) the index in question has no null entries.
+            const auto proposedKey = request().getKey().getOwned();
+
+            if (SimpleBSONObjComparator::kInstance.evaluate(oldShardKeyPattern.toBSON() ==
+                                                            proposedKey)) {
+                repl::ReplClientInfo::forClient(opCtx->getClient())
+                    .setLastOpToSystemLastOpTime(opCtx);
+                return;
+            }
+
+            const auto newShardKeyPattern = ShardKeyPattern(proposedKey);
+
+            uassert(ErrorCodes::InvalidOptions,
+                    str::stream() << "refineCollectionShardKey shard key " << proposedKey.toString()
+                                  << " does not extend the current shard key "
+                                  << collType.getKeyPattern().toString(),
+                    oldShardKeyPattern.isExtendedBy(newShardKeyPattern));
+
+            const auto dbType =
+                uassertStatusOK(
+                    catalogClient->getDatabase(
+                        opCtx, nss.db().toString(), repl::ReadConcernArgs::get(opCtx).getLevel()))
+                    .value;
+            const auto primaryShardId = dbType.getPrimary();
+            const auto primaryShard =
+                uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, primaryShardId));
+
+            // Since createIndexIfPossible is false, we have no need for default collation and set
+            // it to boost::none.
+            shardkeyutil::validateShardKeyAgainstExistingIndexes(opCtx,
+                                                                 nss,
+                                                                 proposedKey,
+                                                                 newShardKeyPattern,
+                                                                 primaryShard,
+                                                                 boost::none,
+                                                                 collType.getUnique(),
+                                                                 false);  // createIndexIfPossible
         }
 
     private:

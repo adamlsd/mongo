@@ -72,6 +72,7 @@
 #include "mongo/s/stale_exception.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/debug_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
@@ -91,6 +92,8 @@ namespace dps = ::mongo::dotted_path_support;
 
 namespace mr {
 namespace {
+
+Rarely mapParamsDeprecationSampler;  // Used to occasionally log deprecation messages.
 
 /**
  * Runs a count against the namespace specified by 'ns'. If the caller holds the global write lock,
@@ -456,8 +459,14 @@ Config::Config(const string& _dbname, const BSONObj& cmdObj) {
         if (cmdObj["finalize"].type() && cmdObj["finalize"].trueValue())
             finalizer.reset(new JSFinalizer(cmdObj["finalize"]));
 
-        if (cmdObj["mapparams"].type() == Array) {
-            mapParams = cmdObj["mapparams"].embeddedObjectUserCheck().getOwned();
+        // DEPRECATED
+        if (auto mapParamsElem = cmdObj["mapparams"]) {
+            if (mapParamsDeprecationSampler.tick()) {
+                warning() << "The mapparams option to MapReduce is deprecated.";
+            }
+            if (mapParamsElem.type() == Array) {
+                mapParams = mapParamsElem.embeddedObjectUserCheck().getOwned();
+            }
         }
     }
 
@@ -1563,7 +1572,7 @@ bool runMapReduce(OperationContext* opCtx,
             // TODO SERVER-23261: Confirm whether this is the correct place to gather all
             // metrics. There is no harm adding here for the time being.
             curOp->debug().setPlanSummaryMetrics(stats);
-            scopedAutoColl->getCollection()->infoCache()->notifyOfQuery(opCtx, stats.indexesUsed);
+            scopedAutoColl->getCollection()->infoCache()->notifyOfQuery(opCtx, stats);
 
             if (curOp->shouldDBProfile()) {
                 BSONObjBuilder execStatsBob;

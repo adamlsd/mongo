@@ -87,6 +87,7 @@ public:
     virtual void signalApplierToChooseNewSyncSource();
     virtual void stopProducer();
     virtual void startProducerIfStopped();
+    virtual bool tooStale();
     virtual void dropAllSnapshots();
     virtual void updateCommittedSnapshot(const OpTime& newCommitPoint);
     virtual void updateLocalSnapshot(const OpTime& optime);
@@ -109,6 +110,11 @@ public:
      * Sets the return value for subsequent calls to loadLocalConfigDocument().
      */
     void setLocalConfigDocument(const StatusWith<BSONObj>& localConfigDocument);
+
+    /**
+     * Initializes the return value for subsequent calls to loadLocalLastVoteDocument().
+     */
+    Status createLocalLastVoteCollection(OperationContext* opCtx) final;
 
     /**
      * Sets the return value for subsequent calls to loadLocalLastVoteDocument().

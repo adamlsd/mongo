@@ -92,7 +92,6 @@ public:
 
     Value val;
     Position nextCollision;  // Position of next field with same hashBucket
-    const unsigned hash;     // Cache the hash value for faster field name comparisons
     const int nameLen;       // doesn't include '\0'
     Kind kind;               // See the possible kinds above for comments
     const char _name[1];     // pointer to start of name (use nameSD instead)
@@ -138,8 +137,8 @@ private:
 };
 // Real size is sizeof(ValueElement) + nameLen
 #pragma pack()
-MONGO_STATIC_ASSERT(sizeof(ValueElement) == (sizeof(Value) + sizeof(Position) + sizeof(unsigned) +
-                                             sizeof(int) + sizeof(char) + 1));
+MONGO_STATIC_ASSERT(sizeof(ValueElement) ==
+                    (sizeof(Value) + sizeof(Position) + sizeof(int) + sizeof(char) + 1));
 
 class DocumentStorage;
 
@@ -390,10 +389,11 @@ public:
      * the document. If we know that the BSON does not contain any metadata fields we can set the
      * 'stripMetadata' flag to false that will speed up the field iteration.
      */
-    DocumentStorage(const BSONObj& bson, bool stripMetadata) : DocumentStorage() {
+    DocumentStorage(const BSONObj& bson, bool stripMetadata, bool modified) : DocumentStorage() {
         _bson = bson.getOwned();
         _bsonIt = BSONObjIterator(_bson);
         _stripMetadata = stripMetadata;
+        _modified = modified;
     }
 
     ~DocumentStorage();
@@ -439,18 +439,20 @@ public:
 
     // MutableDocument uses these
     ValueElement& getField(Position pos) {
+        _modified = true;
         verify(pos.found());
         return *(_firstElement->plusBytes(pos.index));
     }
     Value& getField(StringData name, LookupPolicy policy) {
+        _modified = true;
         Position pos = findField(name, policy);
         if (!pos.found())
-            return appendField(name, hashKey(name), ValueElement::Kind::kMaybeInserted);
+            return appendField(name, ValueElement::Kind::kMaybeInserted);
         return getField(pos).val;
     }
 
     /// Adds a new field with missing Value at the end of the document
-    Value& appendField(StringData name, unsigned hash, ValueElement::Kind kind);
+    Value& appendField(StringData name, ValueElement::Kind kind);
 
     /** Preallocates space for fields. Use this to attempt to prevent buffer growth.
      *  This is only valid to call before anything is added to the document.
@@ -630,6 +632,13 @@ public:
 
     Position constructInCache(const BSONElement& elem);
 
+    auto isModified() const {
+        return _modified;
+    }
+    auto bsonObj() const {
+        return _bson;
+    }
+
 private:
     /// Returns the position of the named field in the cache or Position()
     Position findFieldInCache(StringData name) const;
@@ -710,6 +719,12 @@ private:
     // have to move the metadata to the MetadataFields object. If we know that the BSON does not
     // have any metadata we can set _stripMetadata to false that will speed up the iteration.
     bool _stripMetadata{false};
+
+    // This flag is set to true anytime the storage returns a mutable field. It is used to optimize
+    // a conversion to BSON; i.e. if there are not any modifications we can directly return _bson.
+    // Note that an empty (default) document is marked 'modified'. The reason for this is that the
+    // empty _bson is not owned but consumers expect toBson() to return owned BSON.
+    bool _modified{true};
 
     // Defined in document.cpp
     static const DocumentStorage kEmptyDoc;

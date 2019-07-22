@@ -134,8 +134,7 @@ Position DocumentStorage::findFieldInCache(StringData requested) const {
         Position pos = _hashTab[bucket];
         while (pos.found()) {
             const ValueElement& elem = getField(pos);
-            if (elem.hash == hash && elem.nameLen == reqSize &&
-                memcmp(requested.rawData(), elem._name, reqSize) == 0) {
+            if (elem.nameLen == reqSize && memcmp(requested.rawData(), elem._name, reqSize) == 0) {
                 return pos;
             }
 
@@ -176,15 +175,16 @@ Position DocumentStorage::findField(StringData requested, LookupPolicy policy) c
 }
 
 Position DocumentStorage::constructInCache(const BSONElement& elem) {
+    auto savedModified = _modified;
     auto pos = getNextPosition();
     const auto fieldName = elem.fieldNameStringData();
-    const unsigned hash = hashKey(fieldName);
-    appendField(fieldName, hash, ValueElement::Kind::kCached) = Value(elem);
+    appendField(fieldName, ValueElement::Kind::kCached) = Value(elem);
+    _modified = savedModified;
 
     return pos;
 }
 
-Value& DocumentStorage::appendField(StringData name, unsigned hash, ValueElement::Kind kind) {
+Value& DocumentStorage::appendField(StringData name, ValueElement::Kind kind) {
     Position pos = getNextPosition();
     const int nameSize = name.size();
 
@@ -205,7 +205,6 @@ Value& DocumentStorage::appendField(StringData name, unsigned hash, ValueElement
     dest += sizeof(x)
     append(value);
     append(nextCollision);
-    append(hash);
     append(nameSize);
     append(kind);
     name.copyTo(dest, true);
@@ -296,7 +295,7 @@ void DocumentStorage::reserveFields(size_t expectedFields) {
 }
 
 intrusive_ptr<DocumentStorage> DocumentStorage::clone() const {
-    auto out = make_intrusive<DocumentStorage>(_bson, _stripMetadata);
+    auto out = make_intrusive<DocumentStorage>(_bson, _stripMetadata, _modified);
 
     if (_cache) {
         // Make a copy of the buffer with the fields.
@@ -453,6 +452,10 @@ void Document::toBson(BSONObjBuilder* builder, size_t recursionLevel) const {
 }
 
 BSONObj Document::toBson() const {
+    if (!storage().isModified() && !storage().stripMetadata()) {
+        return storage().bsonObj();
+    }
+
     BSONObjBuilder bb;
     toBson(&bb);
     return bb.obj();

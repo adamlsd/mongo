@@ -489,8 +489,7 @@ public:
      *        If duplicates are not allowed, consider removing this method.
      */
     void addField(StringData fieldName, const Value& val) {
-        storage().appendField(
-            fieldName, DocumentStorage::hashKey(fieldName), ValueElement::Kind::kInserted) = val;
+        storage().appendField(fieldName, ValueElement::Kind::kInserted) = val;
     }
 
     /** Update field by key. If there is no field with that key, add one.
@@ -623,7 +622,7 @@ public:
      *  complete list is in Document::allMetadataFieldNames).
      */
     DocumentStorage& newStorageWithBson(const BSONObj& bson, bool stripMetadata) {
-        reset(make_intrusive<DocumentStorage>(bson, stripMetadata));
+        reset(make_intrusive<DocumentStorage>(bson, stripMetadata, false));
         return const_cast<DocumentStorage&>(*storagePtr());
     }
 

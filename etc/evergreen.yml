@@ -254,8 +254,8 @@ variables:
   # The python virtual environment is installed in ${workdir}, which is created in
   # "set up virtualenv".
   - func: "set up virtualenv"
+  - func: "configure evergreen api credentials"
   # NOTE: To disable the compile bypass feature, comment out the next line.
-  #
   - func: "bypass compile and fetch binaries"
   - func: "update bypass expansions"
   - func: "get buildnumber"
@@ -371,6 +371,7 @@ variables:
   - enterprise-rhel-67-s390x
   - enterprise-rhel-70-64-bit
   - enterprise-rhel-70-64-bit-kitchen-sink
+  - enterprise-rhel-70-64-bit-debug-libunwind
   - enterprise-rhel-71-ppc64le
   - enterprise-rhel-71-ppc64le-inmem
   - enterprise-rhel-72-s390x
@@ -1159,11 +1160,10 @@ functions:
           # Evergreen executable is in $HOME, so add that to the path.
           PATH=$PATH:$HOME $python buildscripts/burn_in_tags_bypass_compile_and_fetch_binaries.py            \
             --project ${project}                                               \
-            --buildVariant ${burn_in_bypass}                                   \
+            --build-variant ${burn_in_bypass}                                  \
             --revision ${revision}                                             \
-            --patchFile patch_files.txt                                        \
-            --outFile bypass_compile_expansions.yml                            \
-            --jsonArtifact artifacts.json
+            --out-file bypass_compile_expansions.yml                           \
+            --version-id ${version_id}
         fi
 
         # For patch builds determine if we can bypass compile.
@@ -1269,7 +1269,6 @@ functions:
         script: |
           # exit immediately if virtualenv is not found
           set -o errexit
-          set -o verbose
 
           virtualenv_loc=$(which ${virtualenv|virtualenv})
 
@@ -1501,7 +1500,7 @@ functions:
   "generate burn in tags":
     - command: expansions.write
       params:
-        file: expansions.yml
+        file: src/expansions.yml
     - *configure_evergreen_api_credentials
     - command: shell.exec
       params:
@@ -1509,9 +1508,9 @@ functions:
         shell: bash
         script: |
           set -o errexit
-          set -o verbose
+
           ${activate_virtualenv}
-          PATH=$PATH:$HOME $python buildscripts/burn_in_tags.py --expansion-file ../expansions.yml
+          PATH=$PATH:$HOME $python buildscripts/burn_in_tags.py --expansion-file expansions.yml
     - command: archive.targz_pack
       params:
         target: burn_in_tags_gen.tgz
@@ -1548,7 +1547,6 @@ functions:
         working_dir: src
         script: |
           set -o errexit
-          set -o verbose
 
           ${activate_virtualenv}
           $python buildscripts/evergreen_generate_resmoke_tasks.py --expansion-file expansions.yml --verbose
@@ -1857,6 +1855,16 @@ functions:
           if [ -f jepsen_system_failure_${task_name}_${execution} ]; then
             exit $(cat jepsen_system_failure_${task_name}_${execution})
           fi
+
+  "load aws test credentials":
+    - command: shell.exec
+      params:
+        silent: true
+        working_dir: src
+        script: |
+          set -o errexit
+          echo "const AWS_KMS_SECRET_ID = '${aws_kms_access_key_id}';" >> src/mongo/db/modules/enterprise/jstests/fle/lib/aws_secrets.js
+          echo "const AWS_KMS_SECRET_KEY = '${aws_kms_secret_access_key}';" >> src/mongo/db/modules/enterprise/jstests/fle/lib/aws_secrets.js
 
   "generate fuzzer tasks":
     - command: manifest.load
@@ -4807,99 +4815,33 @@ tasks:
         ${activate_virtualenv}
         find buildscripts etc jstests -name '*.y*ml' -exec yamllint -c etc/yamllint_config.yml {} +
 
-### This task is deprecated, but left in here in case of need to run burn_in_tests
-### instead of the generated task:
-###  - Rename burn_in_tests_gen task to burn_in_tests_gen_UNUSED
-###  - Rename burn_in_tests_gen to burn_in_tests on the build variants
-- <<: *task_template
-  name: burn_in_tests
-  depends_on:
-  - name: compile
-  commands:
-  - command: manifest.load
-  - func: "git get project"
-    # The repository is cloned in a directory distinct from src for the modified test detection
-    # because the extraction of the artifacts performed in the 'do setup' causes
-    # 'git diff --name-only' to see all tests as modified on Windows (git 1.9.5). See SERVER-30634.
-    vars:
-      git_project_directory: burn_in_tests_clonedir
-  - func: "do setup"
-  - command: shell.exec
-    params:
-      working_dir: burn_in_tests_clonedir
-      shell: bash
-      script: |
-        set -o errexit
-        set -o verbose
-        # If this is a scheduled build, we check for changes against the last scheduled commit.
-        if [ "${is_patch}" != "true" ]; then
-          burn_in_args="--checkEvergreen"
-        fi
-        pushd ../src
-        ${activate_virtualenv}
-        popd
-        # Capture a list of new and modified tests.
-        build_variant=${build_variant}
-        if [ -n "${burn_in_tests_build_variant|}" ]; then
-          build_variant=${burn_in_tests_build_variant|}
-        fi
-        # Evergreen executable is in $HOME.
-        PATH=$PATH:$HOME $python buildscripts/burn_in_tests.py --branch=${branch_name} --buildVariant=$build_variant --testListOutfile=jstests/new_tests.json --noExec $burn_in_args
-        # Copy the results to the src dir.
-        cp jstests/new_tests.json ../src/jstests/new_tests.json
-  - func: "do multiversion setup"
-  - func: "run tests"
-    vars:
-      task_path_suffix: /data/multiversion:$HOME
-      resmoke_wrapper: $python buildscripts/burn_in_tests.py --testListFile=jstests/new_tests.json
-      resmoke_args: --repeatSuites=2
-###
-
 - name: burn_in_tests_gen
   commands:
   - command: manifest.load
   - func: "git get project"
-    # The repository is cloned in a directory distinct from src for the modified test detection
-    # because the extraction of the artifacts performed in the 'do setup' causes
-    # 'git diff --name-only' to see all tests as modified on Windows (git 1.9.5). See SERVER-30634.
-    vars:
-      git_project_directory: burn_in_tests_clonedir
   - func: "set task expansion macros"
   - func: "set up virtualenv"
-    vars:
-      pip_dir: ${workdir}/burn_in_tests_clonedir/etc/pip
-  - command: shell.exec
-    params:
-      working_dir: burn_in_tests_clonedir
-      shell: bash
-      script: |
-        set -o errexit
-        set -o verbose
-        mkdir ../src
   - func: "configure evergreen api credentials"
   - command: shell.exec
     params:
-      working_dir: burn_in_tests_clonedir
+      working_dir: src
       shell: bash
       script: |
         set -o errexit
         set -o verbose
+
         ${activate_virtualenv}
-        # If this is a scheduled build, we check for changes against the last scheduled commit.
-        if [ "${is_patch}" != "true" ]; then
-          burn_in_args="--checkEvergreen"
-        fi
         # Capture a list of new and modified tests. The expansion macro burn_in_tests_build_variant
         # is used to for finding the associated tasks from a different build varaint than the
         # burn_in_tests_gen task executes on.
-        build_variant_opts="--buildVariant=${build_variant}"
+        build_variant_opts="--build-variant=${build_variant}"
         if [ -n "${burn_in_tests_build_variant|}" ]; then
-          build_variant_opts="--buildVariant=${burn_in_tests_build_variant} --runBuildVariant=${build_variant}"
+          build_variant_opts="--build-variant=${burn_in_tests_build_variant} --run-build-variant=${build_variant}"
         fi
-        # Increase the burn_in repetition from 2 to 1000 executions or 10 minutes
-        burn_in_args="$burn_in_args --repeatTestsMin=2 --repeatTestsMax=1000 --repeatTestsSecs=600"
+
+        burn_in_args="$burn_in_args --repeat-tests-min=2 --repeat-tests-max=1000 --repeat-tests-secs=600"
         # Evergreen executable is in $HOME.
-        PATH=$PATH:$HOME $python buildscripts/burn_in_tests.py --branch=${branch_name} --project=${project} $build_variant_opts --distro=${distro_id} --generateTasksFile=../src/burn_in_tests_gen.json --noExec $burn_in_args
+        PATH=$PATH:$HOME $python buildscripts/burn_in_tests.py --project=${project} $build_variant_opts --distro=${distro_id} --generate-tasks-file=burn_in_tests_gen.json $burn_in_args
   - command: archive.targz_pack
     params:
       target: src/burn_in_tests_gen.tgz
@@ -7381,7 +7323,7 @@ tasks:
 
 - <<: *task_template
   name: client_encrypt
-  tags: ["ssl"]
+  tags: ["ssl", "encrypt"]
   commands:
   - func: "do setup"
   - func: "run tests"
@@ -7394,6 +7336,7 @@ tasks:
   tags: ["encrypt"]
   commands:
   - func: "do setup"
+  - func: "load aws test credentials"
   - func: "run tests"
     vars:
       resmoke_args: --suites=fle --storageEngine=wiredTiger
@@ -10309,8 +10252,6 @@ buildvariants:
   - name: lint_fuzzer_sanity_patch
   - name: lint_yaml
   - name: burn_in_tests_gen
-    distros:
-    - rhel62-large
   - name: .aggfuzzer
   - name: .aggregation
   - name: audit
@@ -10668,12 +10609,15 @@ buildvariants:
   - name: compile_TG
     distros:
     - rhel62-large
+  - name: .concurrency !.large !.ubsan !.no_txns
   - name: .jscore .common
+  - name: .jstestfuzz
   - name: noPassthrough_gen
   - name: noPassthroughWithMongod_gen
   - name: .replica_sets !.encrypt !.auth
     distros:
     - rhel62-large
+  - name: .rollbackfuzzer
   - name: sharding_gen
 
 - name: enterprise-rhel-62-64-bit-coverage
@@ -10834,6 +10778,18 @@ buildvariants:
   - name: compile_all_run_unittests_TG
   - name: jsCore
   - name: noPassthrough_gen
+
+- <<: *enterprise-rhel-70-64-bit-template
+  name: enterprise-rhel-70-64-bit-debug-libunwind
+  display_name: "~ Enterprise RHEL 7.0 DEBUG (libunwind)"
+  batchtime: 1440 # 1 day
+  runs_on:
+  - rhel70
+  expansions:
+    <<: *enterprise-rhel-70-64-bit-expansions-template
+    compile_flags: --ssl MONGO_DISTMOD=rhel70 --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars --use-libunwind
+    has_packages: false
+    mh_target: ""
 
 - name: ubuntu1604-debug
   display_name: "* Ubuntu 16.04 DEBUG"

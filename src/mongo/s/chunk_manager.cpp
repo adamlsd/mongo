@@ -64,7 +64,7 @@ std::string extractKeyStringInternal(const BSONObj& shardKeyValue, Ordering orde
         strippedKeyValue.appendAs(elem, ""_sd);
     }
 
-    KeyString ks(KeyString::Version::V1, strippedKeyValue.done(), ordering);
+    KeyString::Builder ks(KeyString::Version::V1, strippedKeyValue.done(), ordering);
     return {ks.getBuffer(), ks.getSize()};
 }
 
@@ -520,7 +520,8 @@ std::shared_ptr<RoutingTableHistory> RoutingTableHistory::makeUpdated(
         const auto& chunkVersion = chunk.getVersion();
 
         uassert(ErrorCodes::ConflictingOperationInProgress,
-                str::stream() << "Chunk " << chunk.genID(getns(), chunk.getMin())
+                str::stream() << "Chunk with namespace " << chunk.getNS().ns() << " and min key "
+                              << chunk.getMin()
                               << " has epoch different from that of the collection "
                               << chunkVersion.epoch(),
                 collectionVersion.epoch() == chunkVersion.epoch());

@@ -202,9 +202,9 @@ public:
         TxnResources& operator=(TxnResources&&) = default;
 
         /**
-         * Returns a const pointer to the stashed lock state, or nullptr if no stashed locks exist.
+         * Returns a pointer to the stashed lock state, or nullptr if no stashed locks exist.
          */
-        const Locker* locker() const {
+        Locker* locker() const {
             return _locker.get();
         }
 
@@ -357,6 +357,11 @@ public:
      */
     class Participant : public Observer {
     public:
+        // Indicates whether the future lock requests should have timeouts.
+        enum class MaxLockTimeout { kNotAllowed, kAllowed };
+        // Indicates whether we should opt out of the ticket mechanism.
+        enum class AcquireTicket { kNoSkip, kSkip };
+
         explicit Participant(OperationContext* opCtx);
         explicit Participant(const SessionToKill& session);
 
@@ -760,9 +765,36 @@ public:
         // invalidating a transaction, or starting a new transaction.
         void _resetTransactionState(WithLock wl, TransactionState::StateFlag state);
 
-        // Releases the resources held in *o().txnResources to the operation context.
-        // o().txnResources must be engaged prior to calling this.
-        void _releaseTransactionResourcesToOpCtx(OperationContext* opCtx);
+        /* Releases the resources held in *o().txnResources to the operation context.
+         * o().txnResources must be engaged prior to calling this.
+         *
+         * maxLockTimeout will determine whether future lock requests should have lock timeouts.
+         *  - MaxLockTimeout::kNotAllowed will clear the lock timeout.
+         *  - MaxLockTimeout::kAllowed will set the timeout as
+         *    MaxTransactionLockRequestTimeoutMillis.
+         *
+         * acquireTicket will determine we should acquire ticket on unstashing the transaction
+         * resources.
+         *  - AcquireTicket::kSkip will not acquire ticket.
+         *  - AcquireTicket::kNoSkip will retain the default behavior which is to acquire ticket.
+         *
+         * Below is the expected behavior.
+         * ----------------------------------------------------------------------------
+         * |                |                      |               |                  |
+         * |                |      PRIMARY         |  SECONDARY    | STATE TRANSITION |
+         * |                |                      |               |                  |
+         * |----------------|----------------------|---------------|------------------|
+         * |                |Unprepared | Prepared |               |                  |
+         * |                |    Txn    |   Txn    |               |                  |
+         * |                |----------------------|               |                  |
+         * |acquireTicket   | kNoSkip   |  kSkip   |  kNoSkip      |     kNoSkip      |
+         * |----------------|----------------------|---------------|------------------|
+         * |maxLockTimeout  |     kAllowed         | kNotAllowed   |  kNotAllowed     |
+         * ----------------------------------------------------------------------------
+         */
+        void _releaseTransactionResourcesToOpCtx(OperationContext* opCtx,
+                                                 MaxLockTimeout maxLockTimeout,
+                                                 AcquireTicket acquireTicket);
 
         TransactionParticipant::PrivateState& p() {
             return _tp->_p;

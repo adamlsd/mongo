@@ -126,6 +126,7 @@ SharedSemiFuture<ReplIndexBuildState::IndexCatalogStats> generateSystemIndexForE
         IndexBuildsCoordinator::IndexBuildOptions indexBuildOptions = {CommitQuorumOptions(1)};
         auto indexBuildFuture =
             uassertStatusOK(indexBuildsCoord->startIndexBuild(opCtx,
+                                                              ns.db(),
                                                               collectionUUID,
                                                               {indexSpec},
                                                               buildUUID,
@@ -182,7 +183,7 @@ Status verifySystemIndexes(OperationContext* opCtx) {
             if (indexes.empty()) {
                 try {
                     systemUsersFuture = generateSystemIndexForExistingCollection(
-                        opCtx, collection->uuid().get(), systemUsers, v3SystemUsersIndexSpec);
+                        opCtx, collection->uuid(), systemUsers, v3SystemUsersIndexSpec);
                 } catch (...) {
                     return exceptionToStatus();
                 }
@@ -200,7 +201,7 @@ Status verifySystemIndexes(OperationContext* opCtx) {
             if (indexes.empty()) {
                 try {
                     systemRolesFuture = generateSystemIndexForExistingCollection(
-                        opCtx, collection->uuid().get(), systemRoles, v3SystemRolesIndexSpec);
+                        opCtx, collection->uuid(), systemRoles, v3SystemRolesIndexSpec);
                 } catch (...) {
                     return exceptionToStatus();
                 }
@@ -252,7 +253,7 @@ void createSystemIndexes(OperationContext* opCtx, Collection* collection) {
     }
     if (!indexSpec.isEmpty()) {
         opCtx->getServiceContext()->getOpObserver()->onCreateIndex(
-            opCtx, ns, *(collection->uuid()), indexSpec, false /* fromMigrate */);
+            opCtx, ns, collection->uuid(), indexSpec, false /* fromMigrate */);
         // Note that the opObserver is called prior to creating the index.  This ensures the index
         // write gets the same storage timestamp as the oplog entry.
         fassert(40456,

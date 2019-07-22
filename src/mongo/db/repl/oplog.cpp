@@ -195,6 +195,7 @@ Status startIndexBuild(OperationContext* opCtx,
     // We don't pass in a commit quorum here because secondary nodes don't have any knowledge of it.
     return IndexBuildsCoordinator::get(opCtx)
         ->startIndexBuild(opCtx,
+                          nss.db(),
                           collUUID,
                           statusWithIndexes.getValue(),
                           indexBuildUUID,
@@ -268,7 +269,7 @@ void createIndexForApplyOps(OperationContext* opCtx,
         Lock::TempRelease release(opCtx->lockState());
         // TempRelease cannot fail because no recursive locks should be taken.
         invariant(!opCtx->lockState()->isLocked());
-        auto collUUID = *indexCollection->uuid();
+        auto collUUID = indexCollection->uuid();
         auto indexBuildUUID = UUID::gen();
         auto indexBuildsCoordinator = IndexBuildsCoordinator::get(opCtx);
 
@@ -281,6 +282,7 @@ void createIndexForApplyOps(OperationContext* opCtx,
         // This spawns a new thread and returns immediately.
         MONGO_COMPILER_VARIABLE_UNUSED auto fut = uassertStatusOK(
             indexBuildsCoordinator->startIndexBuild(opCtx,
+                                                    indexNss.db(),
                                                     collUUID,
                                                     {indexSpec},
                                                     indexBuildUUID,

@@ -538,32 +538,18 @@ void IndexBuildsCoordinator::_unregisterIndexBuild(
 StatusWith<boost::optional<SharedSemiFuture<ReplIndexBuildState::IndexCatalogStats>>>
 IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
     OperationContext* opCtx,
+    StringData dbName,
     CollectionUUID collectionUUID,
     const std::vector<BSONObj>& specs,
     const UUID& buildUUID,
     IndexBuildProtocol protocol,
     boost::optional<CommitQuorumOptions> commitQuorum) {
-    auto nss = CollectionCatalog::get(opCtx).lookupNSSByUUID(collectionUUID);
-    if (!nss) {
-        return Status(ErrorCodes::NamespaceNotFound,
-                      str::stream() << "Cannot create index on collection '" << collectionUUID
-                                    << "' because the collection no longer exists.");
-    }
 
-    AutoGetCollection autoColl(opCtx, *nss, MODE_X);
-    if (!autoColl.getDb()) {
-        return Status(ErrorCodes::NamespaceNotFound,
-                      str::stream() << "Failed to create index(es) on collection '" << *nss
-                                    << "' because the database no longer exists");
-    }
-
+    // AutoGetCollection throws an exception if it is unable to look up the collection by UUID.
+    NamespaceStringOrUUID nssOrUuid{dbName.toString(), collectionUUID};
+    AutoGetCollection autoColl(opCtx, nssOrUuid, MODE_X);
     auto collection = autoColl.getCollection();
-    if (!collection) {
-        // The collection does not exist. We will not build an index.
-        return Status(ErrorCodes::NamespaceNotFound,
-                      str::stream() << "Failed to create index(es) on collection '" << *nss
-                                    << "' because the collection no longer exists");
-    }
+    const auto& nss = collection->ns();
 
     // TODO (SERVER-40807): disabling the following code for the v4.2 release so it does not have
     // downstream impact.
@@ -582,7 +568,7 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
 
     std::vector<BSONObj> filteredSpecs;
     try {
-        filteredSpecs = _addDefaultsAndFilterExistingIndexes(opCtx, collection, *nss, specs);
+        filteredSpecs = _addDefaultsAndFilterExistingIndexes(opCtx, collection, nss, specs);
     } catch (const DBException& ex) {
         return ex.toStatus();
     }
@@ -598,7 +584,7 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
     }
 
     auto replIndexBuildState = std::make_shared<ReplIndexBuildState>(
-        buildUUID, collectionUUID, nss->db().toString(), filteredSpecs, protocol, commitQuorum);
+        buildUUID, collectionUUID, dbName.toString(), filteredSpecs, protocol, commitQuorum);
     replIndexBuildState->stats.numIndexesBefore = _getNumIndexesTotal(opCtx, collection);
 
     Status status = _registerIndexBuild(lk, replIndexBuildState);
@@ -636,7 +622,7 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
 
             opCtx->getServiceContext()->getOpObserver()->onStartIndexBuild(
                 opCtx,
-                *nss,
+                nss,
                 replIndexBuildState->collectionUUID,
                 replIndexBuildState->buildUUID,
                 filteredSpecs,
@@ -650,7 +636,7 @@ IndexBuildsCoordinator::_registerAndSetUpIndexBuild(
 
     IndexBuildsManager::SetupOptions options;
     options.indexConstraints =
-        repl::ReplicationCoordinator::get(opCtx)->shouldRelaxIndexConstraints(opCtx, *nss)
+        repl::ReplicationCoordinator::get(opCtx)->shouldRelaxIndexConstraints(opCtx, nss)
         ? IndexBuildsManager::IndexConstraints::kRelax
         : IndexBuildsManager::IndexConstraints::kEnforce;
     status = _indexBuildsManager.setUpIndexBuild(
@@ -743,23 +729,24 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
 
     invariant(nss,
               str::stream() << "Collection '" << replState->collectionUUID
-                            << "' should exist because an index build is in progress.");
+                            << "' should exist because an index build is in progress: "
+                            << replState->buildUUID);
 
     // Set up the thread's currentOp information to display createIndexes cmd information.
     _updateCurOpOpDescription(opCtx, *nss, replState->indexSpecs);
 
-    AutoGetDb autoDb(opCtx, nss->db(), MODE_IX);
+    boost::optional<AutoGetDb> autoDb;
 
     // Do not use AutoGetCollection since the lock will be in various modes throughout the index
     // build.
     boost::optional<Lock::CollectionLock> collLock;
-    collLock.emplace(opCtx, *nss, MODE_X);
 
     auto collection =
         CollectionCatalog::get(opCtx).lookupCollectionByUUID(replState->collectionUUID);
     invariant(collection,
               str::stream() << "Collection " << *nss
-                            << " should exist because an index build is in progress.");
+                            << " should exist because an index build is in progress: "
+                            << replState->buildUUID);
 
     // TODO(SERVER-39484): Since 'replSetAndNotPrimary' is derived from the replication state at the
     // start of the index build, this value is not resilient to member state changes like
@@ -767,6 +754,10 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
     auto replSetAndNotPrimary = indexBuildOptions.replSetAndNotPrimary;
 
     try {
+        // Acquire locks here to ensure that we clean up the index build.
+        autoDb.emplace(opCtx, nss->db(), MODE_IX);
+        collLock.emplace(opCtx, *nss, MODE_X);
+
         if (replSetAndNotPrimary) {
             // This index build can only be interrupted at shutdown. For the duration of the
             // OperationContext::runWithoutInterruptionExceptAtGlobalShutdown() invocation, any kill

@@ -133,7 +133,8 @@ def get_clang_format_from_linux_cache(dest_file):
 class ClangFormat(object):
     """ClangFormat class."""
 
-    def __init__(self, path, cache_dir):  # pylint: disable=too-many-branches
+    def __init__(self, path, cache_dir):
+        # pylint: disable=too-many-branches,too-many-statements
         """Initialize ClangFormat."""
         self.path = None
         clang_format_progname_ext = ""
@@ -249,7 +250,10 @@ class ClangFormat(object):
             original_text.seek(0)
 
             # Get formatted file as clang-format would format the file
-            formatted_file = callo([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=original_text)
+            formatted_file = callo([
+                self.path, "--assume-filename=" +
+                (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"
+            ], stdin=original_text)
 
         if original_file != formatted_file:
             if print_diff:
@@ -286,8 +290,12 @@ class ClangFormat(object):
         formatted = True
         with open(file_name, 'rb') as source_stream:
             try:
-                reformatted_text = subprocess.check_output([self.path, "--assume-filename=" + (file_name if not file_name.endswith(".h") else file_name + "pp"), "--style=file"], stdin=source_stream)
-            except CalledProcessError:
+                reformatted_text = subprocess.check_output([
+                    self.path, "--assume-filename=" +
+                    (file_name if not file_name.endswith(".h") else file_name + "pp"),
+                    "--style=file"
+                ], stdin=source_stream)
+            except subprocess.CalledProcessError:
                 formatted = False
 
         if formatted:
@@ -308,8 +316,9 @@ FILES_RE = re.compile('\\.(h|hpp|ipp|cpp|js)$')
 
 def is_interesting_file(file_name):
     """Return true if this file should be checked."""
-    return (file_name.startswith("jstests") or
-            file_name.startswith("src") and not file_name.startswith("src/third_party/") and not file_name.startswith("src/mongo/gotools/")) and FILES_RE.search(file_name)
+    return (file_name.startswith("jstests")
+            or file_name.startswith("src") and not file_name.startswith("src/third_party/")
+            and not file_name.startswith("src/mongo/gotools/")) and FILES_RE.search(file_name)
 
 
 def get_list_from_lines(lines):
@@ -447,8 +456,10 @@ def reformat_branch(  # pylint: disable=too-many-branches,too-many-locals,too-ma
             % (new_branch, new_branch))
 
     commits = get_list_from_lines(
-        repo.git_log(["--reverse", "--no-show-signature", "--pretty=format:%H",
-                  "%s..HEAD" % commit_prior_to_reformat]))
+        repo.git_log([
+            "--reverse", "--no-show-signature", "--pretty=format:%H",
+            "%s..HEAD" % commit_prior_to_reformat
+        ]))
 
     previous_commit_base = commit_after_reformat
 

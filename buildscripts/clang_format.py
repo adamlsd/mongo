@@ -311,6 +311,7 @@ class ClangFormat(object):
 
         return formatted
 
+
 FILES_RE = re.compile('\\.(h|hpp|ipp|cpp|js)$')
 
 

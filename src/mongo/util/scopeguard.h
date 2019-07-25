@@ -42,7 +42,7 @@ public:
     template <typename FuncArg>
     explicit ScopeGuard(FuncArg && f) : _func(std::forward<FuncArg>(f)) {}
 
-    // Remove all move and copy, MCE covers us here.
+    // Remove all move and copy, MCE (mandatory copy elision) covers us here.
     ScopeGuard(const ScopeGuard&) = delete;
     ScopeGuard(ScopeGuard && o) = delete;
     ScopeGuard& operator=(const ScopeGuard&) = delete;

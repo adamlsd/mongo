@@ -174,7 +174,7 @@ void Lock::GlobalLock::_enqueue(LockMode lockMode, Date_t deadline) {
         if (_opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {
             _pbwm.lock(MODE_IS);
         }
-        auto unlockPBWM = makeGuard([this] {
+        auto unlockPBWM = makeFailureGuard([this] {
             if (_opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {
                 _pbwm.unlock();
             }
@@ -183,14 +183,11 @@ void Lock::GlobalLock::_enqueue(LockMode lockMode, Date_t deadline) {
         _opCtx->lockState()->lock(
             _opCtx, resourceIdReplicationStateTransitionLock, MODE_IX, deadline);
 
-        auto unlockRSTL = makeGuard(
+        auto unlockRSTL = makeFailureGuard(
             [this] { _opCtx->lockState()->unlock(resourceIdReplicationStateTransitionLock); });
 
         _result = LOCK_INVALID;
         _result = _opCtx->lockState()->lockGlobalBegin(_opCtx, lockMode, deadline);
-
-        unlockRSTL.dismiss();
-        unlockPBWM.dismiss();
     } catch (const ExceptionForCat<ErrorCategory::Interruption>&) {
         // The kLeaveUnlocked behavior suppresses this exception.
         if (_interruptBehavior == InterruptBehavior::kThrow)

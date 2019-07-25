@@ -81,7 +81,7 @@ MinVisibleTimestampMap closeCatalog(OperationContext* opCtx) {
 
     // Need to mark the CollectionCatalog as open if we our closeAll fails, dismissed if successful.
     auto reopenOnFailure =
-        makeGuard([opCtx] { CollectionCatalog::get(opCtx).onOpenCatalog(opCtx); });
+        makeFailureGuard([opCtx] { CollectionCatalog::get(opCtx).onOpenCatalog(opCtx); });
     // Closing CollectionCatalog: only lookupNSSByUUID will fall back to using pre-closing state to
     // allow authorization for currently unknown UUIDs. This is needed because authorization needs
     // to work before acquiring locks, and might otherwise spuriously regard a UUID as unknown
@@ -97,7 +97,6 @@ MinVisibleTimestampMap closeCatalog(OperationContext* opCtx) {
     log() << "closeCatalog: closing storage engine catalog";
     opCtx->getServiceContext()->getStorageEngine()->closeCatalog(opCtx);
 
-    reopenOnFailure.dismiss();
     return minVisibleTimestampMap;
 }
 

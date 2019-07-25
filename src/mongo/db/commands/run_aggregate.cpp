@@ -716,7 +716,7 @@ Status runAggregate(OperationContext* opCtx,
     std::vector<ClientCursorPin> pins;
     std::vector<ClientCursor*> cursors;
 
-    auto cursorFreer = makeGuard([&] {
+    auto cursorFreer = makeDismissibleGuard([&] {
         for (auto& p : pins) {
             p.deleteUnderlying();
         }

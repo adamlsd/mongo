@@ -496,7 +496,7 @@ void runCommand(OperationContext* opCtx,
                 // Retry logic specific to transactions. Throws and aborts the transaction if the
                 // error cannot be retried on.
                 if (auto txnRouter = TransactionRouter::get(opCtx)) {
-                    auto abortGuard = makeGuard(
+                    auto abortGuard = makeDismissibleGuard(
                         [&] { txnRouter.implicitlyAbortTransaction(opCtx, ex.toStatus()); });
 
                     if (!canRetry) {
@@ -535,7 +535,7 @@ void runCommand(OperationContext* opCtx,
                 // Retry logic specific to transactions. Throws and aborts the transaction if the
                 // error cannot be retried on.
                 if (auto txnRouter = TransactionRouter::get(opCtx)) {
-                    auto abortGuard = makeGuard(
+                    auto abortGuard = makeDismissibleGuard(
                         [&] { txnRouter.implicitlyAbortTransaction(opCtx, ex.toStatus()); });
 
                     if (!canRetry) {
@@ -572,7 +572,7 @@ void runCommand(OperationContext* opCtx,
                 // Retry logic specific to transactions. Throws and aborts the transaction if the
                 // error cannot be retried on.
                 if (auto txnRouter = TransactionRouter::get(opCtx)) {
-                    auto abortGuard = makeGuard(
+                    auto abortGuard = makeDismissibleGuard(
                         [&] { txnRouter.implicitlyAbortTransaction(opCtx, ex.toStatus()); });
 
                     if (!canRetry) {

@@ -70,10 +70,9 @@ NamespaceSerializer::ScopedLock NamespaceSerializer::lock(OperationContext* opCt
     } else {
         auto nsLock = iter->second;
         nsLock->numWaiting++;
-        auto guard = makeGuard([&] { nsLock->numWaiting--; });
+        auto guard = makeFailureGuard([&] { nsLock->numWaiting--; });
         opCtx->waitForConditionOrInterrupt(
             nsLock->cvLocked, lock, [nsLock]() { return !nsLock->isInProgress; });
-        guard.dismiss();
         nsLock->isInProgress = true;
     }
 

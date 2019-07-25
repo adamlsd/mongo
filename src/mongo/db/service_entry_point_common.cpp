@@ -409,7 +409,7 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
         txnParticipant.unstashTransactionResources(opCtx, invocation->definition()->getName());
     }
 
-    auto guard = makeGuard([&txnParticipant, opCtx] {
+    auto guard = makeDismissibleGuard([&txnParticipant, opCtx] {
         txnParticipant.abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
     });
 

@@ -570,11 +570,10 @@ void validateTxnNumber(OperationContext* opCtx,
 void validateOperationSessionInfo(OperationContext* opCtx,
                                   const GetMoreRequest& request,
                                   ClusterCursorManager::PinnedCursor* cursor) {
-    auto returnCursorGuard = makeGuard(
+    auto returnCursorGuard = makeFailureGuard(
         [cursor] { cursor->returnCursor(ClusterCursorManager::CursorState::NotExhausted); });
     validateLSID(opCtx, request, cursor);
     validateTxnNumber(opCtx, request, cursor);
-    returnCursorGuard.dismiss();
 }
 
 StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,

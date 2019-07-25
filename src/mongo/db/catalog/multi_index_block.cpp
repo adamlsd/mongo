@@ -61,6 +61,46 @@
 #include "mongo/util/uuid.h"
 
 namespace mongo {
+namespace {
+class[[nodiscard]] TrackerActiveContext {
+public:
+    explicit TrackerActiveContext(OperationContext * const opCtx) {
+        if (MultikeyPathTracker::get(opCtx).isTrackingMultikeyPathInfo())
+            _opCtx = nullptr;
+        else
+            _opCtx = opCtx;
+        MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo();
+    }
+
+    ~TrackerActiveContext() noexcept {
+        if (_opCtx)
+            MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo();
+    }
+
+private:
+    OperationContext* _opCtx;
+};
+
+class[[nodiscard]] TrackerInactiveContext {
+public:
+    explicit TrackerInactiveContext(OperationContext * const opCtx) {
+        if (MultikeyPathTracker::get(_opCtx).isTrackingMultikeyPathInfo())
+            _opCtx = nullptr;
+        else
+            _opCtx = opCtx;
+        MultikeyPathTracker::get(opCtx).stopTrackingMultikeyPathInfo();
+    }
+
+    ~TrackerInactiveContext() noexcept {
+        if (_opCtx)
+            MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo();
+    }
+
+private:
+    OperationContext* _opCtx;
+};
+
+}  // namespace
 
 MONGO_FAIL_POINT_DEFINE(hangAfterSettingUpIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuild);
@@ -383,12 +423,7 @@ Status MultiIndexBlock::insertAllDocumentsInCollection(OperationContext* opCtx,
     // Refrain from persisting any multikey updates as a result from building the index. Instead,
     // accumulate them in the `MultikeyPathTracker` and do the write as part of the update that
     // commits the index.
-    auto stopTracker = makeGuard(
-        [this, opCtx] { MultikeyPathTracker::get(opCtx).stopTrackingMultikeyPathInfo(); });
-    if (MultikeyPathTracker::get(opCtx).isTrackingMultikeyPathInfo()) {
-        stopTracker.dismiss();
-    }
-    MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo();
+    TrackerActiveContext trackerActiveContext{opCtx};
 
     const char* curopMessage = "Index Build: scanning collection";
     const auto numRecords = collection->numRecords(opCtx);
@@ -734,12 +769,7 @@ Status MultiIndexBlock::commit(OperationContext* opCtx,
     invariant(_constraintsChecked);
 
     // Do not interfere with writing multikey information when committing index builds.
-    auto restartTracker = makeGuard(
-        [this, opCtx] { MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo(); });
-    if (!MultikeyPathTracker::get(opCtx).isTrackingMultikeyPathInfo()) {
-        restartTracker.dismiss();
-    }
-    MultikeyPathTracker::get(opCtx).stopTrackingMultikeyPathInfo();
+    TrackerInactiveContext trackerInactiveContext{opCtx};
 
     for (size_t i = 0; i < _indexes.size(); i++) {
         onCreateEach(_indexes[i].block->getSpec());

@@ -59,6 +59,18 @@ MONGO_FAIL_POINT_DEFINE(dropDatabaseHangAfterAllCollectionsDrop);
 
 namespace {
 
+struct DropDatabaseDeleter {
+    DropDatabaseDeleter(OperationContext* const operationContext) : opCtx(operationContext) {}
+
+    void operator()(Database* const db) {
+        db->setDropPending(opCtx, false);
+    }
+
+    OperationContext* opCtx;
+};
+
+using DatabaseDroppingPointer = std::unique_ptr<Database, DropDatabaseDeleter>;
+
 /**
  * Removes database from catalog and writes dropDatabase entry to oplog.
  *
@@ -68,19 +80,18 @@ namespace {
  */
 void _finishDropDatabase(OperationContext* opCtx,
                          const std::string& dbName,
-                         Database* db,
+                         DatabaseDroppingPointer db,
                          std::size_t numCollections) {
     invariant(opCtx->lockState()->isDbLockedForMode(dbName, MODE_X));
-
-    // If DatabaseHolder::dropDb() fails, we should reset the drop-pending state on Database.
-    auto dropPendingGuard = makeGuard([db, opCtx] { db->setDropPending(opCtx, false); });
 
     BackgroundOperation::assertNoBgOpInProgForDb(dbName);
     IndexBuildsCoordinator::get(opCtx)->assertNoBgOpInProgForDb(dbName);
 
     auto databaseHolder = DatabaseHolder::get(opCtx);
-    databaseHolder->dropDb(opCtx, db);
-    dropPendingGuard.dismiss();
+    databaseHolder->dropDb(opCtx, db.get());
+    // If `DatabaseHolder::dropDb()` doesn't fail, we can skip setting the drop-pending state on
+    // Database.
+    db.reset();
 
     log() << "dropDatabase " << dbName << " - dropped " << numCollections << " collection(s)";
     log() << "dropDatabase " << dbName << " - finished";
@@ -148,7 +159,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
 
         // If Database::dropCollectionEventIfSystem() fails, we should reset the drop-pending state
         // on Database.
-        auto dropPendingGuard = makeGuard([&db, opCtx] { db->setDropPending(opCtx, false); });
+        DatabaseDroppingPointer dbPtr(db, opCtx);
 
         std::vector<NamespaceString> collectionsToDrop;
         for (auto collIt = db->begin(opCtx); collIt != db->end(opCtx); ++collIt) {
@@ -201,13 +212,11 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
             });
         }
 
-
-        // _finishDropDatabase creates its own scope guard to ensure drop-pending is unset.
-        dropPendingGuard.dismiss();
-
         // If there are no collection drops to wait for, we complete the drop database operation.
         if (numCollectionsToDrop == 0U && latestDropPendingOpTime.isNull()) {
-            _finishDropDatabase(opCtx, dbName, db, numCollections);
+            // _finishDropDatabase takes ownership of our dropping pointer to ensure drop-pending is
+            // unset.
+            _finishDropDatabase(opCtx, dbName, std::move(dbPtr), numCollections);
             return Status::OK();
         }
     }
@@ -215,7 +224,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
     // Create a scope guard to reset the drop-pending state on the Database to false if there are
     // any errors while we await the replication of any collection drops and then reacquire the
     // locks (which can throw) needed to finish the drop database.
-    auto dropPendingGuardWhileUnlocked = makeGuard([dbName, opCtx] {
+    auto dropPendingGuardWhileUnlocked = makeDismissibleGuard([dbName, opCtx] {
         UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetDb autoDB(opCtx, dbName, MODE_IX);
         if (auto db = autoDB.getDb()) {
@@ -318,10 +327,10 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
                                     << " pending collection drop(s).");
     }
 
-    // _finishDropDatabase creates its own scope guard to ensure drop-pending is unset.
+    // _finishDropDatabase uses a special unique_ptr to ensure drop-pending is unset.
     dropPendingGuardWhileUnlocked.dismiss();
 
-    _finishDropDatabase(opCtx, dbName, db, numCollections);
+    _finishDropDatabase(opCtx, dbName, {db, opCtx}, numCollections);
 
     return Status::OK();
 }

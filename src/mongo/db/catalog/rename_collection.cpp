@@ -522,7 +522,7 @@ Status renameBetweenDBs(OperationContext* opCtx,
     }
 
     // Dismissed on success
-    auto tmpCollectionDropper = makeGuard([&] {
+    auto tmpCollectionDropper = makeFailureGuard([&] {
         BSONObjBuilder unusedResult;
         Status status = Status::OK();
         try {
@@ -670,8 +670,6 @@ Status renameBetweenDBs(OperationContext* opCtx,
     Status status = renameCollectionWithinDB(opCtx, tmpName, target, options);
     if (!status.isOK())
         return status;
-
-    tmpCollectionDropper.dismiss();
 
     BSONObjBuilder unusedResult;
     return dropCollection(opCtx,

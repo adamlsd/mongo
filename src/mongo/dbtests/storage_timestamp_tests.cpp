@@ -2517,7 +2517,7 @@ public:
         auto taskFuture = task.get_future();
         stdx::thread taskThread{std::move(task)};
 
-        auto joinGuard = makeGuard([&] {
+        auto joinGuard = makeDismissibleGuard([&] {
             batchInProgress.promise.emplaceValue(false);
             taskThread.join();
         });

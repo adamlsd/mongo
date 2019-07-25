@@ -175,7 +175,7 @@ void initializeStorageEngine(ServiceContext* service, const StorageEngineInitFla
         uassertStatusOK(factory->validateMetadata(*metadata, storageGlobalParams));
     }
 
-    auto guard = makeGuard([&] {
+    auto guard = makeFailureGuard([&] {
         auto& lockFile = StorageEngineLockFile::get(service);
         if (lockFile) {
             lockFile->close();
@@ -199,8 +199,6 @@ void initializeStorageEngine(ServiceContext* service, const StorageEngineInitFla
         metadata->setStorageEngineOptions(factory->createMetadataOptions(storageGlobalParams));
         uassertStatusOK(metadata->write());
     }
-
-    guard.dismiss();
 
     _supportsDocLocking = service->getStorageEngine()->supportsDocLocking();
 }

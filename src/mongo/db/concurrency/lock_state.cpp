@@ -342,7 +342,7 @@ bool LockerImpl::_acquireTicket(OperationContext* opCtx, LockMode mode, Date_t d
         _clientState.store(reader ? kQueuedReader : kQueuedWriter);
 
         // If the ticket wait is interrupted, restore the state of the client.
-        auto restoreStateOnErrorGuard = makeGuard([&] { _clientState.store(kInactive); });
+        auto restoreStateOnErrorGuard = makeDismissibleGuard([&] { _clientState.store(kInactive); });
 
         OperationContext* interruptible = _uninterruptibleLocksRequested ? nullptr : opCtx;
         if (deadline == Date_t::max()) {
@@ -896,7 +896,7 @@ void LockerImpl::lockComplete(OperationContext* opCtx,
                               Date_t deadline) {
 
     // Clean up the state on any failed lock attempts.
-    auto unlockOnErrorGuard = makeGuard([&] {
+    auto unlockOnErrorGuard = makeFailureGuard([&] {
         LockRequestsMap::Iterator it = _requests.find(resId);
         invariant(it);
         _unlockImpl(&it);
@@ -980,7 +980,6 @@ void LockerImpl::lockComplete(OperationContext* opCtx,
     }
 
     invariant(result == LOCK_OK);
-    unlockOnErrorGuard.dismiss();
 }
 
 void LockerImpl::getFlowControlTicket(OperationContext* opCtx, LockMode lockMode) {

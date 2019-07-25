@@ -196,7 +196,9 @@ ServiceContext* initialize(const char* yaml_config) {
 
     Status status = mongo::runGlobalInitializers(yaml_config ? 1 : 0, argv, nullptr);
     uassertStatusOKWithContext(status, "Global initilization failed");
-    auto giGuard = makeGuard([] { mongo::runGlobalDeinitializers().ignore(); });
+
+    // If init succeeded, no need for global deinit.
+    auto giGuard = makeFailureGuard([] { mongo::runGlobalDeinitializers().ignore(); });
     setGlobalServiceContext(ServiceContext::make());
 
     Client::initThread("initandlisten");
@@ -319,9 +321,6 @@ ServiceContext* initialize(const char* yaml_config) {
     startupOpCtx.reset();
 
     serviceContext->notifyStartupComplete();
-
-    // Init succeeded, no need for global deinit.
-    giGuard.dismiss();
 
     return serviceContext;
 }

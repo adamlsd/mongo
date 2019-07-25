@@ -271,9 +271,10 @@ void LogicalSessionCacheImpl::_refresh(Client* client) {
             member.emplace(it);
         }
     };
-    auto activeSessionsBackSwapper = makeGuard([&] { backSwap(_activeSessions, activeSessions); });
+    auto activeSessionsBackSwapper =
+        makeDismissibleGuard([&] { backSwap(_activeSessions, activeSessions); });
     auto explicitlyEndingBackSwaper =
-        makeGuard([&] { backSwap(_endingSessions, explicitlyEndingSessions); });
+        makeDismissibleGuard([&] { backSwap(_endingSessions, explicitlyEndingSessions); });
 
     // remove all explicitlyEndingSessions from activeSessions
     for (const auto& lsid : explicitlyEndingSessions) {

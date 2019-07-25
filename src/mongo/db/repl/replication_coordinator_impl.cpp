@@ -1773,7 +1773,7 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     ThreadWaiter waiter(opTime, &writeConcern, &condVar);
     WaiterGuard guard(*lock, &_replicationWaiterList, &waiter);
 
-    auto failGuard = makeGuard([&] {
+    auto failGuard = makeDismissibleGuard([&] {
         if (getTestCommandsEnabled()) {
             log() << "Replication failed for write concern: " << writeConcern.toBSON()
                   << ", waitInfo: " << waiter << ", opID: " << opCtx->getOpID()
@@ -2031,7 +2031,7 @@ void ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
 
         _performPostMemberStateUpdateAction(action);
     };
-    auto onExitGuard = makeGuard([&] {
+    auto onExitGuard = makeDismissibleGuard([&] {
         abortFn();
         updateMemberState();
     });
@@ -2576,8 +2576,8 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
     }
 
     _setConfigState_inlock(kConfigReconfiguring);
-    auto configStateGuard =
-        makeGuard([&] { lockAndCall(&lk, [=] { _setConfigState_inlock(kConfigSteady); }); });
+    auto configStateGuard = makeDismissibleGuard(
+        [&] { lockAndCall(&lk, [=] { _setConfigState_inlock(kConfigSteady); }); });
 
     ReplSetConfig oldConfig = _rsConfig;
     lk.unlock();
@@ -2729,8 +2729,8 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
     invariant(!_rsConfig.isInitialized());
     _setConfigState_inlock(kConfigInitiating);
 
-    auto configStateGuard =
-        makeGuard([&] { lockAndCall(&lk, [=] { _setConfigState_inlock(kConfigUninitialized); }); });
+    auto configStateGuard = makeDismissibleGuard(
+        [&] { lockAndCall(&lk, [=] { _setConfigState_inlock(kConfigUninitialized); }); });
     lk.unlock();
 
     ReplSetConfig newConfig;

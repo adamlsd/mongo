@@ -404,7 +404,7 @@ void MigrationDestinationManager::cloneDocumentsFromDonor(
             log() << "Batch insertion failed " << causedBy(redact(exceptionToStatus()));
         }
     }};
-    auto inserterThreadJoinGuard = makeGuard([&] {
+    auto inserterThreadJoinGuard = makeDismissibleGuard([&] {
         batches.closeProducerEnd();
         inserterThread.join();
     });

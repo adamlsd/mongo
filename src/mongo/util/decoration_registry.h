@@ -98,15 +98,13 @@ public:
                           });
         };
 
-        auto cleanup = makeGuard(std::move(cleanupFunction));
+        auto cleanup = makeFailureGuard(std::move(cleanupFunction));
 
         using std::cend;
 
         for (; iter != cend(_decorationInfo); ++iter) {
             iter->constructor(container->getDecoration(iter->descriptor));
         }
-
-        cleanup.dismiss();
     }
 
     /**
@@ -115,9 +113,12 @@ public:
      * Called by the DecorationContainer destructor.  Do not call directly.
      */
     void destroy(DecorationContainer<DecoratedType>* const container) const noexcept try {
-        std::for_each(_decorationInfo.rbegin(), _decorationInfo.rend(), [&](auto&& decoration) {
-            decoration.destructor(container->getDecoration(decoration.descriptor));
-        });
+        [&]() noexcept->void {
+            std::for_each(_decorationInfo.rbegin(), _decorationInfo.rend(), [&](auto&& decoration) {
+                decoration.destructor(container->getDecoration(decoration.descriptor));
+            });
+        }
+        ();
     } catch (...) {
         std::terminate();
     }

@@ -746,7 +746,7 @@ void AuthorizationSessionImpl::_refreshUserInfoAsNeeded(OperationContext* opCtx)
 
             // The user is invalid, so make sure that we erase it from _authenticateUsers at the
             // end of this block.
-            auto removeGuard = makeGuard([&] { _authenticatedUsers.removeAt(it++); });
+            auto removeGuard = makeDismissibleGuard([&] { _authenticatedUsers.removeAt(it++); });
 
             switch (status.code()) {
                 case ErrorCodes::OK: {

@@ -72,7 +72,7 @@ NamespaceString MovePrimarySourceManager::getNss() const {
 Status MovePrimarySourceManager::clone(OperationContext* opCtx) {
     invariant(!opCtx->lockState()->isLocked());
     invariant(_state == kCreated);
-    auto scopedGuard = makeGuard([&] { cleanupOnError(opCtx); });
+    auto scopedGuard = makeDismissibleGuard([&] { cleanupOnError(opCtx); });
 
     log() << "Moving " << _dbname << " primary from: " << _fromShard << " to: " << _toShard;
 
@@ -150,7 +150,7 @@ Status MovePrimarySourceManager::clone(OperationContext* opCtx) {
 Status MovePrimarySourceManager::enterCriticalSection(OperationContext* opCtx) {
     invariant(!opCtx->lockState()->isLocked());
     invariant(_state == kCloneCaughtUp);
-    auto scopedGuard = makeGuard([&] { cleanupOnError(opCtx); });
+    auto scopedGuard = makeDismissibleGuard([&] { cleanupOnError(opCtx); });
 
     // Mark the shard as running a critical operation that requires recovery on crash.
     uassertStatusOK(ShardingStateRecovery::startMetadataOp(opCtx));
@@ -204,7 +204,7 @@ Status MovePrimarySourceManager::enterCriticalSection(OperationContext* opCtx) {
 Status MovePrimarySourceManager::commitOnConfig(OperationContext* opCtx) {
     invariant(!opCtx->lockState()->isLocked());
     invariant(_state == kCriticalSection);
-    auto scopedGuard = makeGuard([&] { cleanupOnError(opCtx); });
+    auto scopedGuard = makeDismissibleGuard([&] { cleanupOnError(opCtx); });
 
     ConfigsvrCommitMovePrimary commitMovePrimaryRequest;
     commitMovePrimaryRequest.set_configsvrCommitMovePrimary(getNss().ns());

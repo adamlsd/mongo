@@ -580,7 +580,7 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     invariant(shard);
     auto targeter = shard->getTargeter();
 
-    auto stopMonitoringGuard = makeGuard([&] {
+    auto stopMonitoringGuard = makeDismissibleGuard([&] {
         if (shardConnectionString.type() == ConnectionString::SET) {
             // This is a workaround for the case were we could have some bad shard being
             // requested to be added and we put that bad connection string on the global replica set

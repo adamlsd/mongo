@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <exception>
 #include <type_traits>
 #include <utility>
 
@@ -42,29 +43,83 @@ public:
     template <typename FuncArg>
     explicit ScopeGuard(FuncArg && f) : _func(std::forward<FuncArg>(f)) {}
 
-    // Can only be move-constructed, to support being returned from a function.
+	// Remove all move and copy, MCE covers us here.
     ScopeGuard(const ScopeGuard&) = delete;
     ScopeGuard(ScopeGuard && o) = delete;
     ScopeGuard& operator=(const ScopeGuard&) = delete;
     ScopeGuard& operator=(ScopeGuard&&) = delete;
 
     ~ScopeGuard() noexcept {
-        if (!_dismissed)
-            _func();
-    }
-
-    void dismiss() noexcept {
-        _dismissed = true;
+		_func();
     }
 
 private:
     F _func;
-    bool _dismissed = false;
 };
 
 template <typename F>
 auto makeGuard(F&& fun) {
     return ScopeGuard<std::decay_t<F>>(std::forward<F>(fun));
+}
+
+template< typename F >
+class[[nodiscard]] FailureGuard
+{
+	public:
+		template <typename FuncArg>
+		explicit FailureGuard(FuncArg && f) : _func(std::forward<FuncArg>(f)) {}
+
+		// Remove all move and copy, MCE covers us here.
+		FailureGuard(const FailureGuard&) = delete;
+		FailureGuard(FailureGuard && o) = delete;
+		FailureGuard& operator=(const FailureGuard&) = delete;
+		FailureGuard& operator=(FailureGuard&&) = delete;
+
+		~FailureGuard() noexcept {
+			if(std::uncaught_exception() > _exceptionDepth)_func();
+		}
+		
+
+	private:
+		const int _exceptionDepth= std::uncaught_exceptions();
+		F _func;
+
+};
+
+template <typename F>
+auto makeFailureGuard(F&& fun) {
+    return FailureGuard<std::decay_t<F>>(std::forward<F>(fun));
+}
+
+
+template< typename F >
+class[[nodiscard]] DismissibleGuard
+{
+	public:
+		template <typename FuncArg>
+		explicit DismissibleGuard(FuncArg && f) : _func(std::forward<FuncArg>(f)) {}
+
+		// Remove all move and copy, MCE covers us here.
+		DismissibleGuard(const DismissibleGuard&) = delete;
+		DismissibleGuard(DismissibleGuard && o) = delete;
+		DismissibleGuard& operator=(const DismissibleGuard&) = delete;
+		DismissibleGuard& operator=(DismissibleGuard&&) = delete;
+
+		~DismissibleGuard() noexcept {
+			if(!_dismissed)_func();
+		}
+
+		void dismiss() noexcept { _dismissed=false;}
+
+	private:
+		bool _dismissed= false;
+		F _func;
+
+};
+
+template <typename F>
+auto makeDismissibleGuard(F&& fun) {
+    return DismissibleGuard<std::decay_t<F>>(std::forward<F>(fun));
 }
 
 }  // namespace mongo

@@ -322,9 +322,12 @@ void CollectionBulkLoaderImpl::_releaseResources() {
 template <typename F>
 Status CollectionBulkLoaderImpl::_runTaskReleaseResourcesOnFailure(const F& task) noexcept {
     AlternativeClientRegion acr(_client);
-    auto guard = makeGuard([this] { _releaseResources(); });
+    auto guard = makeDismissibleGuard([this] { _releaseResources(); });
     try {
-        const auto status = task();
+        const auto status = [&]() noexcept {
+            return task();
+        }
+        ();
         if (status.isOK()) {
             guard.dismiss();
         }

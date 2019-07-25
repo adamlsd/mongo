@@ -150,7 +150,7 @@ PlanStage::StageState DeleteStage::doWork(WorkingSetID* out) {
     WorkingSetMember* member = _ws->get(id);
 
     // We want to free this member when we return, unless we need to retry deleting or returning it.
-    auto memberFreer = makeGuard([&] { _ws->free(id); });
+    auto memberFreer = makeDismissibleGuard([&] { _ws->free(id); });
 
     invariant(member->hasRecordId());
     RecordId recordId = member->recordId;

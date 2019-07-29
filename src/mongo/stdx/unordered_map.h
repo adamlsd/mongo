@@ -37,7 +37,28 @@ namespace mongo {
 namespace stdx {
 
 template <class Key, class Value, class Hasher = DefaultHasher<Key>, typename... Args>
-using unordered_map = absl::node_hash_map<Key, Value, EnsureTrustedHasher<Hasher, Key>, Args...>;
+class unordered_map : absl::node_hash_map<Key, Value, EnsureTrustedHasher<Hasher, Key>, Args...>
+{
+	public:
+		operator const absl::node_hash_map<Key, Value, EnsureTrustedHasher<Hasher, Key>, Args...> &() const= delete;
+		operator absl::node_hash_map<Key, Value, EnsureTrustedHasher<Hasher, Key>, Args...> &() = delete;
+
+		Value &
+		at( Key k )
+		{
+			const auto found= this->find( k );
+			if( found == this->end() ) throw std::out_of_range("Did not find key in unordered map");
+			return found->second;
+		}
+
+		const Value &
+		at( Key k ) const
+		{
+			const auto found= this->find( k );
+			if( found == this->end() ) throw std::out_of_range("Did not find key in unordered map");
+			return found->second;
+		}
+};
 
 }  // namespace stdx
 }  // namespace mongo

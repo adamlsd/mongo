@@ -33,11 +33,105 @@
 
 #include <absl/container/node_hash_set.h>
 
-namespace mongo {
-namespace stdx {
+namespace mongo::stdx {
 
-template <class Key, class Hasher = DefaultHasher<Key>, typename... Args>
-using unordered_set = absl::node_hash_set<Key, EnsureTrustedHasher<Hasher, Key>, Args...>;
+template <typename Key, typename Hasher = DefaultHasher<Key>, typename... Args>
+class unordered_set : absl::node_hash_set<Key, EnsureTrustedHasher<Hasher, Key>, Args...> {
+private:
+    using Parent = absl::node_hash_set<Key, EnsureTrustedHasher<Hasher, Key>, Args...>;
 
-}  // namespace stdx
-}  // namespace mongo
+public:
+    template <typename T>
+    unordered_set& operator=(const std::initializer_list<T>& list) {
+        return *this = unordered_set(list);
+    }
+
+    using typename Parent::allocator_type;
+    using typename Parent::const_iterator;
+    using typename Parent::const_pointer;
+    using typename Parent::const_reference;
+    using typename Parent::difference_type;
+    using typename Parent::hasher;
+    using typename Parent::iterator;
+    using typename Parent::key_equal;
+    using typename Parent::key_type;
+    using typename Parent::node_type;
+    using typename Parent::pointer;
+    using typename Parent::reference;
+    using typename Parent::size_type;
+    using typename Parent::value_type;
+
+    // using typename Parent::insert_return_type; // Absent in abseil
+    // using typename Parent::local_iterator; // Absent in abseil
+    // using typename Parent::const_local_iterator; // Absent in abseil
+
+    using Parent::Parent;
+    using Parent::operator=;
+    using Parent::get_allocator;
+
+    using Parent::begin;
+    using Parent::cbegin;
+
+    using Parent::cend;
+    using Parent::end;
+
+    using Parent::empty;
+    using Parent::max_size;
+    using Parent::size;
+
+    using Parent::clear;
+    using Parent::emplace;
+    using Parent::emplace_hint;
+    using Parent::erase;
+    using Parent::extract;
+    using Parent::insert;
+    using Parent::merge;
+
+    using Parent::contains;
+    using Parent::count;
+    using Parent::equal_range;
+    using Parent::find;
+
+    using Parent::bucket_count;
+    // using Parent::max_bucket_count; // Absent in abseil
+    // using Parent::bucket_size; // Absent in abseil
+    // using Parent::bucket; // Absent in abseil
+
+    using Parent::load_factor;
+    using Parent::max_load_factor;
+    using Parent::rehash;
+    using Parent::reserve;
+
+    using Parent::hash_function;
+    using Parent::key_eq;
+
+    void swap(unordered_set& that) noexcept(
+        noexcept(std::declval<Parent&>().swap(std::declval<Parent&>()))) {
+        auto& a = static_cast<Parent&>(*this);
+        auto& b = static_cast<Parent&>(that);
+
+        a.swap(b);
+    }
+
+
+    friend bool operator==(const unordered_set& lhs, const unordered_set& rhs) noexcept(
+        noexcept(static_cast<const Parent&>(lhs) == static_cast<const Parent&>(rhs))) {
+        return static_cast<const Parent&>(lhs) == static_cast<const Parent&>(rhs);
+    }
+
+    friend bool operator!=(const unordered_set& lhs, const unordered_set& rhs) noexcept(
+        noexcept(static_cast<const Parent&>(lhs) != static_cast<const Parent&>(rhs))) {
+        return static_cast<const Parent&>(lhs) != static_cast<const Parent&>(rhs);
+    }
+};
+
+using std::begin;
+using std::end;
+}  // namespace mongo::stdx
+
+namespace std {
+template <typename Key, typename Hasher, typename... Args>
+void swap(unordered_set<Key, Hasher, Args...>& a_, unordered_set<Key, Hasher, Args...>& b_) {
+    a_.swap(b_);
+}
+}  // namespace std

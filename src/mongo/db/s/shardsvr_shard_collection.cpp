@@ -258,7 +258,7 @@ void createCollectionOrValidateExisting(OperationContext* opCtx,
     // 3. If proposed key is required to be unique, additionally check for exact match.
 
     if (hasUsefulIndexForKey && request.getUnique()) {
-        BSONObj eqQuery = BSON("ns" << nss.ns() << "key" << proposedKey);
+        BSONObj eqQuery = BSON("key" << proposedKey);
         BSONObj eqQueryResult;
 
         for (const auto& idx : indexes) {
@@ -638,6 +638,7 @@ void updateShardingCatalogEntryForCollection(
     coll.setKeyPattern(prerequisites.shardKeyPattern.toBSON());
     coll.setDefaultCollation(defaultCollator ? defaultCollator->getSpec().toBSON() : BSONObj());
     coll.setUnique(unique);
+    coll.setDistributionMode(CollectionType::DistributionMode::kSharded);
 
     uassertStatusOK(ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
         opCtx, nss, coll, true /*upsert*/));

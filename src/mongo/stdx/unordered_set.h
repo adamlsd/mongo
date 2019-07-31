@@ -131,7 +131,8 @@ using std::end;
 
 namespace std {
 template <typename Key, typename Hasher, typename... Args>
-void swap(unordered_set<Key, Hasher, Args...>& a_, unordered_set<Key, Hasher, Args...>& b_) {
+void swap(::mongo::stdx::unordered_set<Key, Hasher, Args...>& a_,
+          ::mongo::stdx::unordered_set<Key, Hasher, Args...>& b_) {
     a_.swap(b_);
 }
 }  // namespace std

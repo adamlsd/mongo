@@ -35,6 +35,8 @@
 #include <thread>
 #include <type_traits>
 
+#include "mongo/stdx/exception.h"
+
 namespace mongo {
 namespace stdx {
 
@@ -78,10 +80,15 @@ public:
         class... Args,
         typename std::enable_if<!std::is_same<thread, typename std::decay<Function>::type>::value,
                                 int>::type = 0>
-    explicit thread(Function&& f, Args&&... args) try:
-        ::std::thread::thread(std::forward<Function>(f), std::forward<Args>(args)...) {}  // NOLINT
-    catch (...) {
-        std::terminate();
+    explicit thread(Function&& f, Args&&... args) noexcept
+        : ::std::thread::thread(  // NOLINT
+              [ f = std::move(f), args = std::tuple(std::move(args)...) ]() noexcept->void {
+#ifdef _WIN32
+                  ::std::set_terminate(
+                      []() noexcept->void { mongo::stdx::terminate_detail::terminationHandler(); });
+#endif
+                  return std::apply(std::move(f), std::move(args));
+              }) {
     }
 
     thread& operator=(const thread&) = delete;

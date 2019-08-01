@@ -15,6 +15,7 @@
 #ifndef ABSL_CONTAINER_INTERNAL_RAW_HASH_MAP_H_
 #define ABSL_CONTAINER_INTERNAL_RAW_HASH_MAP_H_
 
+#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -136,14 +137,14 @@ class raw_hash_map : public raw_hash_set<Policy, Hash, Eq, Alloc> {
   template <class K = key_type, class P = Policy>
   MappedReference<P> at(const key_arg<K>& key) {
     auto it = this->find(key);
-    if (it == this->end()) std::abort();
+    if (it == this->end()) throw std::out_of_range("");
     return Policy::value(&*it);
   }
 
   template <class K = key_type, class P = Policy>
   MappedConstReference<P> at(const key_arg<K>& key) const {
     auto it = this->find(key);
-    if (it == this->end()) std::abort();
+    if (it == this->end()) throw std::out_of_range("");
     return Policy::value(&*it);
   }
 

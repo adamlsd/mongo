@@ -13,3 +13,10 @@ env.Benchmark(
     ],
 )
 
+
+env.CppUnitTest(
+    target='unordered_map_test',
+    source=[
+        'unordered_map_test.cpp'
+    ]
+)

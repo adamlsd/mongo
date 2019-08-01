@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,17 +27,33 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/stdx/unordered_map.h"
 
-#include "mongo/stdx/trusted_hasher.h"
+#include <tuple>
 
-#include <absl/container/node_hash_set.h>
+#include "mongo/unittest/unittest.h"
 
-namespace mongo {
-namespace stdx {
+namespace {
+namespace stdx = mongo::stdx;
+TEST(StdxUnorderedMapTest, atShouldThrow) {
+    stdx::unordered_map<int, int> m;
+    try {
+        auto&& res = m.at(42);
+        ASSERT_TRUE(false);
+        std::ignore = res;
+    } catch (const std::out_of_range&) {
+        ASSERT_TRUE(true);
+    }
+}
 
-template <class Key, class Hasher = DefaultHasher<Key>, typename... Args>
-using unordered_set = absl::node_hash_set<Key, EnsureTrustedHasher<Hasher, Key>, Args...>;
-
-}  // namespace stdx
-}  // namespace mongo
+TEST(StdUnorderedMapTest, atShouldThrow) {
+    std::unordered_map<int, int> m;
+    try {
+        auto&& res = m.at(42);
+        ASSERT_TRUE(false);
+        std::ignore = res;
+    } catch (const std::out_of_range&) {
+        ASSERT_TRUE(true);
+    }
+}
+}  // namespace

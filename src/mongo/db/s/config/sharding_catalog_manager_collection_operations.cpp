@@ -68,6 +68,7 @@
 #include "mongo/s/shard_util.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
@@ -79,11 +80,21 @@ using std::set;
 using std::string;
 using std::vector;
 
+MONGO_FAIL_POINT_DEFINE(writeUnshardedCollectionsToShardingCatalog);
+
+MONGO_FAIL_POINT_DEFINE(hangCreateCollectionAfterAcquiringDistlocks);
+MONGO_FAIL_POINT_DEFINE(hangCreateCollectionAfterSendingCreateToPrimaryShard);
+MONGO_FAIL_POINT_DEFINE(hangCreateCollectionAfterGettingUUIDFromPrimaryShard);
+MONGO_FAIL_POINT_DEFINE(hangCreateCollectionAfterWritingEntryToConfigChunks);
+MONGO_FAIL_POINT_DEFINE(hangCreateCollectionAfterWritingEntryToConfigCollections);
+
 namespace {
 
 const ReadPreferenceSetting kConfigReadSelector(ReadPreference::Nearest, TagSet{});
 const WriteConcernOptions kNoWaitWriteConcern(1, WriteConcernOptions::SyncMode::UNSET, Seconds(0));
 const char kWriteConcernField[] = "writeConcern";
+
+const KeyPattern kUnshardedCollectionShardKey(BSON("_id" << 1));
 
 boost::optional<UUID> checkCollectionOptions(OperationContext* opCtx,
                                              Shard* shard,
@@ -127,8 +138,8 @@ boost::optional<UUID> checkCollectionOptions(OperationContext* opCtx,
     return uassertStatusOK(UUID::parse(collectionInfo["uuid"]));
 }
 
-void writeFirstChunksForShardCollection(
-    OperationContext* opCtx, const InitialSplitPolicy::ShardCollectionConfig& initialChunks) {
+void writeFirstChunksForCollection(OperationContext* opCtx,
+                                   const InitialSplitPolicy::ShardCollectionConfig& initialChunks) {
     for (const auto& chunk : initialChunks.chunks) {
         uassertStatusOK(Grid::get(opCtx)->catalogClient()->insertConfigDocument(
             opCtx,
@@ -174,26 +185,14 @@ void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss)
             numChunks == 0);
 }
 
-Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
-    const Status logStatus =
-        ShardingLogging::get(opCtx)->logChangeChecked(opCtx,
-                                                      "dropCollection.start",
-                                                      nss.ns(),
-                                                      BSONObj(),
-                                                      ShardingCatalogClient::kMajorityWriteConcern);
-    if (!logStatus.isOK()) {
-        return logStatus;
-    }
-
+void sendDropCollectionToAllShards(OperationContext* opCtx, const NamespaceString& nss) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
+
     const auto shardsStatus =
         catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
-    if (!shardsStatus.isOK()) {
-        return shardsStatus.getStatus();
-    }
-    vector<ShardType> allShards = std::move(shardsStatus.getValue().value);
+    uassertStatusOK(shardsStatus.getStatus());
 
-    LOG(1) << "dropCollection " << nss.ns() << " started";
+    vector<ShardType> allShards = std::move(shardsStatus.getValue().value);
 
     const auto dropCommandBSON = [opCtx, &nss] {
         BSONObjBuilder builder;
@@ -207,16 +206,10 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
         return builder.obj();
     }();
 
-    std::map<std::string, BSONObj> errors;
     auto* const shardRegistry = Grid::get(opCtx)->shardRegistry();
 
     for (const auto& shardEntry : allShards) {
-        auto swShard = shardRegistry->getShard(opCtx, shardEntry.getName());
-        if (!swShard.isOK()) {
-            return swShard.getStatus();
-        }
-
-        const auto& shard = swShard.getValue();
+        const auto& shard = uassertStatusOK(shardRegistry->getShard(opCtx, shardEntry.getName()));
 
         auto swDropResult = shard->runCommandWithFixedRetryAttempts(
             opCtx,
@@ -225,95 +218,37 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
             dropCommandBSON,
             Shard::RetryPolicy::kIdempotent);
 
-        if (!swDropResult.isOK()) {
-            return swDropResult.getStatus().withContext(
-                str::stream() << "Error dropping collection on shard " << shardEntry.getName());
+        const std::string dropCollectionErrMsg = str::stream()
+            << "Error dropping collection on shard " << shardEntry.getName();
+
+        auto dropResult = uassertStatusOKWithContext(swDropResult, dropCollectionErrMsg);
+        uassertStatusOKWithContext(dropResult.writeConcernStatus, dropCollectionErrMsg);
+
+        auto dropCommandStatus = std::move(dropResult.commandStatus);
+        if (dropCommandStatus.code() == ErrorCodes::NamespaceNotFound) {
+            // The dropCollection command on the shard is not idempotent, and can return
+            // NamespaceNotFound. We can ignore NamespaceNotFound since we have already asserted
+            // that there is no writeConcern error.
+            continue;
         }
 
-        auto& dropResult = swDropResult.getValue();
-
-        auto dropStatus = std::move(dropResult.commandStatus);
-        auto wcStatus = std::move(dropResult.writeConcernStatus);
-        if (!dropStatus.isOK() || !wcStatus.isOK()) {
-            if (dropStatus.code() == ErrorCodes::NamespaceNotFound && wcStatus.isOK()) {
-                // Generally getting NamespaceNotFound is okay to ignore as it simply means that
-                // the collection has already been dropped or doesn't exist on this shard.
-                // If, however, we get NamespaceNotFound but also have a write concern error then we
-                // can't confirm whether the fact that the namespace doesn't exist is actually
-                // committed.  Thus we must still fail on NamespaceNotFound if there is also a write
-                // concern error. This can happen if we call drop, it succeeds but with a write
-                // concern error, then we retry the drop.
-                continue;
-            }
-
-            errors.emplace(shardEntry.getHost(), std::move(dropResult.response));
-        }
+        uassertStatusOKWithContext(dropCommandStatus, dropCollectionErrMsg);
     }
+}
 
-    if (!errors.empty()) {
-        StringBuilder sb;
-        sb << "Dropping collection failed on the following hosts: ";
+void sendSSVAndUnsetShardingToAllShards(OperationContext* opCtx, const NamespaceString& nss) {
+    const auto catalogClient = Grid::get(opCtx)->catalogClient();
 
-        for (auto it = errors.cbegin(); it != errors.cend(); ++it) {
-            if (it != errors.cbegin()) {
-                sb << ", ";
-            }
+    const auto shardsStatus =
+        catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
+    uassertStatusOK(shardsStatus.getStatus());
 
-            sb << it->first << ": " << it->second;
-        }
+    vector<ShardType> allShards = std::move(shardsStatus.getValue().value);
 
-        return {ErrorCodes::OperationFailed, sb.str()};
-    }
-
-    LOG(1) << "dropCollection " << nss.ns() << " shard data deleted";
-
-    // Remove chunk data
-    Status result =
-        catalogClient->removeConfigDocuments(opCtx,
-                                             ChunkType::ConfigNS,
-                                             BSON(ChunkType::ns(nss.ns())),
-                                             ShardingCatalogClient::kMajorityWriteConcern);
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << nss.ns() << " chunk data deleted";
-
-    // Remove tag data
-    result = catalogClient->removeConfigDocuments(opCtx,
-                                                  TagsType::ConfigNS,
-                                                  BSON(TagsType::ns(nss.ns())),
-                                                  ShardingCatalogClient::kMajorityWriteConcern);
-
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << nss.ns() << " tag data deleted";
-
-    // Mark the collection as dropped
-    CollectionType coll;
-    coll.setNs(nss);
-    coll.setDropped(true);
-    coll.setEpoch(ChunkVersion::DROPPED().epoch());
-    coll.setUpdatedAt(Grid::get(opCtx)->getNetwork()->now());
-
-    const bool upsert = false;
-    result = ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
-        opCtx, nss, coll, upsert);
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << nss.ns() << " collection marked as dropped";
+    auto* const shardRegistry = Grid::get(opCtx)->shardRegistry();
 
     for (const auto& shardEntry : allShards) {
-        auto swShard = shardRegistry->getShard(opCtx, shardEntry.getName());
-        if (!swShard.isOK()) {
-            return swShard.getStatus();
-        }
-
-        const auto& shard = swShard.getValue();
+        const auto& shard = uassertStatusOK(shardRegistry->getShard(opCtx, shardEntry.getName()));
 
         SetShardVersionRequest ssv = SetShardVersionRequest::makeForVersioningNoPersist(
             shardRegistry->getConfigServerConnectionString(),
@@ -331,14 +266,8 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
             ssv.toBSON(),
             Shard::RetryPolicy::kIdempotent);
 
-        if (!ssvResult.isOK()) {
-            return ssvResult.getStatus();
-        }
-
-        auto ssvStatus = std::move(ssvResult.getValue().commandStatus);
-        if (!ssvStatus.isOK()) {
-            return ssvStatus;
-        }
+        uassertStatusOK(ssvResult.getStatus());
+        uassertStatusOK(ssvResult.getValue().commandStatus);
 
         auto unsetShardingStatus = shard->runCommandWithFixedRetryAttempts(
             opCtx,
@@ -347,22 +276,82 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
             BSON("unsetSharding" << 1),
             Shard::RetryPolicy::kIdempotent);
 
-        if (!unsetShardingStatus.isOK()) {
-            return unsetShardingStatus.getStatus();
-        }
-
-        auto unsetShardingResult = std::move(unsetShardingStatus.getValue().commandStatus);
-        if (!unsetShardingResult.isOK()) {
-            return unsetShardingResult;
-        }
+        uassertStatusOK(unsetShardingStatus);
+        uassertStatusOK(unsetShardingStatus.getValue().commandStatus);
     }
+}
+
+void removeChunksAndTagsForDroppedCollection(OperationContext* opCtx, const NamespaceString& nss) {
+    const auto catalogClient = Grid::get(opCtx)->catalogClient();
+
+    // Remove chunk data
+    uassertStatusOK(
+        catalogClient->removeConfigDocuments(opCtx,
+                                             ChunkType::ConfigNS,
+                                             BSON(ChunkType::ns(nss.ns())),
+                                             ShardingCatalogClient::kMajorityWriteConcern));
+
+    // Remove tag data
+    uassertStatusOK(
+        catalogClient->removeConfigDocuments(opCtx,
+                                             TagsType::ConfigNS,
+                                             BSON(TagsType::ns(nss.ns())),
+                                             ShardingCatalogClient::kMajorityWriteConcern));
+}
+
+void ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
+    uassertStatusOK(ShardingLogging::get(opCtx)->logChangeChecked(
+        opCtx,
+        "dropCollection.start",
+        nss.ns(),
+        BSONObj(),
+        ShardingCatalogClient::kMajorityWriteConcern));
+
+    LOG(1) << "dropCollection " << nss.ns() << " started";
+
+    sendDropCollectionToAllShards(opCtx, nss);
+
+    LOG(1) << "dropCollection " << nss.ns() << " shard data deleted";
+
+    removeChunksAndTagsForDroppedCollection(opCtx, nss);
+
+    LOG(1) << "dropCollection " << nss.ns() << " chunk and tag data deleted";
+
+    // Mark the collection as dropped
+    CollectionType coll;
+    coll.setNs(nss);
+    coll.setDropped(true);
+    coll.setEpoch(ChunkVersion::DROPPED().epoch());
+    coll.setUpdatedAt(Grid::get(opCtx)->getNetwork()->now());
+
+    const bool upsert = false;
+    uassertStatusOK(ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
+        opCtx, nss, coll, upsert));
+
+    LOG(1) << "dropCollection " << nss.ns() << " collection marked as dropped";
+
+    sendSSVAndUnsetShardingToAllShards(opCtx, nss);
 
     LOG(1) << "dropCollection " << nss.ns() << " completed";
 
     ShardingLogging::get(opCtx)->logChange(
         opCtx, "dropCollection", nss.ns(), BSONObj(), ShardingCatalogClient::kMajorityWriteConcern);
+}
 
-    return Status::OK();
+void ShardingCatalogManager::ensureDropCollectionCompleted(OperationContext* opCtx,
+                                                           const NamespaceString& nss) {
+
+    LOG(1) << "Ensuring config entries for " << nss.ns()
+           << " from previous dropCollection are cleared";
+
+    // If there was a drop command already sent for this command, the command may not be majority
+    // committed. We will set the client's last optime to the system's last optime to ensure the
+    // client waits for the writeConcern to be satisfied.
+    repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+
+    sendDropCollectionToAllShards(opCtx, nss);
+    removeChunksAndTagsForDroppedCollection(opCtx, nss);
+    sendSSVAndUnsetShardingToAllShards(opCtx, nss);
 }
 
 void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
@@ -437,7 +426,7 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
             opCtx, nss, fieldsAndOrder, dbPrimaryShardId);
     }
 
-    writeFirstChunksForShardCollection(opCtx, initialChunks);
+    writeFirstChunksForCollection(opCtx, initialChunks);
 
     {
         CollectionType coll;
@@ -536,8 +525,17 @@ void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(Operatio
 void ShardingCatalogManager::createCollection(OperationContext* opCtx,
                                               const NamespaceString& ns,
                                               const CollectionOptions& collOptions) {
+    if (MONGO_FAIL_POINT(hangCreateCollectionAfterAcquiringDistlocks)) {
+        log() << "Hit hangCreateCollectionAfterAcquiringDistlocks";
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
+            opCtx, hangCreateCollectionAfterAcquiringDistlocks);
+    }
+
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
+
+    // Forward the create to the primary shard to either create the collection or verify that the
+    // collection already exists with the same options.
 
     auto dbEntry =
         uassertStatusOK(catalogClient->getDatabase(
@@ -557,20 +555,111 @@ void ShardingCatalogManager::createCollection(OperationContext* opCtx,
         createCmdBuilder.obj(),
         Shard::RetryPolicy::kIdempotent);
 
+    if (MONGO_FAIL_POINT(hangCreateCollectionAfterSendingCreateToPrimaryShard)) {
+        log() << "Hit hangCreateCollectionAfterSendingCreateToPrimaryShard";
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
+            opCtx, hangCreateCollectionAfterSendingCreateToPrimaryShard);
+    }
+
     auto createStatus = Shard::CommandResponse::getEffectiveStatus(swResponse);
     if (!createStatus.isOK() && createStatus != ErrorCodes::NamespaceExists) {
         uassertStatusOK(createStatus);
     }
 
-    checkCollectionOptions(opCtx, primaryShard.get(), ns, collOptions);
+    const auto uuid = checkCollectionOptions(opCtx, primaryShard.get(), ns, collOptions);
 
-    // TODO: SERVER-33094 use UUID returned to write config.collections entries.
+    if (MONGO_FAIL_POINT(hangCreateCollectionAfterGettingUUIDFromPrimaryShard)) {
+        log() << "Hit hangCreateCollectionAfterGettingUUIDFromPrimaryShard";
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
+            opCtx, hangCreateCollectionAfterGettingUUIDFromPrimaryShard);
+    }
 
-    // Make sure to advance the opTime if writes didn't occur during the execution of this
-    // command. This is to ensure that this request will wait for the opTime that at least
-    // reflects the current state (that this command observed) while waiting for replication
-    // to satisfy the write concern.
-    repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+    if (collOptions.isView()) {
+        // Views are not written to the sharding catalog.
+        return;
+    }
+
+    uassert(51248,
+            str::stream() << "Expected to get back UUID from primary shard for new collection "
+                          << ns.ns(),
+            uuid);
+
+    // Insert the collection into the sharding catalog if it does not already exist.
+
+    const auto swExistingCollType =
+        catalogClient->getCollection(opCtx, ns, repl::ReadConcernLevel::kLocalReadConcern);
+    if (swExistingCollType != ErrorCodes::NamespaceNotFound) {
+        const auto existingCollType = uassertStatusOK(swExistingCollType).value;
+        LOG(0) << "Collection " << ns.ns() << " already exists in sharding catalog as "
+               << existingCollType.toBSON() << ", createCollection not writing new entry";
+        return;
+    }
+
+    InitialSplitPolicy::ShardCollectionConfig initialChunks;
+    ChunkVersion version(1, 0, OID::gen());
+    initialChunks.chunks.emplace_back(ns,
+                                      ChunkRange(kUnshardedCollectionShardKey.globalMin(),
+                                                 kUnshardedCollectionShardKey.globalMax()),
+                                      version,
+                                      primaryShardId);
+
+    auto& chunk = initialChunks.chunks.back();
+    const Timestamp validAfter = LogicalClock::get(opCtx)->getClusterTime().asTimestamp();
+    chunk.setHistory({ChunkHistory(std::move(validAfter), primaryShardId)});
+
+    // Construct the collection default collator.
+    std::unique_ptr<CollatorInterface> defaultCollator;
+    if (!collOptions.collation.isEmpty()) {
+        defaultCollator = uassertStatusOK(CollatorFactoryInterface::get(opCtx->getServiceContext())
+                                              ->makeFromBSON(collOptions.collation));
+    }
+
+    CollectionType targetCollType;
+    targetCollType.setNs(ns);
+    targetCollType.setDefaultCollation(defaultCollator ? defaultCollator->getSpec().toBSON()
+                                                       : BSONObj());
+    targetCollType.setUUID(*uuid);
+    targetCollType.setEpoch(initialChunks.collVersion().epoch());
+    targetCollType.setUpdatedAt(Date_t::fromMillisSinceEpoch(initialChunks.collVersion().toLong()));
+    targetCollType.setKeyPattern(kUnshardedCollectionShardKey.toBSON());
+    targetCollType.setUnique(false);
+    targetCollType.setDistributionMode(CollectionType::DistributionMode::kUnsharded);
+    uassertStatusOK(targetCollType.validate());
+
+    try {
+        checkForExistingChunks(opCtx, ns);
+    } catch (const ExceptionFor<ErrorCodes::ManualInterventionRequired>&) {
+        LOG(0) << "Found orphaned chunk metadata for " << ns.ns()
+               << ", going to remove it before writing new chunk metadata for createCollection";
+        uassertStatusOK(
+            catalogClient->removeConfigDocuments(opCtx,
+                                                 ChunkType::ConfigNS,
+                                                 BSON(ChunkType::ns(ns.ns())),
+                                                 ShardingCatalogClient::kLocalWriteConcern));
+    }
+
+    if (MONGO_FAIL_POINT(writeUnshardedCollectionsToShardingCatalog)) {
+        LOG(0) << "Going to write initial chunk for new unsharded collection " << ns.ns() << ": "
+               << chunk.toString();
+        writeFirstChunksForCollection(opCtx, initialChunks);
+
+        if (MONGO_FAIL_POINT(hangCreateCollectionAfterWritingEntryToConfigChunks)) {
+            log() << "Hit hangCreateCollectionAfterWritingEntryToConfigChunks";
+            MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
+                opCtx, hangCreateCollectionAfterWritingEntryToConfigChunks);
+        }
+
+        LOG(0) << "Going to write collection entry for new unsharded collection " << ns.ns() << ": "
+               << targetCollType.toBSON();
+        uassertStatusOK(ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
+            opCtx, ns, targetCollType, true /*upsert*/));
+
+        if (MONGO_FAIL_POINT(hangCreateCollectionAfterWritingEntryToConfigCollections)) {
+            log() << "Hit hangCreateCollectionAfterWritingEntryToConfigCollections";
+            MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
+                opCtx, hangCreateCollectionAfterWritingEntryToConfigCollections);
+        }
+    }
 }
 
 void ShardingCatalogManager::refineCollectionShardKey(OperationContext* opCtx,

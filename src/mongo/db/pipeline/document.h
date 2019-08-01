@@ -427,6 +427,16 @@ public:
         reset(std::move(d._storage));
     }
 
+    /**
+     * Replace the current base Document with bson.
+     *
+     * The paramater 'stripMetadata' controls whether we strip the metadata fields from the
+     * underlying bson when converting the document object back to bson.
+     */
+    void reset(const BSONObj& bson, bool stripMetadata) {
+        storage().reset(bson, stripMetadata);
+    }
+
     /** Add the given field to the Document.
      *
      *  BSON documents' fields are ordered; the new Field will be
@@ -512,6 +522,23 @@ public:
      */
     DocumentMetadataFields& metadata() {
         return storage().metadata();
+    }
+
+    /**
+     * Clears all metadata fields inside this Document, and returns a structure containing that
+     * extracted metadata to the caller. The metadata can then be attached to a new Document or to
+     * another data structure that houses metadata.
+     */
+    DocumentMetadataFields releaseMetadata() {
+        return storage().releaseMetadata();
+    }
+
+    /**
+     * Transfers metadata fields to this Document. By pairs of calls to releaseMetadata() and
+     * setMetadata(), callers can cheaply transfer metadata between Documents.
+     */
+    void setMetadata(DocumentMetadataFields&& metadata) {
+        storage().setMetadata(std::move(metadata));
     }
 
     /** Convert to a read-only document and release reference.

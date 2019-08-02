@@ -80,16 +80,33 @@ public:
         class... Args,
         typename std::enable_if<!std::is_same<thread, typename std::decay<Function>::type>::value,
                                 int>::type = 0>
-    explicit thread(Function&& f, Args&&... args) noexcept
+    explicit thread(Function f, Args&&... args) noexcept
         : ::std::thread::thread(  // NOLINT
-              [ f = std::move(f), args = std::tuple(std::move(args)...) ]() noexcept->void {
+              [ f= std::move(f), pack= std::make_tuple(std::forward< Args >(args)... ) ]() mutable noexcept {
 #ifdef _WIN32
                   ::std::set_terminate(
                       []() noexcept->void { mongo::stdx::terminate_detail::terminationHandler(); });
 #endif
-                  return std::apply(std::move(f), std::move(args));
+                  return std::apply( f, std::move( pack ) );
               }) {
     }
+
+#if 0
+    template <
+        class Function,
+        typename std::enable_if<!std::is_same<thread, typename std::decay<Function>::type>::value,
+                                int>::type = 0>
+    explicit thread(Function f ) noexcept
+        : ::std::thread::thread(  // NOLINT
+              [ f= std::move(f) ]() noexcept->void {
+#ifdef _WIN32
+                  ::std::set_terminate(
+                      []() noexcept->void { mongo::stdx::terminate_detail::terminationHandler(); });
+#endif
+                  return f();
+              }) {
+    }
+#endif
 
     thread& operator=(const thread&) = delete;
 

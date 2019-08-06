@@ -63,6 +63,7 @@
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/request_types/flush_routing_table_cache_updates_gen.h"
 #include "mongo/s/request_types/set_shard_version_request.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/shard_util.h"
@@ -146,6 +147,41 @@ void writeFirstChunksForCollection(OperationContext* opCtx,
             ChunkType::ConfigNS,
             chunk.toConfigBSON(),
             ShardingCatalogClient::kMajorityWriteConcern));
+    }
+}
+
+void triggerFireAndForgetShardRefreshes(OperationContext* opCtx, const NamespaceString& nss) {
+    const auto shardRegistry = Grid::get(opCtx)->shardRegistry();
+    const auto allShards = uassertStatusOK(Grid::get(opCtx)->catalogClient()->getAllShards(
+                                               opCtx, repl::ReadConcernLevel::kLocalReadConcern))
+                               .value;
+
+    for (const auto& shardEntry : allShards) {
+        const auto chunk = uassertStatusOK(shardRegistry->getConfigShard()->exhaustiveFindOnConfig(
+                                               opCtx,
+                                               ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+                                               repl::ReadConcernLevel::kLocalReadConcern,
+                                               ChunkType::ConfigNS,
+                                               BSON(ChunkType::ns(nss.ns())
+                                                    << ChunkType::shard(shardEntry.getName())),
+                                               BSONObj(),
+                                               1LL))
+                               .docs;
+
+        invariant(chunk.size() == 0 || chunk.size() == 1);
+
+        if (chunk.size() == 1) {
+            const auto shard =
+                uassertStatusOK(shardRegistry->getShard(opCtx, shardEntry.getName()));
+
+            // This is a best-effort attempt to refresh the shard 'shardEntry'. Fire and forget an
+            // asynchronous '_flushRoutingTableCacheUpdates' request.
+            shard->runFireAndForgetCommand(
+                opCtx,
+                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+                NamespaceString::kAdminDb.toString(),
+                BSON(_flushRoutingTableCacheUpdates::kCommandName << nss.ns()));
+        }
     }
 }
 
@@ -370,6 +406,7 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
     // Fail if there are partially written chunks from a previous failed shardCollection.
     checkForExistingChunks(opCtx, nss);
 
+    // TODO: SERVER-42593
     // Prior to 4.0.5, zones cannot be taken into account at collection sharding time, so ignore
     // them and let the balancer apply them later
     const std::vector<TagsType> treatAsNoZonesDefined;
@@ -672,16 +709,31 @@ void ShardingCatalogManager::refineCollectionShardKey(OperationContext* opCtx,
     Lock::ExclusiveLock chunkLk(opCtx->lockState(), _kChunkOpLock);
     Lock::ExclusiveLock zoneLk(opCtx->lockState(), _kZoneOpLock);
 
+    Timer executionTimer, totalTimer;
+
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
     const auto newEpoch = OID::gen();
 
     auto collType = uassertStatusOK(catalogClient->getCollection(opCtx, nss)).value;
     const auto oldShardKeyPattern = ShardKeyPattern(collType.getKeyPattern());
+
+    uassertStatusOK(ShardingLogging::get(opCtx)->logChangeChecked(
+        opCtx,
+        "refineCollectionShardKey.start",
+        nss.ns(),
+        BSON("oldKey" << oldShardKeyPattern.toBSON() << "newKey" << newShardKeyPattern.toBSON()
+                      << "oldEpoch" << collType.getEpoch() << "newEpoch" << newEpoch),
+        ShardingCatalogClient::kLocalWriteConcern));
+
     collType.setEpoch(newEpoch);
     collType.setKeyPattern(newShardKeyPattern.getKeyPattern());
 
     uassertStatusOK(ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
         opCtx, nss, collType, false /* upsert */));
+
+    log() << "refineCollectionShardKey: updated collection entry for '" << nss.ns() << "': took "
+          << executionTimer.millis() << " ms. Total time taken: " << totalTimer.millis() << " ms.";
+    executionTimer.reset();
 
     const auto oldFields = oldShardKeyPattern.toBSON();
     const auto newFields =
@@ -738,9 +790,14 @@ void ShardingCatalogManager::refineCollectionShardKey(OperationContext* opCtx,
         false,  // upsert
         ShardingCatalogClient::kLocalWriteConcern));
 
+    log() << "refineCollectionShardKey: updated chunk entries for '" << nss.ns() << "': took "
+          << executionTimer.millis() << " ms. Total time taken: " << totalTimer.millis() << " ms.";
+    executionTimer.reset();
+
     // Update all config.tags entries for the given namespace by setting their bounds for each new
     // field in the refined key to MinKey (except for the global max tag where the max bounds are
-    // set to MaxKey).
+    // set to MaxKey). NOTE: The last update has majority write concern to ensure that all updates
+    // are majority committed before refreshing each shard.
     uassertStatusOK(
         catalogClient->updateConfigDocuments(opCtx,
                                              TagsType::ConfigNS,
@@ -749,12 +806,33 @@ void ShardingCatalogManager::refineCollectionShardKey(OperationContext* opCtx,
                                              false,  // upsert
                                              ShardingCatalogClient::kLocalWriteConcern));
 
-    uassertStatusOK(catalogClient->updateConfigDocument(opCtx,
-                                                        TagsType::ConfigNS,
-                                                        isGlobalMaxQuery,
-                                                        BSON("$max" << globalMaxBounds),
-                                                        false,  // upsert
-                                                        ShardingCatalogClient::kLocalWriteConcern));
+    uassertStatusOK(
+        catalogClient->updateConfigDocument(opCtx,
+                                            TagsType::ConfigNS,
+                                            isGlobalMaxQuery,
+                                            BSON("$max" << globalMaxBounds),
+                                            false,  // upsert
+                                            ShardingCatalogClient::kMajorityWriteConcern));
+
+    log() << "refineCollectionShardKey: updated zone entries for '" << nss.ns() << "': took "
+          << executionTimer.millis() << " ms. Total time taken: " << totalTimer.millis() << " ms.";
+
+    ShardingLogging::get(opCtx)->logChange(opCtx,
+                                           "refineCollectionShardKey.end",
+                                           nss.ns(),
+                                           BSONObj(),
+                                           ShardingCatalogClient::kLocalWriteConcern);
+
+    // Trigger refreshes on each shard containing chunks in the namespace 'nss'. Since this isn't
+    // necessary for correctness, all refreshes are best-effort.
+    try {
+        triggerFireAndForgetShardRefreshes(opCtx, nss);
+    } catch (const DBException& ex) {
+        log() << ex.toStatus().withContext(str::stream()
+                                           << "refineCollectionShardKey: failed to best-effort "
+                                              "refresh all shards containing chunks in '"
+                                           << nss.ns() << "'");
+    }
 }
 
 }  // namespace mongo

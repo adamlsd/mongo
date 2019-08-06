@@ -212,6 +212,20 @@ TEST(TypeBitsTest, AppendLotsOfZeroTypeBits) {
     ASSERT(!typeBits.isLongEncoding());
 }
 
+TEST_F(KeyStringBuilderTest, TooManyElementsInCompoundKey) {
+    // Construct an illegal KeyString with more than the limit of 32 elements in a compound index
+    // key. Encode 33 kBoolTrue ('o') values.
+    const char* data = "ooooooooooooooooooooooooooooooooo";
+    const size_t size = 33;
+
+    KeyString::Builder ks(KeyString::Version::V1);
+    ks.resetFromBuffer(data, size);
+
+    ASSERT_THROWS_CODE(KeyString::toBsonSafe(data, size, ALL_ASCENDING, ks.getTypeBits()),
+                       AssertionException,
+                       ErrorCodes::Overflow);
+}
+
 TEST_F(KeyStringBuilderTest, Simple1) {
     BSONObj a = BSON("" << 5);
     BSONObj b = BSON("" << 6);
@@ -617,6 +631,23 @@ TEST_F(KeyStringBuilderTest, DoubleInvalidIntegerPartV0) {
         mongo::KeyString::toBsonSafe(data, size, mongo::Ordering::make(mongo::BSONObj()), tb),
         AssertionException,
         31209);
+}
+
+TEST_F(KeyStringBuilderTest, InvalidInfinityDecimalV0) {
+    // Encode a Decimal positive infinity in a V1 keystring.
+    mongo::KeyString::Builder ks(
+        mongo::KeyString::Version::V1, BSON("" << Decimal128::kPositiveInfinity), ALL_ASCENDING);
+
+    // Construct V0 type bits that indicate a NumberDecimal has been encoded.
+    mongo::KeyString::TypeBits tb(mongo::KeyString::Version::V0);
+    tb.appendNumberDecimal();
+
+    // The conversion to BSON will fail because Decimal positive infinity cannot be encoded with V0
+    // type bits.
+    ASSERT_THROWS_CODE(
+        mongo::KeyString::toBsonSafe(ks.getBuffer(), ks.getSize(), ALL_ASCENDING, tb),
+        AssertionException,
+        31231);
 }
 
 TEST_F(KeyStringBuilderTest, LotsOfNumbers1) {

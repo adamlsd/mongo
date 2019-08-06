@@ -29,31 +29,13 @@
 
 #include "mongo/stdx/unordered_map.h"
 
-#include <tuple>
+#include <stdexcept>
 
 #include "mongo/unittest/unittest.h"
 
 namespace {
-namespace stdx = mongo::stdx;
 TEST(StdxUnorderedMapTest, atShouldThrow) {
-    stdx::unordered_map<int, int> m;
-    try {
-        auto&& res = m.at(42);
-        ASSERT_TRUE(false);
-        std::ignore = res;
-    } catch (const std::out_of_range&) {
-        ASSERT_TRUE(true);
-    }
-}
-
-TEST(StdUnorderedMapTest, atShouldThrow) {
-    std::unordered_map<int, int> m;
-    try {
-        auto&& res = m.at(42);
-        ASSERT_TRUE(false);
-        std::ignore = res;
-    } catch (const std::out_of_range&) {
-        ASSERT_TRUE(true);
-    }
+    mongo::stdx::unordered_map<int, int> m;
+    ASSERT_THROWS(m.at(42), std::out_of_range);
 }
 }  // namespace

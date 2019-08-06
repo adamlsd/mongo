@@ -40,16 +40,9 @@ using ::std::terminate_handler;
 
 namespace terminate_detail {
 inline ::std::terminate_handler terminationHandler = [] {};
-enum Token {};
-template <typename = void>
-struct ManageTermination {
-    static Token token;
-};
-
-template <typename T>
-Token ManageTermination<T>::token = []() -> Token {
+inline const auto token = [] {
     ::std::set_terminate([]() noexcept->void { terminationHandler(); });
-    return {};
+	return 0;
 }();
 }  // namespace terminate_detail
 

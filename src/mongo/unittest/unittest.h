@@ -220,20 +220,20 @@
  * Behaves like ASSERT_THROWS, above, but also calls CHECK(caughtException) which may contain
  * additional assertions.
  */
-#define ASSERT_THROWS_WITH_CHECK(EXPRESSION, EXCEPTION_TYPE, CHECK)                               \
-    do {                                                                                          \
-        try {                                                                                     \
-            UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(EXPRESSION);                        \
-        } catch (const EXCEPTION_TYPE& ex) {                                                      \
-            CHECK(ex);                                                                            \
-            break;                                                                                \
-        }                                                                                         \
-        /*                                                                                        \
-         * Fail outside of the try/catch, this way the failure code doesn't have the potential to \
-         * throw an exception which we might have checked for.                                    \
-         */                                                                                       \
-        FAIL("Expected expression " #EXPRESSION " to throw " #EXCEPTION_TYPE                      \
-             " but it threw nothing.");                                                           \
+#define ASSERT_THROWS_WITH_CHECK(EXPRESSION, EXCEPTION_TYPE, CHECK)                              \
+    do {                                                                                         \
+        try {                                                                                    \
+            UNIT_TEST_INTERNALS_IGNORE_UNUSED_RESULT_WARNINGS(EXPRESSION);                       \
+        } catch (const EXCEPTION_TYPE& ex) {                                                     \
+            CHECK(ex);                                                                           \
+            break;                                                                               \
+        }                                                                                        \
+        /*                                                                                       \
+         * Fail outside of the try/catch, this way the code in the `FAIL` macro doesn't have the \
+         * potential to throw an exception which we might also be checking for.                  \
+         */                                                                                      \
+        FAIL("Expected expression " #EXPRESSION " to throw " #EXCEPTION_TYPE                     \
+             " but it threw nothing.");                                                          \
     } while (false)
 
 #define ASSERT_STRING_CONTAINS(BIG_STRING, CONTAINS)                                            \

@@ -134,12 +134,7 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
         return result;
     }
 
-    // State is a new field in FCV 4.2 that indicates if a transaction committed, so check it in FCV
-    // 4.2 and upgrading to 4.2. Check when downgrading as well so sessions refreshed at the start
-    // of downgrade enter the correct state.
-    if ((serverGlobalParams.featureCompatibility.getVersion() >=
-             ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo40 &&
-         result.lastTxnRecord->getState())) {
+    if (result.lastTxnRecord->getState()) {
         // When state is given, it must be a transaction, so we don't need to traverse the history.
         return result;
     }
@@ -161,15 +156,8 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
                 continue;
             }
 
-
-            // State is a new field in FCV 4.2, so look for an applyOps oplog entry without a
-            // prepare flag to mark a committed transaction in FCV 4.0 or downgrading to 4.0. Check
-            // when upgrading as well so sessions refreshed at the beginning of upgrade enter the
-            // correct state.
-            if ((serverGlobalParams.featureCompatibility.getVersion() <=
-                 ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo42) &&
-                (entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps &&
-                 !entry.shouldPrepare() && !entry.isPartialTransaction())) {
+            if (entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps &&
+                !entry.shouldPrepare() && !entry.isPartialTransaction()) {
                 result.lastTxnRecord->setState(DurableTxnStateEnum::kCommitted);
                 return result;
             }
@@ -1103,24 +1091,11 @@ Timestamp TransactionParticipant::Participant::prepareTransaction(
         o(lk).prepareOpTime = *prepareOptime;
         reservedSlots.push_back(prepareOplogSlot);
     } else {
-        // On primary, we reserve an optime, prepare the transaction and write the oplog entry.
-        //
-        // Reserve an optime for the 'prepareTimestamp'. This will create a hole in the oplog and
-        // cause 'snapshot' and 'afterClusterTime' readers to block until this transaction is done
-        // being prepared. When the OplogSlotReserver goes out of scope and is destroyed, the
-        // storage-transaction it uses to keep the hole open will abort and the slot (and
-        // corresponding oplog hole) will vanish.
-        // TODO(SERVER-41470): Remove the if-clause here.
-        if (serverGlobalParams.featureCompatibility.getVersion() <
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
-            oplogSlotReserver.emplace(opCtx);
-        } else {
-            // Even if the prepared transaction contained no statements, we always reserve at least
-            // 1 oplog slot for the prepare oplog entry.
-            const auto numSlotsToReserve = retrieveCompletedTransactionOperations(opCtx).size();
-            oplogSlotReserver.emplace(opCtx, std::max(1, static_cast<int>(numSlotsToReserve)));
-            invariant(oplogSlotReserver->getSlots().size() >= 1);
-        }
+        // Even if the prepared transaction contained no statements, we always reserve at least
+        // 1 oplog slot for the prepare oplog entry.
+        const auto numSlotsToReserve = retrieveCompletedTransactionOperations(opCtx).size();
+        oplogSlotReserver.emplace(opCtx, std::max(1, static_cast<int>(numSlotsToReserve)));
+        invariant(oplogSlotReserver->getSlots().size() >= 1);
         prepareOplogSlot = oplogSlotReserver->getLastSlot();
         reservedSlots = oplogSlotReserver->getSlots();
         invariant(o().prepareOpTime.isNull(),
@@ -1202,20 +1177,6 @@ void TransactionParticipant::Participant::addTransactionOperation(
                           << "server parameter 'transactionSizeLimitBytes' = "
                           << transactionSizeLimitBytes,
             p().transactionOperationBytes <= static_cast<size_t>(transactionSizeLimitBytes));
-
-    // Creating transactions larger than 16MB requires a new oplog format only available in FCV 4.2.
-    const auto isFCV42 = serverGlobalParams.featureCompatibility.getVersion() ==
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42;
-    // _transactionOperationBytes is based on the in-memory size of the operation.  With overhead,
-    // we expect the BSON size of the operation to be larger, so it's possible to make a transaction
-    // just a bit too large and have it fail only in the commit.  It's still useful to fail early
-    // when possible (e.g. to avoid exhausting server memory).
-    uassert(ErrorCodes::TransactionTooLarge,
-            str::stream() << "Total size of all transaction operations must be less than "
-                          << BSONObjMaxInternalSize
-                          << " when using featureCompatibilityVersion < 4.2. Actual size is "
-                          << p().transactionOperationBytes,
-            isFCV42 || p().transactionOperationBytes <= BSONObjMaxInternalSize);
 }
 
 std::vector<repl::ReplOperation>&

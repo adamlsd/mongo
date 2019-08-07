@@ -29,27 +29,61 @@
 
 #pragma once
 
-#include <chrono>
-#include <ctime>
 #include <exception>
-#include <thread>
-#include <type_traits>
+#include <atomic>
+#include <utility>
+
+// This file provides a wrapper over the function registered by `std::set_terminate`.
+// This facilitates making `stdx::set_terminate` work correctly on windows.  In
+// windows, `std::set_terminate` works on a per-thread basis.  Our `stdx::thread`
+// header registers the `stdx::terminate_detail::termination_handler` with
+// `std::set_terminate` when a thread starts on windows.  `stdx::set_terminate`
+// sets the handler globally for all threads.  Our wrapper, which is registered
+// with each thread, calls the global handler.
 
 namespace mongo::stdx {
-using ::std::terminate_handler;
+::std::terminate_handler set_terminate(::std::terminate_handler) noexcept;
+::std::terminate_handler get_terminate() noexcept;
+
+class thread;
 
 namespace terminate_detail {
-inline ::std::terminate_handler terminationHandler = [] {};
-inline const auto token = [] {
-    ::std::set_terminate([]() noexcept->void { terminationHandler(); });
-	return 0;
-}();
+class TerminateHandlerInterface {
+    friend ::mongo::stdx::thread;
+    friend decltype(::mongo::stdx::set_terminate) mongo::stdx::set_terminate;
+    friend decltype(::mongo::stdx::get_terminate) mongo::stdx::get_terminate;
+
+    static void dispatch() noexcept {
+        if (const ::std::terminate_handler handler = TerminateHandlerStorage::terminationHandler)
+            handler();
+    }
+
+    class TerminateHandlerStorage {
+        friend TerminateHandlerInterface;
+        friend decltype(::mongo::stdx::set_terminate) mongo::stdx::set_terminate;
+        friend decltype(::mongo::stdx::get_terminate) mongo::stdx::get_terminate;
+
+        // We need to initialize the global terminate handler for the main thread as
+        // early as possible, even possibly before MONGO_INITIALIZERS.  The built-in
+        // termination handler is just forwarded from our wrapper.  This is a static
+        // initializer of a value with a side effect.
+        inline static ::std::atomic<::std::terminate_handler> terminationHandler = []() noexcept {
+            return ::std::set_terminate(
+                ::mongo::stdx::terminate_detail::TerminateHandlerInterface::dispatch);
+        }
+        ();
+    };
+};
 }  // namespace terminate_detail
 
-inline terminate_handler set_terminate(terminate_handler f) noexcept {
-    const terminate_handler result = terminate_detail::terminationHandler;
-    terminate_detail::terminationHandler = f;
-    return result;
+using ::std::terminate_handler;
+
+inline terminate_handler set_terminate(const terminate_handler newHandler) noexcept {
+    using Storage = terminate_detail::TerminateHandlerInterface::TerminateHandlerStorage;
+    return Storage::terminationHandler.exchange( newHandler);
 }
 
+inline terminate_handler get_terminate() noexcept {
+    return terminate_detail::TerminateHandlerInterface::TerminateHandlerStorage::terminationHandler;
+}
 }  // namespace mongo::stdx

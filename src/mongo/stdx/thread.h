@@ -87,11 +87,11 @@ public:
                   pack = std::make_tuple(std::forward<Args>(args)...)
               ]() mutable noexcept {
 #ifdef _WIN32
-                  // On Win32 we have to set the terminate handler per thread
+                  // On Win32 we have to set the terminate handler per thread.
                   // We set it to our universal terminate handler, which people can register via the
-                  // `stdx::?` hooks.
-                  ::std::set_terminate(
-                      []() noexcept->void { mongo::stdx::terminate_detail::terminationHandler(); });
+                  // `stdx::set_terminate` hook.
+                  ::std::set_terminate(  // NOLINT
+                      ::mongo::stdx::terminate_detail::TerminateHandlerInterface::dispatch);
 #endif
                   return std::apply(std::move(f), std::move(pack));
               }) {

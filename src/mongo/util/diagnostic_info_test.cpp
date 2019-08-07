@@ -140,7 +140,7 @@ TEST(DiagnosticInfo, StackTraceTest) {
 
 void NOINLINE_DECL recurseAndCaptureInfo(MaybeDiagnosticInfo& info, size_t i) {
     // Prevent tail-call optimization.
-#ifdef _WIN32
+#ifndef _WIN32
     asm volatile("");  // NOLINT
 #endif
 

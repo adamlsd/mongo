@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,33 +27,35 @@
  *    it in the license file.
  */
 
-/**
- * Tools for working with in-process stack traces.
- */
-
 #pragma once
 
-#include <iosfwd>
-
-#if defined(_WIN32)
-// We need to pick up a decl for CONTEXT. Forward declaring would be preferable, but it is
-// unclear that we can do so.
-#include "mongo/platform/windows_basic.h"
-#endif
+#include "mongo/base/string_data.h"
+#include "mongo/bson/bsonelement.h"
+#include "mongo/bson/bsonobj.h"
 
 namespace mongo {
 
-// Print stack trace information to "os", default to the log stream.
-void printStackTrace(std::ostream& os);
-void printStackTrace();
+/**
+ * Parsed MapReduce Global variable scope.
+ */
+class MapReduceGlobalVariableScope {
+public:
+    static MapReduceGlobalVariableScope parseFromBSON(const BSONElement& element) {
+        uassert(ErrorCodes::BadValue, "'scope' must be an object", element.type() == Object);
+        return MapReduceGlobalVariableScope(element.embeddedObject());
+    }
 
-// Signal-safe variant.
-void printStackTraceFromSignal(std::ostream& os);
+    MapReduceGlobalVariableScope() = default;
+    MapReduceGlobalVariableScope(const BSONObj& obj) : obj(obj.getOwned()) {}
 
-#if defined(_WIN32)
-// Print stack trace (using a specified stack context) to "os", default to the log stream.
-void printWindowsStackTrace(CONTEXT& context, std::ostream& os);
-void printWindowsStackTrace(CONTEXT& context);
-#endif
+    void serializeToBSON(StringData fieldName, BSONObjBuilder* builder) const {
+        builder->append(fieldName, obj);
+    }
+
+private:
+    // Initializers for global variables. These will be directly executed as Javascript. This is
+    // left as a BSONObj for that API.
+    BSONObj obj;
+};
 
 }  // namespace mongo

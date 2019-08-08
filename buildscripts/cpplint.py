@@ -1633,7 +1633,7 @@ def make_polyfill_regex():
     'promise',
     'recursive_mutex',
     'set_terminate',
-    'shared_lock,',
+    'shared_lock',
     'shared_mutex',
     'shared_timed_mutex',
     'this_thread(?!::at_thread_exit)',

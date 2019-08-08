@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,33 +27,38 @@
  *    it in the license file.
  */
 
-/**
- * Tools for working with in-process stack traces.
- */
-
 #pragma once
 
-#include <iosfwd>
+#include <string>
 
-#if defined(_WIN32)
-// We need to pick up a decl for CONTEXT. Forward declaring would be preferable, but it is
-// unclear that we can do so.
-#include "mongo/platform/windows_basic.h"
-#endif
+#include "mongo/bson/bsonelement.h"
+#include "mongo/bson/bsonobj.h"
 
 namespace mongo {
 
-// Print stack trace information to "os", default to the log stream.
-void printStackTrace(std::ostream& os);
-void printStackTrace();
+/**
+ * Code to run as a component of MapReduce.
+ */
+class MapReduceJavascriptCode {
+public:
+    static MapReduceJavascriptCode parseFromBSON(const BSONElement& element) {
+        uassert(ErrorCodes::BadValue,
+                "'scope' must be a string, code or 'code with scope'",
+                element.type() == String || element.type() == Code || element.type() == CodeWScope);
+        return MapReduceJavascriptCode(element);
+    }
 
-// Signal-safe variant.
-void printStackTraceFromSignal(std::ostream& os);
+    MapReduceJavascriptCode() = default;
+    MapReduceJavascriptCode(const BSONElement& element) : code(element.wrap()) {}
 
-#if defined(_WIN32)
-// Print stack trace (using a specified stack context) to "os", default to the log stream.
-void printWindowsStackTrace(CONTEXT& context, std::ostream& os);
-void printWindowsStackTrace(CONTEXT& context);
-#endif
+    void serializeToBSON(StringData fieldName, BSONObjBuilder* builder) const {
+        (*builder) << fieldName << code[0];
+    }
+
+private:
+    // We have to save a local copy of the BSON for reserialization since it's difficult to rebuild
+    // once it has been turned into a code type.
+    BSONObj code;
+};
 
 }  // namespace mongo

@@ -27,32 +27,39 @@
  *    it in the license file.
  */
 
-#pragma once
+
+#include "mongo/stdx/exception.h"
 
 #include <atomic>
-#include <exception>
 #include <utility>
 
-// This file provides a wrapper over the function registered by `std::set_terminate`.  This
-// facilitates making `stdx::set_terminate` work correctly on windows.  In windows,
-// `std::set_terminate` works on a per-thread basis.  Our `stdx::thread` header registers our
-// handler using the `stdx::terminate_detail::TerminateHandlerInterface::dispatch` as an entry point
-// for `std::set_terminate` when a thread starts on windows.  `stdx::set_terminate` sets the handler
-// globally for all threads.  Our wrapper, which is registered with each thread, calls the global
-// handler.
 
-namespace mongo::stdx {
-class thread;
+namespace mongo {
+namespace stdx::terminate_detail {
+static void dispatch_impl() noexcept;
 
-namespace terminate_detail {
-class TerminateHandlerInterface {
-    friend ::mongo::stdx::thread;
-    static void dispatch() noexcept;
-};
-}  // namespace terminate_detail
+namespace {
+::std::atomic<::std::terminate_handler> terminationHandler = []() noexcept {
+    return ::std::set_terminate(&dispatch_impl);
+}
+();
+}  // namespace
+}  // namespace stdx::terminate_detail
 
-::std::terminate_handler set_terminate(::std::terminate_handler) noexcept;
-::std::terminate_handler get_terminate() noexcept;
+void stdx::terminate_detail::dispatch_impl() noexcept {
+    if (const ::std::terminate_handler handler = terminationHandler)
+        handler();
+}
 
-using ::std::terminate_handler;
-}  // namespace mongo::stdx
+void stdx::terminate_detail::TerminateHandlerInterface::dispatch() noexcept {
+    return stdx::terminate_detail::dispatch_impl();
+}
+
+stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
+    return terminate_detail::terminationHandler.exchange(handler);
+}
+
+stdx::terminate_handler stdx::get_terminate() noexcept {
+    return terminate_detail::terminationHandler;
+}
+}  // namespace mongo

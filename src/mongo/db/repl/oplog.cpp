@@ -318,7 +318,7 @@ void _logOpsInner(OperationContext* opCtx,
     auto replCoord = ReplicationCoordinator::get(opCtx);
     if (nss.size() && replCoord->getReplicationMode() == ReplicationCoordinator::modeReplSet &&
         !replCoord->canAcceptWritesFor(opCtx, nss)) {
-        uasserted(17405,
+        uasserted(ErrorCodes::NotMaster,
                   str::stream() << "logOp() but can't accept write to collection " << nss.ns());
     }
 
@@ -1349,8 +1349,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
                 // [2] This upsert behavior exists to support idempotency guarantees outside
                 //     steady-state replication and existing users of applyOps.
 
-                const auto txnParticipant = TransactionParticipant::get(opCtx);
-                const bool inTxn = txnParticipant && txnParticipant.inMultiDocumentTransaction();
+                const bool inTxn = opCtx->inMultiDocumentTransaction();
                 bool needToDoUpsert = haveWrappingWriteUnitOfWork && !inTxn;
 
                 Timestamp timestamp;

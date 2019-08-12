@@ -382,7 +382,8 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
         if (plannerParams.options & QueryPlannerParams::INCLUDE_SHARD_FILTER) {
             root = std::make_unique<ShardFilterStage>(
                 opCtx,
-                CollectionShardingState::get(opCtx, canonicalQuery->nss())->getOrphansFilter(opCtx),
+                CollectionShardingState::get(opCtx, canonicalQuery->nss())
+                    ->getOrphansFilter(opCtx, collection),
                 ws,
                 root.release());
         }
@@ -395,11 +396,10 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
             // Add a SortKeyGeneratorStage if there is a $meta sortKey projection.
             if (canonicalQuery->getProj()->wantSortKey()) {
                 root = std::make_unique<SortKeyGeneratorStage>(
-                    opCtx,
+                    canonicalQuery->getExpCtx(),
                     root.release(),
                     ws,
-                    canonicalQuery->getQueryRequest().getSort(),
-                    canonicalQuery->getCollator());
+                    canonicalQuery->getQueryRequest().getSort());
             }
 
             // Stuff the right data into the params depending on what proj impl we use.
@@ -612,10 +612,7 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
     unique_ptr<CanonicalQuery> canonicalQuery,
     bool permitYield,
     size_t plannerOptions) {
-    const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    auto yieldPolicy =
-        (permitYield &&
-         (readConcernArgs.getLevel() != repl::ReadConcernLevel::kSnapshotReadConcern))
+    auto yieldPolicy = (permitYield && !opCtx->inMultiDocumentTransaction())
         ? PlanExecutor::YIELD_AUTO
         : PlanExecutor::INTERRUPT_ONLY;
     return _getExecutorFind(
@@ -1099,11 +1096,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
     }
     unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
-    const auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    const auto yieldPolicy =
-        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
-        ? PlanExecutor::INTERRUPT_ONLY
-        : PlanExecutor::YIELD_AUTO;
+    const auto yieldPolicy = opCtx->inMultiDocumentTransaction() ? PlanExecutor::INTERRUPT_ONLY
+                                                                 : PlanExecutor::YIELD_AUTO;
 
     const auto skip = request.getSkip().value_or(0);
     const auto limit = request.getLimit().value_or(0);
@@ -1556,11 +1550,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
     Collection* collection,
     size_t plannerOptions,
     ParsedDistinct* parsedDistinct) {
-    const auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    const auto yieldPolicy =
-        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
-        ? PlanExecutor::INTERRUPT_ONLY
-        : PlanExecutor::YIELD_AUTO;
+    const auto yieldPolicy = opCtx->inMultiDocumentTransaction() ? PlanExecutor::INTERRUPT_ONLY
+                                                                 : PlanExecutor::YIELD_AUTO;
 
     if (!collection) {
         // Treat collections that do not exist as empty collections.

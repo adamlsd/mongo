@@ -273,7 +273,6 @@ variables:
   - func: "set up win mount script"
   - func: "generate compile expansions"
   teardown_group:
-  - func: "scons cache pruning"
   - func: "umount shared scons directory"
   - func: "print OOM messages"
   - func: "cleanup environment"
@@ -357,7 +356,6 @@ variables:
     - func: "set up win mount script"
     - func: "generate compile expansions"
   teardown_group:
-    - func: "scons cache pruning"
     - func: "umount shared scons directory"
 
 # List of all variants that make mongocryptd
@@ -1041,21 +1039,6 @@ functions:
           echo "Not on master, shared SCons cache pruning skipped"
         fi
 
-  "scons cache pruning":
-    command: shell.exec
-    params:
-      working_dir: src
-      script: |
-        set -o errexit
-        set -o verbose
-        # removes files from the local scons cache.
-
-        ${activate_virtualenv}
-        echo "Legacy local shared cache prune"
-        if [ -d "${scons_cache_path}" ]; then
-          $python buildscripts/scons_cache_prune.py --cache-dir ${scons_cache_path} --cache-size ${scons_cache_size|200} --prune-ratio ${scons_prune_ratio|0.8}
-        fi
-
   "umount shared scons directory":
     command: shell.exec
     params:
@@ -1218,7 +1201,8 @@ functions:
             --build-variant ${burn_in_bypass}                                  \
             --revision ${revision}                                             \
             --out-file bypass_compile_expansions.yml                           \
-            --version-id ${version_id}
+            --version-id ${version_id}                                         \
+            --json-artifact artifacts.json
         fi
 
         # For patch builds determine if we can bypass compile.
@@ -6310,7 +6294,7 @@ tasks:
 
 - <<: *task_template
   name: jsCore_txns_large_txns_format
-  tags: ["jscore", "txns"]
+  tags: ["jscore", "txns", "multi_oplog"]
   commands:
   - func: "do setup"
   - func: "run tests"
@@ -8314,6 +8298,14 @@ tasks:
   - func: "set up win mount script"
   - func: "shared scons cache pruning"
 
+- name: commit_queue_placeholder
+  commands:
+  - command: shell.exec
+    params:
+      script: |
+        echo "Commit Queue Placeholder"
+        exit 0
+
 #######################################
 #             Task Groups             #
 #######################################
@@ -8354,7 +8346,6 @@ task_groups:
     - func: "set up win mount script"
     - func: "generate compile expansions"
   teardown_group:
-    - func: "scons cache pruning"
     - func: "umount shared scons directory"
   setup_task:
     - func: "set task expansion macros"
@@ -8571,7 +8562,7 @@ buildvariants:
   - name: jsCore
 
 - name: ubuntu1804
-  display_name: SSL Ubuntu 18.04
+  display_name: Ubuntu 18.04
   run_on:
   - ubuntu1804-test
   batchtime: 1440 # 1 day
@@ -8675,7 +8666,7 @@ buildvariants:
   - name: .publish
 
 - name: ubuntu1604
-  display_name: SSL Ubuntu 16.04
+  display_name: Ubuntu 16.04
   run_on:
   - ubuntu1604-test
   batchtime: 1440 # 1 day
@@ -8847,7 +8838,7 @@ buildvariants:
     - ubuntu1804-test
 
 - name: ubuntu1804-arm64
-  display_name: SSL Ubuntu 18.04 arm64
+  display_name: Ubuntu 18.04 arm64
   run_on:
   - ubuntu1804-arm64-build
   batchtime: 1440 # 1 day
@@ -9002,7 +8993,7 @@ buildvariants:
     - ubuntu1604-test
 
 - name: ubuntu1804-s390x
-  display_name: SSL Ubuntu 18.04 s390x
+  display_name: Ubuntu 18.04 s390x
   run_on:
   - ubuntu1804-zseries-test
   batchtime: 10080 # 7 days
@@ -9155,7 +9146,7 @@ buildvariants:
   - name: .publish
 
 - name: amazon
-  display_name: SSL Amazon Linux
+  display_name: Amazon Linux
   run_on:
   - amazon1-2018-test
   batchtime: 1440 # 1 day
@@ -9271,7 +9262,7 @@ buildvariants:
   - name: .publish
 
 - name: amazon2
-  display_name: SSL Amazon Linux 2
+  display_name: Amazon Linux 2
   run_on:
   - amazon2-test
   batchtime: 1440 # 1 day
@@ -10482,58 +10473,27 @@ buildvariants:
   - name: concurrency_sharded_multi_stmt_txn_with_stepdowns
   - name: concurrency_sharded_with_stepdowns
   - name: concurrency_sharded_with_stepdowns_and_balancer
+  - name: initial_sync_fuzzer_gen
   - name: jsCore
   - name: jsCore_txns
-  - name: logical_session_cache_replication_100ms_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_replication_1sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_replication_10sec_refresh_jscore_passthrough_gen
-  - name: logical_session_cache_replication_default_refresh_jscore_passthrough_gen
-  - name: multi_shard_local_read_write_multi_stmt_txn_jscore_passthrough_gen
-  - name: multi_shard_multi_stmt_txn_jscore_passthrough_gen
-  - name: multi_shard_multi_stmt_txn_kill_primary_jscore_passthrough_gen
-  - name: multi_shard_multi_stmt_txn_stepdown_primary_jscore_passthrough_gen
+  - name: .logical_session_cache .repl
+  - name: .multi_shard
   - name: multi_stmt_txn_jscore_passthrough_with_migration_gen
   - name: multiversion_auth
   - name: multiversion
   - name: noPassthrough_gen
-  - name: replica_sets
+  - name: .replica_sets !.multi_oplog !.large
+  - name: .replica_sets !.multi_oplog .large
     distros:
     - rhel62-large
-  - name: replica_sets_auth_gen
-  - name: replica_sets_ese_gen
-  - name: replica_sets_ese_gcm_gen
-  - name: replica_sets_jscore_passthrough
-  - name: replica_sets_initsync_jscore_passthrough
-    distros:
-    - rhel62-large
-  - name: replica_sets_initsync_static_jscore_passthrough
-    distros:
-    - rhel62-large
-  - name: replica_sets_kill_secondaries_jscore_passthrough
-    distros:
-    - rhel62-large
-  - name: replica_sets_multi_stmt_txn_jscore_passthrough
-    distros:
-    - rhel62-large
-  - name: replica_sets_multi_stmt_txn_stepdown_jscore_passthrough_gen
-    distros:
-    - rhel62-large
-  - name: replica_sets_multi_stmt_txn_kill_primary_jscore_passthrough
-    distros:
-    - rhel62-large
-  - name: replica_sets_multi_stmt_txn_terminate_primary_jscore_passthrough
-    distros:
-    - rhel62-large
+  - name: .rollbackfuzzer
+  - name: .sharding .txns
   - name: sharding_gen
   - name: sharding_auth_gen
   - name: sharding_auth_audit_gen
-  - name: sharded_causally_consistent_jscore_txns_passthrough_gen
-  - name: sharded_collections_causally_consistent_jscore_txns_passthrough
   - name: sharding_ese_gen
   - name: sharding_ese_gcm_gen
   - name: sharding_csrs_continuous_config_stepdown_gen
-  - name: sharded_jscore_txns
-  - name: sharded_jscore_txns_sharded_collections
   - name: sharded_multi_stmt_txn_jscore_passthrough
     distros:
     - rhel62-large
@@ -10996,7 +10956,7 @@ buildvariants:
   - name: .stitch
 
 - name: rhel62
-  display_name: SSL RHEL 6.2
+  display_name: RHEL 6.2
   run_on:
   - rhel62-small
   batchtime: 1440 # 1 day
@@ -11049,7 +11009,7 @@ buildvariants:
   - name: .publish
 
 - name: rhel70
-  display_name: SSL RHEL 7.0
+  display_name: RHEL 7.0
   run_on:
   - rhel70-small
   batchtime: 1440 # 1 day
@@ -11104,7 +11064,7 @@ buildvariants:
   - name: .publish
 
 - name: rhel80
-  display_name: SSL RHEL 8.0
+  display_name: RHEL 8.0
   run_on:
   - rhel80-build
   batchtime: 1440 # 1 day
@@ -11353,7 +11313,7 @@ buildvariants:
     - rhel62-large
 
 - name: rhel-72-s390x
-  display_name: SSL RHEL 7.2 s390x
+  display_name: RHEL 7.2 s390x
   run_on:
   - rhel72-zseries-test
   batchtime: 1440 # 1 day
@@ -11385,7 +11345,7 @@ buildvariants:
     - rhel70
 
 - name: rhel-67-s390x
-  display_name: SSL RHEL 6.7 s390x
+  display_name: RHEL 6.7 s390x
   run_on:
   - rhel67-zseries-test
   batchtime: 1440 # 1 day
@@ -11628,7 +11588,7 @@ buildvariants:
     - suse12-test
 
 - name: suse12-s390x
-  display_name: SSL SLES 12 s390x
+  display_name: SLES 12 s390x
   run_on:
   - suse12-zseries-test
   batchtime: 10080 # 7 days
@@ -11665,7 +11625,7 @@ buildvariants:
 
 
 - name: suse12
-  display_name: SSL SUSE 12
+  display_name: SUSE 12
   run_on:
   - suse12-test
   batchtime: 1440 # 1 day
@@ -11759,7 +11719,7 @@ buildvariants:
 #   - name: .publish
 
 # - name: suse15
-#   display_name: SSL SUSE 15
+#   display_name: SUSE 15
 #   run_on:
 #   - suse15-test
 #   batchtime: 1440 # 1 day
@@ -11866,7 +11826,7 @@ buildvariants:
   - name: .publish
 
 - name: debian92
-  display_name: SSL Debian 9.2
+  display_name: Debian 9.2
   run_on:
   - debian92-test
   batchtime: 1440 # 1 day
@@ -12335,7 +12295,7 @@ buildvariants:
 ###########################################
 
 - name: ubuntu1804-debug-asan
-  display_name: ~ ASAN Enterprise SSL Ubuntu 18.04 DEBUG
+  display_name: ~ ASAN Enterprise Ubuntu 18.04 DEBUG
   modules:
   - enterprise
   run_on:
@@ -12400,7 +12360,7 @@ buildvariants:
   - name: .updatefuzzer
 
 - name: ubuntu1804-asan
-  display_name: ~ ASAN SSL Ubuntu 18.04
+  display_name: ~ ASAN Ubuntu 18.04
   run_on:
   - ubuntu1804-build
   stepback: true
@@ -12491,7 +12451,7 @@ buildvariants:
   - name: .updatefuzzer
 
 - name: ubuntu1804-debug-aubsan-lite
-  display_name: "! {A,UB}SAN Enterprise SSL Ubuntu 18.04 DEBUG"
+  display_name: "! {A,UB}SAN Enterprise Ubuntu 18.04 DEBUG"
   modules:
   - enterprise
   run_on:
@@ -12521,7 +12481,7 @@ buildvariants:
   - name: watchdog_wiredtiger
 
 - name: ubuntu1804-debug-aubsan-lite_fuzzer
-  display_name: "{A,UB}SAN Enterprise SSL Ubuntu 18.04 FUZZER"
+  display_name: "{A,UB}SAN Enterprise Ubuntu 18.04 FUZZER"
   modules:
   - enterprise
   run_on:
@@ -12545,7 +12505,7 @@ buildvariants:
    - name: libfuzzertests_TG
 
 - name: ubuntu1804-debug-aubsan-async
-  display_name: "~ {A,UB}SAN Enterprise SSL Ubuntu 18.04 async"
+  display_name: "~ {A,UB}SAN Enterprise Ubuntu 18.04 async"
   modules:
   - enterprise
   run_on:
@@ -12637,3 +12597,12 @@ buildvariants:
   stepback: false
   tasks:
   - name: win_shared_scons_cache_pruning
+
+- name: commit-queue
+  display_name: "~ Commit Queue"
+  run_on:
+    - rhel62-small
+  batchtime: 10080 # 7 days
+  stepback: false
+  tasks:
+    - name: commit_queue_placeholder

@@ -15,7 +15,7 @@ env.Benchmark(
 
 
 env.CppUnitTest(
-    target='unordered_map_test',
+    target='stdx_test',
     source=[
         'unordered_map_test.cpp'
     ],

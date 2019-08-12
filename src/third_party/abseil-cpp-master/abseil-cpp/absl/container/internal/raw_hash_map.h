@@ -15,7 +15,6 @@
 #ifndef ABSL_CONTAINER_INTERNAL_RAW_HASH_MAP_H_
 #define ABSL_CONTAINER_INTERNAL_RAW_HASH_MAP_H_
 
-#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <utility>

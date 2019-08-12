@@ -42,17 +42,19 @@
 // handler.
 
 namespace mongo::stdx {
+// In order to grant `mongo::stdx::thread` access to the dispatch method, we need to know this
+// class's name.  A forward-decl header would be overkill for this singular special case.
 class thread;
 
-namespace terminate_detail {
-class TerminateHandlerInterface {
+// This must be the same as the definition in standard.  Do not alter this alias.
+using ::std::terminate_handler;
+
+class TerminateHandlerDetailsInterface {
     friend ::mongo::stdx::thread;
     static void dispatch() noexcept;
 };
-}  // namespace terminate_detail
 
-::std::terminate_handler set_terminate(::std::terminate_handler) noexcept;
-::std::terminate_handler get_terminate() noexcept;
+terminate_handler set_terminate(terminate_handler) noexcept;
+terminate_handler get_terminate() noexcept;
 
-using ::std::terminate_handler;
 }  // namespace mongo::stdx

@@ -35,31 +35,34 @@
 
 
 namespace mongo {
-namespace stdx::terminate_detail {
+namespace stdx {
+// `dispatch_impl` is circularly dependent with the initialization of `terminationHandler`, but
+// should not have linkage.  To facilitate matching the definition to the declaration, we make this
+// function `static`, rather than placing it in the anonymous namespace.
 static void dispatch_impl() noexcept;
 
 namespace {
-::std::atomic<::std::terminate_handler> terminationHandler = []() noexcept {
+::std::atomic<terminate_handler> terminationHandler = []() noexcept {  // NOLINT
     return ::std::set_terminate(&dispatch_impl);
 }
 ();
 }  // namespace
-}  // namespace stdx::terminate_detail
+}  // namespace stdx
 
-void stdx::terminate_detail::dispatch_impl() noexcept {
-    if (const ::std::terminate_handler handler = terminationHandler)
+void stdx::dispatch_impl() noexcept {
+    if (const ::std::terminate_handler handler = terminationHandler.load())
         handler();
 }
 
-void stdx::terminate_detail::TerminateHandlerInterface::dispatch() noexcept {
-    return stdx::terminate_detail::dispatch_impl();
+void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
+    return stdx::dispatch_impl();
 }
 
 stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
-    return terminate_detail::terminationHandler.exchange(handler);
+    return terminationHandler.exchange(handler);
 }
 
 stdx::terminate_handler stdx::get_terminate() noexcept {
-    return terminate_detail::terminationHandler;
+    return terminationHandler.load();
 }
 }  // namespace mongo

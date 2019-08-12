@@ -13,3 +13,12 @@ env.Benchmark(
     ],
 )
 
+
+env.Library(
+    target="stdx",
+    source=[
+        'set_terminate_internals.cpp',
+    ],
+    LIBDEPS=[
+    ],
+)

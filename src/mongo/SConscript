@@ -123,7 +123,6 @@ baseEnv.Library(
         'platform/stack_locator_${TARGET_OS}.cpp',
         'platform/strcasestr.cpp',
         'platform/strnlen.cpp',
-        'stdx/set_terminate_internals.cpp',
         'util/allocator.cpp',
         'util/assert_util.cpp',
         'util/base64.cpp',
@@ -155,6 +154,7 @@ baseEnv.Library(
     # NOTE: This library *must not* depend on any libraries than
     # the ones declared here. Do not add to this list.
     LIBDEPS=[
+        '$BUILD_DIR/mongo/stdx/stdx',
         '$BUILD_DIR/third_party/murmurhash3/murmurhash3',
         '$BUILD_DIR/third_party/shim_abseil',
         '$BUILD_DIR/third_party/shim_allocator',

@@ -33,8 +33,8 @@ from buildscripts.patch_builds.change_data import find_changed_files
 from buildscripts.resmokelib.suitesconfig import create_test_membership_map, get_suites
 from buildscripts.resmokelib.utils import default_if_none, globstar
 from buildscripts.ciconfig.evergreen import parse_evergreen_file, ResmokeArgs, \
-    EvergreenProjectConfig
-from buildscripts.util import teststats
+    EvergreenProjectConfig, VariantTask
+from buildscripts.util.teststats import TestStats
 from buildscripts.util.taskname import name_generated_task
 from buildscripts.patch_builds.task_generation import resmoke_commands, TimeoutInfo, TaskList
 # pylint: enable=wrong-import-position
@@ -54,7 +54,7 @@ DEFAULT_PROJECT = "mongodb-mongo-master"
 REPEAT_SUITES = 2
 EVERGREEN_FILE = "etc/evergreen.yml"
 MAX_TASKS_TO_CREATE = 1000
-MIN_AVG_TEST_OVERFLOW_SEC = 60
+MIN_AVG_TEST_OVERFLOW_SEC = float(60)
 MIN_AVG_TEST_TIME_SEC = 5 * 60
 # The executor_file and suite_files defaults are required to make the suite resolver work
 # correctly.
@@ -124,6 +124,13 @@ class RepeatConfig(object):
 
         repeat_suites = self.repeat_tests_num if self.repeat_tests_num else REPEAT_SUITES
         return f" --repeatSuites={repeat_suites} "
+
+    def __repr__(self):
+        """Build string representation of object for debugging."""
+        return "".join([
+            f"RepeatConfig[num={self.repeat_tests_num}, secs={self.repeat_tests_secs}, ",
+            f"min={self.repeat_tests_min}, max={self.repeat_tests_max}]",
+        ])
 
 
 class GenerateConfig(object):
@@ -297,8 +304,55 @@ def _set_resmoke_args(task):
     return ResmokeArgs.get_updated_arg(resmoke_args, "suites", suite_name)
 
 
-def create_task_list(evergreen_conf: EvergreenProjectConfig, build_variant: str, suites: Dict,
-                     exclude_tasks: [str]):
+def _distro_to_run_task_on(task: VariantTask, evg_proj_config: EvergreenProjectConfig,
+                           build_variant: str) -> str:
+    """
+    Determine what distro an task should be run on.
+
+    For normal tasks, the distro will be the default for the build variant unless the task spec
+    specifies a particular distro to run on.
+
+    For generated tasks, the distro will be the default for the build variant unless (1) the
+    "use_large_distro" flag is set as a "var" in the "generate resmoke tasks" command of the
+    task definition and (2) the build variant defines the "large_distro_name" in its expansions.
+
+    :param task: Task being run.
+    :param evg_proj_config: Evergreen project configuration.
+    :param build_variant: Build Variant task is being run on.
+    :return: Distro task should be run on.
+    """
+    task_def = evg_proj_config.get_task(task.name)
+    if task_def.is_generate_resmoke_task:
+        resmoke_vars = task_def.generate_resmoke_tasks_command["vars"]
+        if "use_large_distro" in resmoke_vars:
+            bv = evg_proj_config.get_variant(build_variant)
+            if "large_distro_name" in bv.raw["expansions"]:
+                return bv.raw["expansions"]["large_distro_name"]
+
+    return task.run_on[0]
+
+
+def _gather_task_info(task: VariantTask, tests_by_suite: Dict,
+                      evg_proj_config: EvergreenProjectConfig, build_variant: str) -> Dict:
+    """
+    Gather the information needed to run the given task.
+
+    :param task: Task to be run.
+    :param tests_by_suite: Dict of suites.
+    :param evg_proj_config: Evergreen project configuration.
+    :param build_variant: Build variant task will be run on.
+    :return: Dictionary of information needed to run task.
+    """
+    return {
+        "resmoke_args": _set_resmoke_args(task),
+        "tests": tests_by_suite[task.resmoke_suite],
+        "use_multiversion": task.multiversion_path,
+        "distro": _distro_to_run_task_on(task, evg_proj_config, build_variant)
+    }  # yapf: disable
+
+
+def create_task_list(evergreen_conf: EvergreenProjectConfig, build_variant: str,
+                     tests_by_suite: Dict[str, List[str]], exclude_tasks: [str]):
     """
     Find associated tasks for the specified build_variant and suites.
 
@@ -311,13 +365,13 @@ def create_task_list(evergreen_conf: EvergreenProjectConfig, build_variant: str,
 
     :param evergreen_conf: Evergreen configuration for project.
     :param build_variant: Build variant to select tasks from.
-    :param suites: Suites to be run.
+    :param tests_by_suite: Suites to be run.
     :param exclude_tasks: Tasks to exclude.
     :return: Dict of tasks to run with run configuration.
     """
     log = LOGGER.bind(build_variant=build_variant)
 
-    log.debug("creating task list for suites", suites=suites, exclude_tasks=exclude_tasks)
+    log.debug("creating task list for suites", suites=tests_by_suite, exclude_tasks=exclude_tasks)
     evg_build_variant = evergreen_conf.get_variant(build_variant)
     if not evg_build_variant:
         log.warning("Buildvariant not found in evergreen config")
@@ -333,11 +387,8 @@ def create_task_list(evergreen_conf: EvergreenProjectConfig, build_variant: str,
 
     # Return the list of tasks to run for the specified suite.
     task_list = {
-        task_name: {
-            "resmoke_args": _set_resmoke_args(task), "tests": suites[task.resmoke_suite],
-            "use_multiversion": task.multiversion_path
-        }
-        for task_name, task in all_variant_tasks.items() if task.resmoke_suite in suites
+        task_name: _gather_task_info(task, tests_by_suite, evergreen_conf, build_variant)
+        for task_name, task in all_variant_tasks.items() if task.resmoke_suite in tests_by_suite
     }
 
     log.debug("Found task list", task_list=task_list)
@@ -362,7 +413,7 @@ def _set_resmoke_cmd(repeat_config: RepeatConfig, resmoke_args: [str]) -> [str]:
     return new_args
 
 
-def _parse_avg_test_runtime(test, task_avg_test_runtime_stats):
+def _parse_avg_test_runtime(test: str, task_avg_test_runtime_stats: TestStats) -> Optional[float]:
     """
     Parse list of teststats to find runtime for particular test.
 
@@ -376,7 +427,7 @@ def _parse_avg_test_runtime(test, task_avg_test_runtime_stats):
     return None
 
 
-def _calculate_timeout(avg_test_runtime):
+def _calculate_timeout(avg_test_runtime: float) -> int:
     """
     Calculate timeout_secs for the Evergreen task.
 
@@ -387,24 +438,35 @@ def _calculate_timeout(avg_test_runtime):
     return max(MIN_AVG_TEST_TIME_SEC, ceil(avg_test_runtime * AVG_TEST_TIME_MULTIPLIER))
 
 
-def _calculate_exec_timeout(repeat_tests_secs, avg_test_runtime):
+def _calculate_exec_timeout(repeat_config: RepeatConfig, avg_test_runtime: float) -> int:
     """
     Calculate exec_timeout_secs for the Evergreen task.
 
+    :param repeat_config: Information about how the test will repeat.
     :param avg_test_runtime: How long a test has historically taken to run.
     :return: repeat_tests_secs + an amount of padding time so that the test has time to finish on
         its final run.
     """
+    LOGGER.debug("Calculating exec timeout", repeat_config=repeat_config,
+                 avg_test_runtime=avg_test_runtime)
+    repeat_tests_secs = repeat_config.repeat_tests_secs
+    if avg_test_runtime > repeat_tests_secs and repeat_config.repeat_tests_min:
+        # If a single execution of the test takes longer than the repeat time, then we don't
+        # have to worry about the repeat time at all and can just use the average test runtime
+        # and minimum number of executions to calculate the exec timeout value.
+        return ceil(avg_test_runtime * AVG_TEST_TIME_MULTIPLIER * repeat_config.repeat_tests_min)
+
     test_execution_time_over_limit = avg_test_runtime - (repeat_tests_secs % avg_test_runtime)
     test_execution_time_over_limit = max(MIN_AVG_TEST_OVERFLOW_SEC, test_execution_time_over_limit)
     return ceil(repeat_tests_secs + (test_execution_time_over_limit * AVG_TEST_TIME_MULTIPLIER))
 
 
-def _generate_timeouts(repeat_tests_secs, test, task_avg_test_runtime_stats) -> TimeoutInfo:
+def _generate_timeouts(repeat_config: RepeatConfig, test: str,
+                       task_avg_test_runtime_stats: TestStats) -> TimeoutInfo:
     """
     Add timeout.update command to list of commands for a burn in execution task.
 
-    :param repeat_tests_secs: How long test will repeat for.
+    :param repeat_config: Information on how the test will repeat.
     :param test: Test name.
     :param task_avg_test_runtime_stats: Teststat data.
     :return: TimeoutInfo to use.
@@ -415,7 +477,8 @@ def _generate_timeouts(repeat_tests_secs, test, task_avg_test_runtime_stats) -> 
             LOGGER.debug("Avg test runtime", test=test, runtime=avg_test_runtime)
 
             timeout = _calculate_timeout(avg_test_runtime)
-            exec_timeout = _calculate_exec_timeout(repeat_tests_secs, avg_test_runtime)
+            exec_timeout = _calculate_exec_timeout(repeat_config, avg_test_runtime)
+            LOGGER.debug("Using timeout overrides", exec_timeout=exec_timeout, timeout=timeout)
             timeout_info = TimeoutInfo.overridden(exec_timeout, timeout)
 
             LOGGER.debug("Override runtime for test", test=test, timeout=timeout_info)
@@ -445,8 +508,7 @@ def _get_task_runtime_history(evg_api: Optional[EvergreenApi], project: str, tas
                                              before_date=end_date.strftime("%Y-%m-%d"),
                                              tasks=[task], variants=[variant], group_by="test",
                                              group_num_days=AVG_TEST_RUNTIME_ANALYSIS_DAYS)
-        test_runtimes = teststats.TestStats(data).get_tests_runtimes()
-        LOGGER.debug("Test_runtime data parsed from Evergreen history", runtimes=test_runtimes)
+        test_runtimes = TestStats(data).get_tests_runtimes()
         return test_runtimes
     except requests.HTTPError as err:
         if err.response.status_code == requests.codes.SERVICE_UNAVAILABLE:
@@ -482,6 +544,7 @@ def create_generate_tasks_config(evg_config: Configuration, tests_by_task: Dict,
                                                        generate_config.build_variant)
         resmoke_args = tests_by_task[task]["resmoke_args"]
         test_list = tests_by_task[task]["tests"]
+        distro = tests_by_task[task].get("distro", generate_config.distro)
         for index, test in enumerate(test_list):
             sub_task_name = name_generated_task(f"{task_prefix}:{task}", index, len(test_list),
                                                 generate_config.run_build_variant)
@@ -490,10 +553,10 @@ def create_generate_tasks_config(evg_config: Configuration, tests_by_task: Dict,
             run_tests_vars = {"resmoke_args": f"{resmoke_args} {resmoke_options} {test}"}
             if multiversion_path:
                 run_tests_vars["task_path_suffix"] = multiversion_path
-            timeout = _generate_timeouts(repeat_config.repeat_tests_secs, test, task_runtime_stats)
+            timeout = _generate_timeouts(repeat_config, test, task_runtime_stats)
             commands = resmoke_commands("run tests", run_tests_vars, timeout, multiversion_path)
 
-            task_list.add_task(sub_task_name, commands, ["compile"], generate_config.distro)
+            task_list.add_task(sub_task_name, commands, ["compile"], distro)
 
     existing_tasks = [BURN_IN_TESTS_GEN_TASK] if include_gen_task else None
     task_list.add_to_variant(generate_config.run_build_variant, BURN_IN_TESTS_TASK, existing_tasks)
@@ -715,6 +778,7 @@ def main(build_variant, run_build_variant, distro, project, generate_tasks_file,
     resmoke_cmd = _set_resmoke_cmd(repeat_config, list(resmoke_args))
 
     tests_by_task = create_tests_by_task(build_variant, repo, evg_conf)
+    LOGGER.debug("tests and tasks found", tests_by_task=tests_by_task)
 
     if generate_tasks_file:
         json_config = create_generate_tasks_file(tests_by_task, generate_config, repeat_config,

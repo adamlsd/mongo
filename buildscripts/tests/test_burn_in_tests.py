@@ -285,42 +285,53 @@ class TestCalculateTimeout(unittest.TestCase):
 
 class TestCalculateExecTimeout(unittest.TestCase):
     def test__calculate_exec_timeout(self):
+        repeat_config = under_test.RepeatConfig(repeat_tests_secs=600)
         avg_test_runtime = 455.1
-        repeat_tests_secs = 600
 
-        exec_timeout = under_test._calculate_exec_timeout(repeat_tests_secs, avg_test_runtime)
+        exec_timeout = under_test._calculate_exec_timeout(repeat_config, avg_test_runtime)
 
         self.assertEqual(1531, exec_timeout)
+
+    def test_average_timeout_greater_than_execution_time(self):
+        repeat_config = under_test.RepeatConfig(repeat_tests_secs=600, repeat_tests_min=2)
+        avg_test_runtime = 750
+
+        exec_timeout = under_test._calculate_exec_timeout(repeat_config, avg_test_runtime)
+
+        # The timeout needs to be greater than the number of the test * the minimum number of runs.
+        minimum_expected_timeout = avg_test_runtime * repeat_config.repeat_tests_min
+
+        self.assertGreater(exec_timeout, minimum_expected_timeout)
 
 
 class TestGenerateTimeouts(unittest.TestCase):
     def test__generate_timeouts(self):
-        repeat_tests_secs = 600
+        repeat_config = under_test.RepeatConfig(repeat_tests_secs=600)
         runtime_stats = [teststats_utils.TestRuntime(test_name="dir/test2.js", runtime=455.1)]
         test_name = "dir/test2.js"
 
-        timeout_info = under_test._generate_timeouts(repeat_tests_secs, test_name, runtime_stats)
+        timeout_info = under_test._generate_timeouts(repeat_config, test_name, runtime_stats)
 
         self.assertEqual(timeout_info.exec_timeout, 1531)
         self.assertEqual(timeout_info.timeout, 1366)
 
     def test__generate_timeouts_no_results(self):
-        repeat_tests_secs = 600
+        repeat_config = under_test.RepeatConfig(repeat_tests_secs=600)
         runtime_stats = []
         test_name = "dir/new_test.js"
 
-        timeout_info = under_test._generate_timeouts(repeat_tests_secs, test_name, runtime_stats)
+        timeout_info = under_test._generate_timeouts(repeat_config, test_name, runtime_stats)
 
         self.assertIsNone(timeout_info.cmd)
 
     def test__generate_timeouts_avg_runtime_is_zero(self):
-        repeat_tests_secs = 600
+        repeat_config = under_test.RepeatConfig(repeat_tests_secs=600)
         runtime_stats = [
             teststats_utils.TestRuntime(test_name="dir/test_with_zero_runtime.js", runtime=0)
         ]
         test_name = "dir/test_with_zero_runtime.js"
 
-        timeout_info = under_test._generate_timeouts(repeat_tests_secs, test_name, runtime_stats)
+        timeout_info = under_test._generate_timeouts(repeat_config, test_name, runtime_stats)
 
         self.assertIsNone(timeout_info.cmd)
 
@@ -663,113 +674,230 @@ class CreateExecutorList(unittest.TestCase):
         self.assertEqual(mock_suite_class.call_count, 0)
 
 
-class CreateTaskList(unittest.TestCase):
-    def test_create_task_list(self):
-        variant = "variantall"
-        suites = [SUITE1, SUITE2, SUITE3]
-        exclude_suites = []
-        suite_list = _create_executor_list(suites, exclude_suites)
+def create_variant_task_mock(task_name, suite_name, distro="distro"):
+    variant_task = MagicMock()
+    variant_task.name = task_name
+    variant_task.generated_task_name = task_name
+    variant_task.resmoke_suite = suite_name
+    variant_task.get_vars_suite_name.return_value = suite_name
+    variant_task.combined_resmoke_args = f"--suites={suite_name}"
+    variant_task.multiversion_path = None
+    variant_task.run_on = [distro]
+    return variant_task
 
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
 
-        self.assertEqual(len(task_list), len(VARIANTS["variantall"].tasks))
-        self.assertIn("task1", task_list)
-        self.assertEqual(task_list["task1"]["resmoke_args"], "--suites=suite1 var1arg1")
-        self.assertEqual(task_list["task1"]["tests"], SUITE1.tests)
-        self.assertIsNone(task_list["task1"]["use_multiversion"])
-        self.assertIn("task2", task_list)
-        self.assertEqual(task_list["task2"]["resmoke_args"], "--suites=suite1 var1arg2")
-        self.assertEqual(task_list["task2"]["tests"], SUITE1.tests)
-        self.assertIsNone(task_list["task2"]["use_multiversion"])
-        self.assertIn("task3", task_list)
-        self.assertEqual(task_list["task3"]["resmoke_args"], "--suites=suite1 var1arg3")
-        self.assertEqual(task_list["task3"]["tests"], SUITE1.tests)
-        self.assertIsNone(task_list["task3"]["use_multiversion"])
+class TestGatherTaskInfo(unittest.TestCase):
+    def test_non_generated_task(self):
+        suite_name = "suite_1"
+        distro_name = "distro_1"
+        variant = "build_variant"
+        evg_conf_mock = MagicMock()
+        evg_conf_mock.get_task.return_value.is_generate_resmoke_task = False
+        task_mock = create_variant_task_mock("task 1", suite_name, distro_name)
+        test_list = [f"test{i}.js" for i in range(3)]
+        tests_by_suite = {
+            suite_name: test_list,
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
 
-    def test_create_task_list_multiversion(self):
-        variant = "variant_multiversion"
-        suites = [SUITE1, SUITE2, SUITE3]
-        exclude_suites = []
-        suite_list = _create_executor_list(suites, exclude_suites)
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
-        self.assertEqual(len(task_list), len(VARIANTS["variant_multiversion"].tasks))
-        self.assertEqual(task_list["multiversion_task"]["use_multiversion"], MULTIVERSION_PATH)
+        task_info = under_test._gather_task_info(task_mock, tests_by_suite, evg_conf_mock, variant)
 
-    def test_create_task_list_gen_tasks(self):
-        variant = "variant_generate_tasks"
-        suites = [SUITE3]
-        exclude_suites = []
-        suite_list = _create_executor_list(suites, exclude_suites)
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
-        self.assertEqual(len(task_list), len(VARIANTS["variant_generate_tasks"].tasks))
-        self.assertIn(GENERATE_RESMOKE_TASKS_BASENAME, task_list)
-        self.assertEqual(task_list[GENERATE_RESMOKE_TASKS_BASENAME]["tests"], SUITE3.tests)
-        self.assertIsNone(task_list[GENERATE_RESMOKE_TASKS_BASENAME]["use_multiversion"])
+        self.assertIn(suite_name, task_info["resmoke_args"])
+        for test in test_list:
+            self.assertIn(test, task_info["tests"])
+        self.assertIsNone(task_info["use_multiversion"])
+        self.assertEqual(distro_name, task_info["distro"])
 
-    def test_create_task_list_gen_tasks_multiversion(self):
-        variant = "variant_generate_tasks_multiversion"
-        suites = [SUITE3]
-        exclude_suites = []
-        suite_list = _create_executor_list(suites, exclude_suites)
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
-        self.assertEqual(len(task_list), len(VARIANTS["variant_generate_tasks_multiversion"].tasks))
-        self.assertEqual(task_list[GENERATE_RESMOKE_TASKS_BASENAME]["use_multiversion"],
-                         MULTIVERSION_PATH)
+    def test_multiversion_task(self):
+        suite_name = "suite_1"
+        distro_name = "distro_1"
+        variant = "build_variant"
+        evg_conf_mock = MagicMock()
+        evg_conf_mock.get_task.return_value.is_generate_resmoke_task = False
+        task_mock = create_variant_task_mock("task 1", suite_name, distro_name)
+        task_mock.multiversion_path = "/path/to/multiversion"
+        test_list = [f"test{i}.js" for i in range(3)]
+        tests_by_suite = {
+            suite_name: test_list,
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
 
-    def test_create_task_list_gen_tasks_no_suite(self):
-        variant = "variant_generate_tasks_no_suite"
-        suites = [SUITE3]
-        exclude_suites = []
-        suite_list = _create_executor_list(suites, exclude_suites)
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
-        self.assertEqual(len(task_list), len(VARIANTS["variant_generate_tasks_no_suite"].tasks))
-        self.assertIn(GENERATE_RESMOKE_TASKS_BASENAME, task_list)
-        self.assertEqual(task_list[GENERATE_RESMOKE_TASKS_BASENAME]["tests"], SUITE3.tests)
+        task_info = under_test._gather_task_info(task_mock, tests_by_suite, evg_conf_mock, variant)
 
+        self.assertIn(suite_name, task_info["resmoke_args"])
+        for test in test_list:
+            self.assertIn(test, task_info["tests"])
+        self.assertEqual(task_mock.multiversion_path, task_info["use_multiversion"])
+        self.assertEqual(distro_name, task_info["distro"])
+
+    def test_generated_task_no_large_on_task(self):
+        suite_name = "suite_1"
+        distro_name = "distro_1"
+        variant = "build_variant"
+        evg_conf_mock = MagicMock()
+        task_def_mock = evg_conf_mock.get_task.return_value
+        task_def_mock.is_generate_resmoke_task = True
+        task_def_mock.generate_resmoke_tasks_command = {"vars": {}}
+        task_mock = create_variant_task_mock("task 1", suite_name, distro_name)
+        test_list = [f"test{i}.js" for i in range(3)]
+        tests_by_suite = {
+            suite_name: test_list,
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
+
+        task_info = under_test._gather_task_info(task_mock, tests_by_suite, evg_conf_mock, variant)
+
+        self.assertIn(suite_name, task_info["resmoke_args"])
+        for test in test_list:
+            self.assertIn(test, task_info["tests"])
+        self.assertIsNone(task_info["use_multiversion"])
+        self.assertEqual(distro_name, task_info["distro"])
+
+    def test_generated_task_no_large_on_build_variant(self):
+        suite_name = "suite_1"
+        distro_name = "distro_1"
+        variant = "build_variant"
+        evg_conf_mock = MagicMock()
+        task_def_mock = evg_conf_mock.get_task.return_value
+        task_def_mock.is_generate_resmoke_task = True
+        task_def_mock.generate_resmoke_tasks_command = {"vars": {"use_large_distro": True}}
+        task_mock = create_variant_task_mock("task 1", suite_name, distro_name)
+        test_list = [f"test{i}.js" for i in range(3)]
+        tests_by_suite = {
+            suite_name: test_list,
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
+
+        task_info = under_test._gather_task_info(task_mock, tests_by_suite, evg_conf_mock, variant)
+
+        self.assertIn(suite_name, task_info["resmoke_args"])
+        for test in test_list:
+            self.assertIn(test, task_info["tests"])
+        self.assertIsNone(task_info["use_multiversion"])
+        self.assertEqual(distro_name, task_info["distro"])
+
+    def test_generated_task_large_distro(self):
+        suite_name = "suite_1"
+        distro_name = "distro_1"
+        large_distro_name = "large_distro_1"
+        variant = "build_variant"
+        evg_conf_mock = MagicMock()
+        task_def_mock = evg_conf_mock.get_task.return_value
+        task_def_mock.is_generate_resmoke_task = True
+        task_def_mock.generate_resmoke_tasks_command = {"vars": {"use_large_distro": True}}
+        evg_conf_mock.get_variant.return_value.raw = {
+            "expansions": {
+                "large_distro_name": large_distro_name
+            }
+        }  # yapf: disable
+        task_mock = create_variant_task_mock("task 1", suite_name, distro_name)
+        test_list = [f"test{i}.js" for i in range(3)]
+        tests_by_suite = {
+            suite_name: test_list,
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
+
+        task_info = under_test._gather_task_info(task_mock, tests_by_suite, evg_conf_mock, variant)
+
+        self.assertIn(suite_name, task_info["resmoke_args"])
+        for test in test_list:
+            self.assertIn(test, task_info["tests"])
+        self.assertIsNone(task_info["use_multiversion"])
+        self.assertEqual(large_distro_name, task_info["distro"])
+
+
+class TestCreateTaskList(unittest.TestCase):
     def test_create_task_list_no_excludes(self):
-        variant = "variant1"
-        suites = [SUITE1, SUITE2]
-        exclude_suites = []
-        suite_list = _create_executor_list(suites, exclude_suites)
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
-        self.assertEqual(len(task_list), 1)
-        self.assertIn("task1", task_list)
-        self.assertEqual(task_list["task1"]["resmoke_args"], "--suites=suite1 var1arg1")
-        self.assertEqual(task_list["task1"]["tests"], SUITE1.tests)
-        self.assertNotIn("task2", task_list)
-        self.assertNotIn("task3", task_list)
+        variant = "variant name"
+        evg_conf_mock = MagicMock()
+        evg_conf_mock.get_variant.return_value.tasks = [
+            create_variant_task_mock("task 1", "suite 1"),
+            create_variant_task_mock("task 2", "suite 2"),
+            create_variant_task_mock("task 3", "suite 3"),
+        ]
+        tests_by_suite = {
+            "suite 1": [f"test{i}.js" for i in range(3)],
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
+        exclude_tasks = []
+
+        task_list = under_test.create_task_list(evg_conf_mock, variant, tests_by_suite,
+                                                exclude_tasks)
+
+        self.assertIn("task 1", task_list)
+        self.assertIn("task 2", task_list)
+        self.assertIn("task 3", task_list)
+        self.assertEqual(3, len(task_list))
+
+    def test_create_task_list_has_correct_task_info(self):
+        variant = "variant name"
+        evg_conf_mock = MagicMock()
+        evg_conf_mock.get_variant.return_value.tasks = [
+            create_variant_task_mock("task 1", "suite_1", "distro 1"),
+        ]
+        evg_conf_mock.get_task.return_value.run_on = ["distro 1"]
+        tests_by_suite = {
+            "suite_1": [f"test{i}.js" for i in range(3)],
+        }
+        exclude_tasks = []
+
+        task_list = under_test.create_task_list(evg_conf_mock, variant, tests_by_suite,
+                                                exclude_tasks)
+
+        self.assertIn("task 1", task_list)
+        task_info = task_list["task 1"]
+        self.assertIn("suite_1", task_info["resmoke_args"])
+        for i in range(3):
+            self.assertIn(f"test{i}.js", task_info["tests"])
+        self.assertIsNone(task_info["use_multiversion"])
+        self.assertEqual("distro 1", task_info["distro"])
 
     def test_create_task_list_with_excludes(self):
-        variant = "variant2"
-        suites = [SUITE1, SUITE2, SUITE3]
-        suite_list = _create_executor_list(suites, [])
-        exclude_suites = ["suite2"]
-        task_list = under_test.create_task_list(EVERGREEN_CONF, variant, suite_list, exclude_suites)
-        self.assertEqual(len(task_list), 1)
-        self.assertIn("task3", task_list)
-        self.assertEqual(task_list["task3"]["resmoke_args"], "--suites=suite3 var2arg3")
-        self.assertEqual(task_list["task3"]["tests"], SUITE3.tests)
-        self.assertNotIn("task1", task_list)
-        self.assertNotIn("task2", task_list)
+        variant = "variant name"
+        evg_conf_mock = MagicMock()
+        evg_conf_mock.get_variant.return_value.tasks = [
+            create_variant_task_mock("task 1", "suite 1"),
+            create_variant_task_mock("task 2", "suite 2"),
+            create_variant_task_mock("task 3", "suite 3"),
+        ]
+        tests_by_suite = {
+            "suite 1": [f"test{i}.js" for i in range(3)],
+            "suite 2": [f"test{i}.js" for i in range(1)],
+            "suite 3": [f"test{i}.js" for i in range(2)],
+        }
+        exclude_tasks = ["task 2"]
+
+        task_list = under_test.create_task_list(evg_conf_mock, variant, tests_by_suite,
+                                                exclude_tasks)
+
+        self.assertIn("task 1", task_list)
+        self.assertNotIn("task 2", task_list)
+        self.assertIn("task 3", task_list)
+        self.assertEqual(2, len(task_list))
 
     def test_create_task_list_no_suites(self):
-        variant = "variant2"
+        variant = "variant name"
         evg_conf_mock = MagicMock()
-        suite_list = {}
+        suite_dict = {}
 
-        task_list = under_test.create_task_list(evg_conf_mock, variant, suite_list, [])
+        task_list = under_test.create_task_list(evg_conf_mock, variant, suite_dict, [])
 
-        self.assertEqual(len(task_list), 0)
         self.assertEqual(task_list, {})
 
-    def test_create_task_list_no_variant(self):
+    def test_build_variant_not_in_evg_project_config(self):
         variant = "novariant"
         evg_conf_mock = MagicMock()
         evg_conf_mock.get_variant.return_value = None
-        suites = {}
+        suite_dict = {}
 
         with self.assertRaises(ValueError):
-            under_test.create_task_list(EVERGREEN_CONF, variant, suites, [])
+            under_test.create_task_list(EVERGREEN_CONF, variant, suite_dict, [])
 
 
 class TestFindChangedTests(unittest.TestCase):

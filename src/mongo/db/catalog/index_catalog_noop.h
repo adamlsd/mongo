@@ -43,10 +43,6 @@ public:
         return Status::OK();
     }
 
-    bool ok() const override {
-        return true;
-    }
-
     bool haveAnyIndexes() const override {
         return false;
     }
@@ -235,8 +231,6 @@ public:
     void prepareInsertDeleteOptions(OperationContext* opCtx,
                                     const IndexDescriptor* desc,
                                     InsertDeleteOptions* options) const override {}
-
-    void setNs(NamespaceString ns) override {}
 
     void indexBuildSuccess(OperationContext* opCtx, IndexCatalogEntry* index) override {}
 };

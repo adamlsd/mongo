@@ -396,22 +396,15 @@ void CollectionCloner::_listIndexesCallback(const Fetcher::QueryResponseStatus& 
     }
 
     UniqueLock lk(_mutex);
-    // When listing indexes by UUID, the sync source may use a different name for the collection
-    // as result of renaming or two-phase drop. As the index spec also includes a 'ns' field, this
-    // must be rewritten.
-    BSONObjBuilder nsFieldReplacementBuilder;
-    nsFieldReplacementBuilder.append("ns", _sourceNss.ns());
-    BSONElement nsFieldReplacementElem = nsFieldReplacementBuilder.done().firstElement();
 
     // We may be called with multiple batches leading to a need to grow _indexSpecs.
     _indexSpecs.reserve(_indexSpecs.size() + documents.size());
     for (auto&& doc : documents) {
-        // The addField replaces the 'ns' field with the correct name, see above.
         if (StringData("_id_") == doc["name"].str()) {
-            _idIndexSpec = doc.addField(nsFieldReplacementElem);
+            _idIndexSpec = doc;
             continue;
         }
-        _indexSpecs.push_back(doc.addField(nsFieldReplacementElem));
+        _indexSpecs.push_back(doc);
     }
     lk.unlock();
 
@@ -544,18 +537,13 @@ void CollectionCloner::_runQuery(const executor::TaskExecutor::CallbackArgs& cal
         return;
     }
 
-    // readOnce is available on 4.2 sync sources only.  Initially we don't know FCV, so
-    // we won't use the readOnce feature, but once the admin database is cloned we will use it.
-    // The admin database is always cloned first, so all user data should use readOnce.
-    const bool readOnceAvailable = serverGlobalParams.featureCompatibility.getVersionUnsafe() ==
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42;
     try {
         _clientConnection->query(
             [this, onCompletionGuard](DBClientCursorBatchIterator& iter) {
                 _handleNextBatch(onCompletionGuard, iter);
             },
             NamespaceStringOrUUID(_sourceNss.db().toString(), *_options.uuid),
-            readOnceAvailable ? QUERY("query" << BSONObj() << "$readOnce" << true) : Query(),
+            QUERY("query" << BSONObj() << "$readOnce" << true),
             nullptr /* fieldsToReturn */,
             QueryOption_NoCursorTimeout | QueryOption_SlaveOk |
                 (collectionClonerUsesExhaust ? QueryOption_Exhaust : 0),

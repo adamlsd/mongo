@@ -55,6 +55,7 @@
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
+#include "mongo/db/query/collection_query_info.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
@@ -532,11 +533,10 @@ void State::prepTempCollection() {
             auto incColl = db->createCollection(
                 _opCtx, _config.incLong, options, false /* force no _id index */);
 
-            auto rawIndexSpec =
-                BSON("key" << BSON("0" << 1) << "ns" << _config.incLong.ns() << "name"
-                           << "_temp_0");
+            auto rawIndexSpec = BSON("key" << BSON("0" << 1) << "name"
+                                           << "_temp_0");
             auto indexSpec = uassertStatusOK(index_key_validate::validateIndexSpec(
-                _opCtx, rawIndexSpec, _config.incLong, serverGlobalParams.featureCompatibility));
+                _opCtx, rawIndexSpec, serverGlobalParams.featureCompatibility));
 
             uassertStatusOKWithContext(
                 incColl->getIndexCatalog()->createIndexOnEmptyCollection(_opCtx, indexSpec),
@@ -566,13 +566,12 @@ void State::prepTempCollection() {
             while (ii->more()) {
                 const IndexDescriptor* currIndex = ii->next()->descriptor();
                 BSONObjBuilder b;
-                b.append("ns", _config.tempNamespace.ns());
 
                 // Copy over contents of the index descriptor's infoObj.
                 BSONObjIterator j(currIndex->infoObj());
                 while (j.more()) {
                     BSONElement e = j.next();
-                    if (e.fieldNameStringData() == "_id" || e.fieldNameStringData() == "ns")
+                    if (e.fieldNameStringData() == "_id")
                         continue;
                     b.append(e);
                 }
@@ -1414,7 +1413,8 @@ bool runMapReduce(OperationContext* opCtx,
 
     const auto metadata = [&] {
         AutoGetCollectionForReadCommand autoColl(opCtx, config.nss);
-        return CollectionShardingState::get(opCtx, config.nss)->getOrphansFilter(opCtx);
+        return CollectionShardingState::get(opCtx, config.nss)
+            ->getOrphansFilter(opCtx, autoColl.getCollection());
     }();
 
     bool shouldHaveData = false;
@@ -1566,7 +1566,7 @@ bool runMapReduce(OperationContext* opCtx,
             // TODO SERVER-23261: Confirm whether this is the correct place to gather all
             // metrics. There is no harm adding here for the time being.
             curOp->debug().setPlanSummaryMetrics(stats);
-            scopedAutoColl->getCollection()->infoCache()->notifyOfQuery(opCtx, stats);
+            CollectionQueryInfo::get(scopedAutoColl->getCollection()).notifyOfQuery(opCtx, stats);
 
             if (curOp->shouldDBProfile()) {
                 BSONObjBuilder execStatsBob;

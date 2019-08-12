@@ -226,9 +226,9 @@ NamespaceString parseUUIDOrNs(OperationContext* opCtx, const OplogEntry& oplogEn
     return *nss;
 }
 
-NamespaceStringOrUUID getNsOrUUID(const NamespaceString& nss, const BSONObj& op) {
-    if (auto ui = op["ui"]) {
-        return {nss.db().toString(), uassertStatusOK(UUID::parse(ui))};
+NamespaceStringOrUUID getNsOrUUID(const NamespaceString& nss, const OplogEntry& op) {
+    if (auto ui = op.getUuid()) {
+        return {nss.db().toString(), ui.get()};
     }
     return nss;
 }
@@ -240,8 +240,7 @@ NamespaceStringOrUUID getNsOrUUID(const NamespaceString& nss, const BSONObj& op)
 Status finishAndLogApply(ClockSource* clockSource,
                          Status finalStatus,
                          Date_t applyStartTime,
-                         OpTypeEnum opType,
-                         const BSONObj& op) {
+                         const OplogEntryBatch& batch) {
 
     if (finalStatus.isOK()) {
         auto applyEndTime = clockSource->now();
@@ -253,13 +252,13 @@ Status finishAndLogApply(ClockSource* clockSource,
             StringBuilder s;
             s << "applied op: ";
 
-            if (opType == OpTypeEnum::kCommand) {
+            if (batch.getOp().getOpType() == OpTypeEnum::kCommand) {
                 s << "command ";
             } else {
                 s << "CRUD ";
             }
 
-            s << redact(op);
+            s << redact(batch.toBSON());
             s << ", took " << diffMS << "ms";
 
             log() << s.str();
@@ -276,13 +275,14 @@ LockMode fixLockModeForSystemDotViewsChanges(const NamespaceString& nss, LockMod
 
 // static
 Status SyncTail::syncApply(OperationContext* opCtx,
-                           const BSONObj& op,
+                           const OplogEntryBatch& batch,
                            OplogApplication::Mode oplogApplicationMode,
                            boost::optional<Timestamp> stableTimestampForRecovery) {
+    auto op = batch.getOp();
     // Count each log op application as a separate operation, for reporting purposes
     CurOp individualOp(opCtx);
 
-    const NamespaceString nss(op.getStringField("ns"));
+    const NamespaceString nss(op.getNss());
 
     auto incrementOpsAppliedStats = [] { opsAppliedStats.increment(1); };
 
@@ -302,7 +302,7 @@ Status SyncTail::syncApply(OperationContext* opCtx,
         // mode (similar to initial sync) instead so we do not accidentally ignore real errors.
         bool shouldAlwaysUpsert = (oplogApplicationMode != OplogApplication::Mode::kInitialSync);
         Status status = applyOperation_inlock(
-            opCtx, db, op, shouldAlwaysUpsert, oplogApplicationMode, incrementOpsAppliedStats);
+            opCtx, db, batch, shouldAlwaysUpsert, oplogApplicationMode, incrementOpsAppliedStats);
         if (!status.isOK() && status.code() == ErrorCodes::WriteConflict) {
             throw WriteConflictException();
         }
@@ -318,10 +318,10 @@ Status SyncTail::syncApply(OperationContext* opCtx,
         MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterRecordingOpApplicationStartTime);
     }
 
-    auto opType = OpType_parse(IDLParserErrorContext("syncApply"), op["op"].valuestrsafe());
+    auto opType = op.getOpType();
 
     auto finishApply = [&](Status status) {
-        return finishAndLogApply(clockSource, status, applyStartTime, opType, op);
+        return finishAndLogApply(clockSource, status, applyStartTime, batch);
     };
 
     if (opType == OpTypeEnum::kNoop) {
@@ -353,19 +353,16 @@ Status SyncTail::syncApply(OperationContext* opCtx,
                     return Status::OK();
                 }
 
-                ex.addContext(str::stream() << "Failed to apply operation: " << redact(op));
+                ex.addContext(str::stream()
+                              << "Failed to apply operation: " << redact(batch.toBSON()));
                 throw;
             }
         }));
     } else if (opType == OpTypeEnum::kCommand) {
         return finishApply(writeConflictRetry(opCtx, "syncApply_command", nss.ns(), [&] {
-            // TODO SERVER-37180 Remove this double-parsing.
-            // The command entry has been parsed before, so it must be valid.
-            auto entry = uassertStatusOK(OplogEntry::parse(op));
-
             // A special case apply for commands to avoid implicit database creation.
-            Status status = applyCommand_inlock(
-                opCtx, op, entry, oplogApplicationMode, stableTimestampForRecovery);
+            Status status =
+                applyCommand_inlock(opCtx, op, oplogApplicationMode, stableTimestampForRecovery);
             incrementOpsAppliedStats();
             return status;
         }));
@@ -647,7 +644,7 @@ private:
                 auto oplogEntries =
                     fassertNoTrace(31004, _getNextApplierBatchFn(opCtx.get(), batchLimits));
                 for (const auto& oplogEntry : oplogEntries) {
-                    ops.emplace_back(oplogEntry.getRaw());
+                    ops.emplace_back(oplogEntry);
                 }
 
                 // If we don't have anything in the queue, wait a bit for something to appear.
@@ -829,20 +826,6 @@ void SyncTail::_oplogApplication(ReplicationCoordinator* replCoord,
         finalizer->record({lastOpTimeInBatch, lastWallTimeInBatch.get()}, consistency);
     }
 }
-
-// Returns whether an oplog entry represents an applyOps which is a self-contained atomic operation,
-// or the last applyOps of an unprepared transaction, as opposed to part of a prepared transaction
-// or a non-final applyOps in an transaction.
-inline bool isCommitApplyOps(const OplogEntry& entry) {
-    return entry.getCommandType() == OplogEntry::CommandType::kApplyOps && !entry.shouldPrepare() &&
-        !entry.isPartialTransaction() && !entry.getObject().getBoolField("prepare");
-}
-
-// Returns whether a commitTransaction oplog entry is a part of a prepared transaction.
-inline bool isPreparedCommit(const OplogEntry& entry) {
-    return entry.getCommandType() == OplogEntry::CommandType::kCommitTransaction;
-}
-
 
 void SyncTail::shutdown() {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
@@ -1052,7 +1035,7 @@ Status multiSyncApply(OperationContext* opCtx,
             try {
                 auto stableTimestampForRecovery = st->getOptions().stableTimestampForRecovery;
                 const Status status = SyncTail::syncApply(
-                    opCtx, entry.getRaw(), oplogApplicationMode, stableTimestampForRecovery);
+                    opCtx, &entry, oplogApplicationMode, stableTimestampForRecovery);
 
                 if (!status.isOK()) {
                     // In initial sync, update operations can cause documents to be missed during
@@ -1108,7 +1091,7 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
                                   MultiApplier::Operations* ops,
                                   std::vector<MultiApplier::OperationPtrs>* writerVectors,
                                   std::vector<MultiApplier::Operations>* derivedOps,
-                                  SessionUpdateTracker* sessionUpdateTracker) {
+                                  SessionUpdateTracker* sessionUpdateTracker) noexcept {
     const auto serviceContext = opCtx->getServiceContext();
     const auto storageEngine = serviceContext->getStorageEngine();
 
@@ -1143,7 +1126,9 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
         // If this entry is part of a multi-oplog-entry transaction, ignore it until the commit.
         // We must save it here because we are not guaranteed it has been written to the oplog
         // yet.
-        if (op.isPartialTransaction()) {
+        // We also do this for prepare during initial sync.
+        if (op.isPartialTransaction() ||
+            (op.shouldPrepare() && _options.mode == OplogApplication::Mode::kInitialSync)) {
             auto& partialTxnList = partialTxnOps[*op.getSessionId()];
             // If this operation belongs to an existing partial transaction, partialTxnList
             // must contain the previous operations of the transaction.
@@ -1183,43 +1168,29 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
 
         // Extract applyOps operations and fill writers with extracted operations using this
         // function.
-        if (isCommitApplyOps(op)) {
-            try {
-                auto logicalSessionId = op.getSessionId();
-                // applyOps entries generated by a transaction must have a sessionId and a
-                // transaction number.
-                if (logicalSessionId && op.getTxnNumber()) {
-                    // On commit of unprepared transactions, get transactional operations from the
-                    // oplog and fill writers with those operations.
-                    // Flush partialTxnList operations for current transaction.
-                    auto& partialTxnList = partialTxnOps[*logicalSessionId];
-                    {
-                        // We need to use a ReadSourceScope avoid the reads of the transaction
-                        // messing up the state of the opCtx.  In particular we do not want to
-                        // set the ReadSource to kLastApplied.
-                        ReadSourceScope readSourceScope(opCtx);
-                        derivedOps->emplace_back(readTransactionOperationsFromOplogChain(
-                            opCtx, op, partialTxnList, boost::none));
-                        partialTxnList.clear();
-                    }
-                    // Transaction entries cannot have different session updates.
-                    _fillWriterVectors(
-                        opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
-                } else {
-                    // The applyOps entry was not generated as part of a transaction.
-                    invariant(!op.getPrevWriteOpTimeInTransaction());
-                    derivedOps->emplace_back(ApplyOps::extractOperations(op));
+        if (op.isTerminalApplyOps()) {
+            auto logicalSessionId = op.getSessionId();
+            // applyOps entries generated by a transaction must have a sessionId and a
+            // transaction number.
+            if (logicalSessionId && op.getTxnNumber()) {
+                // On commit of unprepared transactions, get transactional operations from the
+                // oplog and fill writers with those operations.
+                // Flush partialTxnList operations for current transaction.
+                auto& partialTxnList = partialTxnOps[*logicalSessionId];
 
-                    // Nested entries cannot have different session updates.
-                    _fillWriterVectors(
-                        opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
-                }
-            } catch (...) {
-                fassertFailedWithStatusNoTrace(
-                    50711,
-                    exceptionToStatus().withContext(str::stream()
-                                                    << "Unable to extract operations from applyOps "
-                                                    << redact(op.toBSON())));
+                derivedOps->emplace_back(
+                    readTransactionOperationsFromOplogChain(opCtx, op, partialTxnList));
+                partialTxnList.clear();
+
+                // Transaction entries cannot have different session updates.
+                _fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
+            } else {
+                // The applyOps entry was not generated as part of a transaction.
+                invariant(!op.getPrevWriteOpTimeInTransaction());
+                derivedOps->emplace_back(ApplyOps::extractOperations(op));
+
+                // Nested entries cannot have different session updates.
+                _fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
             }
             continue;
         }
@@ -1227,24 +1198,13 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
         // If we see a commitTransaction command that is a part of a prepared transaction during
         // initial sync, find the prepare oplog entry, extract applyOps operations, and fill writers
         // with the extracted operations.
-        if (isPreparedCommit(op) && (_options.mode == OplogApplication::Mode::kInitialSync)) {
+        if (op.isPreparedCommit() && (_options.mode == OplogApplication::Mode::kInitialSync)) {
             auto logicalSessionId = op.getSessionId();
             auto& partialTxnList = partialTxnOps[*logicalSessionId];
 
-            {
-                // Traverse the oplog chain with its own snapshot and read timestamp.
-                ReadSourceScope readSourceScope(opCtx);
-
-                // Get the previous oplog entry, which should be a prepare oplog entry.
-                const auto prevOplogEntry = getPreviousOplogEntry(opCtx, op);
-                invariant(prevOplogEntry.shouldPrepare());
-
-                // Extract the operations from the applyOps entry.
-                auto commitOplogEntryOpTime = op.getOpTime();
-                derivedOps->emplace_back(readTransactionOperationsFromOplogChain(
-                    opCtx, prevOplogEntry, partialTxnList, commitOplogEntryOpTime.getTimestamp()));
-                partialTxnList.clear();
-            }
+            derivedOps->emplace_back(
+                readTransactionOperationsFromOplogChain(opCtx, op, partialTxnList));
+            partialTxnList.clear();
 
             _fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
             continue;
@@ -1261,7 +1221,7 @@ void SyncTail::_fillWriterVectors(OperationContext* opCtx,
 void SyncTail::fillWriterVectors(OperationContext* opCtx,
                                  MultiApplier::Operations* ops,
                                  std::vector<MultiApplier::OperationPtrs>* writerVectors,
-                                 std::vector<MultiApplier::Operations>* derivedOps) {
+                                 std::vector<MultiApplier::Operations>* derivedOps) noexcept {
     SessionUpdateTracker sessionUpdateTracker;
     _fillWriterVectors(opCtx, ops, writerVectors, derivedOps, &sessionUpdateTracker);
 

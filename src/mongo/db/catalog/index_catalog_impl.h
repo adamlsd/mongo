@@ -57,12 +57,9 @@ struct InsertDeleteOptions;
 class IndexCatalogImpl : public IndexCatalog {
 public:
     explicit IndexCatalogImpl(Collection* collection);
-    ~IndexCatalogImpl() override;
 
     // must be called before used
     Status init(OperationContext* opCtx) override;
-
-    bool ok() const override;
 
     // ---- accessors -----
 
@@ -296,8 +293,6 @@ public:
                                     const IndexDescriptor* desc,
                                     InsertDeleteOptions* options) const override;
 
-    void setNs(NamespaceString ns) override;
-
     void indexBuildSuccess(OperationContext* opCtx, IndexCatalogEntry* index) override;
 
 private:
@@ -311,12 +306,10 @@ private:
      */
     std::string _getAccessMethodName(const BSONObj& keyPattern) const;
 
-    void _checkMagic() const;
-
     Status _indexKeys(OperationContext* opCtx,
                       IndexCatalogEntry* index,
-                      const std::vector<BSONObj>& keys,
-                      const BSONObjSet& multikeyMetadataKeys,
+                      const std::vector<KeyString::Value>& keys,
+                      const KeyStringSet& multikeyMetadataKeys,
                       const MultikeyPaths& multikeyPaths,
                       const BSONObj& obj,
                       RecordId loc,
@@ -343,7 +336,7 @@ private:
 
     void _unindexKeys(OperationContext* opCtx,
                       IndexCatalogEntry* index,
-                      const std::vector<BSONObj>& keys,
+                      const std::vector<KeyString::Value>& keys,
                       const BSONObj& obj,
                       RecordId loc,
                       bool logIfError,
@@ -400,7 +393,6 @@ private:
                            const std::vector<std::string>& indexNamesToDrop,
                            bool haveIdIndex);
 
-    int _magic;
     Collection* const _collection;
 
     IndexCatalogEntryContainer _readyIndexes;

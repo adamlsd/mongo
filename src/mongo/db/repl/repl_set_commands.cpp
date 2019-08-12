@@ -458,15 +458,30 @@ public:
                "primary.)\n"
                "http://dochub.mongodb.org/core/replicasetcommands";
     }
-    CmdReplSetStepDown() : ReplSetCommand("replSetStepDown") {}
+    CmdReplSetStepDown()
+        : ReplSetCommand("replSetStepDown"),
+          _stepDownCmdsWithForceExecutedMetric("commands.replSetStepDownWithForce.total",
+                                               &_stepDownCmdsWithForceExecuted),
+          _stepDownCmdsWithForceFailedMetric("commands.replSetStepDownWithForce.failed",
+                                             &_stepDownCmdsWithForceFailed) {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
+        const bool force = cmdObj["force"].trueValue();
+
+        if (force) {
+            _stepDownCmdsWithForceExecuted.increment();
+        }
+
+        auto onExitGuard = makeGuard([&] {
+            if (force) {
+                _stepDownCmdsWithForceFailed.increment();
+            }
+        });
+
         Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         uassertStatusOK(status);
-
-        const bool force = cmdObj["force"].trueValue();
 
         long long stepDownForSecs = cmdObj.firstElement().numberLong();
         if (stepDownForSecs == 0) {
@@ -509,10 +524,16 @@ public:
 
         log() << "replSetStepDown command completed";
 
+        onExitGuard.dismiss();
         return true;
     }
 
 private:
+    mutable Counter64 _stepDownCmdsWithForceExecuted;
+    mutable Counter64 _stepDownCmdsWithForceFailed;
+    ServerStatusMetricField<Counter64> _stepDownCmdsWithForceExecutedMetric;
+    ServerStatusMetricField<Counter64> _stepDownCmdsWithForceFailedMetric;
+
     ActionSet getAuthActionSet() const override {
         return ActionSet{ActionType::replSetStateChange};
     }
@@ -590,16 +611,7 @@ public:
         if (cmdObj.hasField("handshake"))
             return true;
 
-        // Wall clock times are required in ReplSetMetadata when FCV is 4.2. Arbiters trivially
-        // have FCV equal to 4.2, so they are excluded from this check.
-        bool isArbiter = replCoord->getMemberState() == MemberState::RS_ARBITER;
-        bool requireWallTime =
-            (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-             serverGlobalParams.featureCompatibility.getVersion() ==
-                 ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42 &&
-             !isArbiter);
-
-        auto metadataResult = rpc::ReplSetMetadata::readFromMetadata(cmdObj, requireWallTime);
+        auto metadataResult = rpc::ReplSetMetadata::readFromMetadata(cmdObj);
         if (metadataResult.isOK()) {
             // New style update position command has metadata, which may inform the
             // upstream of a higher term.
@@ -613,13 +625,7 @@ public:
 
         UpdatePositionArgs args;
 
-        // re-check requireWallTime
-        requireWallTime =
-            (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-             serverGlobalParams.featureCompatibility.getVersion() ==
-                 ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42 &&
-             !isArbiter);
-        status = args.initialize(cmdObj, requireWallTime);
+        status = args.initialize(cmdObj);
         if (status.isOK()) {
             status = replCoord->processReplSetUpdatePosition(args, &configVersion);
 

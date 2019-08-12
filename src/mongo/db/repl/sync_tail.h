@@ -73,15 +73,14 @@ public:
                              WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
 
     /**
-     * Applies the operation that is in param o.
+     * Applies the operations that is in param ops.
      * Functions for applying operations/commands and increment server status counters may
      * be overridden for testing.
      */
     static Status syncApply(OperationContext* opCtx,
-                            const BSONObj& o,
+                            const OplogEntryBatch& batch,
                             OplogApplication::Mode oplogApplicationMode,
                             boost::optional<Timestamp> stableTimestampForRecovery);
-
     /**
      *
      * Constructs a SyncTail.
@@ -151,10 +150,10 @@ public:
             return _batch;
         }
 
-        void emplace_back(BSONObj obj) {
+        void emplace_back(OplogEntry oplog) {
             invariant(!_mustShutdown);
-            _bytes += obj.objsize();
-            _batch.emplace_back(std::move(obj));
+            _bytes += oplog.getRawObjSizeBytes();
+            _batch.emplace_back(std::move(oplog));
         }
         void pop_back() {
             _bytes -= back().getRawObjSizeBytes();
@@ -228,7 +227,7 @@ public:
     void fillWriterVectors(OperationContext* opCtx,
                            MultiApplier::Operations* ops,
                            std::vector<MultiApplier::OperationPtrs>* writerVectors,
-                           std::vector<MultiApplier::Operations>* derivedOps);
+                           std::vector<MultiApplier::Operations>* derivedOps) noexcept;
 
 private:
     class OpQueueBatcher;
@@ -239,7 +238,7 @@ private:
                             MultiApplier::Operations* ops,
                             std::vector<MultiApplier::OperationPtrs>* writerVectors,
                             std::vector<MultiApplier::Operations>* derivedOps,
-                            SessionUpdateTracker* sessionUpdateTracker);
+                            SessionUpdateTracker* sessionUpdateTracker) noexcept;
 
     /**
      * Doles out all the work to the writer pool threads. Does not modify writerVectors, but passes

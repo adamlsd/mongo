@@ -805,6 +805,16 @@ tasks:
     - func: "run test"
     - func: "analyze"
 
+- name: out_of_cache_scanner
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "out_of_cache_scanner"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
 #######################################
 #               Modules               #
 #######################################
@@ -1066,6 +1076,26 @@ buildvariants:
     - name: industry_benchmarks
     - name: smoke_test
 
+- name: linux-1-node-15gbwtcache
+  display_name: Linux 1-Node ReplSet 15 GB WiredTiger Cache
+  batchtime: 1440 # 24 hours
+  modules: *modules
+  expansions:
+    setup: single-replica-15gbwtcache
+    cluster: replica
+    platform: linux
+    project_dir: *project_dir
+    authentication: enabled
+    storageEngine: wiredTiger
+  run_on:
+      - "rhel70-perf-single"
+  depends_on:
+      - name: compile
+        variant: compile-linux-64-amzn
+  tasks:
+    - name: industry_benchmarks
+    - name: smoke_test
+    - name: out_of_cache_scanner
 
 - name: linux-3-shard
   display_name: Linux 3-Shard Cluster

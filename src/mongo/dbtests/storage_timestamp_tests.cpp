@@ -261,8 +261,7 @@ public:
             auto swIndexInfoObj =
                 indexer.init(_opCtx,
                              coll,
-                             {BSON("v" << 2 << "name" << indexName << "ns" << coll->ns().ns()
-                                       << "key" << indexKey)},
+                             {BSON("v" << 2 << "name" << indexName << "key" << indexKey)},
                              MultiIndexBlock::makeTimestampedIndexOnInitFn(_opCtx, coll));
             ASSERT_OK(swIndexInfoObj.getStatus());
             indexInfoObj = std::move(swIndexInfoObj.getValue()[0]);
@@ -745,36 +744,34 @@ public:
         const std::int32_t docsToInsert = 10;
         const LogicalTime firstInsertTime = _clock->reserveTicks(docsToInsert);
 
-        BSONObjBuilder oplogEntryBuilder;
+        BSONObjBuilder oplogCommonBuilder;
+        oplogCommonBuilder << "v" << 2 << "op"
+                           << "i"
+                           << "ns" << nss.ns() << "ui" << autoColl.getCollection()->uuid();
+        auto oplogCommon = oplogCommonBuilder.done();
 
-        // Populate the "ts" field with an array of all the grouped inserts' timestamps.
-        BSONArrayBuilder tsArrayBuilder(oplogEntryBuilder.subarrayStart("ts"));
+        std::vector<repl::OplogEntry> oplogEntries;
+        oplogEntries.reserve(docsToInsert);
+        std::vector<const repl::OplogEntry*> opPtrs;
+        BSONObjBuilder oplogEntryBuilders[docsToInsert];
         for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
-            tsArrayBuilder.append(firstInsertTime.addTicks(idx).asTimestamp());
+            auto o = BSON("_id" << idx);
+            // Populate the "ts" field.
+            oplogEntryBuilders[idx] << "ts" << firstInsertTime.addTicks(idx).asTimestamp();
+            // Populate the "t" (term) field.
+            oplogEntryBuilders[idx] << "t" << 1LL;
+            // Populate the "o" field.
+            oplogEntryBuilders[idx] << "o" << o;
+            // Populate the other common fields.
+            oplogEntryBuilders[idx].appendElementsUnique(oplogCommon);
+            // Insert ops to be applied.
+            oplogEntries.push_back(repl::OplogEntry(oplogEntryBuilders[idx].done()));
+            opPtrs.push_back(&(oplogEntries.back()));
         }
-        tsArrayBuilder.done();
 
-        // Populate the "t" (term) field with an array of all the grouped inserts' terms.
-        BSONArrayBuilder tArrayBuilder(oplogEntryBuilder.subarrayStart("t"));
-        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
-            tArrayBuilder.append(1LL);
-        }
-        tArrayBuilder.done();
-
-        // Populate the "o" field with an array of all the grouped inserts.
-        BSONArrayBuilder oArrayBuilder(oplogEntryBuilder.subarrayStart("o"));
-        for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
-            oArrayBuilder.append(BSON("_id" << idx));
-        }
-        oArrayBuilder.done();
-
-        oplogEntryBuilder << "v" << 2 << "op"
-                          << "i"
-                          << "ns" << nss.ns() << "ui" << autoColl.getCollection()->uuid();
-
-        auto oplogEntry = oplogEntryBuilder.done();
+        repl::OplogEntryBatch groupedInsertBatch(opPtrs.cbegin(), opPtrs.cend());
         ASSERT_OK(repl::SyncTail::syncApply(
-            _opCtx, oplogEntry, repl::OplogApplication::Mode::kSecondary, boost::none));
+            _opCtx, groupedInsertBatch, repl::OplogApplication::Mode::kSecondary, boost::none));
 
         for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
@@ -1262,8 +1259,8 @@ public:
             uuid = autoColl.getCollection()->uuid();
         }
         auto indexName = "a_1";
-        auto indexSpec = BSON("name" << indexName << "ns" << nss.ns() << "key" << BSON("a" << 1)
-                                     << "v" << static_cast<int>(kIndexVersion));
+        auto indexSpec = BSON("name" << indexName << "key" << BSON("a" << 1) << "v"
+                                     << static_cast<int>(kIndexVersion));
         ASSERT_OK(dbtests::createIndexFromSpec(_opCtx, nss.ns(), indexSpec));
 
         _coordinatorMock->alwaysAllowWrites(false);
@@ -1331,8 +1328,8 @@ public:
             uuid = autoColl.getCollection()->uuid();
         }
         auto indexName = "a_1";
-        auto indexSpec = BSON("name" << indexName << "ns" << nss.ns() << "key" << BSON("a" << 1)
-                                     << "v" << static_cast<int>(kIndexVersion));
+        auto indexSpec = BSON("name" << indexName << "key" << BSON("a" << 1) << "v"
+                                     << static_cast<int>(kIndexVersion));
         ASSERT_OK(dbtests::createIndexFromSpec(_opCtx, nss.ns(), indexSpec));
 
         _coordinatorMock->alwaysAllowWrites(false);
@@ -1359,10 +1356,10 @@ public:
                                               << "op"
                                               << "i"
                                               << "ns" << nss.ns() << "ui" << uuid << "o" << doc2));
-        auto indexSpec2 = BSON("createIndexes" << nss.coll() << "ns" << nss.ns() << "v"
-                                               << static_cast<int>(kIndexVersion) << "key"
-                                               << BSON("b" << 1) << "name"
-                                               << "b_1");
+        auto indexSpec2 =
+            BSON("createIndexes" << nss.coll() << "v" << static_cast<int>(kIndexVersion) << "key"
+                                 << BSON("b" << 1) << "name"
+                                 << "b_1");
         auto createIndexOp = repl::OplogEntry(
             BSON("ts" << indexBuildTime.asTimestamp() << "t" << 1LL << "v" << 2 << "op"
                       << "c"
@@ -1427,8 +1424,8 @@ public:
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
         auto indexName = "a_1";
-        auto indexSpec = BSON("name" << indexName << "ns" << nss.ns() << "key" << BSON("a" << 1)
-                                     << "v" << static_cast<int>(kIndexVersion));
+        auto indexSpec = BSON("name" << indexName << "key" << BSON("a" << 1) << "v"
+                                     << static_cast<int>(kIndexVersion));
         ASSERT_OK(dbtests::createIndexFromSpec(_opCtx, nss.ns(), indexSpec));
 
         const LogicalTime pastTime = _clock->reserveTicks(1);
@@ -1456,8 +1453,8 @@ public:
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
         auto indexName = "a_1";
-        auto indexSpec = BSON("name" << indexName << "ns" << nss.ns() << "key" << BSON("a" << 1)
-                                     << "v" << static_cast<int>(kIndexVersion));
+        auto indexSpec = BSON("name" << indexName << "key" << BSON("a" << 1) << "v"
+                                     << static_cast<int>(kIndexVersion));
         ASSERT_OK(dbtests::createIndexFromSpec(_opCtx, nss.ns(), indexSpec));
 
         const LogicalTime pastTime = _clock->reserveTicks(1);
@@ -1515,6 +1512,7 @@ public:
         const auto sessionId = makeLogicalSessionIdForTest();
         _opCtx->setLogicalSessionId(sessionId);
         _opCtx->setTxnNumber(1);
+        _opCtx->setInMultiDocumentTransaction();
 
         // Check out the session.
         MongoDOperationContextSession ocs(_opCtx);
@@ -1879,7 +1877,7 @@ public:
                 autoColl.getCollection(),
                 {BSON("v" << 2 << "unique" << true << "name"
                           << "a_1"
-                          << "ns" << nss.ns() << "key" << BSON("a" << 1))},
+                          << "key" << BSON("a" << 1))},
                 MultiIndexBlock::makeTimestampedIndexOnInitFn(_opCtx, autoColl.getCollection()));
             ASSERT_OK(swIndexInfoObj.getStatus());
             indexInfoObj = std::move(swIndexInfoObj.getValue()[0]);
@@ -2517,10 +2515,10 @@ public:
                 origIdents = durableCatalog->getAllIdents(_opCtx);
             }
 
-            auto indexSpec = BSON("createIndexes" << nss.coll() << "ns" << nss.ns() << "v"
-                                                  << static_cast<int>(kIndexVersion) << "key"
-                                                  << BSON("field" << 1) << "name"
-                                                  << "field_1");
+            auto indexSpec =
+                BSON("createIndexes" << nss.coll() << "v" << static_cast<int>(kIndexVersion)
+                                     << "key" << BSON("field" << 1) << "name"
+                                     << "field_1");
 
             auto createIndexOp = BSON("ts" << startBuildTs << "t" << 1LL << "v" << 2 << "op"
                                            << "c"
@@ -2683,6 +2681,7 @@ public:
         const auto sessionId = makeLogicalSessionIdForTest();
         _opCtx->setLogicalSessionId(sessionId);
         _opCtx->setTxnNumber(26);
+        _opCtx->setInMultiDocumentTransaction();
 
         ocs.emplace(_opCtx);
 

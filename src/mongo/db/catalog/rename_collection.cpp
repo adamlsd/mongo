@@ -89,7 +89,8 @@ bool isReplicatedChanged(OperationContext* opCtx,
 Status checkSourceAndTargetNamespaces(OperationContext* opCtx,
                                       const NamespaceString& source,
                                       const NamespaceString& target,
-                                      RenameCollectionOptions options) {
+                                      RenameCollectionOptions options,
+                                      bool targetExistsAllowed) {
 
     auto replCoord = repl::ReplicationCoordinator::get(opCtx);
     if (opCtx->writesAreReplicated() && !replCoord->canAcceptWritesFor(opCtx, source))
@@ -129,7 +130,7 @@ Status checkSourceAndTargetNamespaces(OperationContext* opCtx,
         if (isCollectionSharded(opCtx, target))
             return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
 
-        if (!options.dropTarget)
+        if (!targetExistsAllowed && !options.dropTarget)
             return Status(ErrorCodes::NamespaceExists, "target namespace exists");
     }
 
@@ -295,7 +296,8 @@ Status renameCollectionWithinDB(OperationContext* opCtx,
         sourceLock.emplace(opCtx, source, MODE_X);
     }
 
-    auto status = checkSourceAndTargetNamespaces(opCtx, source, target, options);
+    auto status = checkSourceAndTargetNamespaces(
+        opCtx, source, target, options, /* targetExistsAllowed */ false);
     if (!status.isOK())
         return status;
 
@@ -334,7 +336,8 @@ Status renameCollectionWithinDBForApplyOps(OperationContext* opCtx,
         dss->checkDbVersion(opCtx, dssLock);
     }
 
-    auto status = checkSourceAndTargetNamespaces(opCtx, source, target, options);
+    auto status = checkSourceAndTargetNamespaces(
+        opCtx, source, target, options, /* targetExistsAllowed */ true);
     if (!status.isOK())
         return status;
 
@@ -371,7 +374,7 @@ Status renameCollectionWithinDBForApplyOps(OperationContext* opCtx,
                 return Status::OK();
             });
         }
-        if (uuidToDrop && uuidToDrop != targetColl->uuid()) {
+        if (!uuidToDrop || (uuidToDrop && uuidToDrop != targetColl->uuid())) {
             // We need to rename the targetColl to a temporary name.
             auto status = renameTargetCollectionToTmp(
                 opCtx, source, sourceColl->uuid(), db, target, targetColl->uuid());
@@ -536,34 +539,21 @@ Status renameBetweenDBs(OperationContext* opCtx,
         }
     });
 
-    // Copy the index descriptions from the source collection, adjusting the ns field.
+    // Copy the index descriptions from the source collection.
     {
         std::vector<BSONObj> indexesToCopy;
         std::unique_ptr<IndexCatalog::IndexIterator> sourceIndIt =
             sourceColl->getIndexCatalog()->getIndexIterator(opCtx, true);
         while (sourceIndIt->more()) {
             auto descriptor = sourceIndIt->next()->descriptor();
-            if (descriptor->isIdIndex()) {
-                continue;
+            if (!descriptor->isIdIndex()) {
+                indexesToCopy.push_back(descriptor->infoObj());
             }
-
-            const BSONObj currIndex = descriptor->infoObj();
-
-            // Process the source index, adding fields in the same order as they were originally.
-            BSONObjBuilder newIndex;
-            for (auto&& elem : currIndex) {
-                if (elem.fieldNameStringData() == "ns") {
-                    newIndex.append("ns", tmpName.ns());
-                } else {
-                    newIndex.append(elem);
-                }
-            }
-            indexesToCopy.push_back(newIndex.obj());
         }
 
-        // Create indexes using the namespace-adjusted index specs on the empty temporary collection
-        // that was just created. Since each index build is possibly replicated to downstream nodes,
-        // each createIndex oplog entry must have a distinct timestamp to support correct rollback
+        // Create indexes using the index specs on the empty temporary collection that was just
+        // created. Since each index build is possibly replicated to downstream nodes, each
+        // createIndex oplog entry must have a distinct timestamp to support correct rollback
         // operation. This is achieved by writing the createIndexes oplog entry *before* creating
         // the index. Using IndexCatalog::createIndexOnEmptyCollection() for the index creation
         // allows us to add and commit the index within a single WriteUnitOfWork and avoids the
@@ -747,7 +737,7 @@ Status renameCollection(OperationContext* opCtx,
 
 Status renameCollectionForApplyOps(OperationContext* opCtx,
                                    const std::string& dbName,
-                                   const BSONElement& ui,
+                                   const OptionalCollectionUUID& uuidToRename,
                                    const BSONObj& cmd,
                                    const repl::OpTime& renameOpTime) {
 
@@ -769,9 +759,7 @@ Status renameCollectionForApplyOps(OperationContext* opCtx,
 
     NamespaceString sourceNss(sourceNsElt.valueStringData());
     NamespaceString targetNss(targetNsElt.valueStringData());
-    OptionalCollectionUUID uuidToRename;
-    if (!ui.eoo()) {
-        uuidToRename = uassertStatusOK(UUID::parse(ui));
+    if (uuidToRename) {
         auto nss = CollectionCatalog::get(opCtx).lookupNSSByUUID(uuidToRename.get());
         if (nss)
             sourceNss = *nss;

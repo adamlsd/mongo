@@ -1273,11 +1273,6 @@ var ReplSetTest = function(opts) {
                     "data": {"awaitLastStableRecoveryTimestamp": 1},
                     "writeConcern": {"w": "majority", "wtimeout": ReplSetTest.kDefaultTimeoutMS}
                 }));
-
-                // Perform a second write, in case some node had lost its sync source.
-                // TODO SERVER-40211: Remove the second write.
-                assert.commandWorked(db.adminCommand(
-                    {"appendOplogNote": 1, "data": {"awaitLastStableRecoveryTimestamp": 2}}));
             };
 
             // TODO(SERVER-14017): Remove this extra sub-shell in favor of a cleaner authentication
@@ -2016,6 +2011,13 @@ var ReplSetTest = function(opts) {
                                 // Ignore the 'flags' collection option as it was removed in 4.2
                                 primaryInfo.options.flags = null;
                                 secondaryInfo.options.flags = null;
+
+                                // Ignore the 'ns' field in the 'idIndex' field as 'ns' was removed
+                                // from index specs in 4.4.
+                                if (primaryInfo.idIndex) {
+                                    primaryInfo.idIndex.ns = null;
+                                    secondaryInfo.idIndex.ns = null;
+                                }
 
                                 if (!bsonBinaryEqual(secondaryInfo, primaryInfo)) {
                                     print(msgPrefix +

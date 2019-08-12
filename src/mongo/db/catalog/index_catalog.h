@@ -158,8 +158,6 @@ public:
     // Must be called before used.
     virtual Status init(OperationContext* const opCtx) = 0;
 
-    virtual bool ok() const = 0;
-
     // ---- accessors -----
 
     virtual bool haveAnyIndexes() const = 0;
@@ -469,8 +467,6 @@ public:
     virtual void prepareInsertDeleteOptions(OperationContext* opCtx,
                                             const IndexDescriptor* desc,
                                             InsertDeleteOptions* options) const = 0;
-
-    virtual void setNs(NamespaceString ns) = 0;
 
     virtual void indexBuildSuccess(OperationContext* opCtx, IndexCatalogEntry* index) = 0;
 };

@@ -74,12 +74,14 @@ public:
      * participate in overload resolution if std::decay_t<Function> is not the same type as thread.
      * That prevents this overload from intercepting calls that might generate implicit conversions
      * before binding to other constructors (specifically move/copy constructors).
+     *
+     * NOTE: The `Function f` parameter must be taken by value, not reference or forwarding
+     * reference, as it is used on the far side of the thread launch, and this ctor has to properly
+     * transfer ownership to the far side's thread.
      */
-    template <
-        class Function,
-        class... Args,
-        typename std::enable_if<!std::is_same<thread, typename std::decay<Function>::type>::value,
-                                int>::type = 0>
+    template <class Function,
+              class... Args,
+              std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0>
     explicit thread(Function f, Args&&... args) noexcept
         : ::std::thread::thread(  // NOLINT
               [

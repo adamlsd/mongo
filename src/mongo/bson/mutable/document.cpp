@@ -38,7 +38,6 @@
 #include <vector>
 
 #include "mongo/base/static_assert.h"
-#include "mongo/bson/inline_decls.h"
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/util/debug_util.h"
 

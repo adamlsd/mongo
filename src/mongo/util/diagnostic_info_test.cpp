@@ -33,7 +33,6 @@
 
 #include <string>
 
-#include "mongo/bson/inline_decls.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
 #include "mongo/util/log.h"

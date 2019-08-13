@@ -760,7 +760,7 @@ int BSONElement::computeSize() const {
     if (MONGO_likely(sizeInfo.style == SizeStyle::kIntPlusFixed))
         return sizeInfo.bytes + fieldNameSize() + valuestrsize();
 
-    return [this, type]() MONGO_COMPILER_NOINLINE {
+    return [this, type]() {
         // Regex is two c-strings back-to-back.
         invariant(type == BSONType::RegEx);
         const char* p = value();

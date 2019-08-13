@@ -31,7 +31,6 @@
 
 #include <benchmark/benchmark.h>
 
-#include "mongo/bson/inline_decls.h"
 #include "mongo/util/future.h"
 
 namespace mongo {

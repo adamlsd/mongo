@@ -32,7 +32,6 @@
 #include <benchmark/benchmark.h>
 
 #include "mongo/base/init.h"
-#include "mongo/bson/inline_decls.h"
 #include "mongo/db/s/collection_metadata.h"
 #include "mongo/platform/random.h"
 #include "mongo/s/chunk_manager.h"

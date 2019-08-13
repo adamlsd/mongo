@@ -96,4 +96,4 @@
 
 #define MONGO_COMPILER_UNREACHABLE __builtin_unreachable()
 
-#define MONGO_COMPILER_NOINLINE [[gnu:noinline]]
+#define MONGO_COMPILER_NOINLINE [[gnu::noinline]]

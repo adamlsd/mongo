@@ -94,7 +94,7 @@ public:
                   // We set it to our universal terminate handler, which people can register via the
                   // `stdx::set_terminate` hook.
                   ::std::set_terminate(  // NOLINT
-                      ::mongo::stdx::terminate_detail::TerminateHandlerInterface::dispatch);
+                      ::mongo::stdx::TerminateHandlerInterface::dispatch);
 #endif
                   return std::apply(std::move(f), std::move(pack));
               }) {

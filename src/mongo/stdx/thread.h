@@ -62,12 +62,13 @@ public:
     using ::std::thread::id;                  // NOLINT
     using ::std::thread::native_handle_type;  // NOLINT
 
-    thread() noexcept : ::std::thread::thread() {}  // NOLINT
+    thread() noexcept = default;
 
+    ~thread() noexcept = default;
     thread(const thread&) = delete;
-
-    thread(thread&& other) noexcept
-        : ::std::thread::thread(static_cast<::std::thread&&>(std::move(other))) {}  // NOLINT
+    thread(thread&& other) noexcept = default;
+    thread& operator=(const thread&) = delete;
+    thread& operator=(thread&& other) noexcept = default;
 
     /**
      * As of C++14, the Function overload for std::thread requires that this constructor only
@@ -99,13 +100,6 @@ public:
               }) {
     }
 
-    thread& operator=(const thread&) = delete;
-
-    thread& operator=(thread&& other) noexcept {
-        return static_cast<thread&>(
-            ::std::thread::operator=(static_cast<::std::thread&&>(std::move(other))));  // NOLINT
-    };
-
     using ::std::thread::get_id;                // NOLINT
     using ::std::thread::hardware_concurrency;  // NOLINT
     using ::std::thread::joinable;              // NOLINT
@@ -118,6 +112,7 @@ public:
         ::std::thread::swap(static_cast<::std::thread&>(other));  // NOLINT
     }
 };
+
 
 inline void swap(thread& lhs, thread& rhs) noexcept {
     lhs.swap(rhs);
@@ -157,4 +152,7 @@ void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  
 }  // namespace this_thread
 
 }  // namespace stdx
+
+static_assert(std::is_move_constructible_v<stdx::thread>);
+static_assert(std::is_move_assignable_v<stdx::thread>);
 }  // namespace mongo

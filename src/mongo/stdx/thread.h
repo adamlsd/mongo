@@ -109,7 +109,7 @@ public:
     using ::std::thread::join;    // NOLINT
 
     void swap(thread& other) noexcept {
-        ::std::thread::swap(static_cast<::std::thread&>(other));  // NOLINT
+        this->::std::thread::swap(other);  // NOLINT
     }
 };
 

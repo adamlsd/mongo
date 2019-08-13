@@ -41,7 +41,7 @@ namespace asio {
 namespace ssl {
 namespace apple {
 
-namespace {
+namespace detail_ssl_apple {
 template <typename T>
 struct CFReleaser {
     void operator()(T ptr) {
@@ -50,7 +50,7 @@ struct CFReleaser {
         }
     }
 };
-}  // namespace
+}  // namespace detail_ssl_apple
 
 /**
  * CoreFoundation types are internally refcounted using CFRetain/CFRelease.
@@ -64,7 +64,8 @@ struct CFReleaser {
  * method, or that it has been explicitly retained.
  */
 template <typename T>
-using CFUniquePtr = std::unique_ptr<typename std::remove_pointer<T>::type, CFReleaser<T>>;
+using CFUniquePtr =
+    std::unique_ptr<typename std::remove_pointer<T>::type, detail_ssl_apple::CFReleaser<T>>;
 
 /**
  * Equivalent of OpenSSL's SSL_CTX type.

@@ -24,3 +24,13 @@ env.Library(
         # implementations.  There should never be any link-time dependencies into mongo internals.
     ],
 )
+
+env.CppUnitTest(
+    target='set_terminate_test',
+	source=[
+        'set_terminate_test.cpp',
+    ],
+    LIBDEPS=[
+        'stdx',
+    ]
+)

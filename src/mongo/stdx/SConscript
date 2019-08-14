@@ -14,7 +14,7 @@ env.Benchmark(
 )
 
 env.Library(
-    target="stdx",
+    target='stdx',
     source=[
         'set_terminate_internals.cpp',
     ],

@@ -39,7 +39,7 @@ namespace stdx {
 // `dispatch_impl` is circularly dependent with the initialization of `terminationHandler`, but
 // should not have linkage.  To facilitate matching the definition to the declaration, we make this
 // function `static`, rather than placing it in the anonymous namespace.
-static void dispatch_impl() noexcept;
+[[noreturn]] static void dispatch_impl() noexcept;
 
 namespace {
 ::std::atomic<terminate_handler> terminationHandler = []() noexcept {  // NOLINT
@@ -52,6 +52,10 @@ namespace {
 void stdx::dispatch_impl() noexcept {
     if (const ::std::terminate_handler handler = terminationHandler.load())
         handler();
+
+    // The standard says that returning from your handler is undefined.  We may as well make the
+    // wrapper have stronger guarantees.
+    std::abort();
 }
 
 void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {

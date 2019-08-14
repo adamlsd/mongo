@@ -154,7 +154,6 @@ baseEnv.Library(
     # NOTE: This library *must not* depend on any libraries than
     # the ones declared here. Do not add to this list.
     LIBDEPS=[
-        '$BUILD_DIR/mongo/stdx/stdx',
         '$BUILD_DIR/third_party/murmurhash3/murmurhash3',
         '$BUILD_DIR/third_party/shim_abseil',
         '$BUILD_DIR/third_party/shim_allocator',
@@ -164,6 +163,7 @@ baseEnv.Library(
         '$BUILD_DIR/third_party/shim_pcrecpp',
         '$BUILD_DIR/third_party/shim_unwind' if use_libunwind else [],
         'boost_assert_shim',
+        'stdx/stdx',
         'util/quick_exit',
     ],
     LIBDEPS_PRIVATE=[

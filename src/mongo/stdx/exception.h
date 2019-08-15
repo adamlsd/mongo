@@ -40,6 +40,9 @@
 // for `std::set_terminate` when a thread starts on windows.  `stdx::set_terminate` sets the handler
 // globally for all threads.  Our wrapper, which is registered with each thread, calls the global
 // handler.
+//
+// NOTE: Our wrapper is not initialization order safe.  It is not safe to set the terminate handler
+// until main has started.
 
 namespace mongo::stdx {
 // In order to grant `mongo::stdx::thread` access to the dispatch method, we need to know this

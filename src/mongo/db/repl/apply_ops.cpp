@@ -381,6 +381,7 @@ Status applyOps(OperationContext* opCtx,
     uassert(
         ErrorCodes::BadValue, "applyOps command can't have 'prepare' field", !info.getPrepare());
     uassert(31056, "applyOps command can't have 'partialTxn' field.", !info.getPartialTxn());
+    uassert(31240, "applyOps command can't have 'count' field.", !info.getCount());
 
     // There's only one case where we are allowed to take the database lock instead of the global
     // lock - no preconditions; only CRUD ops; and non-atomic mode.
@@ -489,6 +490,7 @@ MultiApplier::Operations ApplyOps::extractOperations(const OplogEntry& applyOpsO
     return result;
 }
 
+// static
 void ApplyOps::extractOperationsTo(const OplogEntry& applyOpsOplogEntry,
                                    const BSONObj& topLevelDoc,
                                    MultiApplier::Operations* operations) {
@@ -503,16 +505,19 @@ void ApplyOps::extractOperationsTo(const OplogEntry& applyOpsOplogEntry,
             OplogEntry::CommandType::kApplyOps == applyOpsOplogEntry.getCommandType());
 
     auto cmdObj = applyOpsOplogEntry.getOperationToApply();
-    auto operationDocs = cmdObj.firstElement().Obj();
+    auto info = ApplyOpsCommandInfo::parse(cmdObj);
+    auto operationDocs = info.getOperations();
+    bool alwaysUpsert = info.getAlwaysUpsert() && !applyOpsOplogEntry.getTxnNumber();
 
-    if (operationDocs.isEmpty()) {
-        return;
-    }
-
-    for (const auto& elem : operationDocs) {
-        auto operationDoc = elem.Obj();
-
+    for (const auto& operationDoc : operationDocs) {
         BSONObjBuilder builder(operationDoc);
+
+        // Oplog entries can have an oddly-named "b" field for "upsert". MongoDB stopped creating
+        // such entries in 4.0, but we can use the "b" field for the extracted entry here.
+        if (alwaysUpsert && !operationDoc.hasField("b")) {
+            builder.append("b", true);
+        }
+
         builder.appendElementsUnique(topLevelDoc);
         auto operation = builder.obj();
 

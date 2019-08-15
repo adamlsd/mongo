@@ -343,15 +343,58 @@ void BuilderBase<BufferT>::resetToKey(const BSONObj& obj,
 
 template <class BufferT>
 void BuilderBase<BufferT>::appendBSONElement(const BSONElement& elem, const StringTransformFn& f) {
-    invariant(_state == BuildState::kEmpty || _state == BuildState::kAppendingBSONElements);
+    _verifyAppendingState();
+    _appendBsonValue(elem, _shouldInvertOnAppend(), nullptr, f);
+    _elemCount++;
+}
 
-    const int elemIdx = _elemCount++;
-    const bool invert = (_ordering.get(elemIdx) == -1);
+template <class BufferT>
+void BuilderBase<BufferT>::appendString(StringData val) {
+    _verifyAppendingState();
+    _appendString(val, _shouldInvertOnAppend(), nullptr);
+    _elemCount++;
+}
 
-    if (_state == BuildState::kEmpty) {
-        _transition(BuildState::kAppendingBSONElements);
-    }
-    _appendBsonValue(elem, invert, nullptr, f);
+template <class BufferT>
+void BuilderBase<BufferT>::appendNumberDouble(double num) {
+    _verifyAppendingState();
+    _appendNumberDouble(num, _shouldInvertOnAppend());
+    _elemCount++;
+}
+
+template <class BufferT>
+void BuilderBase<BufferT>::appendNumberLong(long long num) {
+    _verifyAppendingState();
+    _appendNumberLong(num, _shouldInvertOnAppend());
+    _elemCount++;
+}
+
+template <class BufferT>
+void BuilderBase<BufferT>::appendNull() {
+    _verifyAppendingState();
+    _append(CType::kNullish, _shouldInvertOnAppend());
+    _elemCount++;
+}
+
+template <class BufferT>
+void BuilderBase<BufferT>::appendUndefined() {
+    _verifyAppendingState();
+    _append(CType::kUndefined, _shouldInvertOnAppend());
+    _elemCount++;
+}
+
+template <class BufferT>
+void BuilderBase<BufferT>::appendBinData(const BSONBinData& data) {
+    _verifyAppendingState();
+    _appendBinData(data, _shouldInvertOnAppend());
+    _elemCount++;
+}
+
+template <class BufferT>
+void BuilderBase<BufferT>::appendSetAsArray(const BSONElementSet& set, const StringTransformFn& f) {
+    _verifyAppendingState();
+    _appendSetAsArray(set, _shouldInvertOnAppend(), nullptr);
+    _elemCount++;
 }
 
 template <class BufferT>
@@ -565,7 +608,19 @@ void BuilderBase<BufferT>::_appendArray(const BSONArray& val,
                                         bool invert,
                                         const StringTransformFn& f) {
     _append(CType::kArray, invert);
-    BSONForEach(elem, val) {
+    for (const auto& elem : val) {
+        // No generic ctype byte needed here since no name is encoded.
+        _appendBsonValue(elem, invert, nullptr, f);
+    }
+    _append(int8_t(0), invert);
+}
+
+template <class BufferT>
+void BuilderBase<BufferT>::_appendSetAsArray(const BSONElementSet& val,
+                                             bool invert,
+                                             const StringTransformFn& f) {
+    _append(CType::kArray, invert);
+    for (const auto& elem : val) {
         // No generic ctype byte needed here since no name is encoded.
         _appendBsonValue(elem, invert, nullptr, f);
     }

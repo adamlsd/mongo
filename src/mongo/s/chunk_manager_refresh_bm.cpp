@@ -85,16 +85,18 @@ ShardId optimalShardSelector(int i, int nShards, int nChunks) {
     return ShardId(str::stream() << "shard" << shardNum);
 }
 
-MONGO_COMPILER_NOINLINE auto makeChunkManagerWithPessimalBalancedDistribution(int nShards, uint32_t nChunks) {
+MONGO_COMPILER_NOINLINE auto makeChunkManagerWithPessimalBalancedDistribution(int nShards,
+                                                                              uint32_t nChunks) {
     return makeChunkManagerWithShardSelector(nShards, nChunks, pessimalShardSelector);
 }
 
-MONGO_COMPILER_NOINLINE auto makeChunkManagerWithOptimalBalancedDistribution(int nShards, uint32_t nChunks) {
+MONGO_COMPILER_NOINLINE auto makeChunkManagerWithOptimalBalancedDistribution(int nShards,
+                                                                             uint32_t nChunks) {
     return makeChunkManagerWithShardSelector(nShards, nChunks, optimalShardSelector);
 }
 
 MONGO_COMPILER_NOINLINE auto runIncrementalUpdate(const CollectionMetadata& cm,
-                                        const std::vector<ChunkType>& newChunks) {
+                                                  const std::vector<ChunkType>& newChunks) {
     auto rt = cm.getChunkManager()->getRoutingHistory()->makeUpdated(newChunks);
     return std::make_unique<CollectionMetadata>(std::make_shared<ChunkManager>(rt, boost::none),
                                                 ShardId("shard0"));

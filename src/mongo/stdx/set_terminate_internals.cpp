@@ -42,8 +42,16 @@ namespace stdx {
 [[noreturn]] static void dispatch_impl() noexcept;
 
 namespace {
-::std::atomic<terminate_handler> terminationHandler = []() noexcept {  // NOLINT
-    return ::std::set_terminate(&dispatch_impl);
+void dead() {}
+
+::std::atomic<terminate_handler> terminationHandler(&dead);  // NOLINT
+
+int i = []() noexcept {
+    const auto oldHandler =
+        terminationHandler.exchange(::std::set_terminate(&dispatch_impl));  // NOLINT
+    if (oldHandler != &dead)
+        std::abort();  // Someone set the handler, somehow before we got to initialize ourselves.
+    return 0;
 }
 ();
 }  // namespace
@@ -63,10 +71,17 @@ void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
 }
 
 stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
-    return terminationHandler.exchange(handler);
+    const auto oldHandler = terminationHandler.exchange(handler);
+    if (oldHandler == &dead)
+        std::abort();  // Do not let people set terminate before the initializer has run.
+    return oldHandler;
 }
 
 stdx::terminate_handler stdx::get_terminate() noexcept {
-    return terminationHandler.load();
+    const auto currentHandler = terminationHandler.load();
+    if (currentHandler == &dead)
+        std::abort();  // Do not let people see the terminate handler before the initializer has
+                       // run.
+    return currentHandler;
 }
 }  // namespace mongo

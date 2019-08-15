@@ -49,7 +49,7 @@ for (i = 0; i < numDocs; ++i) {
 }
 
 var res = bulk.execute();
-assert.writeOK(res);
+assert.commandWorked(res);
 assert.eq(numDocs, res.nInserted);
 
 db.dest.drop();
@@ -58,7 +58,7 @@ assert.commandWorked(db.createCollection('dest'));
 var numThreads = 6;
 var t = [];
 for (i = 0; i < numThreads - 1; ++i) {
-    t[i] = new ScopedThread(main);
+    t[i] = new Thread(main);
     t[i].start();
 }
 

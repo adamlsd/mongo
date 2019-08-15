@@ -48,7 +48,7 @@ assert.commandWorked(primary.getDB("db").adminCommand(
 
 // In a background thread, issue an insert command to the primary that will insert 10 batches of
 // documents.
-var worker = new ScopedThread((host, collName, numToInsert) => {
+var worker = new Thread((host, collName, numToInsert) => {
     // Insert elements [{idx: 0}, {idx: 1}, ..., {idx: numToInsert - 1}].
     const docsToInsert = Array.from({length: numToInsert}, (_, i) => {
         return {idx: i};
@@ -79,7 +79,7 @@ restartServerReplication(conns[2]);
 
 // Issue a write to the new primary.
 var collOnNewPrimary = replTest.nodes[1].getCollection(collName);
-assert.writeOK(collOnNewPrimary.insert({singleDoc: 1}, {writeConcern: {w: "majority"}}));
+assert.commandWorked(collOnNewPrimary.insert({singleDoc: 1}, {writeConcern: {w: "majority"}}));
 
 // Isolate node 1, forcing it to step down as primary, and reconnect node 0, allowing it to step
 // up again.

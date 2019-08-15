@@ -28,7 +28,7 @@ var master = replTest.getPrimary();
 
 // do a write
 print("\ndo a write");
-assert.writeOK(master.getDB("foo").bar.insert({x: 1}));
+assert.commandWorked(master.getDB("foo").bar.insert({x: 1}));
 replTest.awaitReplication();
 
 // In the event of any error, we have to unlock any nodes that we have fsyncLocked.
@@ -61,9 +61,12 @@ try {
 
     for (var i = 0; i < 11; i++) {
         // do another write
-        assert.writeOK(master.getDB("foo").bar.insert({x: i}));
+        assert.commandWorked(master.getDB("foo").bar.insert({x: i}));
     }
 
+    let res = assert.commandWorked(master.adminCommand({replSetGetStatus: 1}));
+    assert(res.electionCandidateMetrics,
+           () => "Response should have an 'electionCandidateMetrics' field: " + tojson(res));
     let intitialServerStatus = assert.commandWorked(master.adminCommand({serverStatus: 1}));
 
     jsTestLog('Do stepdown of primary ' + master + ' that should not work');
@@ -155,6 +158,12 @@ try {
     jsTestLog('Result from running isMaster on ' + master + ': ' + tojson(r2));
     assert.eq(r2.ismaster, false);
     assert.eq(r2.secondary, true);
+
+    // Check that the 'electionCandidateMetrics' section of the replSetGetStatus response has been
+    // cleared, since the node is no longer primary.
+    res = assert.commandWorked(master.adminCommand({replSetGetStatus: 1}));
+    assert(!res.electionCandidateMetrics,
+           () => "Response should not have an 'electionCandidateMetrics' field: " + tojson(res));
 
     // This section checks that the metrics are incremented accurately when the command fails due to
     // an error while stepping down. This is one reason the replSetStepDown command could fail once

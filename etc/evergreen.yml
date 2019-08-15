@@ -557,10 +557,8 @@ functions:
 
         target_dir="src/corpus"
         mkdir -p $target_dir
-        mv src/corpus.tgz $target_dir
 
-        cd $target_dir
-        tar xzf corpus.tgz
+        tar -xzf corpus.tgz -C $target_dir
 
   "archive new corpus": &archive_new_corpus
     command: archive.targz_pack
@@ -581,6 +579,7 @@ functions:
       permissions: private
       content_type: ${content_type|application/gzip}
       display_name: "Fuzzer Tests Corpus Tar Archive"
+      optional: true
 
   "get buildnumber": &get_buildnumber
     command: keyval.inc
@@ -3847,18 +3846,6 @@ tasks:
     - func: "run tests"
       vars:
         resmoke_args: --suites=libfuzzer
-    - command: shell.exec
-      type: setup
-      params:
-        working_dir: src
-        shell: bash
-        script: |
-          set -o verbose
-          set -o errexit
-
-          ./buildscripts/merge_corpus.sh
-    - func: "archive new corpus"
-    - func: "upload new corpus"
 
 ## compile_dbtest ##
 - name: compile_dbtest
@@ -8324,6 +8311,19 @@ task_groups:
   tasks:
   - compile_libfuzzertests
   - libfuzzertests
+  teardown_task:
+  - command: shell.exec
+    type: setup
+    params:
+      working_dir: src
+      shell: bash
+      script: |
+        set -o verbose
+        set -o errexit
+
+        ./buildscripts/merge_corpus.sh
+  - func: "archive new corpus"
+  - func: "upload new corpus"
 - <<: *compile_task_group_template
   name: compile_all_run_unittests_TG
   tasks:
@@ -10889,11 +10889,11 @@ buildvariants:
 # This variant is to intentionally test uncommon features nightly
 - <<: *enterprise-rhel-70-64-bit-template
   name: enterprise-rhel-70-64-bit-kitchen-sink
-  display_name: "~ Enterprise RHEL 7.0 (Dagger, tcmalloc-profiling)"
+  display_name: "~ Enterprise RHEL 7.0 (Dagger, tcmalloc-profiling, libunwind)"
   batchtime: 1440 # 1 day
   expansions:
     <<: *enterprise-rhel-70-64-bit-expansions-template
-    compile_flags: --ssl --use-cpu-profiler MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
+    compile_flags: --ssl --use-cpu-profiler --use-libunwind MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     additional_targets: dagger # If this moves to another variant, update the compile_all task
   tasks:
   - name: compile_all_run_unittests_TG
@@ -10912,7 +10912,7 @@ buildvariants:
   - rhel70
   expansions:
     <<: *enterprise-rhel-70-64-bit-expansions-template
-    compile_flags: --ssl --use-cpu-profiler MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars --enterprise-features=hot_backups
+    compile_flags: --ssl MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars --enterprise-features=hot_backups
     has_packages: false
     mh_target: ""
   tasks:

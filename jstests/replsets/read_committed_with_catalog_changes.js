@@ -22,7 +22,7 @@
  *  - compact collection
  */
 
-load("jstests/libs/parallelTester.js");  // For ScopedThread.
+load("jstests/libs/parallelTester.js");  // For Thread.
 load("jstests/replsets/rslib.js");       // For startSetIfSupportsReadMajority.
 
 (function() {
@@ -38,10 +38,10 @@ load("jstests/replsets/rslib.js");       // For startSetIfSupportsReadMajority.
 const testCases = {
     createCollectionInExistingDB: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
         },
         performOp: function(db) {
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         blockedCollections: ['coll'],
         unblockedCollections: ['other'],
@@ -49,15 +49,15 @@ const testCases = {
     createCollectionInNewDB: {
         prepare: function(db) {},
         performOp: function(db) {
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         blockedCollections: ['coll'],
         unblockedCollections: ['otherDoesNotExist'],  // Only existent collections are blocked.
     },
     dropCollection: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         performOp: function(db) {
             assert(db.coll.drop());
@@ -67,7 +67,7 @@ const testCases = {
     },
     dropDB: {
         prepare: function(db) {
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
             // Drop collection explicitly during the preparation phase while we are still able
             // to write to a majority. Otherwise, dropDatabase() will drop the collection
             // and wait for the collection drop to be replicated to a majority of the nodes.
@@ -81,19 +81,19 @@ const testCases = {
     },
     dropAndRecreateCollection: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         performOp: function(db) {
             assert(db.coll.drop());
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         blockedCollections: ['coll'],
         unblockedCollections: ['other'],
     },
     dropAndRecreateDB: {
         prepare: function(db) {
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
             // Drop collection explicitly during the preparation phase while we are still able
             // to write to a majority. Otherwise, dropDatabase() will drop the collection
             // and wait for the collection drop to be replicated to a majority of the nodes.
@@ -101,15 +101,15 @@ const testCases = {
         },
         performOp: function(db) {
             assert.commandWorked(db.dropDatabase({w: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         blockedCollections: ['coll'],
         unblockedCollections: ['otherDoesNotExist'],
     },
     renameCollectionToNewName: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.from.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.from.insert({_id: 1}));
         },
         performOp: function(db) {
             assert.commandWorked(db.from.renameCollection('coll'));
@@ -119,9 +119,9 @@ const testCases = {
     },
     renameCollectionToExistingName: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.from.insert({_id: 'from'}));
-            assert.writeOK(db.coll.insert({_id: 'coll'}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.from.insert({_id: 'from'}));
+            assert.commandWorked(db.coll.insert({_id: 'coll'}));
         },
         performOp: function(db) {
             assert.commandWorked(db.from.renameCollection('coll', true));
@@ -131,8 +131,8 @@ const testCases = {
     },
     createIndexForeground: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         performOp: function(db) {
             assert.commandWorked(db.coll.ensureIndex({x: 1}, {background: false}));
@@ -142,8 +142,8 @@ const testCases = {
     },
     createIndexBackground: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
         },
         performOp: function(db) {
             assert.commandWorked(db.coll.ensureIndex({x: 1}, {background: true}));
@@ -153,8 +153,8 @@ const testCases = {
     },
     dropIndex: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
             assert.commandWorked(db.coll.ensureIndex({x: 1}));
         },
         performOp: function(db) {
@@ -167,8 +167,8 @@ const testCases = {
     // Remaining cases are local-only operations.
     reIndex: {
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
             assert.commandWorked(db.coll.ensureIndex({x: 1}));
         },
         performOp: function(db) {
@@ -181,8 +181,8 @@ const testCases = {
     compact: {
         // At least on WiredTiger, compact is fully inplace so it doesn't need to block readers.
         prepare: function(db) {
-            assert.writeOK(db.other.insert({_id: 1}));
-            assert.writeOK(db.coll.insert({_id: 1}));
+            assert.commandWorked(db.other.insert({_id: 1}));
+            assert.commandWorked(db.coll.insert({_id: 1}));
             assert.commandWorked(db.coll.ensureIndex({x: 1}));
         },
         performOp: function(db) {
@@ -201,7 +201,7 @@ const testCases = {
 };
 
 // Assertion helpers. These must get all state as arguments rather than through closure since
-// they may be passed in to a ScopedThread.
+// they may be passed in to a Thread.
 function assertReadsBlock(coll) {
     var res = coll.runCommand('find', {"readConcern": {"level": "majority"}, "maxTimeMS": 5000});
     assert.commandFailedWithCode(
@@ -249,7 +249,7 @@ var mainDB = primary.getDB('mainDB');
 // This DB won't be used by any tests so it should always be unblocked.
 var otherDB = primary.getDB('otherDB');
 var otherDBCollection = otherDB.collection;
-assert.writeOK(otherDBCollection.insert(
+assert.commandWorked(otherDBCollection.insert(
     {}, {writeConcern: {w: "majority", wtimeout: ReplSetTest.kDefaultTimeoutMS}}));
 assertReadsSucceed(otherDBCollection);
 
@@ -285,7 +285,7 @@ for (var testName in testCases) {
     // performing the operation. This will ensure that the operation happens after an
     // uncommitted write which prevents it from immediately being marked as committed.
     if (test.localOnly) {
-        assert.writeOK(otherDBCollection.insert({}));
+        assert.commandWorked(otherDBCollection.insert({}));
     }
 
     // Perform the op and ensure that blocked collections block and unblocked ones don't.
@@ -296,18 +296,18 @@ for (var testName in testCases) {
 
     // Use background threads to test that reads that start blocked can complete if the
     // operation they are waiting on becomes committed while the read is still blocked.
-    // We don't do this when testing auth because ScopedThread's don't propagate auth
+    // We don't do this when testing auth because Thread's don't propagate auth
     // credentials.
     var threads = jsTest.options().auth ? [] : test.blockedCollections.map((name) => {
         // This function must get all inputs as arguments and can't use closure because it
-        // is used in a ScopedThread.
+        // is used in a Thread.
         function bgThread(host, collection, assertReadsSucceed) {
             // Use a longer timeout since we expect to block for a little while (at least 2
             // seconds).
             assertReadsSucceed(new Mongo(host).getCollection(collection), 30 * 1000);
         }
-        var thread = new ScopedThread(
-            bgThread, primary.host, mainDB[name].getFullName(), assertReadsSucceed);
+        var thread =
+            new Thread(bgThread, primary.host, mainDB[name].getFullName(), assertReadsSucceed);
         thread.start();
         return thread;
     });

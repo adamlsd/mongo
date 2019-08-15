@@ -30,8 +30,6 @@
 
 #include "mongo/stdx/exception.h"
 
-#include "mongo/unittest/unittest.h"
-
 #include <sys/types.h>
 
 #include <sys/wait.h>
@@ -40,6 +38,10 @@
 #include <unistd.h>
 
 #include "mongo/stdx/thread.h"
+#include "mongo/logger/logger.h"
+
+#include "mongo/unittest/unittest.h"
+
 
 namespace {
 namespace stdx = mongo::stdx;
@@ -97,13 +99,13 @@ TEST(SetTerminateTest, testTerminateStdDispatch) {
     close(pipedes[0]);
 }
 
-#if 1
 TEST(SetTerminateTest, testTerminateNonDispatch) {
     ASSERT(pipe(pipedes) == 0);
 
     const int pid = fork();
 
     if (!pid) {
+        std::set_terminate( []{ exit( 0 ); } );
         close(pipedes[0]);
         std::terminate();
     }
@@ -115,7 +117,6 @@ TEST(SetTerminateTest, testTerminateNonDispatch) {
     int receipt = 0;
     ASSERT_LTE(read(pipedes[0], &receipt, sizeof(receipt)), 0);
 }
-#endif
 
 TEST(SetTerminateTest, setFromMainDieInThread) {
     ASSERT(pipe(pipedes) == 0);

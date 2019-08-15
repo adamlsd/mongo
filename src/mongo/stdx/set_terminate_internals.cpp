@@ -34,6 +34,7 @@
 #include <utility>
 
 
+#ifdef _WIN32
 namespace mongo {
 namespace stdx {
 // `dispatch_impl` is circularly dependent with the initialization of `terminationHandler`, but
@@ -70,3 +71,4 @@ stdx::terminate_handler stdx::get_terminate() noexcept {
     return terminationHandler.load();
 }
 }  // namespace mongo
+#endif

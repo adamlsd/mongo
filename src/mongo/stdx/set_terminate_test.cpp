@@ -36,185 +36,162 @@
 
 #include <sys/wait.h>
 
-#include <unistd.h>
 #include <iostream>
+#include <unistd.h>
 
 #include "mongo/stdx/thread.h"
 
-namespace
-{
-    namespace stdx= mongo::stdx;
+namespace {
+namespace stdx = mongo::stdx;
 
-    const int message= 42;
-    int pipedes[ 2 ];
+const int message = 42;
+int pipedes[2];
 
-    void
-    writeFeedbackAndCleanlyExit()
-    {
-        write( pipedes[ 1 ], &message, sizeof( message ) );
-        std::exit(0);
+void writeFeedbackAndCleanlyExit() {
+    write(pipedes[1], &message, sizeof(message));
+    std::exit(0);
+}
+
+TEST(SetTerminateTest, testTerminateDispatch) {
+    ASSERT(pipe(pipedes) == 0);
+
+
+    const int pid = fork();
+    if (!pid) {
+        close(pipedes[0]);
+        stdx::set_terminate(writeFeedbackAndCleanlyExit);
+        std::terminate();
     }
 
-    TEST( SetTerminateTest, testTerminateDispatch )
-    {
-        ASSERT( pipe( pipedes ) == 0 );
+    close(pipedes[1]);
 
+    int status;
+    waitpid(pid, &status, 0);
 
-        const int pid= fork();
-        if( !pid )
-        {
-            close( pipedes[ 0 ] );
-            stdx::set_terminate( writeFeedbackAndCleanlyExit );
-            std::terminate();
-        }
+    int receipt = 0;
+    ASSERT_GT(read(pipedes[0], &receipt, sizeof(receipt)), 0);
 
-        close( pipedes[ 1 ] );
+    ASSERT_EQ(receipt, message);
+    close(pipedes[0]);
+}
 
-        int status;
-        waitpid( pid, &status, 0 );
+TEST(SetTerminateTest, testTerminateStdDispatch) {
+    ASSERT(pipe(pipedes) == 0);
 
-        int receipt= 0;
-        ASSERT_GT( read( pipedes[ 0 ], &receipt, sizeof( receipt ) ), 0 );
+    const int pid = fork();
 
-        ASSERT_EQ( receipt, message );
-        close( pipedes[ 0 ] );
+    if (!pid) {
+        close(pipedes[0]);
+        std::set_terminate(writeFeedbackAndCleanlyExit);
+        std::terminate();
     }
+    close(pipedes[1]);
 
-    TEST( SetTerminateTest, testTerminateStdDispatch )
-    {
-       ASSERT( pipe( pipedes ) == 0 );
+    int status;
+    waitpid(pid, &status, 0);
 
-        const int pid= fork();
+    int receipt = 0;
+    ASSERT_GT(read(pipedes[0], &receipt, sizeof(receipt)), 0);
 
-        if( !pid )
-        {
-            close( pipedes[ 0 ] );
-            std::set_terminate( writeFeedbackAndCleanlyExit );
-            std::terminate();
-        }
-        close( pipedes[ 1 ] );
-
-        int status;
-        waitpid( pid, &status, 0 );
-
-        int receipt= 0;
-        ASSERT_GT( read( pipedes[ 0 ], &receipt, sizeof( receipt ) ), 0 );
-
-        ASSERT_EQ( receipt, message );
-        close( pipedes[ 0 ] );
-    }
+    ASSERT_EQ(receipt, message);
+    close(pipedes[0]);
+}
 
 #if 1
-    TEST( SetTerminateTest, testTerminateNonDispatch )
-    {
-       ASSERT( pipe( pipedes ) == 0 );
+TEST(SetTerminateTest, testTerminateNonDispatch) {
+    ASSERT(pipe(pipedes) == 0);
 
-        const int pid= fork();
+    const int pid = fork();
 
-        if( !pid )
-        {
-            close( pipedes[ 0 ] );
-            std::terminate();
-        }
-        close( pipedes[ 1 ] );
-
-        int status;
-        waitpid( pid, &status, 0 );
-
-        int receipt= 0;
-        ASSERT_LTE( read( pipedes[ 0 ], &receipt, sizeof( receipt ) ), 0 );
+    if (!pid) {
+        close(pipedes[0]);
+        std::terminate();
     }
+    close(pipedes[1]);
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    int receipt = 0;
+    ASSERT_LTE(read(pipedes[0], &receipt, sizeof(receipt)), 0);
+}
 #endif
 
-    TEST( SetTerminateTest, setFromMainDieInThread )
-    {
-       ASSERT( pipe( pipedes ) == 0 );
+TEST(SetTerminateTest, setFromMainDieInThread) {
+    ASSERT(pipe(pipedes) == 0);
 
-        const int pid= fork();
+    const int pid = fork();
 
-        if( !pid )
-        {
-            close( pipedes[ 0 ] );
-            stdx::set_terminate( writeFeedbackAndCleanlyExit );
-            stdx::thread bg( []{
-                std::terminate();
-            });
+    if (!pid) {
+        close(pipedes[0]);
+        stdx::set_terminate(writeFeedbackAndCleanlyExit);
+        stdx::thread bg([] { std::terminate(); });
 
-            bg.join();
-            ASSERT( false );
-        }
-        close( pipedes[ 1 ] );
-
-        int status;
-        waitpid( pid, &status, 0 );
-
-        int receipt= 0;
-        ASSERT_GT( read( pipedes[ 0 ], &receipt, sizeof( receipt ) ), 0 );
-
-        ASSERT_EQ( receipt, message );
-        close( pipedes[ 0 ] );
+        bg.join();
+        ASSERT(false);
     }
+    close(pipedes[1]);
 
-    TEST( SetTerminateTest, setFromThreadDieInMain )
-    {
-       ASSERT( pipe( pipedes ) == 0 );
+    int status;
+    waitpid(pid, &status, 0);
 
-        const int pid= fork();
+    int receipt = 0;
+    ASSERT_GT(read(pipedes[0], &receipt, sizeof(receipt)), 0);
 
-        if( !pid )
-        {
-            close( pipedes[ 0 ] );
-            stdx::thread bg( []{
-            stdx::set_terminate( writeFeedbackAndCleanlyExit );
-            });
-            bg.join();
-
-            std::terminate();
-
-            ASSERT( false );
-        }
-        close( pipedes[ 1 ] );
-
-        int status;
-        waitpid( pid, &status, 0 );
-
-        int receipt= 0;
-        ASSERT_GT( read( pipedes[ 0 ], &receipt, sizeof( receipt ) ), 0 );
-
-        ASSERT_EQ( receipt, message );
-        close( pipedes[ 0 ] );
-    }
-
-
-    TEST( SetTerminateTest, setFromThreadDieInThread )
-    {
-       ASSERT( pipe( pipedes ) == 0 );
-
-        const int pid= fork();
-
-        if( !pid )
-        {
-            close( pipedes[ 0 ] );
-            stdx::thread bg( []{
-                stdx::set_terminate( writeFeedbackAndCleanlyExit );
-            });
-            bg.join();
-            stdx::thread bg2( []{
-                std::terminate();
-            });
-            bg2.join();
-
-            ASSERT( false );
-        }
-        close( pipedes[ 1 ] );
-
-        int status;
-        waitpid( pid, &status, 0 );
-
-        int receipt= 0;
-        ASSERT_GT( read( pipedes[ 0 ], &receipt, sizeof( receipt ) ), 0 );
-
-        ASSERT_EQ( receipt, message );
-        close( pipedes[ 0 ] );
-    }
+    ASSERT_EQ(receipt, message);
+    close(pipedes[0]);
 }
+
+TEST(SetTerminateTest, setFromThreadDieInMain) {
+    ASSERT(pipe(pipedes) == 0);
+
+    const int pid = fork();
+
+    if (!pid) {
+        close(pipedes[0]);
+        stdx::thread bg([] { stdx::set_terminate(writeFeedbackAndCleanlyExit); });
+        bg.join();
+
+        std::terminate();
+
+        ASSERT(false);
+    }
+    close(pipedes[1]);
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    int receipt = 0;
+    ASSERT_GT(read(pipedes[0], &receipt, sizeof(receipt)), 0);
+
+    ASSERT_EQ(receipt, message);
+    close(pipedes[0]);
+}
+
+
+TEST(SetTerminateTest, setFromThreadDieInThread) {
+    ASSERT(pipe(pipedes) == 0);
+
+    const int pid = fork();
+
+    if (!pid) {
+        close(pipedes[0]);
+        stdx::thread bg([] { stdx::set_terminate(writeFeedbackAndCleanlyExit); });
+        bg.join();
+        stdx::thread bg2([] { std::terminate(); });
+        bg2.join();
+
+        ASSERT(false);
+    }
+    close(pipedes[1]);
+
+    int status;
+    waitpid(pid, &status, 0);
+
+    int receipt = 0;
+    ASSERT_GT(read(pipedes[0], &receipt, sizeof(receipt)), 0);
+
+    ASSERT_EQ(receipt, message);
+    close(pipedes[0]);
+}
+}  // namespace

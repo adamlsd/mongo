@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2018-present MongoDB, Inc.
+ *    Copyright (C) 2019-present MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or modify
  *    it under the terms of the Server Side Public License, version 1,
@@ -27,21 +27,15 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/stdx/unordered_map.h"
 
-#if defined(__GNUC__)
+#include <stdexcept>
 
-#define NOINLINE_DECL __attribute__((noinline))
-#define PACKED_DECL __attribute__((packed))
+#include "mongo/unittest/unittest.h"
 
-#elif defined(_MSC_VER)
-
-#define NOINLINE_DECL __declspec(noinline)
-#define PACKED_DECL
-
-#else
-
-#define NOINLINE_DECL
-#define PACKED_DECL
-
-#endif
+namespace {
+TEST(StdxUnorderedMapTest, atShouldThrow) {
+    mongo::stdx::unordered_map<int, int> m;
+    ASSERT_THROWS(m.at(42), std::out_of_range);
+}
+}  // namespace

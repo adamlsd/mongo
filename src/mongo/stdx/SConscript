@@ -25,6 +25,7 @@ env.Library(
     ],
 )
 
+# Needs to be a different test -- It has to have direct control over the `main()` entry point.
 env.CppUnitTest(
     target='set_terminate_test',
 	source=[
@@ -33,4 +34,14 @@ env.CppUnitTest(
     LIBDEPS=[
         'stdx',
     ]
+)
+
+env.CppUnitTest(
+    target='stdx_test',
+    source=[
+        'unordered_map_test.cpp'
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/third_party/shim_abseil',
+    ],
 )

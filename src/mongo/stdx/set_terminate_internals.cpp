@@ -34,7 +34,7 @@
 #include <utility>
 
 
-#ifdef _WIN32
+#if defined( _WIN32 ) || defined (MONGO_TEST_STDX_SET_TERMINATE)
 namespace mongo {
 namespace stdx {
 // `dispatch_impl` is circularly dependent with the initialization of `terminationHandler`, but
@@ -47,7 +47,7 @@ void dead() {}
 
 ::std::atomic<terminate_handler> terminationHandler(&dead);  // NOLINT
 
-int i = []() noexcept {
+[[maybe_unused]] const int initializeTerminationHandler = []() noexcept {
     const auto oldHandler =
         terminationHandler.exchange(::std::set_terminate(&dispatch_impl));  // NOLINT
     if (oldHandler != &dead)
@@ -59,6 +59,7 @@ int i = []() noexcept {
 }  // namespace stdx
 
 void stdx::dispatch_impl() noexcept {
+    std::cerr << "Dispatched" << std::endl;
     if (const ::std::terminate_handler handler = terminationHandler.load())
         handler();
 
@@ -72,6 +73,7 @@ void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
 }
 
 stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
+    std::cerr << "Mongo's Set terminate called" << std::endl;
     const auto oldHandler = terminationHandler.exchange(handler);
     if (oldHandler == &dead)
         std::abort();  // Do not let people set terminate before the initializer has run.

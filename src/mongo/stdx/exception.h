@@ -45,7 +45,7 @@
 // until main has started.
 
 namespace mongo::stdx {
-#ifdef _WIN32
+#if defined( _WIN32) || defined (MONGO_TEST_STDX_SET_TERMINATE)
 // In order to grant `mongo::stdx::thread` access to the dispatch method, we need to know this
 // class's name.  A forward-decl header would be overkill for this singular special case.
 class thread;

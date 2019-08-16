@@ -27,12 +27,41 @@ env.Library(
 
 # Needs to be a different test -- It has to have direct control over the `main()` entry point.
 env.CppUnitTest(
-    target='set_terminate_test',
+    target='set_terminate_dispatch_test',
 	source=[
-        'set_terminate_test.cpp',
+        'set_terminate_dispatch_test.cpp',
     ],
     LIBDEPS=[
-        'stdx',
+    ]
+)
+
+# Needs to be a different test -- It has to have direct control over the `main()` entry point.
+env.CppUnitTest(
+    target='set_terminate_from_main_die_in_thread_test',
+	source=[
+        'set_terminate_from_main_die_in_thread_test.cpp',
+    ],
+    LIBDEPS=[
+    ]
+)
+
+# Needs to be a different test -- It has to have direct control over the `main()` entry point.
+env.CppUnitTest(
+    target='set_terminate_from_thread_die_in_main_test',
+	source=[
+        'set_terminate_from_thread_die_in_main_test.cpp',
+    ],
+    LIBDEPS=[
+    ]
+)
+
+# Needs to be a different test -- It has to have direct control over the `main()` entry point.
+env.CppUnitTest(
+    target='set_terminate_from_thread_die_in_thread_test',
+	source=[
+        'set_terminate_from_thread_die_in_thread_test.cpp',
+    ],
+    LIBDEPS=[
     ]
 )
 

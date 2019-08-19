@@ -31,38 +31,40 @@
 
 #include "mongo/stdx/exception.h"
 
-#include <sys/types.h>
-
-#include <sys/wait.h>
+#include <stdlib.h>
 
 #include <iostream>
-#include <unistd.h>
 
-#include "mongo/logger/logger.h"
 #include "mongo/stdx/thread.h"
-
-#include "mongo/unittest/unittest.h"
 
 namespace {
 
 namespace stdx = ::mongo::stdx;
 
 void writeFeedbackAndCleanlyExit() {
-    ASSERT(true);
+    std::cerr << "Entered terminate handler." << std::endl;
     exit(EXIT_SUCCESS);
 }
 
 void testTerminateDispatch() {
-    stdx::thread{[]{ stdx::set_terminate(writeFeedbackAndCleanlyExit); }}.join();
-    stdx::thread{[]{ std::terminate(); }}.join();
+    std::cerr << "Starting background thread (which will call `set_terminate`)." << std::endl;
+    stdx::thread{[] {
+        std::cerr << "Setting terminate handler" << std::endl;
+        stdx::set_terminate(writeFeedbackAndCleanlyExit);
+    }}
+        .join();
+    std::cerr << "Starting background thread (which will terminate)." << std::endl;
+    stdx::thread{[] {
+        std::cerr << "Calling terminate from background thread." << std::endl;
+        std::terminate();
+    }}
+        .join();
+    exit(EXIT_FAILURE);
 }
 }  // namespace
 
 int main() {
-    ::mongo::logger::globalLogDomain()->setMinimumLoggedSeverity(
-        ::mongo::logger::LogSeverity::Debug(4));
     testTerminateDispatch();
-    exit(EXIT_FAILURE);
 }
 
 // Include the actual implementation, as we force the injection form for this test.

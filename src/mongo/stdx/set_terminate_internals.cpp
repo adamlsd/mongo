@@ -59,7 +59,6 @@ void dead() {}
 }  // namespace stdx
 
 void stdx::dispatch_impl() noexcept {
-    std::cerr << "Dispatched" << std::endl;
     if (const ::std::terminate_handler handler = terminationHandler.load())
         handler();
 
@@ -73,7 +72,6 @@ void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
 }
 
 stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
-    std::cerr << "Mongo's Set terminate called" << std::endl;
     const auto oldHandler = terminationHandler.exchange(handler);
     if (oldHandler == &dead)
         std::abort();  // Do not let people set terminate before the initializer has run.

@@ -43,14 +43,14 @@ namespace stdx {
 [[noreturn]] static void dispatch_impl() noexcept;
 
 namespace {
-void dead() {}
+void uninitializedTerminateHandler() {}
 
-::std::atomic<terminate_handler> terminationHandler(&dead);  // NOLINT
+::std::atomic<terminate_handler> terminationHandler(&uninitializedTerminateHandler);  // NOLINT
 
 [[maybe_unused]] const int initializeTerminationHandler = []() noexcept {
     const auto oldHandler =
         terminationHandler.exchange(::std::set_terminate(&dispatch_impl));  // NOLINT
-    if (oldHandler != &dead)
+    if (oldHandler != &uninitializedTerminateHandler)
         std::abort();  // Someone set the handler, somehow before we got to initialize ourselves.
     return 0;
 }
@@ -73,14 +73,14 @@ void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
 
 stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
     const auto oldHandler = terminationHandler.exchange(handler);
-    if (oldHandler == &dead)
+    if (oldHandler == &uninitializedTerminateHandler)
         std::abort();  // Do not let people set terminate before the initializer has run.
     return oldHandler;
 }
 
 stdx::terminate_handler stdx::get_terminate() noexcept {
     const auto currentHandler = terminationHandler.load();
-    if (currentHandler == &dead)
+    if (currentHandler == &uninitializedTerminateHandler)
         std::abort();  // Do not let people see the terminate handler before the initializer has
                        // run.
     return currentHandler;

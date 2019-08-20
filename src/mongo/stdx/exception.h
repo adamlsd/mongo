@@ -45,7 +45,7 @@
 // until main has started.
 
 namespace mongo::stdx {
-#if defined( _WIN32) || defined (MONGO_TEST_STDX_SET_TERMINATE)
+
 // In order to grant `mongo::stdx::thread` access to the dispatch method, we need to know this
 // class's name.  A forward-decl header would be overkill for this singular special case.
 class thread;
@@ -58,12 +58,24 @@ class TerminateHandlerDetailsInterface {
     static void dispatch() noexcept;
 };
 
-terminate_handler set_terminate(terminate_handler) noexcept;
-terminate_handler get_terminate() noexcept;
-#else
-using ::std::terminate_handler;
-using ::std::set_terminate;
-using ::std::get_terminate;
-#endif
+namespace set_terminate_details {
+terminate_handler set_terminate_impl(terminate_handler) noexcept;
+terminate_handler get_terminate_impl() noexcept;
+void setup_terminate_system_for_testing() noexcept;
+}  // namespace set_terminate_details
 
+#if defined(_WIN32) || defined(MONGO_TEST_STDX_SET_TERMINATE)
+
+inline terminate_handler set_terminate(const terminate_handler handler) noexcept {
+    return set_terminate_details::set_terminate_impl(handler);
+}
+
+inline terminate_handler get_terminate() noexcept {
+    return set_terminate_details::get_terminate_impl();
+}
+
+#else
+using ::std::get_terminate;
+using ::std::set_terminate;
+#endif
 }  // namespace mongo::stdx

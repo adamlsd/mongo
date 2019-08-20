@@ -89,7 +89,7 @@ public:
                   f = std::move(f),
                   pack = std::make_tuple(std::forward<Args>(args)...)
               ]() mutable noexcept {
-#if defined( _WIN32) || defined (MONGO_TEST_STDX_SET_TERMINATE_UNDER_POSIX)
+#if defined( _WIN32)
                   // On Win32 we have to set the terminate handler per thread.
                   // We set it to our universal terminate handler, which people can register via the
                   // `stdx::set_terminate` hook.

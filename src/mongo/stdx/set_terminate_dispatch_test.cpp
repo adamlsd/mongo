@@ -56,8 +56,6 @@ void testTerminateDispatch() {
 }  // namespace
 
 int main() {
+    stdx::set_terminate_details::setup_terminate_system_for_testing();
     testTerminateDispatch();
 }
-
-// Include the actual implementation, as we force the injection form for this test.
-#include "mongo/stdx/set_terminate_internals.cpp"

@@ -34,7 +34,6 @@
 #include <utility>
 
 
-#if defined( _WIN32 ) || defined (MONGO_TEST_STDX_SET_TERMINATE)
 namespace mongo {
 namespace stdx {
 // `dispatch_impl` is circularly dependent with the initialization of `terminationHandler`, but
@@ -47,15 +46,45 @@ void uninitializedTerminateHandler() {}
 
 ::std::atomic<terminate_handler> terminationHandler(&uninitializedTerminateHandler);  // NOLINT
 
-[[maybe_unused]] const int initializeTerminationHandler = []() noexcept {
+void registerTerminationHook() noexcept {
     const auto oldHandler =
         terminationHandler.exchange(::std::set_terminate(&dispatch_impl));  // NOLINT
     if (oldHandler != &uninitializedTerminateHandler)
         std::abort();  // Someone set the handler, somehow before we got to initialize ourselves.
+}
+
+
+[[maybe_unused]] const int initializeTerminationHandler = []() noexcept {
+#if defined(_WIN32)
+    registerTerminationHook();
+#endif
     return 0;
 }
 ();
+
 }  // namespace
+
+void set_terminate_details::setup_terminate_system_for_testing() noexcept {
+#if !defined(_WIN32)
+    registerTerminationHook();
+#endif
+}
+
+stdx::terminate_handler set_terminate_details::set_terminate_impl(
+    const stdx::terminate_handler handler) noexcept {
+    const auto oldHandler = terminationHandler.exchange(handler);
+    if (oldHandler == &uninitializedTerminateHandler)
+        std::abort();  // Do not let people set terminate before the initializer has run.
+    return oldHandler;
+}
+
+stdx::terminate_handler set_terminate_details::get_terminate_impl() noexcept {
+    const auto currentHandler = terminationHandler.load();
+    if (currentHandler == &uninitializedTerminateHandler)
+        std::abort();  // Do not let people see the terminate handler before the initializer has
+                       // run.
+    return currentHandler;
+}
 }  // namespace stdx
 
 void stdx::dispatch_impl() noexcept {
@@ -70,20 +99,4 @@ void stdx::dispatch_impl() noexcept {
 void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
     return stdx::dispatch_impl();
 }
-
-stdx::terminate_handler stdx::set_terminate(const terminate_handler handler) noexcept {
-    const auto oldHandler = terminationHandler.exchange(handler);
-    if (oldHandler == &uninitializedTerminateHandler)
-        std::abort();  // Do not let people set terminate before the initializer has run.
-    return oldHandler;
-}
-
-stdx::terminate_handler stdx::get_terminate() noexcept {
-    const auto currentHandler = terminationHandler.load();
-    if (currentHandler == &uninitializedTerminateHandler)
-        std::abort();  // Do not let people see the terminate handler before the initializer has
-                       // run.
-    return currentHandler;
-}
 }  // namespace mongo
-#endif

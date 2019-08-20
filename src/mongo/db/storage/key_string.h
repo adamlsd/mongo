@@ -32,6 +32,7 @@
 #include <limits>
 
 #include "mongo/base/static_assert.h"
+#include "mongo/bson/bsonelement_comparator_interface.h"
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
@@ -290,8 +291,13 @@ private:
 class Value {
 
 public:
+    Value() : _version(Version::kLatestVersion), _typeBits(Version::kLatestVersion), _size(0) {}
+
     Value(Version version, TypeBits typeBits, size_t size, ConstSharedBuffer buffer)
         : _version(version), _typeBits(typeBits), _size(size), _buffer(std::move(buffer)) {}
+
+    Value(const Value&) = default;
+    Value(Value&&) = default;
 
     Value& operator=(const Value& other);
 
@@ -321,6 +327,36 @@ public:
      * Returns a hex encoding of this key.
      */
     std::string toString() const;
+
+    /// Members for Sorter
+    struct SorterDeserializeSettings {
+        SorterDeserializeSettings(Version version) : keyStringVersion(version) {}
+        Version keyStringVersion;
+    };
+
+    void serializeForSorter(BufBuilder& buf) const {
+        invariant(_size < std::numeric_limits<unsigned int>::max());
+        buf.appendNum(static_cast<unsigned int>(_size));            // Serialize size of Keystring
+        buf.appendBuf(_buffer.get(), _size);                        // Serialize Keystring
+        buf.appendBuf(_typeBits.getBuffer(), _typeBits.getSize());  // Serialize Typebits
+    }
+
+    static Value deserializeForSorter(BufReader& buf, const SorterDeserializeSettings& settings) {
+        const size_t sizeOfKeystring = buf.read<LittleEndian<unsigned int>>();
+        const void* keystringPtr = buf.skip(sizeOfKeystring);
+
+        BufBuilder newBuf;
+        newBuf.appendBuf(keystringPtr, sizeOfKeystring);
+
+        auto typeBits = TypeBits::fromBuffer(settings.keyStringVersion, &buf);  // advances the buf
+
+        return {settings.keyStringVersion, typeBits, sizeOfKeystring, newBuf.release()};
+    }
+
+    int memUsageForSorter() const {
+        return sizeof(Value) + _size + _typeBits.getSize();
+    }
+    /// Members for Sorter
 
 private:
     Version _version;
@@ -354,16 +390,44 @@ enum DecimalContinuationMarker {
     kDCMHasContinuationLargerThanDoubleRoundedUpTo15Digits = 0x3
 };
 
+using StringTransformFn = std::function<std::string(StringData)>;
+
 template <class BufferT>
 class BuilderBase {
 public:
-    BuilderBase(Version version, Ordering ord, Discriminator discriminator)
+    static const uint8_t kHeapAllocatorDefaultBytes = 32;
+
+    /*
+     * This constructor is enabled only for KeyString::HeapBuilder.
+     */
+    template <class T = BufferT>
+    BuilderBase(Version version,
+                Ordering ord,
+                Discriminator discriminator,
+                typename std::enable_if<std::is_same<T, BufBuilder>::value>::type* = nullptr)
+        : version(version),
+          _typeBits(version),
+          _buffer(kHeapAllocatorDefaultBytes),
+          _state(BuildState::kEmpty),
+          _elemCount(0),
+          _ordering(ord),
+          _discriminator(discriminator) {}
+
+    /*
+     * This constructor is enabled only for KeyString::Builder.
+     */
+    template <class T = BufferT>
+    BuilderBase(Version version,
+                Ordering ord,
+                Discriminator discriminator,
+                typename std::enable_if<std::is_same<T, StackBufBuilder>::value>::type* = nullptr)
         : version(version),
           _typeBits(version),
           _state(BuildState::kEmpty),
           _elemCount(0),
           _ordering(ord),
           _discriminator(discriminator) {}
+
     BuilderBase(Version version, Ordering ord)
         : BuilderBase(version, ord, Discriminator::kInclusive) {}
     explicit BuilderBase(Version version)
@@ -382,6 +446,16 @@ public:
         resetToKey(obj, ord, discriminator);
     }
 
+    BuilderBase(const BuilderBase& other)
+        : version(other.version),
+          _typeBits(other.getTypeBits()),
+          _state(other._state),
+          _elemCount(other._elemCount),
+          _ordering(other._ordering),
+          _discriminator(other._discriminator) {
+        resetFromBuffer(other.getBuffer(), other.getSize());
+    }
+
     BuilderBase(Version version, RecordId rid) : BuilderBase(version) {
         appendRecordId(rid);
     }
@@ -398,7 +472,7 @@ public:
      */
     template <typename T = BufferT>
     typename std::enable_if<std::is_same<T, BufBuilder>::value, Value>::type release() {
-        _prepareForRelease();
+        _doneAppending();
         _transition(BuildState::kReleased);
         return {version, _typeBits, static_cast<size_t>(_buffer.len()), _buffer.release()};
     }
@@ -408,9 +482,7 @@ public:
      * buffer.
      */
     Value getValueCopy() {
-        _prepareForRelease();
-        invariant(_state == BuildState::kEndAdded || _state == BuildState::kAppendedRecordID ||
-                  _state == BuildState::kAppendedTypeBits);
+        _doneAppending();
         BufBuilder newBuf(_buffer.len());
         newBuf.appendBuf(_buffer.buf(), _buffer.len());
         return {version, _typeBits, static_cast<size_t>(newBuf.len()), newBuf.release()};
@@ -418,7 +490,19 @@ public:
 
     void appendRecordId(RecordId loc);
     void appendTypeBits(const TypeBits& bits);
-    void appendBSONElement(const BSONElement& elem);
+
+    /*
+     * Function 'f' will be applied to all string elements contained in 'elem'.
+     */
+    void appendBSONElement(const BSONElement& elem, const StringTransformFn& f = nullptr);
+
+    void appendString(StringData val);
+    void appendNumberDouble(double num);
+    void appendNumberLong(long long num);
+    void appendNull();
+    void appendUndefined();
+    void appendBinData(const BSONBinData& data);
+    void appendSetAsArray(const BSONElementSet& set, const StringTransformFn& f = nullptr);
 
     /**
      * Resets to an empty state.
@@ -493,15 +577,16 @@ private:
     void _appendDate(Date_t val, bool invert);
     void _appendTimestamp(Timestamp val, bool invert);
     void _appendOID(OID val, bool invert);
-    void _appendString(StringData val, bool invert);
+    void _appendString(StringData val, bool invert, const StringTransformFn& f);
     void _appendSymbol(StringData val, bool invert);
     void _appendCode(StringData val, bool invert);
     void _appendCodeWString(const BSONCodeWScope& val, bool invert);
     void _appendBinData(const BSONBinData& val, bool invert);
     void _appendRegex(const BSONRegEx& val, bool invert);
     void _appendDBRef(const BSONDBRef& val, bool invert);
-    void _appendArray(const BSONArray& val, bool invert);
-    void _appendObject(const BSONObj& val, bool invert);
+    void _appendArray(const BSONArray& val, bool invert, const StringTransformFn& f);
+    void _appendSetAsArray(const BSONElementSet& val, bool invert, const StringTransformFn& f);
+    void _appendObject(const BSONObj& val, bool invert, const StringTransformFn& f);
     void _appendNumberDouble(const double num, bool invert);
     void _appendNumberLong(const long long num, bool invert);
     void _appendNumberInt(const int num, bool invert);
@@ -512,10 +597,13 @@ private:
      *              if NULL, not included in encoding
      *              if not NULL, put in after type, before value
      */
-    void _appendBsonValue(const BSONElement& elem, bool invert, const StringData* name);
+    void _appendBsonValue(const BSONElement& elem,
+                          bool invert,
+                          const StringData* name,
+                          const StringTransformFn& f);
 
     void _appendStringLike(StringData str, bool invert);
-    void _appendBson(const BSONObj& obj, bool invert);
+    void _appendBson(const BSONObj& obj, bool invert, const StringTransformFn& f);
     void _appendSmallDouble(double value, DecimalContinuationMarker dcm, bool invert);
     void _appendLargeDouble(double value, DecimalContinuationMarker dcm, bool invert);
     void _appendInteger(const long long num, bool invert);
@@ -534,9 +622,17 @@ private:
 
     void _appendBytes(const void* source, size_t bytes, bool invert);
 
-    void _prepareForRelease() {
+    void _doneAppending() {
         if (_state == BuildState::kAppendingBSONElements) {
             _appendDiscriminator(_discriminator);
+        }
+    }
+
+    void _verifyAppendingState() {
+        invariant(_state == BuildState::kEmpty || _state == BuildState::kAppendingBSONElements);
+
+        if (_state == BuildState::kEmpty) {
+            _transition(BuildState::kAppendingBSONElements);
         }
     }
 
@@ -580,6 +676,10 @@ private:
         _state = to;
     }
 
+    bool _shouldInvertOnAppend() const {
+        return _ordering.get(_elemCount) == -1;
+    }
+
 
     TypeBits _typeBits;
     BufferT _buffer;
@@ -605,39 +705,39 @@ struct isKeyString<BuilderBase<BufferT>> : public std::true_type {};
 template <>
 struct isKeyString<Value> : public std::true_type {};
 
-template <class T>
+template <class T, class U>
 inline typename std::enable_if<isKeyString<T>::value, bool>::type operator<(const T& lhs,
-                                                                            const T& rhs) {
+                                                                            const U& rhs) {
     return lhs.compare(rhs) < 0;
 }
 
-template <class T>
+template <class T, class U>
 inline typename std::enable_if<isKeyString<T>::value, bool>::type operator<=(const T& lhs,
-                                                                             const T& rhs) {
+                                                                             const U& rhs) {
     return lhs.compare(rhs) <= 0;
 }
 
-template <class T>
+template <class T, class U>
 inline typename std::enable_if<isKeyString<T>::value, bool>::type operator==(const T& lhs,
-                                                                             const T& rhs) {
+                                                                             const U& rhs) {
     return lhs.compare(rhs) == 0;
 }
 
-template <class T>
+template <class T, class U>
 inline typename std::enable_if<isKeyString<T>::value, bool>::type operator>(const T& lhs,
-                                                                            const T& rhs) {
+                                                                            const U& rhs) {
     return lhs.compare(rhs) > 0;
 }
 
-template <class T>
+template <class T, class U>
 inline typename std::enable_if<isKeyString<T>::value, bool>::type operator>=(const T& lhs,
-                                                                             const T& rhs) {
+                                                                             const U& rhs) {
     return lhs.compare(rhs) >= 0;
 }
 
-template <class T>
+template <class T, class U>
 inline typename std::enable_if<isKeyString<T>::value, bool>::type operator!=(const T& lhs,
-                                                                             const T& rhs) {
+                                                                             const U& rhs) {
     return !(lhs == rhs);
 }
 
@@ -647,6 +747,10 @@ inline typename std::enable_if<isKeyString<T>::value, std::ostream&>::type opera
     return stream << value.toString();
 }
 
+/**
+ * Given a KeyString which may or may not have a RecordId, returns the length of the section without
+ * the RecordId. More expensive than sizeWithoutRecordIdAtEnd
+ */
 size_t getKeySize(const char* buffer, size_t len, Ordering ord, const TypeBits& typeBits);
 
 /**

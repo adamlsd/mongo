@@ -588,6 +588,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         ss << "log=(enabled=true,archive=true,path=journal,compressor=";
         ss << wiredTigerGlobalOptions.journalCompressor << "),";
         ss << "file_manager=(close_idle_time=" << gWiredTigerFileHandleCloseIdleTime
+           << ",close_scan_interval=" << gWiredTigerFileHandleCloseScanInterval
            << ",close_handle_minimum=" << gWiredTigerFileHandleCloseMinimum << "),";
         ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
 
@@ -1219,6 +1220,7 @@ std::unique_ptr<RecordStore> WiredTigerKVEngine::getGroupedRecordStore(
     params.cappedCallback = nullptr;
     params.sizeStorer = _sizeStorer.get();
     params.isReadOnly = _readOnly;
+    params.tracksSizeAdjustments = true;
 
     params.cappedMaxSize = -1;
     if (options.capped) {
@@ -1320,6 +1322,7 @@ std::unique_ptr<RecordStore> WiredTigerKVEngine::makeTemporaryRecordStore(Operat
     params.cappedCallback = nullptr;
     // Temporary collections do not need to persist size information to the size storer.
     params.sizeStorer = nullptr;
+    params.tracksSizeAdjustments = true;
     params.isReadOnly = false;
 
     params.cappedMaxSize = -1;

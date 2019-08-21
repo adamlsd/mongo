@@ -245,21 +245,6 @@ WiredTigerIndex::WiredTigerIndex(OperationContext* ctx,
       _isIdIndex(desc->isIdIndex()) {}
 
 Status WiredTigerIndex::insert(OperationContext* opCtx,
-                               const BSONObj& key,
-                               const RecordId& id,
-                               bool dupsAllowed) {
-    dassert(opCtx->lockState()->isWriteLocked());
-    invariant(id.isValid());
-    dassert(!key.hasFieldNames());
-
-    TRACE_INDEX << " key: " << key << " id: " << id;
-
-    KeyString::HeapBuilder keyString(getKeyStringVersion(), key, _ordering, id);
-
-    return insert(opCtx, std::move(keyString.release()), id, dupsAllowed);
-}
-
-Status WiredTigerIndex::insert(OperationContext* opCtx,
                                const KeyString::Value& keyString,
                                const RecordId& id,
                                bool dupsAllowed) {
@@ -276,20 +261,10 @@ Status WiredTigerIndex::insert(OperationContext* opCtx,
 }
 
 void WiredTigerIndex::unindex(OperationContext* opCtx,
-                              const BSONObj& key,
-                              const RecordId& id,
-                              bool dupsAllowed) {
-    invariant(id.isValid());
-    dassert(!key.hasFieldNames());
-    KeyString::HeapBuilder keyString(getKeyStringVersion(), key, _ordering, id);
-
-    unindex(opCtx, std::move(keyString.release()), id, dupsAllowed);
-}
-
-void WiredTigerIndex::unindex(OperationContext* opCtx,
                               const KeyString::Value& keyString,
                               const RecordId& id,
                               bool dupsAllowed) {
+    invariant(id.isValid());
     dassert(opCtx->lockState()->isWriteLocked());
     dassert(id == KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize()));
 
@@ -379,14 +354,6 @@ bool WiredTigerIndex::appendCustomStats(OperationContext* opCtx,
         output->append("reason", status.reason());
     }
     return true;
-}
-
-Status WiredTigerIndex::dupKeyCheck(OperationContext* opCtx, const BSONObj& key) {
-    invariant(!key.hasFieldNames());
-    invariant(unique());
-
-    KeyString::Builder keyString(getKeyStringVersion(), key, _ordering);
-    return dupKeyCheck(opCtx, keyString.getValueCopy());
 }
 
 Status WiredTigerIndex::dupKeyCheck(OperationContext* opCtx, const KeyString::Value& key) {
@@ -647,10 +614,10 @@ public:
         WiredTigerItem item(keyString.getBuffer(), keyString.getSize());
         setKey(_cursor, item.Get());
 
-        WiredTigerItem valueItem = keyString.getTypeBits().isAllZeros()
+        const KeyString::TypeBits typeBits = keyString.getTypeBits();
+        WiredTigerItem valueItem = typeBits.isAllZeros()
             ? emptyItem
-            : WiredTigerItem(keyString.getTypeBits().getBuffer(),
-                             keyString.getTypeBits().getSize());
+            : WiredTigerItem(typeBits.getBuffer(), typeBits.getSize());
 
         _cursor->set_value(_cursor, valueItem.Get());
 
@@ -737,10 +704,10 @@ private:
         WiredTigerItem keyItem(newKeyString.getBuffer(), newKeyString.getSize());
         setKey(_cursor, keyItem.Get());
 
-        WiredTigerItem valueItem = newKeyString.getTypeBits().isAllZeros()
+        const KeyString::TypeBits typeBits = newKeyString.getTypeBits();
+        WiredTigerItem valueItem = typeBits.isAllZeros()
             ? emptyItem
-            : WiredTigerItem(newKeyString.getTypeBits().getBuffer(),
-                             newKeyString.getTypeBits().getSize());
+            : WiredTigerItem(typeBits.getBuffer(), typeBits.getSize());
 
         _cursor->set_value(_cursor, valueItem.Get());
 
@@ -1473,8 +1440,9 @@ Status WiredTigerIndexUnique::_insertTimestampUnsafe(OperationContext* opCtx,
     WiredTigerItem keyItem(keyString.getBuffer(), sizeWithoutRecordId);
 
     KeyString::Builder value(getKeyStringVersion(), id);
-    if (!keyString.getTypeBits().isAllZeros())
-        value.appendTypeBits(keyString.getTypeBits());
+    const KeyString::TypeBits typeBits = keyString.getTypeBits();
+    if (!typeBits.isAllZeros())
+        value.appendTypeBits(typeBits);
 
     WiredTigerItem valueItem(value.getBuffer(), value.getSize());
     setKey(c, keyItem.Get());
@@ -1510,7 +1478,7 @@ Status WiredTigerIndexUnique::_insertTimestampUnsafe(OperationContext* opCtx,
 
         if (!insertedId && id < idInIndex) {
             value.appendRecordId(id);
-            value.appendTypeBits(keyString.getTypeBits());
+            value.appendTypeBits(typeBits);
             insertedId = true;
         }
 
@@ -1527,7 +1495,7 @@ Status WiredTigerIndexUnique::_insertTimestampUnsafe(OperationContext* opCtx,
     if (!insertedId) {
         // This id is higher than all currently in the index for this key
         value.appendRecordId(id);
-        value.appendTypeBits(keyString.getTypeBits());
+        value.appendTypeBits(typeBits);
     }
 
     valueItem = WiredTigerItem(value.getBuffer(), value.getSize());
@@ -1588,9 +1556,10 @@ Status WiredTigerIndexUnique::_insertTimestampSafe(OperationContext* opCtx,
     // Now create the table key/value, the actual data record.
     WiredTigerItem keyItem(keyString.getBuffer(), keyString.getSize());
 
-    WiredTigerItem valueItem = keyString.getTypeBits().isAllZeros()
+    const KeyString::TypeBits typeBits = keyString.getTypeBits();
+    WiredTigerItem valueItem = typeBits.isAllZeros()
         ? emptyItem
-        : WiredTigerItem(keyString.getTypeBits().getBuffer(), keyString.getTypeBits().getSize());
+        : WiredTigerItem(typeBits.getBuffer(), typeBits.getSize());
     setKey(c, keyItem.Get());
     c->set_value(c, valueItem.Get());
     ret = WT_OP_CHECK(c->insert(c));
@@ -1789,9 +1758,10 @@ Status WiredTigerIndexStandard::_insert(OperationContext* opCtx,
 
     WiredTigerItem keyItem(keyString.getBuffer(), keyString.getSize());
 
-    WiredTigerItem valueItem = keyString.getTypeBits().isAllZeros()
+    const KeyString::TypeBits typeBits = keyString.getTypeBits();
+    WiredTigerItem valueItem = typeBits.isAllZeros()
         ? emptyItem
-        : WiredTigerItem(keyString.getTypeBits().getBuffer(), keyString.getTypeBits().getSize());
+        : WiredTigerItem(typeBits.getBuffer(), typeBits.getSize());
 
     setKey(c, keyItem.Get());
     c->set_value(c, valueItem.Get());

@@ -190,13 +190,6 @@ public:
     }
 
     virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& loc,
-                          bool dupsAllowed) {
-        return Status::OK();
-    }
-
-    virtual Status insert(OperationContext* opCtx,
                           const KeyString::Value& keyString,
                           const RecordId& loc,
                           bool dupsAllowed) {
@@ -204,18 +197,9 @@ public:
     }
 
     virtual void unindex(OperationContext* opCtx,
-                         const BSONObj& key,
-                         const RecordId& loc,
-                         bool dupsAllowed) {}
-
-    virtual void unindex(OperationContext* opCtx,
                          const KeyString::Value& keyString,
                          const RecordId& loc,
                          bool dupsAllowed) {}
-
-    virtual Status dupKeyCheck(OperationContext* opCtx, const BSONObj& key) {
-        return Status::OK();
-    }
 
     virtual Status dupKeyCheck(OperationContext* opCtx, const KeyString::Value& keyString) {
         return Status::OK();

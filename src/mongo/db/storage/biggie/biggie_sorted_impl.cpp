@@ -327,16 +327,6 @@ SortedDataInterface::SortedDataInterface(const Ordering& ordering, bool isUnique
 }
 
 Status SortedDataInterface::insert(OperationContext* opCtx,
-                                   const BSONObj& key,
-                                   const RecordId& loc,
-                                   bool dupsAllowed) {
-    // The KeyString representation of the key.
-    KeyString::HeapBuilder keyString(_keyStringVersion, key, _ordering, loc);
-
-    return insert(opCtx, std::move(keyString.release()), loc, dupsAllowed);
-}
-
-Status SortedDataInterface::insert(OperationContext* opCtx,
                                    const KeyString::Value& keyString,
                                    const RecordId& loc,
                                    bool dupsAllowed) {
@@ -401,15 +391,6 @@ Status SortedDataInterface::insert(OperationContext* opCtx,
     RecoveryUnit::get(opCtx)->makeDirty();
 
     return Status::OK();
-}
-
-void SortedDataInterface::unindex(OperationContext* opCtx,
-                                  const BSONObj& key,
-                                  const RecordId& loc,
-                                  bool dupsAllowed) {
-    KeyString::HeapBuilder keyString(_keyStringVersion, key, _ordering, loc);
-
-    unindex(opCtx, std::move(keyString.release()), loc, dupsAllowed);
 }
 
 void SortedDataInterface::unindex(OperationContext* opCtx,
@@ -486,12 +467,6 @@ Status SortedDataInterface::truncate(OperationContext* opCtx) {
     }
 
     return Status::OK();
-}
-
-Status SortedDataInterface::dupKeyCheck(OperationContext* opCtx, const BSONObj& key) {
-    KeyString::Builder ks(KeyString::Version::V1, key, _ordering);
-
-    return dupKeyCheck(opCtx, ks.getValueCopy());
 }
 
 Status SortedDataInterface::dupKeyCheck(OperationContext* opCtx, const KeyString::Value& key) {

@@ -48,12 +48,9 @@
 #include "mongo/util/log.h"
 
 namespace {
-namespace testingData {
-extern const std::string testData;
-}  // namespace testingData
+std::string initTestData();
+const std::string testData= initTestData();
 
-namespace decimal128_bson_unittest {
-using testingData::testData;
 using namespace mongo;
 
 BSONObj convertHexStringToBsonObj(StringData hexString) {
@@ -115,10 +112,6 @@ TEST(Decimal128BSONTest, TestsConstructingDecimalWithBsonDump) {
         }
     }
 }
-
-}  // namespace decimal128_bson_unittest
-
-namespace testingData {
 
 const std::string data1 = R"VOGON({
     "valid": [
@@ -3475,9 +3468,7 @@ const std::string data12 = R"VOGON(
         }   
     ]
 })VOGON";
-}  // namespace testingData
 
-using namespace testingData;
-const std::string testingData::testData = data1 + data2 + data3 + data4 + data5 + data6 +
-    data7 + data8 + data9 + data10 + data11 + data12;
+std::string initTestData () { return data1 + data2 + data3 + data4 + data5 + data6 +
+    data7 + data8 + data9 + data10 + data11 + data12; }
 }  // namespace

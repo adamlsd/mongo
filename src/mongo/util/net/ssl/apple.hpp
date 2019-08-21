@@ -41,7 +41,6 @@ namespace asio {
 namespace ssl {
 namespace apple {
 
-namespace detail_ssl_apple {
 template <typename T>
 struct CFReleaser {
     void operator()(T ptr) {
@@ -50,7 +49,6 @@ struct CFReleaser {
         }
     }
 };
-}  // namespace detail_ssl_apple
 
 /**
  * CoreFoundation types are internally refcounted using CFRetain/CFRelease.

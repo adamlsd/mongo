@@ -411,6 +411,7 @@ VALGRIND
 VARCHAR
 VLDB
 VMSG
+VPM
 VR
 VRFY
 VX
@@ -1072,6 +1073,7 @@ ownp
 pR
 pS
 packv
+pagedump
 pagesize
 parens
 pareto
@@ -1361,6 +1363,7 @@ versa
 vfprintf
 vm
 vpack
+vpmsum
 vprintf
 vrfy
 vsize

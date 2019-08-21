@@ -44,6 +44,7 @@ SUFFIX_MAP = "AIB_SUFFIX_MAP"
 AIB_MAKE_ARCHIVE_CONTENT = """
 import os
 import sys
+from shutil import which
 
 USAGE = '''
 Usage: {} ARCHIVE_TYPE ARCHIVE_NAME ROOT_DIRECTORY FILES...
@@ -69,16 +70,29 @@ if __name__ == "__main__":
         print(USAGE.format(sys.argv[0]))
         sys.exit(1)
 
-    os.chdir(root_dir)
+    if archive_type == "tar" and which("tar") is not None:
+        import subprocess
+        import shlex
+        tar = which("tar")
+        tar_cmd = "{tar} -C {root_dir} -czf {archive_name} {files}".format(
+            tar=tar,
+            root_dir=root_dir,
+            archive_name=archive_name,
+            files=" ".join(files),
+        )
+        subprocess.run(shlex.split(tar_cmd))
+        sys.exit(0)
 
     if archive_type == "zip":
-        from zipfile import ZipFile
-        archive = ZipFile(archive_name, mode='w')
+        import zipfile
+        archive = zipfile.ZipFile(archive_name, mode='w', compression=zipfile.ZIP_DEFLATED)
         add_file = archive.write
     else:
         import tarfile
         archive = tarfile.open(archive_name, mode='w:gz')
         add_file = archive.add
+
+    os.chdir(root_dir)
 
     for filename in files:
         add_file(filename)
@@ -596,8 +610,12 @@ def generate(env):  # pylint: disable=too-many-statements
     # TODO: make this configurable?
     env[ROLE_DEPENDENCIES] = {
         "debug": [
-            "runtime",
-            "base",
+            # TODO: Debug should depend on these when making packages, but shouldn't when building
+            # the legacy tarball. Probably fuel for the above configurability fire. For now, make it not
+            # depend so that we can get AIB in place for the dist builders.
+
+            # "runtime",
+            # "base",
         ],
         "dev": [
             "runtime",

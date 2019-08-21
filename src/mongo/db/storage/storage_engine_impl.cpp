@@ -660,6 +660,10 @@ StatusWith<std::vector<std::string>> StorageEngineImpl::extendBackupCursor(
     return _engine->extendBackupCursor(opCtx);
 }
 
+bool StorageEngineImpl::supportsCheckpoints() const {
+    return _engine->supportsCheckpoints();
+}
+
 bool StorageEngineImpl::isDurable() const {
     return _engine->isDurable();
 }
@@ -854,11 +858,8 @@ void StorageEngineImpl::_onMinOfCheckpointAndOldestTimestampChanged(const Timest
             log() << "Removing drop-pending idents with drop timestamps before timestamp "
                   << timestamp;
             auto opCtx = cc().getOperationContext();
-            mongo::ServiceContext::UniqueOperationContext uOpCtx;
-            if (!opCtx) {
-                uOpCtx = cc().makeOperationContext();
-                opCtx = uOpCtx.get();
-            }
+            invariant(opCtx);
+
             _dropPendingIdentReaper.dropIdentsOlderThan(opCtx, timestamp);
         }
     }

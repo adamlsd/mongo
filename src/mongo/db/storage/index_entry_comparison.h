@@ -37,6 +37,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/storage/key_string.h"
 
 namespace mongo {
 
@@ -79,6 +80,18 @@ inline bool operator==(const IndexKeyEntry& lhs, const IndexKeyEntry& rhs) {
 inline bool operator!=(const IndexKeyEntry& lhs, const IndexKeyEntry& rhs) {
     return !(lhs == rhs);
 }
+
+/**
+ * Represents KeyString struct containing a KeyString::Value and its RecordId
+ */
+struct KeyStringEntry {
+    KeyStringEntry(KeyString::Value ks, RecordId loc) : keyString(ks), loc(loc) {
+        invariant(loc == KeyString::decodeRecordIdAtEnd(ks.getBuffer(), ks.getSize()));
+    }
+
+    const KeyString::Value keyString;
+    const RecordId loc;
+};
 
 /**
  * Describes a query that can be compared against an IndexKeyEntry in a way that allows
@@ -232,5 +245,14 @@ Status buildDupKeyErrorStatus(const BSONObj& key,
                               const NamespaceString& collectionNamespace,
                               const std::string& indexName,
                               const BSONObj& keyPattern);
+
+/**
+ * Returns the formatted error status about the duplicate KeyString.
+ */
+Status buildDupKeyErrorStatus(const KeyString::Value& keyString,
+                              const NamespaceString& collectionNamespace,
+                              const std::string& indexName,
+                              const BSONObj& keyPattern,
+                              const Ordering& ordering);
 
 }  // namespace mongo

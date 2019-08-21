@@ -224,18 +224,14 @@ public:
             const auto& cmd = request();
             const auto tcs = TransactionCoordinatorService::get(opCtx);
 
-            boost::optional<Future<txn::CommitDecision>> coordinatorDecisionFuture;
-
-            if (!cmd.getParticipants().empty()) {
-                coordinatorDecisionFuture =
-                    tcs->coordinateCommit(opCtx,
-                                          *opCtx->getLogicalSessionId(),
-                                          *opCtx->getTxnNumber(),
-                                          validateParticipants(opCtx, cmd.getParticipants()));
-            } else {
-                coordinatorDecisionFuture = tcs->recoverCommit(
-                    opCtx, *opCtx->getLogicalSessionId(), *opCtx->getTxnNumber());
-            }
+            // Coordinate the commit, or recover the commit decision from disk if this command was
+            // sent without a participant list.
+            auto coordinatorDecisionFuture = cmd.getParticipants().empty()
+                ? tcs->recoverCommit(opCtx, *opCtx->getLogicalSessionId(), *opCtx->getTxnNumber())
+                : tcs->coordinateCommit(opCtx,
+                                        *opCtx->getLogicalSessionId(),
+                                        *opCtx->getTxnNumber(),
+                                        validateParticipants(opCtx, cmd.getParticipants()));
 
             ON_BLOCK_EXIT([opCtx] {
                 // A decision will most likely have been written from a different OperationContext
@@ -280,16 +276,15 @@ public:
             {
                 MongoDOperationContextSession sessionTxnState(opCtx);
                 auto txnParticipant = TransactionParticipant::get(opCtx);
-
                 txnParticipant.beginOrContinue(opCtx,
                                                *opCtx->getTxnNumber(),
                                                false /* autocommit */,
                                                boost::none /* startTransaction */);
 
-                try {
-                    txnParticipant.abortTransactionIfNotPrepared(opCtx);
-                } catch (const ExceptionFor<ErrorCodes::TransactionCommitted>&) {
+                if (txnParticipant.transactionIsCommitted())
                     return;
+                if (txnParticipant.transactionIsInProgress()) {
+                    txnParticipant.abortTransaction(opCtx);
                 }
 
                 participantExitPrepareFuture = txnParticipant.onExitPrepare();

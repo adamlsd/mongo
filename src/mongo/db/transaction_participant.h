@@ -46,7 +46,7 @@
 #include "mongo/db/session.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/session_txn_record_gen.h"
-#include "mongo/db/single_transaction_stats.h"
+#include "mongo/db/stats/single_transaction_stats.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/transaction_metrics_observer.h"
@@ -495,34 +495,10 @@ public:
                                        Timestamp commitTimestamp,
                                        boost::optional<repl::OpTime> commitOplogEntryOpTime);
 
-        /**
-         * Aborts the transaction, if it is not in the "prepared" state.
-         */
-        void abortTransactionIfNotPrepared(OperationContext* opCtx);
-
         /*
          * Aborts the transaction, releasing transaction resources.
          */
-        void abortActiveTransaction(OperationContext* opCtx);
-
-        /*
-         * If the transaction is prepared, stash its resources. If not, it's the same as
-         * abortActiveTransaction.
-         */
-        void abortActiveUnpreparedOrStashPreparedTransaction(OperationContext* opCtx);
-
-        /**
-         * Abort the transaction and write an abort oplog entry unconditionally.
-         */
-        void abortTransactionForStepUp(OperationContext* opCtx);
-
-        /**
-         * Aborts the storage transaction of the prepared transaction on this participant by
-         * releasing its resources. Also invalidates the session and the current transaction state.
-         * Avoids writing any oplog entries or making any changes to the transaction table since the
-         * state for prepared transactions will be re-constituted during replication recovery.
-         */
-        void abortPreparedTransactionForRollback(OperationContext* opCtx);
+        void abortTransaction(OperationContext* opCtx);
 
         /**
          * Adds a stored operation to the list of stored operations for the current multi-document
@@ -701,11 +677,10 @@ public:
         void _stashActiveTransaction(OperationContext* opCtx);
 
         // Abort the transaction if it's in one of the expected states and clean up the transaction
-        // states associated with the opCtx.
-        // If 'writeOplog' is true, logs an 'abortTransaction' oplog entry if writes are replicated.
+        // states associated with the opCtx.  Write an abort oplog entry if specified by the
+        // needToWriteAbortEntry state bool.
         void _abortActiveTransaction(OperationContext* opCtx,
-                                     TransactionState::StateSet expectedStates,
-                                     bool writeOplog);
+                                     TransactionState::StateSet expectedStates);
 
         // Aborts a prepared transaction.
         void _abortActivePreparedTransaction(OperationContext* opCtx);
@@ -954,6 +929,12 @@ private:
         // opTime. Used for fast retryability check and retrieving the previous write's data without
         // having to scan through the oplog.
         CommittedStatementTimestampMap activeTxnCommittedStatements;
+
+        // Set to true if we need to write an "abort" oplog entry in the case of an abort.  This
+        // is the case when we have (or may have) written or replicated an oplog entry for the
+        // transaction.
+        bool needToWriteAbortEntry{false};
+
     } _p;
 };
 

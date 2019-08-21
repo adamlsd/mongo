@@ -78,23 +78,6 @@ public:
                                                        bool dupsAllowed) = 0;
 
     /**
-     * Insert an entry into the index with the specified key and RecordId.
-     *
-     * @param opCtx the transaction under which the insert takes place
-     * @param dupsAllowed true if duplicate keys are allowed, and false
-     *        otherwise
-     *
-     * @return Status::OK() if the insert succeeded,
-     *
-     *         ErrorCodes::DuplicateKey if 'key' already exists in 'this' index
-     *         at a RecordId other than 'loc' and duplicates were not allowed
-     */
-    virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& loc,
-                          bool dupsAllowed) = 0;
-
-    /**
      * Insert an entry into the index with the specified KeyString and RecordId.
      *
      * @param opCtx the transaction under which the insert takes place
@@ -112,18 +95,6 @@ public:
                           bool dupsAllowed) = 0;
 
     /**
-     * Remove the entry from the index with the specified key and RecordId.
-     *
-     * @param opCtx the transaction under which the remove takes place
-     * @param dupsAllowed true if duplicate keys are allowed, and false
-     *        otherwise
-     */
-    virtual void unindex(OperationContext* opCtx,
-                         const BSONObj& key,
-                         const RecordId& loc,
-                         bool dupsAllowed) = 0;
-
-    /**
      * Remove the entry from the index with the specified KeyString and RecordId.
      *
      * @param opCtx the transaction under which the remove takes place
@@ -136,13 +107,13 @@ public:
                          bool dupsAllowed) = 0;
 
     /**
-     * Return ErrorCodes::DuplicateKey if there is more than one occurence of 'key' in this index,
-     * and Status::OK() otherwise. This call is only allowed on a unique index, and will invariant
-     * otherwise.
+     * Return ErrorCodes::DuplicateKey if there is more than one occurence of 'KeyString' in this
+     * index, and Status::OK() otherwise. This call is only allowed on a unique index, and will
+     * invariant otherwise.
      *
      * @param opCtx the transaction under which this operation takes place
      */
-    virtual Status dupKeyCheck(OperationContext* opCtx, const BSONObj& key) = 0;
+    virtual Status dupKeyCheck(OperationContext* opCtx, const KeyString::Value& keyString) = 0;
 
     /**
      * Attempt to reduce the storage space used by this index via compaction. Only called if the
@@ -320,18 +291,17 @@ public:
         virtual boost::optional<IndexKeyEntry> seek(const IndexSeekPoint& seekPoint,
                                                     RequestedInfo parts = kKeyAndLoc) = 0;
 
+        virtual boost::optional<KeyStringEntry> seek(const KeyString::Value& keyString,
+                                                     bool inclusive) = 0;
         /**
          * Seeks to a key with a hint to the implementation that you only want exact matches. If
          * an exact match can't be found, boost::none will be returned and the resulting
          * position of the cursor is unspecified.
          */
         virtual boost::optional<IndexKeyEntry> seekExact(const BSONObj& key,
-                                                         RequestedInfo parts = kKeyAndLoc) {
-            auto kv = seek(key, true, kKeyAndLoc);
-            if (kv && kv->key.woCompare(key, BSONObj(), /*considerFieldNames*/ false) == 0)
-                return kv;
-            return {};
-        }
+                                                         RequestedInfo parts = kKeyAndLoc) = 0;
+
+        virtual boost::optional<KeyStringEntry> seekExact(const KeyString::Value& keyString) = 0;
 
         //
         // Saving and restoring state

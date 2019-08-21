@@ -103,6 +103,8 @@ public:
 
     virtual StatusWith<std::vector<std::string>> extendBackupCursor(OperationContext* opCtx);
 
+    virtual bool supportsCheckpoints() const override;
+
     virtual bool isDurable() const;
 
     virtual bool isEphemeral() const;
@@ -220,19 +222,19 @@ public:
             }
 
         private:
-            void _onCheckpointTimestampChanged(Timestamp newTimestamp) noexcept {
+            void _onCheckpointTimestampChanged(Timestamp newTimestamp) {
                 _callback(newTimestamp);
             }
 
-            void _onOldestTimestampChanged(Timestamp newTimestamp) noexcept {
+            void _onOldestTimestampChanged(Timestamp newTimestamp) {
                 _callback(newTimestamp);
             }
 
-            void _onStableTimestampChanged(Timestamp newTimestamp) noexcept {
+            void _onStableTimestampChanged(Timestamp newTimestamp) {
                 _callback(newTimestamp);
             }
 
-            void _onMinOfCheckpointAndOldestTimestampChanged(Timestamp newTimestamp) noexcept {
+            void _onMinOfCheckpointAndOldestTimestampChanged(Timestamp newTimestamp) {
                 _callback(newTimestamp);
             }
 

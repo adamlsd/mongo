@@ -378,6 +378,25 @@ void appendClusterAndOperationTime(OperationContext* opCtx,
     operationTime.appendAsOperationTime(commandBodyFieldsBob);
 }
 
+namespace {
+void _abortUnpreparedOrStashPreparedTransaction(
+    OperationContext* opCtx, TransactionParticipant::Participant* txnParticipant) {
+    const bool isPrepared = txnParticipant->transactionIsPrepared();
+    try {
+        if (isPrepared)
+            txnParticipant->stashTransactionResources(opCtx);
+        else if (txnParticipant->transactionIsOpen())
+            txnParticipant->abortTransaction(opCtx);
+    } catch (...) {
+        // It is illegal for this to throw so we catch and log this here for diagnosability.
+        severe() << "Caught exception during transaction " << opCtx->getTxnNumber()
+                 << (isPrepared ? " stash " : " abort ") << opCtx->getLogicalSessionId()->toBSON()
+                 << ": " << exceptionToStatus();
+        std::terminate();
+    }
+}
+}  // namespace
+
 void invokeWithSessionCheckedOut(OperationContext* opCtx,
                                  CommandInvocation* invocation,
                                  const OperationSessionInfoFromClient& sessionOptions,
@@ -411,8 +430,11 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
         // transactions on failure to unstash the transaction resources to opCtx. We don't want to
         // have this error guard for beginOrContinue as it can abort the transaction for any
         // accidental invalid statements in the transaction.
-        auto abortOnError = makeGuard(
-            [&txnParticipant, opCtx] { txnParticipant.abortTransactionIfNotPrepared(opCtx); });
+        auto abortOnError = makeGuard([&txnParticipant, opCtx] {
+            if (txnParticipant.transactionIsInProgress()) {
+                txnParticipant.abortTransaction(opCtx);
+            }
+        });
 
         txnParticipant.unstashTransactionResources(opCtx, invocation->definition()->getName());
 
@@ -420,8 +442,8 @@ void invokeWithSessionCheckedOut(OperationContext* opCtx,
         abortOnError.dismiss();
     }
 
-    auto guard = makeGuard([&txnParticipant, opCtx] {
-        txnParticipant.abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
+    auto guard = makeGuard([opCtx, &txnParticipant] {
+        _abortUnpreparedOrStashPreparedTransaction(opCtx, &txnParticipant);
     });
 
     try {
@@ -1087,19 +1109,18 @@ void receivedKillCursors(OperationContext* opCtx, const Message& m) {
     DbMessage dbmessage(m);
     int n = dbmessage.pullInt();
 
+    if (n > 2000) {
+        (n < 30000 ? warning() : error()) << "receivedKillCursors, n=" << n;
+        verify(n < 30000);
+    }
+
     uassert(13659, "sent 0 cursors to kill", n != 0);
     massert(13658,
             str::stream() << "bad kill cursors size: " << m.dataSize(),
             m.dataSize() == 8 + (8 * n));
     uassert(13004, str::stream() << "sent negative cursors to kill: " << n, n >= 1);
 
-    if (n > 2000) {
-        (n < 30000 ? warning() : error()) << "receivedKillCursors, n=" << n;
-        verify(n < 30000);
-    }
-
     const char* cursorArray = dbmessage.getArray(n);
-
     int found = runOpKillCursors(opCtx, static_cast<size_t>(n), cursorArray);
 
     if (shouldLog(logger::LogSeverity::Debug(1)) || found != n) {

@@ -82,22 +82,14 @@ public:
     virtual SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx,
                                                        bool dupsAllowed) override;
     virtual Status insert(OperationContext* opCtx,
-                          const BSONObj& key,
-                          const RecordId& loc,
-                          bool dupsAllowed) override;
-    virtual Status insert(OperationContext* opCtx,
                           const KeyString::Value& keyString,
                           const RecordId& loc,
                           bool dupsAllowed) override;
     virtual void unindex(OperationContext* opCtx,
-                         const BSONObj& key,
-                         const RecordId& loc,
-                         bool dupsAllowed) override;
-    virtual void unindex(OperationContext* opCtx,
                          const KeyString::Value& keyString,
                          const RecordId& loc,
                          bool dupsAllowed) override;
-    virtual Status dupKeyCheck(OperationContext* opCtx, const BSONObj& key) override;
+    virtual Status dupKeyCheck(OperationContext* opCtx, const KeyString::Value& keyString) override;
     virtual void fullValidate(OperationContext* opCtx,
                               long long* numKeysOut,
                               ValidateResults* fullResults) const override;
@@ -134,6 +126,12 @@ public:
                                                     RequestedInfo parts = kKeyAndLoc) override;
         virtual boost::optional<IndexKeyEntry> seek(const IndexSeekPoint& seekPoint,
                                                     RequestedInfo parts = kKeyAndLoc) override;
+        virtual boost::optional<KeyStringEntry> seek(const KeyString::Value& keyStringValue,
+                                                     bool inclusive) override;
+        virtual boost::optional<IndexKeyEntry> seekExact(const BSONObj& key,
+                                                         RequestedInfo parts = kKeyAndLoc) override;
+        virtual boost::optional<KeyStringEntry> seekExact(
+            const KeyString::Value& keyStringValue) override;
         virtual void save() override;
         virtual void restore() override;
         virtual void detachFromOperationContext() override;
@@ -146,6 +144,8 @@ public:
         bool checkCursorValid();
         // This is a helper function for seek.
         boost::optional<IndexKeyEntry> seekAfterProcessing(BSONObj finalKey, bool inclusive);
+        boost::optional<KeyStringEntry> seekAfterProcessing(const KeyString::Value& keyString,
+                                                            bool inclusive);
         OperationContext* _opCtx;
         // This is the "working copy" of the master "branch" in the git analogy.
         StringStore* _workingCopy;

@@ -78,7 +78,9 @@ BSONObj listFiles(const BSONObj& _args, void* data) {
     stringstream ss;
     ss << "listFiles: no such directory: " << rootname;
     string msg = ss.str();
-    uassert(12581, msg.c_str(), boost::filesystem::exists(root));
+    uassert(12581,
+            msg.c_str(),
+            boost::filesystem::exists(root) && boost::filesystem::is_directory(root));
 
 
     for (boost::filesystem::directory_iterator i(root), end; i != end; ++i)

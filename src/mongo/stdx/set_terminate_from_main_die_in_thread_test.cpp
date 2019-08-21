@@ -42,16 +42,16 @@ namespace {
 namespace stdx = ::mongo::stdx;
 
 void writeFeedbackAndCleanlyExit() {
-    std::cerr << "Entered terminate handler." << std::endl;
+    std::cout << "Entered terminate handler." << std::endl;
     exit(EXIT_SUCCESS);
 }
 
 void testTerminateDispatch() {
-    std::cerr << "Setting terminate handler" << std::endl;
+    std::cout << "Setting terminate handler" << std::endl;
     stdx::set_terminate(writeFeedbackAndCleanlyExit);
-    std::cerr << "Starting background thread (which will terminate)." << std::endl;
+    std::cout << "Starting background thread (which will terminate)." << std::endl;
     stdx::thread{[] {
-        std::cerr << "Calling terminate from background thread." << std::endl;
+        std::cout << "Calling terminate from background thread." << std::endl;
         std::terminate();
     }}
         .join();

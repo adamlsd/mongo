@@ -48,6 +48,7 @@ enum ValidateCmdLevel : int { kValidateNormal = 0x01, kValidateFull = 0x02 };
  */
 class ValidateAdaptor {
     using ValidateResultsMap = std::map<std::string, ValidateResults>;
+
 public:
     ValidateAdaptor(OperationContext* opCtx,
                     IndexConsistency* indexConsistency,

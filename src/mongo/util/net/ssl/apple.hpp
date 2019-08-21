@@ -62,8 +62,7 @@ struct CFReleaser {
  * method, or that it has been explicitly retained.
  */
 template <typename T>
-using CFUniquePtr =
-    std::unique_ptr<typename std::remove_pointer<T>::type, detail_ssl_apple::CFReleaser<T>>;
+using CFUniquePtr = std::unique_ptr<typename std::remove_pointer<T>::type, CFReleaser<T>>;
 
 /**
  * Equivalent of OpenSSL's SSL_CTX type.

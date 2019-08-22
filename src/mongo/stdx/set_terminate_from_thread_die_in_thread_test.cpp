@@ -27,8 +27,6 @@
  *    it in the license file.
  */
 
-#define MONGO_TEST_STDX_SET_TERMINATE
-
 #include "mongo/stdx/exception.h"
 
 #include <stdlib.h>
@@ -65,4 +63,5 @@ void testTerminateDispatch() {
 
 int main() {
     testTerminateDispatch();
+    return EXIT_FAILURE;
 }

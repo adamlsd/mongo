@@ -53,26 +53,15 @@ class thread;
 // This must be the same as the definition in standard.  Do not alter this alias.
 using ::std::terminate_handler;
 
+#if defined(_WIN32)
 class TerminateHandlerDetailsInterface {
     friend ::mongo::stdx::thread;
     static void dispatch() noexcept;
 };
 
-namespace set_terminate_details {
-terminate_handler set_terminate_impl(terminate_handler) noexcept;
-terminate_handler get_terminate_impl() noexcept;
-void setup_terminate_system_for_testing() noexcept;
-}  // namespace set_terminate_details
+terminate_handler set_terminate(const terminate_handler handler);
 
-#if defined(_WIN32) || defined(MONGO_TEST_STDX_SET_TERMINATE)
-
-inline terminate_handler set_terminate(const terminate_handler handler) noexcept {
-    return set_terminate_details::set_terminate_impl(handler);
-}
-
-inline terminate_handler get_terminate() noexcept {
-    return set_terminate_details::get_terminate_impl();
-}
+terminate_handler get_terminate();
 
 #else
 using ::std::get_terminate;

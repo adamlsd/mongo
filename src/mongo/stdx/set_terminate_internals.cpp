@@ -33,6 +33,7 @@
 #include <atomic>
 #include <utility>
 
+#if defined(_WIN32)
 
 namespace mongo {
 namespace stdx {
@@ -55,36 +56,30 @@ void registerTerminationHook() noexcept {
 
 
 [[maybe_unused]] const int initializeTerminationHandler = []() noexcept {
-#if defined(_WIN32)
     registerTerminationHook();
-#endif
     return 0;
 }
 ();
 
 }  // namespace
+}  // namespace stdx
 
-void set_terminate_details::setup_terminate_system_for_testing() noexcept {
-#if !defined(_WIN32)
-    registerTerminationHook();
-#endif
-}
 
-stdx::terminate_handler set_terminate_details::set_terminate_impl(
-    const stdx::terminate_handler handler) noexcept {
+stdx::terminate_handler stdx::set_terminate(const stdx::terminate_handler handler) noexcept {
     const auto oldHandler = terminationHandler.exchange(handler);
     if (oldHandler == &uninitializedTerminateHandler)
         std::abort();  // Do not let people set terminate before the initializer has run.
     return oldHandler;
 }
 
-stdx::terminate_handler set_terminate_details::get_terminate_impl() noexcept {
+stdx::terminate_handler stdx::get_terminate() noexcept {
     const auto currentHandler = terminationHandler.load();
     if (currentHandler == &uninitializedTerminateHandler)
         std::abort();  // Do not let people see the terminate handler before the initializer has
                        // run.
     return currentHandler;
 }
+}  // namespace mongo
 }  // namespace stdx
 
 void stdx::dispatch_impl() noexcept {
@@ -100,3 +95,4 @@ void stdx::TerminateHandlerDetailsInterface::dispatch() noexcept {
     return stdx::dispatch_impl();
 }
 }  // namespace mongo
+#endif

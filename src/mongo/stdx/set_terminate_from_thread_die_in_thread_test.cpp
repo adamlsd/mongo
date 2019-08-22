@@ -64,6 +64,5 @@ void testTerminateDispatch() {
 }  // namespace
 
 int main() {
-    stdx::set_terminate_details::setup_terminate_system_for_testing();
     testTerminateDispatch();
 }

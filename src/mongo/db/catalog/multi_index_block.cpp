@@ -82,8 +82,33 @@ void MultiIndexBlock::cleanUpAfterBuild(OperationContext* opCtx, Collection* col
         invariant(_collectionUUID.get() == collection->uuid());
     }
 
-    if (!_needToCleanup && !_indexes.empty()) {
+    if (_indexes.empty()) {
+        _buildIsCleanedUp = true;
+        return;
+    }
+
+    if (!_needToCleanup) {
         CollectionQueryInfo::get(collection).clearQueryCache();
+
+        // The temp tables cannot be dropped in commit() because commit() can be called multiple
+        // times on write conflict errors and the drop does not rollback in WUOWs.
+
+        // Make lock acquisition uninterruptible.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+
+        // Lock if it's not already locked, to ensure storage engine cannot be destructed out from
+        // underneath us.
+        boost::optional<Lock::GlobalLock> lk;
+        if (!opCtx->lockState()->isWriteLocked()) {
+            lk.emplace(opCtx, MODE_IS);
+        }
+
+        for (auto& index : _indexes) {
+            index.block->deleteTemporaryTables(opCtx);
+        }
+
+        _buildIsCleanedUp = true;
+        return;
     }
 
     // Make lock acquisition uninterruptible.
@@ -99,17 +124,6 @@ void MultiIndexBlock::cleanUpAfterBuild(OperationContext* opCtx, Collection* col
         collLock.emplace(opCtx, nss, MODE_X);
     }
 
-    if (!_needToCleanup || _indexes.empty()) {
-        // The temp tables cannot be dropped in commit() because commit() can be called multiple
-        // times on write conflict errors and the drop does not rollback in WUOWs.
-        for (auto& index : _indexes) {
-            index.block->deleteTemporaryTables(opCtx);
-        }
-
-        _buildIsCleanedUp = true;
-        return;
-    }
-
     while (true) {
         try {
             WriteUnitOfWork wunit(opCtx);
@@ -120,7 +134,6 @@ void MultiIndexBlock::cleanUpAfterBuild(OperationContext* opCtx, Collection* col
                 _indexes[i].block->deleteTemporaryTables(opCtx);
             }
 
-            auto replCoord = repl::ReplicationCoordinator::get(opCtx);
             // Nodes building an index on behalf of a user (e.g: `createIndexes`, `applyOps`) may
             // fail, removing the existence of the index from the catalog. This update must be
             // timestamped (unless the build is on an unreplicated collection). A failure from
@@ -130,20 +143,10 @@ void MultiIndexBlock::cleanUpAfterBuild(OperationContext* opCtx, Collection* col
                 // We must choose a timestamp to write with, as we don't have one handy in the
                 // recovery unit already.
 
-                // We need to avoid checking replication state if we do not hold the RSTL.  If we do
-                // not hold the RSTL, we must be a build started on a secondary via replication.
-                if (opCtx->lockState()->isRSTLLocked() &&
-                    replCoord->canAcceptWritesForDatabase(opCtx, "admin")) {
-                    opCtx->getServiceContext()->getOpObserver()->onOpMessage(
-                        opCtx,
-                        BSON("msg" << std::string(str::stream()
-                                                  << "Failing index builds. Coll: " << nss)));
-                } else {
-                    // Simply get a timestamp to write with here; we can't write to the oplog.
-                    repl::UnreplicatedWritesBlock uwb(opCtx);
-                    if (!IndexTimestampHelper::setGhostCommitTimestampForCatalogWrite(opCtx, nss)) {
-                        log() << "Did not timestamp index abort write.";
-                    }
+                // Simply get a timestamp to write with here; we can't write to the oplog.
+                repl::UnreplicatedWritesBlock uwb(opCtx);
+                if (!IndexTimestampHelper::setGhostCommitTimestampForCatalogWrite(opCtx, nss)) {
+                    log() << "Did not timestamp index abort write.";
                 }
             }
             wunit.commit();
@@ -573,7 +576,7 @@ Status MultiIndexBlock::insert(OperationContext* opCtx, const BSONObj& doc, cons
         }
 
         InsertResult result;
-        Status idxStatus(ErrorCodes::InternalError, "");
+        Status idxStatus = Status::OK();
         if (_indexes[i].bulk) {
             idxStatus = _indexes[i].bulk->insert(opCtx, doc, loc, _indexes[i].options);
         } else {

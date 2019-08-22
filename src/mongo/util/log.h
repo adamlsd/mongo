@@ -63,6 +63,13 @@ Status registerExtraLogContextFn(ExtraLogContextFn contextFn);
 
 }  // namespace logger
 
+/*
+ * Although this is a "header" file, it is only supposed to be included in C++ files.  The
+ * definitions of the following objects and functions (in the below anonymous namespace) will
+ * potentially differ by TU.  Therefore these names must remain with internal linkage.  This
+ * particular anoymous namespace in this header, therefore, is not an ODR problem but is instead a
+ * solution to an ODR problem which would arise.
+ */
 namespace {
 
 // Provide log component in global scope so that MONGO_LOG will always have a valid component.

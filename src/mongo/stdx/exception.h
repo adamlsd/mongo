@@ -59,9 +59,9 @@ class TerminateHandlerDetailsInterface {
     static void dispatch() noexcept;
 };
 
-terminate_handler set_terminate(const terminate_handler handler);
+terminate_handler set_terminate(const terminate_handler handler) noexcept;
 
-terminate_handler get_terminate();
+terminate_handler get_terminate() noexcept;
 
 #else
 using ::std::get_terminate;

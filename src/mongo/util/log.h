@@ -93,7 +93,7 @@ inline LogstreamBuilder severe() {
     return LogstreamBuilder(logger::globalLogDomain(),
                             getThreadName(),
                             logger::LogSeverity::Severe(),
-                            ::MongoLogDefaultComponent_component);
+                            MongoLogDefaultComponent_component);
 }
 
 inline LogstreamBuilder severe(logger::LogComponent component) {
@@ -108,7 +108,7 @@ inline LogstreamBuilder error() {
     return LogstreamBuilder(logger::globalLogDomain(),
                             getThreadName(),
                             logger::LogSeverity::Error(),
-                            ::MongoLogDefaultComponent_component);
+                            MongoLogDefaultComponent_component);
 }
 
 inline LogstreamBuilder error(logger::LogComponent component) {
@@ -123,7 +123,7 @@ inline LogstreamBuilder warning() {
     return LogstreamBuilder(logger::globalLogDomain(),
                             getThreadName(),
                             logger::LogSeverity::Warning(),
-                            ::MongoLogDefaultComponent_component);
+                            MongoLogDefaultComponent_component);
 }
 
 inline LogstreamBuilder warning(logger::LogComponent component) {
@@ -138,7 +138,7 @@ inline LogstreamBuilder log() {
     return LogstreamBuilder(logger::globalLogDomain(),
                             getThreadName(),
                             logger::LogSeverity::Log(),
-                            ::MongoLogDefaultComponent_component);
+                            MongoLogDefaultComponent_component);
 }
 
 /**
@@ -153,7 +153,7 @@ inline LogstreamBuilder logNoCache() {
     return LogstreamBuilder(logger::globalLogDomain(),
                             getThreadName(),
                             logger::LogSeverity::Log(),
-                            ::MongoLogDefaultComponent_component,
+                            MongoLogDefaultComponent_component,
                             false);
 }
 
@@ -175,7 +175,7 @@ inline bool shouldLog(logger::LogComponent logComponent, logger::LogSeverity sev
 }
 
 inline bool shouldLog(logger::LogSeverity severity) {
-    return shouldLog(::MongoLogDefaultComponent_component, severity);
+    return shouldLog(MongoLogDefaultComponent_component, severity);
 }
 
 }  // namespace

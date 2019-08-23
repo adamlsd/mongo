@@ -64,7 +64,6 @@ void registerTerminationHook() noexcept {
 }  // namespace
 }  // namespace stdx
 
-
 stdx::terminate_handler stdx::set_terminate(const stdx::terminate_handler handler) noexcept {
     const auto oldHandler = terminationHandler.exchange(handler);
     if (oldHandler == &uninitializedTerminateHandler)
@@ -79,8 +78,6 @@ stdx::terminate_handler stdx::get_terminate() noexcept {
                        // run.
     return currentHandler;
 }
-}  // namespace mongo
-}  // namespace stdx
 
 void stdx::dispatch_impl() noexcept {
     if (const ::std::terminate_handler handler = terminationHandler.load())

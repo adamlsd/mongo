@@ -64,7 +64,7 @@ terminate_handler set_terminate(const terminate_handler handler) noexcept;
 terminate_handler get_terminate() noexcept;
 
 #else
-using ::std::get_terminate;
-using ::std::set_terminate;
+using ::std::get_terminate;  // NOLINT
+using ::std::set_terminate;  // NOLINT
 #endif
 }  // namespace mongo::stdx

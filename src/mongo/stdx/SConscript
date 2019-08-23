@@ -44,41 +44,41 @@ env.CppUnitTest(
 # robust testing of this mechanism.
 
 # Needs to be a different test -- It has to have direct control over the `main()` entry point.
-env.CppUnitTest(
+env.RegisterUnitTest(env.Program(
     target='set_terminate_dispatch_test',
     source=[
         'set_terminate_dispatch_test.cpp',
     ],
     LIBDEPS=[
     ]
-)
+)[0])
 
 # Needs to be a different test -- It has to have direct control over the `main()` entry point.
-env.CppUnitTest(
+env.RegisterUnitTest(env.Program(
     target='set_terminate_from_main_die_in_thread_test',
     source=[
         'set_terminate_from_main_die_in_thread_test.cpp',
     ],
     LIBDEPS=[
     ]
-)
+)[0])
 
 # Needs to be a different test -- It has to have direct control over the `main()` entry point.
-env.CppUnitTest(
+env.RegisterUnitTest(env.Program(
     target='set_terminate_from_thread_die_in_main_test',
     source=[
         'set_terminate_from_thread_die_in_main_test.cpp',
     ],
     LIBDEPS=[
     ]
-)
+)[0])
 
 # Needs to be a different test -- It has to have direct control over the `main()` entry point.
-env.CppUnitTest(
+env.RegisterUnitTest(env.Program(
     target='set_terminate_from_thread_die_in_thread_test',
     source=[
         'set_terminate_from_thread_die_in_thread_test.cpp',
     ],
     LIBDEPS=[
     ]
-)
+)[0])

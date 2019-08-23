@@ -50,6 +50,7 @@
 #include "mongo/db/query/collection_query_info.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/write_unit_of_work.h"
 #include "mongo/logger/redaction.h"
@@ -62,6 +63,33 @@
 #include "mongo/util/uuid.h"
 
 namespace mongo {
+
+namespace {
+
+/**
+ * We do not need synchronization with step up and step down. Dropping the RSTL is important because
+ * otherwise if we held the RSTL it would create deadlocks with prepared transactions on step up and
+ * step down.  A deadlock could result if the index build was attempting to acquire a Collection S
+ * or X lock while a prepared transaction held a Collection IX lock, and a step down was waiting to
+ * acquire the RSTL in mode X.
+ * We should only drop the RSTL while in FCV 4.2, as prepared transactions can only
+ * occur in FCV 4.2.
+ */
+void _unlockRSTLForIndexCleanup(OperationContext* opCtx) {
+    if (!serverGlobalParams.featureCompatibility.isVersionInitialized()) {
+        return;
+    }
+
+    if (serverGlobalParams.featureCompatibility.getVersion() !=
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
+        return;
+    }
+
+    opCtx->lockState()->unlockRSTLforPrepare();
+    invariant(!opCtx->lockState()->isRSTLLocked());
+}
+
+}  // namespace
 
 MONGO_FAIL_POINT_DEFINE(hangAfterSettingUpIndexBuild);
 MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuild);
@@ -89,6 +117,26 @@ void MultiIndexBlock::cleanUpAfterBuild(OperationContext* opCtx, Collection* col
 
     if (!_needToCleanup) {
         CollectionQueryInfo::get(collection).clearQueryCache();
+
+        // The temp tables cannot be dropped in commit() because commit() can be called multiple
+        // times on write conflict errors and the drop does not rollback in WUOWs.
+
+        // Make lock acquisition uninterruptible.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+
+        // Lock if it's not already locked, to ensure storage engine cannot be destructed out from
+        // underneath us.
+        boost::optional<Lock::GlobalLock> lk;
+        if (!opCtx->lockState()->isWriteLocked()) {
+            lk.emplace(opCtx, MODE_IS);
+        }
+
+        for (auto& index : _indexes) {
+            index.block->deleteTemporaryTables(opCtx);
+        }
+
+        _buildIsCleanedUp = true;
+        return;
     }
 
     // Make lock acquisition uninterruptible.
@@ -101,18 +149,13 @@ void MultiIndexBlock::cleanUpAfterBuild(OperationContext* opCtx, Collection* col
 
     if (!opCtx->lockState()->isCollectionLockedForMode(nss, MODE_X)) {
         dbLock.emplace(opCtx, nss.db(), MODE_IX);
+        // Since DBLock implicitly acquires RSTL, we release the RSTL after acquiring the database
+        // lock. Additionally, the RSTL has to be released before acquiring a strong lock (MODE_X)
+        // on the collection to avoid potential deadlocks.
+        _unlockRSTLForIndexCleanup(opCtx);
         collLock.emplace(opCtx, nss, MODE_X);
-    }
-
-    if (!_needToCleanup) {
-        // The temp tables cannot be dropped in commit() because commit() can be called multiple
-        // times on write conflict errors and the drop does not rollback in WUOWs.
-        for (auto& index : _indexes) {
-            index.block->deleteTemporaryTables(opCtx);
-        }
-
-        _buildIsCleanedUp = true;
-        return;
+    } else {
+        _unlockRSTLForIndexCleanup(opCtx);
     }
 
     while (true) {

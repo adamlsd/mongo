@@ -11,6 +11,11 @@ def exists(env):
 _unittests = []
 def register_unit_test(env, test):
     _unittests.append(test.path)
+    env.Command(
+        target="#@{}".format(os.path.basename(test.path)),
+        source=test,
+        action="${SOURCES[0]}"
+    )
     env.Alias('$UNITTEST_ALIAS', test)
 
 def unit_test_list_builder_action(env, target, source):
@@ -44,12 +49,8 @@ def build_cpp_unit_test(env, target, source, **kwargs):
 
     hygienic = env.GetOption('install-mode') == 'hygienic'
     if not hygienic:
-        installed_test = env.Install('#/build/unittests/', result[0])
-        env.Command(
-            target="#@{}".format(os.path.basename(installed_test[0].path)),
-            source=installed_test,
-            action="${SOURCES[0]}"
-        )
+        #installed_test = env.Install('#/build/unittests/', result[0])
+        pass
     else:
         test_bin_name = os.path.basename(result[0].path)
         env.Command(

@@ -100,6 +100,7 @@ MONGO_FAIL_POINT_DEFINE(rsStopGetMore);
 MONGO_FAIL_POINT_DEFINE(respondWithNotPrimaryInCommandDispatch);
 MONGO_FAIL_POINT_DEFINE(skipCheckingForNotMasterInCommandDispatch);
 MONGO_FAIL_POINT_DEFINE(waitAfterReadCommandFinishesExecution);
+MONGO_FAIL_POINT_DEFINE(sleepMillisAfterCommandExecutionBegins);
 
 // Tracks the number of times a legacy unacknowledged write failed due to
 // not master error resulted in network disconnection.
@@ -664,6 +665,16 @@ void execCommandDatabase(OperationContext* opCtx,
             CurOp::get(opCtx)->setCommand_inlock(command);
         }
 
+        MONGO_FAIL_POINT_BLOCK(sleepMillisAfterCommandExecutionBegins, arg) {
+            const BSONObj& data = arg.getData();
+            auto numMillis = data["millis"].numberInt();
+            auto commands = data["commands"].Obj().getFieldNames<std::set<std::string>>();
+            // Only sleep for one of the specified commands.
+            if (commands.find(command->getName()) != commands.end()) {
+                mongo::sleepmillis(numMillis);
+            }
+        }
+
         // TODO: move this back to runCommands when mongos supports OperationContext
         // see SERVER-18515 for details.
         rpc::readRequestMetadata(opCtx, request.body, command->requiresAuth());
@@ -881,6 +892,7 @@ void execCommandDatabase(OperationContext* opCtx,
         }
 
         behaviors.waitForReadConcern(opCtx, invocation.get(), request);
+        behaviors.setPrepareConflictBehaviorForReadConcern(opCtx, invocation.get());
 
         try {
             if (!runCommandImpl(opCtx,
@@ -1111,7 +1123,7 @@ void receivedKillCursors(OperationContext* opCtx, const Message& m) {
 
     if (n > 2000) {
         (n < 30000 ? warning() : error()) << "receivedKillCursors, n=" << n;
-        verify(n < 30000);
+        uassert(51250, "must kill fewer than 30000 cursors", n < 30000);
     }
 
     uassert(13659, "sent 0 cursors to kill", n != 0);

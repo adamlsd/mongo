@@ -29,34 +29,35 @@
 
 #pragma once
 
-#include "mongo/db/catalog/validate_adaptor.h"
-
-namespace mongo {
-
-class OperationContext;
-class Collection;
-struct ValidateResults;
-class BSONObjBuilder;
-class Status;
-
-namespace CollectionValidation {
+#include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/namespace_string.h"
 
 /**
- * Expects the caller to hold no locks.
- *
- * Background validation does not support full validation and so the combination of level =
- * 'kValidateTrue' and background = 'True' is prohibited.
- *
- * @return OK if the validate run successfully
- *         OK will be returned even if corruption is found
- *         details will be in 'results'.
+ * Formats Aggregation Pipeline results as legacy mapReduce output.
  */
-Status validate(OperationContext* opCtx,
-                const NamespaceString& nss,
-                ValidateCmdLevel level,
-                bool background,
-                ValidateResults* results,
-                BSONObjBuilder* output);
+namespace mongo::map_reduce_output_format {
 
-}  // namespace CollectionValidation
-}  // namespace mongo
+/**
+ * Appends fields to 'resultBuilder' as if 'documents' was a response from the mapReduce command
+ * with inline output. 'verbose' causes extra fields to be appended to the response in accordance
+ * with the verbose option on the mapReduce command. 'inMongos' indicates that we are using the
+ * format that was historically sent from mongos. If it isn't set, we will use the mongod format.
+ */
+void appendInlineResponse(BSONArray&& documents,
+                          bool verbose,
+                          bool inMongos,
+                          BSONObjBuilder* resultBuilder);
+
+/**
+ * Appends fields to 'resultBuilder' to formulate a response that would be given if the mapReduce
+ * command had written output to the collection named by 'outCollNss'. 'verbose' causes extra fields
+ * to be appended to the response in accordance with the verbose option on the mapReduce command.
+ * 'inMongos' indicates that we are using the format that was historically sent from mongos. If it
+ * isn't set, we will use the mongod format.
+ */
+void appendOutResponse(NamespaceString outCollNss,
+                       bool verbose,
+                       bool inMongos,
+                       BSONObjBuilder* resultBuilder);
+
+}  // namespace mongo::map_reduce_output_format

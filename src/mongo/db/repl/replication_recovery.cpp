@@ -324,11 +324,11 @@ void ReplicationRecoveryImpl::_recoverFromUnstableCheckpoint(OperationContext* o
     //
     // Not waiting for checkpoint durability here can result in a scenario where the node takes
     // writes and persists them to the oplog, but crashes before a stable checkpoint persists a
-    // "recovery timestamp". The typical startup path for data-bearing nodes with 4.0 is to use
-    // the recovery timestamp to determine where to play oplog forward from. As this method shows,
-    // when a recovery timestamp does not exist, the applied through is used to determine where to
-    // start playing oplog entries from.
-    opCtx->recoveryUnit()->waitUntilUnjournaledWritesDurable();
+    // "recovery timestamp". The typical startup path for data-bearing nodes is to use the recovery
+    // timestamp to determine where to play oplog forward from. As this method shows, when a
+    // recovery timestamp does not exist, the applied through is used to determine where to start
+    // playing oplog entries from.
+    opCtx->recoveryUnit()->waitUntilUnjournaledWritesDurable(opCtx);
 }
 
 void ReplicationRecoveryImpl::_applyToEndOfOplog(OperationContext* opCtx,
@@ -504,7 +504,7 @@ void ReplicationRecoveryImpl::_truncateOplogIfNeededAndThenClearOplogTruncateAft
     // Clear the oplogTruncateAfterPoint now that we have removed any holes that might exist in the
     // oplog -- and so that we do not truncate future entries erroneously.
     _consistencyMarkers->setOplogTruncateAfterPoint(opCtx, {});
-    opCtx->recoveryUnit()->waitUntilDurable();
+    opCtx->recoveryUnit()->waitUntilDurable(opCtx);
 }
 
 }  // namespace repl

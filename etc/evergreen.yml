@@ -221,6 +221,18 @@ variables:
   - func: "save hang analyzer debugger files"
   - func: "save disk statistics"
   - func: "save system resource information"
+  - command: shell.exec
+    type: setup
+    params:
+      working_dir: src
+      shell: bash
+      script: |
+        set -o verbose
+        set -o errexit
+
+        ./buildscripts/merge_corpus.sh
+  - func: "archive new corpus"
+  - func: "upload new corpus"
   - func: "remove files"
     vars:
       files: >-
@@ -532,18 +544,10 @@ functions:
       local_file: src/corpus.tgz
 
   "extract corpus": &extract_corpus
-    command: shell.exec
-    type: test
+    command: archive.auto_extract
     params:
-      shell: bash
-      script: |
-        set -o verbose
-        set -o errexit
-
-        target_dir="src/corpus"
-        mkdir -p $target_dir
-
-        tar -xzf corpus.tgz -C $target_dir
+        path: src/corpus.tgz
+        destination: src/corpus
 
   "archive new corpus": &archive_new_corpus
     command: archive.targz_pack
@@ -6835,6 +6839,16 @@ tasks:
       resmoke_args: --suites=concurrency_sharded_replication_with_balancer --excludeWithAnyTags=uses_transactions --storageEngine=wiredTiger
       resmoke_jobs_max: 1
 
+- <<: *task_template
+  name: concurrency_sharded_clusterwide_ops_add_remove_shards
+  tags: ["concurrency", "common", "read_concern_maj"]
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=concurrency_sharded_clusterwide_ops_add_remove_shards --storageEngine=wiredTiger
+      resmoke_jobs_max: 1
+
 - name: concurrency_sharded_causal_consistency_gen
   tags: ["concurrency"]
   commands:
@@ -8355,19 +8369,6 @@ task_groups:
   tasks:
   - compile_libfuzzertests
   - libfuzzertests
-  teardown_task:
-  - command: shell.exec
-    type: setup
-    params:
-      working_dir: src
-      shell: bash
-      script: |
-        set -o verbose
-        set -o errexit
-
-        ./buildscripts/merge_corpus.sh
-  - func: "archive new corpus"
-  - func: "upload new corpus"
 - <<: *compile_task_group_template
   name: compile_all_run_unittests_TG
   tasks:
@@ -10307,10 +10308,6 @@ buildvariants:
     burn_in_tag_buildvariants: enterprise-rhel-62-64-bit-majority-read-concern-off enterprise-rhel-62-64-bit-inmem linux-64-duroff
   tasks:
   - name: compile_all_run_unittests_TG
-    requires:
-    - name: burn_in_tests_gen
-    - name: lint
-    - name: lint_fuzzer_sanity_patch
     distros:
     - rhel62-large
   - name: compile_benchmarks
@@ -10424,6 +10421,7 @@ buildvariants:
   - name: concurrency_replication_multi_stmt_txn
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
+  - name: concurrency_sharded_clusterwide_ops_add_remove_shards
   - name: concurrency_sharded_local_read_write_multi_stmt_txn
   - name: concurrency_sharded_local_read_write_multi_stmt_txn_with_balancer
   - name: concurrency_sharded_multi_stmt_txn
@@ -12053,6 +12051,7 @@ buildvariants:
     - rhel62-large
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
+  - name: concurrency_sharded_clusterwide_ops_add_remove_shards
   - name: concurrency_simultaneous
   - name: concurrency_simultaneous_replication
     distros:

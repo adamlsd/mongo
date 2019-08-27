@@ -28,7 +28,7 @@ import mongo.toolchain as mongo_toolchain
 import mongo.generators as mongo_generators
 
 EnsurePythonVersion(3, 5)
-EnsureSConsVersion(3, 0, 4)
+EnsureSConsVersion(3, 1, 1)
 
 from buildscripts import utils
 from buildscripts import moduleconfig
@@ -3817,6 +3817,11 @@ if get_option('install-mode') == 'hygienic':
             ]
         ),
     })
+
+    if env.TargetOSIs('windows'):
+        # On windows, we want the runtime role to depend on the debug role so that PDBs
+        # end in the runtime package.
+        env.AddRoleDependencies(role="runtime", dependencies=["debug"])
 
     env.AddPackageNameAlias(
         component="dist",

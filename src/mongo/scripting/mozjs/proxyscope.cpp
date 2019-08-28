@@ -51,10 +51,6 @@ MozJSProxyScope::MozJSProxyScope(MozJSScriptEngine* engine)
       _mutex(),
       _state(State::Idle),
       _status(Status::OK()),
-      // Despite calling PR_CreateThread, we're actually using our own
-      // implementation of PosixNSPR.cpp in this directory. So these threads
-      // are actually hosted on top of stdx::threads and most of the flags
-      // don't matter.
       _thread(implThread, this) {
     // Test the child on startup to make sure it's awake and that the
     // implementation scope sucessfully constructed.

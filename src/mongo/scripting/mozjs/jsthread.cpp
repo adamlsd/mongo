@@ -106,10 +106,6 @@ public:
     void start() {
         uassert(ErrorCodes::JSInterpreterFailure, "Thread already started", !_started);
 
-        // Despite calling PR_CreateThread, we're actually using our own
-        // implementation of PosixNSPR.cpp in this directory. So these threads
-        // are actually hosted on top of stdx::threads and most of the flags
-        // don't matter.
         _thread = stdx::thread( JSThread::run, &_jsthread );
         _started = true;
     }

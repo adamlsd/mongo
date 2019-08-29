@@ -33,6 +33,8 @@
 
 #include "mongo/db/repl/oplog.h"
 
+#include <fmt/format.h>
+
 #include <deque>
 #include <memory>
 #include <set>
@@ -108,6 +110,8 @@ using IndexVersion = IndexDescriptor::IndexVersion;
 
 namespace repl {
 namespace {
+
+using namespace fmt::literals;
 
 MONGO_FAIL_POINT_DEFINE(sleepBetweenInsertOpTimeGenerationAndLogOp);
 
@@ -223,7 +227,6 @@ Status abortIndexBuild(OperationContext* opCtx,
 void createIndexForApplyOps(OperationContext* opCtx,
                             const BSONObj& indexSpec,
                             const NamespaceString& indexNss,
-                            IncrementOpsAppliedStatsFn incrementOpsAppliedStats,
                             OplogApplication::Mode mode) {
     invariant(opCtx->lockState()->isCollectionLockedForMode(indexNss, MODE_X));
 
@@ -281,10 +284,6 @@ void createIndexForApplyOps(OperationContext* opCtx,
     }
 
     opCtx->recoveryUnit()->abandonSnapshot();
-
-    if (incrementOpsAppliedStats) {
-        incrementOpsAppliedStats();
-    }
 }
 
 /* we write to local.oplog.rs:
@@ -741,7 +740,7 @@ const StringMap<ApplyOpMetadata> kOpsMap = {
           BSONObj indexSpec = cmd.removeField("createIndexes");
           Lock::DBLock dbLock(opCtx, nss.db(), MODE_IX);
           Lock::CollectionLock collLock(opCtx, nss, MODE_X);
-          createIndexForApplyOps(opCtx, indexSpec, nss, {}, mode);
+          createIndexForApplyOps(opCtx, indexSpec, nss, mode);
           return Status::OK();
       },
       {ErrorCodes::IndexAlreadyExists,
@@ -1642,6 +1641,10 @@ Status applyCommand_inlock(OperationContext* opCtx,
                 IndexBuildsCoordinator::get(opCtx)->awaitNoBgOpInProgForDb(nss.db());
                 opCtx->recoveryUnit()->abandonSnapshot();
                 opCtx->checkForInterrupt();
+
+                LOG(1)
+                    << "Acceptable error during oplog application: background operation in progress for DB '{}' from oplog entry {}"_format(
+                           nss.db(), redact(entry.toBSON()));
                 break;
             }
             case ErrorCodes::BackgroundOperationInProgressForNamespace: {
@@ -1664,6 +1667,10 @@ Status applyCommand_inlock(OperationContext* opCtx,
 
                 opCtx->recoveryUnit()->abandonSnapshot();
                 opCtx->checkForInterrupt();
+
+                LOG(1)
+                    << "Acceptable error during oplog application: background operation in progress for ns '{}' from oplog entry {}"_format(
+                           ns, redact(entry.toBSON()));
                 break;
             }
             default: {
@@ -1672,6 +1679,10 @@ Status applyCommand_inlock(OperationContext* opCtx,
                             << " with status " << status << " during oplog application";
                     return status;
                 }
+
+                LOG(1)
+                    << "Acceptable error during oplog application on db '{}' with status '{}' from oplog entry {}"_format(
+                           nss.db(), status.toString(), redact(entry.toBSON()));
             }
             // fallthrough
             case ErrorCodes::OK:

@@ -11,6 +11,19 @@ def exists(env):
 _unittests = []
 def register_unit_test(env, test):
     _unittests.append(test.path)
+
+    hygienic = env.GetOption('install-mode') == 'hygienic'
+    if hygienic and getattr(test.attributes, "AIB_INSTALL_ACTIONS", []):
+        installed = getattr(test.attributes, "AIB_INSTALL_ACTIONS")
+    else:
+        installed = [test]
+
+    env.Command(
+        target="#@{}".format(os.path.basename(installed[0].get_path())),
+        source=installed,
+        action="${SOURCES[0]}"
+    )
+
     env.Alias('$UNITTEST_ALIAS', test)
 
 def unit_test_list_builder_action(env, target, source):

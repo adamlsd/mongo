@@ -255,14 +255,10 @@ Future<void> IndexBuildsCoordinator::joinIndexBuilds(const NamespaceString& nss,
     return std::move(pf.future);
 }
 
-void IndexBuildsCoordinator::interruptAllIndexBuildsForShutdown(const std::string& reason) {
+void IndexBuildsCoordinator::waitForAllIndexBuildsToStopForShutdown() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    _shuttingDown = true;
 
-    // Signal all the index builds to stop.
-    for (auto& buildStateIt : _allIndexBuilds) {
-        _indexBuildsManager.abortIndexBuild(buildStateIt.second->buildUUID, reason);
-    }
+    // All index builds should have been signaled to stop via the ServiceContext.
 
     // Wait for all the index builds to stop.
     for (auto& dbIt : _databaseIndexBuilds) {
@@ -831,11 +827,6 @@ void IndexBuildsCoordinator::_runIndexBuildInner(OperationContext* opCtx,
 
         // Failed index builds should abort secondary oplog application.
         if (replSetAndNotPrimary) {
-            stdx::unique_lock<stdx::mutex> lk(_mutex);
-            if (_shuttingDown) {
-                // Allow shutdown with success exit status, despite interrupted index builds.
-                return;
-            }
             fassert(51101,
                     status.withContext(str::stream() << "Index build: " << replState->buildUUID
                                                      << "; Database: " << replState->dbName));

@@ -27,7 +27,7 @@ import mongo.platform as mongo_platform
 import mongo.toolchain as mongo_toolchain
 import mongo.generators as mongo_generators
 
-EnsurePythonVersion(3, 5)
+EnsurePythonVersion(3, 6)
 EnsureSConsVersion(3, 1, 1)
 
 from buildscripts import utils
@@ -1921,6 +1921,15 @@ if env.TargetOSIs('posix'):
             env['ENV'][key] = os.environ[key]
         except KeyError:
             pass
+
+    # Python uses APPDATA to determine the location of user installed
+    # site-packages. If we do not pass this variable down to Python
+    # subprocesses then anything installed with `pip install --user`
+    # will be inaccessible leading to import errors.
+    if env.TargetOSIs('windows'):
+        appdata = os.getenv('APPDATA', None)
+        if appdata is not None:
+            env['ENV']['APPDATA'] = appdata
 
     if env.TargetOSIs('linux') and has_option( "gcov" ):
         env.Append( CCFLAGS=["-fprofile-arcs", "-ftest-coverage", "-fprofile-update=single"] )

@@ -186,7 +186,7 @@ private:
     void runOnImplThread(unique_function<void()> f);
 
     void shutdownThread();
-    static void implThread(MozJSProxyScope *proxy);
+    static void implThread(MozJSProxyScope* proxy);
 
     MozJSScriptEngine* const _engine;
     MozJSImplScope* _implScope;

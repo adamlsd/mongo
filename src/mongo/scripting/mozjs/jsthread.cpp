@@ -106,7 +106,7 @@ public:
     void start() {
         uassert(ErrorCodes::JSInterpreterFailure, "Thread already started", !_started);
 
-        _thread = stdx::thread( JSThread::run, &_jsthread );
+        _thread = stdx::thread(JSThread::run, &_jsthread);
         _started = true;
     }
 

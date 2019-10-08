@@ -38,12 +38,12 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/exec/collection_scan.h"
+#include "mongo/db/exec/document_value/document_value_test_util.h"
 #include "mongo/db/exec/multi_plan.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_cursor.h"
-#include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/get_executor.h"
@@ -199,12 +199,12 @@ class PendingValue {
 public:
     PendingValue(int initialValue) : _value(initialValue) {}
     void set(int newValue) {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        stdx::lock_guard<Latch> lk(_mutex);
         _value = newValue;
         _condition.notify_all();
     }
     void await(int expectedValue) const {
-        stdx::unique_lock<stdx::mutex> lk(_mutex);
+        stdx::unique_lock<Latch> lk(_mutex);
         while (_value != expectedValue) {
             _condition.wait(lk);
         }
@@ -212,7 +212,7 @@ public:
 
 private:
     int _value;
-    mutable stdx::mutex _mutex;
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("PendingValue::_mutex");
     mutable stdx::condition_variable _condition;
 };
 
@@ -343,10 +343,9 @@ TEST_F(DocumentSourceCursorTest, TailableAwaitDataCursorShouldErrorAfterTimeout)
     auto canonicalQuery = unittest::assertGet(
         CanonicalQuery::canonicalize(opCtx(), std::move(queryRequest), nullptr));
     auto planExecutor =
-        uassertStatusOK(PlanExecutor::make(opCtx(),
+        uassertStatusOK(PlanExecutor::make(std::move(canonicalQuery),
                                            std::move(workingSet),
                                            std::move(collectionScan),
-                                           std::move(canonicalQuery),
                                            readLock.getCollection(),
                                            PlanExecutor::YieldPolicy::ALWAYS_TIME_OUT));
 
@@ -380,10 +379,9 @@ TEST_F(DocumentSourceCursorTest, NonAwaitDataCursorShouldErrorAfterTimeout) {
     auto canonicalQuery = unittest::assertGet(
         CanonicalQuery::canonicalize(opCtx(), std::move(queryRequest), nullptr));
     auto planExecutor =
-        uassertStatusOK(PlanExecutor::make(opCtx(),
+        uassertStatusOK(PlanExecutor::make(std::move(canonicalQuery),
                                            std::move(workingSet),
                                            std::move(collectionScan),
-                                           std::move(canonicalQuery),
                                            readLock.getCollection(),
                                            PlanExecutor::YieldPolicy::ALWAYS_TIME_OUT));
 
@@ -426,10 +424,9 @@ TEST_F(DocumentSourceCursorTest, TailableAwaitDataCursorShouldErrorAfterBeingKil
     auto canonicalQuery = unittest::assertGet(
         CanonicalQuery::canonicalize(opCtx(), std::move(queryRequest), nullptr));
     auto planExecutor =
-        uassertStatusOK(PlanExecutor::make(opCtx(),
+        uassertStatusOK(PlanExecutor::make(std::move(canonicalQuery),
                                            std::move(workingSet),
                                            std::move(collectionScan),
-                                           std::move(canonicalQuery),
                                            readLock.getCollection(),
                                            PlanExecutor::YieldPolicy::ALWAYS_MARK_KILLED));
 
@@ -462,10 +459,9 @@ TEST_F(DocumentSourceCursorTest, NormalCursorShouldErrorAfterBeingKilled) {
     auto canonicalQuery = unittest::assertGet(
         CanonicalQuery::canonicalize(opCtx(), std::move(queryRequest), nullptr));
     auto planExecutor =
-        uassertStatusOK(PlanExecutor::make(opCtx(),
+        uassertStatusOK(PlanExecutor::make(std::move(canonicalQuery),
                                            std::move(workingSet),
                                            std::move(collectionScan),
-                                           std::move(canonicalQuery),
                                            readLock.getCollection(),
                                            PlanExecutor::YieldPolicy::ALWAYS_MARK_KILLED));
 

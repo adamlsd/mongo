@@ -38,13 +38,13 @@
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
+#include "mongo/db/repl/oplog_applier_impl_test_fixture.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_interface_local.h"
 #include "mongo/db/repl/replication_consistency_markers_mock.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/replication_recovery.h"
 #include "mongo/db/repl/storage_interface_impl.h"
-#include "mongo/db/repl/sync_tail_test_fixture.h"
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/db/session_catalog_mongod.h"
 #include "mongo/db/session_txn_record_gen.h"
@@ -64,47 +64,47 @@ const NamespaceString testNs("a.a");
 class StorageInterfaceRecovery : public StorageInterfaceImpl {
 public:
     boost::optional<Timestamp> getRecoveryTimestamp(ServiceContext* serviceCtx) const override {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         return _recoveryTimestamp;
     }
 
     void setRecoveryTimestamp(Timestamp recoveryTimestamp) {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         _recoveryTimestamp = recoveryTimestamp;
     }
 
     bool supportsRecoverToStableTimestamp(ServiceContext* serviceCtx) const override {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         return _supportsRecoverToStableTimestamp;
     }
 
     void setSupportsRecoverToStableTimestamp(bool supports) {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         _supportsRecoverToStableTimestamp = supports;
     }
 
     bool supportsRecoveryTimestamp(ServiceContext* serviceCtx) const override {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         return _supportsRecoveryTimestamp;
     }
 
     void setSupportsRecoveryTimestamp(bool supports) {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         _supportsRecoveryTimestamp = supports;
     }
 
     void setPointInTimeReadTimestamp(Timestamp pointInTimeReadTimestamp) {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         _pointInTimeReadTimestamp = pointInTimeReadTimestamp;
     }
 
     Timestamp getPointInTimeReadTimestamp(OperationContext* opCtx) const override {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         return _pointInTimeReadTimestamp;
     }
 
 private:
-    mutable stdx::mutex _mutex;
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("StorageInterfaceRecovery::_mutex");
     Timestamp _initialDataTimestamp = Timestamp::min();
     boost::optional<Timestamp> _recoveryTimestamp = boost::none;
     Timestamp _pointInTimeReadTimestamp = {};
@@ -227,7 +227,7 @@ repl::OplogEntry _makeOplogEntry(repl::OpTime opTime,
                                  BSONObj object,
                                  boost::optional<BSONObj> object2 = boost::none,
                                  OperationSessionInfo sessionInfo = {},
-                                 boost::optional<Date_t> wallTime = boost::none) {
+                                 Date_t wallTime = Date_t()) {
     return repl::OplogEntry(opTime,                           // optime
                             boost::none,                      // hash
                             opType,                           // opType

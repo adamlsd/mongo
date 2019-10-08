@@ -34,12 +34,12 @@
 #include <boost/optional.hpp>
 #include <memory>
 
+#include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/scoped_timer.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
-#include "mongo/db/pipeline/document.h"
 #include "mongo/db/record_id.h"
 #include "mongo/util/log.h"
 #include "mongo/util/str.h"
@@ -55,7 +55,8 @@ BSONObj indexKey(const WorkingSetMember& member) {
 }
 
 BSONObj sortKey(const WorkingSetMember& member) {
-    return member.metadata().getSortKey();
+    return DocumentMetadataFields::serializeSortKey(member.metadata().isSingleElementKey(),
+                                                    member.metadata().getSortKey());
 }
 
 double geoDistance(const WorkingSetMember& member) {
@@ -205,19 +206,7 @@ Status ProjectionStageDefault::transform(WorkingSetMember* member) const {
         return Status(ErrorCodes::InternalError,
                       "sortKey meta-projection requested but no data available");
 
-    if (_exec.returnKey()) {
-        auto keys = _exec.computeReturnKeyProjection(
-            member->metadata().hasIndexKey() ? indexKey(*member) : BSONObj(),
-            _exec.needsSortKey() ? sortKey(*member) : BSONObj());
-        if (!keys.isOK())
-            return keys.getStatus();
-
-        transitionMemberToOwnedObj(keys.getValue(), member);
-        return Status::OK();
-    }
-
     auto projected = provideMetaFieldsAndPerformExec(_exec, *member);
-
     if (!projected.isOK())
         return projected.getStatus();
 

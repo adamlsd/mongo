@@ -59,7 +59,6 @@
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
-#include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/sharding_network_connection_hook.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/grid.h"
@@ -101,16 +100,15 @@ std::unique_ptr<ShardingCatalogClient> makeCatalogClient(ServiceContext* service
 
 std::shared_ptr<executor::TaskExecutor> makeShardingFixedTaskExecutor(
     std::unique_ptr<NetworkInterface> net) {
-    auto executor = std::make_unique<ThreadPoolTaskExecutor>(
-        std::make_unique<ThreadPool>([] {
-            ThreadPool::Options opts;
-            opts.poolName = "Sharding-Fixed";
-
-            const auto maxThreads = stdx::thread::hardware_concurrency();
-            opts.maxThreads = maxThreads == 0 ? 16 : 2 * maxThreads;
-            return opts;
-        }()),
-        std::move(net));
+    auto executor =
+        std::make_unique<ThreadPoolTaskExecutor>(std::make_unique<ThreadPool>([] {
+                                                     ThreadPool::Options opts;
+                                                     opts.poolName = "Sharding-Fixed";
+                                                     opts.maxThreads =
+                                                         ThreadPool::Options::kUnlimited;
+                                                     return opts;
+                                                 }()),
+                                                 std::move(net));
 
     return std::make_shared<executor::ShardingTaskExecutor>(std::move(executor));
 }
@@ -164,16 +162,11 @@ std::string generateDistLockProcessId(OperationContext* opCtx) {
 }
 
 Status initializeGlobalShardingState(OperationContext* opCtx,
-                                     const ConnectionString& configCS,
                                      StringData distLockProcessId,
-                                     std::unique_ptr<ShardFactory> shardFactory,
                                      std::unique_ptr<CatalogCache> catalogCache,
+                                     std::unique_ptr<ShardRegistry> shardRegistry,
                                      rpc::ShardingEgressMetadataHookBuilder hookBuilder,
                                      boost::optional<size_t> taskExecutorPoolSize) {
-    if (configCS.type() == ConnectionString::INVALID) {
-        return {ErrorCodes::BadValue, "Unrecognized connection string."};
-    }
-
     ConnectionPool::Options connPoolOptions;
     connPoolOptions.controller = std::make_shared<ShardingTaskExecutorPoolController>();
 
@@ -189,7 +182,7 @@ Status initializeGlobalShardingState(OperationContext* opCtx,
 
     grid->init(makeCatalogClient(service, distLockProcessId),
                std::move(catalogCache),
-               std::make_unique<ShardRegistry>(std::move(shardFactory), configCS),
+               std::move(shardRegistry),
                std::make_unique<ClusterCursorManager>(service->getPreciseClockSource()),
                std::make_unique<BalancerConfiguration>(),
                std::move(executorPool),

@@ -94,6 +94,7 @@ DEFAULTS = {
     "storage_engine_cache_size_gb": None,
     "tag_file": None,
     "transport_layer": None,
+    "mixed_bin_versions": None,
 
     # Evergreen options.
     "build_id": None,
@@ -117,7 +118,10 @@ DEFAULTS = {
     "benchmark_filter": None,
     "benchmark_list_tests": None,
     "benchmark_min_time_secs": None,
-    "benchmark_repetitions": None
+    "benchmark_repetitions": None,
+
+    # Config Dir
+    "config_dir": "buildscripts/resmokeconfig"
 }
 
 _SuiteOptions = collections.namedtuple("_SuiteOptions", [
@@ -379,6 +383,9 @@ STAGGER_JOBS = None
 # If set to true, it enables read concern majority. Else, read concern majority is disabled.
 MAJORITY_READ_CONCERN = None
 
+# Specifies the binary versions of each node we should run for a replica set.
+MIXED_BIN_VERSIONS = None
+
 # If set to "on", it enables flow control. If set to "off", it disables flow control. If left as
 # None, the server's default will determine whether flow control is enabled.
 FLOW_CONTROL = None
@@ -447,3 +454,8 @@ DEFAULT_LIBFUZZER_TEST_LIST = "build/libfuzzer_tests.txt"
 EXTERNAL_SUITE_SELECTORS = (DEFAULT_BENCHMARK_TEST_LIST, DEFAULT_UNIT_TEST_LIST,
                             DEFAULT_INTEGRATION_TEST_LIST, DEFAULT_DBTEST_EXECUTABLE,
                             DEFAULT_MONGOEBENCH_EXECUTABLE, DEFAULT_LIBFUZZER_TEST_LIST)
+
+# Where to look for logging and suite configuration files
+CONFIG_DIR = None
+NAMED_SUITES = None
+LOGGER_DIR = None

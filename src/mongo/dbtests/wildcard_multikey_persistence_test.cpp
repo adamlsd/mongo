@@ -103,7 +103,7 @@ protected:
         auto indexCursor = getIndexCursor(collection, indexName);
 
         KeyString::Value keyStringForSeek = IndexEntryComparison::makeKeyStringFromBSONKeyForSeek(
-            kMinBSONKey, KeyString::Version::V1, Ordering::make(BSONObj()), true, true);
+            BSONObj(), KeyString::Version::V1, Ordering::make(BSONObj()), true, true);
 
         auto indexKey = indexCursor->seek(keyStringForSeek);
         try {
@@ -197,7 +197,8 @@ protected:
         auto coll = autoColl.getCollection();
 
         MultiIndexBlock indexer;
-        ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(opCtx(), coll); });
+        ON_BLOCK_EXIT(
+            [&] { indexer.cleanUpAfterBuild(opCtx(), coll, MultiIndexBlock::kNoopOnCleanUpFn); });
 
         // Initialize the index builder and add all documents currently in the collection.
         ASSERT_OK(

@@ -59,7 +59,7 @@
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/util/decimal_counter.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/map_util.h"
 
@@ -244,7 +244,7 @@ public:
         CommandHelpers::handleMarkKillOnClientDisconnect(opCtx);
 
         // TODO Unwind after SERVER-41070
-        MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(opCtx, waitInIsMaster);
+        waitInIsMaster.pauseWhileSet(opCtx);
 
         /* currently request to arbiter is (somewhat arbitrarily) an ismaster request that is not
            authenticated.

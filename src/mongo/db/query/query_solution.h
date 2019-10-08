@@ -540,6 +540,35 @@ struct IndexScanNode : public QuerySolutionNode {
     std::set<StringData> multikeyFields;
 };
 
+struct ReturnKeyNode : public QuerySolutionNode {
+    ReturnKeyNode(std::unique_ptr<QuerySolutionNode> child,
+                  std::vector<std::string> sortKeyMetaFields)
+        : QuerySolutionNode(std::move(child)), sortKeyMetaFields(std::move(sortKeyMetaFields)) {}
+
+    StageType getType() const final {
+        return STAGE_RETURN_KEY;
+    }
+
+    void appendToString(str::stream* ss, int indent) const final;
+
+    bool fetched() const final {
+        return children[0]->fetched();
+    }
+    bool hasField(const std::string& field) const final {
+        return false;
+    }
+    bool sortedByDiskLoc() const final {
+        return children[0]->sortedByDiskLoc();
+    }
+    const BSONObjSet& getSort() const final {
+        return children[0]->getSort();
+    }
+
+    QuerySolutionNode* clone() const final;
+
+    std::vector<std::string> sortKeyMetaFields;
+};
+
 /**
  * We have a few implementations of the projection functionality. They are chosen by constructing
  * a type derived from this abstract struct. The most general implementation 'ProjectionNodeDefault'
@@ -549,13 +578,11 @@ struct IndexScanNode : public QuerySolutionNode {
 struct ProjectionNode : QuerySolutionNode {
     ProjectionNode(std::unique_ptr<QuerySolutionNode> child,
                    const MatchExpression& fullExpression,
-                   BSONObj projection,
-                   ParsedProjection parsed)
+                   projection_ast::Projection proj)
         : QuerySolutionNode(std::move(child)),
           _sorts(SimpleBSONObjComparator::kInstance.makeBSONObjSet()),
           fullExpression(fullExpression),
-          projection(std::move(projection)),
-          parsed(parsed) {}
+          proj(std::move(proj)) {}
 
     void computeProperties() final;
 
@@ -605,11 +632,7 @@ public:
     // Owned in the CanonicalQuery, not here.
     const MatchExpression& fullExpression;
 
-    // Given that we don't yet have a MatchExpression analogue for the expression language, we
-    // use a BSONObj.
-    BSONObj projection;
-
-    ParsedProjection parsed;
+    projection_ast::Projection proj;
 };
 
 /**
@@ -635,10 +658,9 @@ struct ProjectionNodeDefault final : ProjectionNode {
 struct ProjectionNodeCovered final : ProjectionNode {
     ProjectionNodeCovered(std::unique_ptr<QuerySolutionNode> child,
                           const MatchExpression& fullExpression,
-                          BSONObj projection,
-                          ParsedProjection parsed,
+                          projection_ast::Projection proj,
                           BSONObj coveredKeyObj)
-        : ProjectionNode(std::move(child), fullExpression, projection, parsed),
+        : ProjectionNode(std::move(child), fullExpression, std::move(proj)),
           coveredKeyObj(std::move(coveredKeyObj)) {}
 
     StageType getType() const final {
@@ -703,10 +725,7 @@ struct SortKeyGeneratorNode : public QuerySolutionNode {
 };
 
 struct SortNode : public QuerySolutionNode {
-    SortNode()
-        : _sorts(SimpleBSONObjComparator::kInstance.makeBSONObjSet()),
-          limit(0),
-          allowDiskUse(false) {}
+    SortNode() : _sorts(SimpleBSONObjComparator::kInstance.makeBSONObjSet()), limit(0) {}
 
     virtual ~SortNode() {}
 
@@ -746,8 +765,6 @@ struct SortNode : public QuerySolutionNode {
 
     // Sum of both limit and skip count in the parsed query.
     size_t limit;
-
-    bool allowDiskUse;
 };
 
 struct LimitNode : public QuerySolutionNode {

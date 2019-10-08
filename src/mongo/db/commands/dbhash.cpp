@@ -50,7 +50,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/transaction_participant.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/mutex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/md5.hpp"
 #include "mongo/util/net/socket_utils.h"
@@ -226,8 +226,32 @@ public:
                 return false;
             }
 
-            if (repl::ReplicationCoordinator::isOplogDisabledForNS(collNss)) {
-                return true;
+            // Only hash replicated collections. In 4.4 we use a more general way of choosing what
+            // collections are replicated. This means that mixed 4.2-4.4 replica sets could hash the
+            // same database differently, even when all nodes are up-to-date. We only use the new
+            // method for choosing collections to hash in FCV 4.4 so that when all nodes are
+            // up-to-date, it is guaranteed that they hash the same set of collections.
+            if (serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo44) {
+                if (repl::ReplicationCoordinator::isOplogDisabledForNS(collNss)) {
+                    return true;
+                }
+            } else {
+                // A set of 'system' collections that are replicated, and therefore included in the
+                // db hash.
+                const std::set<StringData> replicatedSystemCollections{"system.backup_users",
+                                                                       "system.js",
+                                                                       "system.new_users",
+                                                                       "system.roles",
+                                                                       "system.users",
+                                                                       "system.version",
+                                                                       "system.views"};
+                // Only include 'system' collections that are replicated.
+                bool isReplicatedSystemColl =
+                    (replicatedSystemCollections.count(collNss.coll().toString()) > 0);
+                if (collNss.isSystem() && !isReplicatedSystemColl) {
+                    return true;
+                }
             }
 
             if (collNss.coll().startsWith("tmp.mr.")) {
@@ -301,7 +325,7 @@ public:
 private:
     std::string _hashCollection(OperationContext* opCtx, Database* db, const NamespaceString& nss) {
 
-        Collection* collection = db->getCollection(opCtx, nss);
+        Collection* collection = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss);
         invariant(collection);
 
         boost::optional<Lock::CollectionLock> collLock;

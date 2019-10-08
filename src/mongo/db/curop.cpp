@@ -45,9 +45,9 @@
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/json.h"
+#include "mongo/db/prepare_conflict_tracker.h"
 #include "mongo/db/query/getmore_request.h"
 #include "mongo/db/query/plan_summary_stats.h"
-#include "mongo/platform/mutex.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/rpc/metadata/impersonated_user_metadata.h"
@@ -233,28 +233,12 @@ CurOp* CurOp::get(const OperationContext& opCtx) {
     return _curopStack(opCtx).top();
 }
 
-namespace {
-
-struct {
-    Mutex mutex = Mutex("TestMutex"_sd, Seconds(1));
-    stdx::unique_lock<Mutex> lock = stdx::unique_lock<Mutex>(mutex, stdx::defer_lock);
-} gHangLock;
-
-}  // namespace
 void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
                                      Client* client,
                                      bool truncateOps,
                                      bool backtraceMode,
                                      BSONObjBuilder* infoBuilder) {
     invariant(client);
-    if (MONGO_FAIL_POINT(keepDiagnosticCaptureOnFailedLock)) {
-        gHangLock.lock.lock();
-        try {
-            stdx::lock_guard testLock(gHangLock.mutex);
-        } catch (const DBException& e) {
-            log() << "Successfully caught " << e;
-        }
-    }
 
     OperationContext* clientOpCtx = client->getOperationContext();
 
@@ -318,15 +302,14 @@ void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
             lsid->serialize(&lsidBuilder);
         }
 
-        CurOp::get(clientOpCtx)->reportState(infoBuilder, truncateOps);
+        CurOp::get(clientOpCtx)->reportState(clientOpCtx, infoBuilder, truncateOps);
     }
 
-    std::shared_ptr<DiagnosticInfo> diagnostic = DiagnosticInfo::Diagnostic::get(client);
-    if (diagnostic && backtraceMode) {
+    if (auto diagnostic = DiagnosticInfo::get(*client)) {
         BSONObjBuilder waitingForLatchBuilder(infoBuilder->subobjStart("waitingForLatch"));
         waitingForLatchBuilder.append("timestamp", diagnostic->getTimestamp());
         waitingForLatchBuilder.append("captureName", diagnostic->getCaptureName());
-        {
+        if (backtraceMode) {
             BSONArrayBuilder backtraceBuilder(waitingForLatchBuilder.subarrayStart("backtrace"));
             for (const auto& frame : diagnostic->makeStackTrace().frames) {
                 BSONObjBuilder backtraceObj(backtraceBuilder.subobjStart());
@@ -334,10 +317,6 @@ void CurOp::reportCurrentOpForClient(OperationContext* opCtx,
                 backtraceObj.append("path", frame.objectPath);
             }
         }
-    }
-
-    if (MONGO_FAIL_POINT(keepDiagnosticCaptureOnFailedLock)) {
-        gHangLock.lock.unlock();
     }
 }
 
@@ -475,10 +454,11 @@ bool CurOp::completeAndLogOperation(OperationContext* opCtx,
                                       "operation due to interrupt";
             }
         }
-        log(component) << _debug.report(client,
-                                        *this,
-                                        (lockerInfo ? &lockerInfo->stats : nullptr),
-                                        opCtx->lockState()->getFlowControlStats());
+
+        // Gets the time spent blocked on prepare conflicts.
+        _debug.prepareConflictDurationMicros =
+            PrepareConflictTracker::get(opCtx).getPrepareConflictDuration();
+        log(component) << _debug.report(opCtx, (lockerInfo ? &lockerInfo->stats : nullptr));
     }
 
     // Return 'true' if this operation should also be added to the profiler.
@@ -503,6 +483,11 @@ Command::ReadWriteType CurOp::getReadWriteType() const {
 }
 
 namespace {
+
+BSONObj appendCommentField(OperationContext* opCtx, const BSONObj& cmdObj) {
+    return opCtx->getComment() && !cmdObj["comment"] ? cmdObj.addField(*opCtx->getComment())
+                                                     : cmdObj;
+}
 
 /**
  * Appends {<name>: obj} to the provided builder.  If obj is greater than maxSize, appends a string
@@ -577,7 +562,7 @@ BSONObj CurOp::truncateAndSerializeGenericCursor(GenericCursor* cursor,
     return serialized;
 }
 
-void CurOp::reportState(BSONObjBuilder* builder, bool truncateOps) {
+void CurOp::reportState(OperationContext* opCtx, BSONObjBuilder* builder, bool truncateOps) {
     if (_start) {
         builder->append("secs_running", durationCount<Seconds>(elapsedTimeTotal()));
         builder->append("microsecs_running", durationCount<Microseconds>(elapsedTimeTotal()));
@@ -592,7 +577,9 @@ void CurOp::reportState(BSONObjBuilder* builder, bool truncateOps) {
     // is true, limit the size of each op to 1000 bytes. Otherwise, do not truncate.
     const boost::optional<size_t> maxQuerySize{truncateOps, 1000};
 
-    appendAsObjOrString("command", _opDescription, maxQuerySize, builder);
+    appendAsObjOrString(
+        "command", appendCommentField(opCtx, _opDescription), maxQuerySize, builder);
+
 
     if (!_planSummary.empty()) {
         builder->append("planSummary", _planSummary);
@@ -651,10 +638,10 @@ StringData getProtoString(int op) {
     if (y)                                   \
     s << " " x ":" << (*y)
 
-string OpDebug::report(Client* client,
-                       const CurOp& curop,
-                       const SingleThreadedLockStats* lockStats,
-                       FlowControlTicketholder::CurOp flowControlStats) const {
+string OpDebug::report(OperationContext* opCtx, const SingleThreadedLockStats* lockStats) const {
+    Client* client = opCtx->getClient();
+    auto& curop = *CurOp::get(opCtx);
+    auto flowControlStats = opCtx->lockState()->getFlowControlStats();
     StringBuilder s;
     if (iscommand)
         s << "command ";
@@ -671,7 +658,7 @@ string OpDebug::report(Client* client,
         }
     }
 
-    auto query = curop.opDescription();
+    auto query = appendCommentField(opCtx, curop.opDescription());
     if (!query.isEmpty()) {
         s << " command: ";
         if (iscommand) {
@@ -700,6 +687,10 @@ string OpDebug::report(Client* client,
 
     if (!curop.getPlanSummary().empty()) {
         s << " planSummary: " << curop.getPlanSummary().toString();
+    }
+
+    if (prepareConflictDurationMicros > 0) {
+        s << " prepareConflictDuration: " << (prepareConflictDurationMicros / 1000) << "ms";
     }
 
     OPDEBUG_TOSTRING_HELP(nShards);
@@ -788,10 +779,11 @@ string OpDebug::report(Client* client,
     if (y)                            \
     b.appendNumber(x, (*y))
 
-void OpDebug::append(const CurOp& curop,
+void OpDebug::append(OperationContext* opCtx,
                      const SingleThreadedLockStats& lockStats,
                      FlowControlTicketholder::CurOp flowControlStats,
                      BSONObjBuilder& b) const {
+    auto& curop = *CurOp::get(opCtx);
     const size_t maxElementSize = 50 * 1024;
 
     b.append("op", logicalOpToString(logicalOp));
@@ -799,7 +791,8 @@ void OpDebug::append(const CurOp& curop,
     NamespaceString nss = NamespaceString(curop.getNS());
     b.append("ns", nss.ns());
 
-    appendAsObjOrString("command", curop.opDescription(), maxElementSize, &b);
+    appendAsObjOrString(
+        "command", appendCommentField(opCtx, curop.opDescription()), maxElementSize, &b);
 
     auto originatingCommand = curop.originatingCommand();
     if (!originatingCommand.isEmpty()) {

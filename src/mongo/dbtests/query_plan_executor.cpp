@@ -119,8 +119,8 @@ public:
             new CollectionScan(&_opCtx, coll, csparams, ws.get(), cq.get()->root()));
 
         // Hand the plan off to the executor.
-        auto statusWithPlanExecutor = PlanExecutor::make(
-            &_opCtx, std::move(ws), std::move(root), std::move(cq), coll, yieldPolicy);
+        auto statusWithPlanExecutor =
+            PlanExecutor::make(std::move(cq), std::move(ws), std::move(root), coll, yieldPolicy);
         ASSERT_OK(statusWithPlanExecutor.getStatus());
         return std::move(statusWithPlanExecutor.getValue());
     }
@@ -148,11 +148,13 @@ public:
         ixparams.bounds.endKey = BSON("" << end);
         ixparams.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
 
-        const Collection* coll = db->getCollection(&_opCtx, nss);
+        const Collection* coll = CollectionCatalog::get(&_opCtx).lookupCollectionByNamespace(nss);
+
 
         unique_ptr<WorkingSet> ws(new WorkingSet());
-        IndexScan* ix = new IndexScan(&_opCtx, ixparams, ws.get(), nullptr);
-        unique_ptr<PlanStage> root(new FetchStage(&_opCtx, ws.get(), ix, nullptr, coll));
+        auto ixscan = std::make_unique<IndexScan>(&_opCtx, ixparams, ws.get(), nullptr);
+        unique_ptr<PlanStage> root =
+            std::make_unique<FetchStage>(&_opCtx, ws.get(), std::move(ixscan), nullptr, coll);
 
         auto qr = std::make_unique<QueryRequest>(nss);
         auto statusWithCQ = CanonicalQuery::canonicalize(&_opCtx, std::move(qr));
@@ -161,12 +163,8 @@ public:
         verify(nullptr != cq.get());
 
         // Hand the plan off to the executor.
-        auto statusWithPlanExecutor = PlanExecutor::make(&_opCtx,
-                                                         std::move(ws),
-                                                         std::move(root),
-                                                         std::move(cq),
-                                                         coll,
-                                                         PlanExecutor::YIELD_MANUAL);
+        auto statusWithPlanExecutor = PlanExecutor::make(
+            std::move(cq), std::move(ws), std::move(root), coll, PlanExecutor::YIELD_MANUAL);
         ASSERT_OK(statusWithPlanExecutor.getStatus());
         return std::move(statusWithPlanExecutor.getValue());
     }
@@ -177,7 +175,7 @@ protected:
 
 private:
     const IndexDescriptor* getIndex(Database* db, const BSONObj& obj) {
-        Collection* collection = db->getCollection(&_opCtx, nss);
+        Collection* collection = CollectionCatalog::get(&_opCtx).lookupCollectionByNamespace(nss);
         std::vector<const IndexDescriptor*> indexes;
         collection->getIndexCatalog()->findIndexesByKeyPattern(&_opCtx, obj, false, &indexes);
         ASSERT_LTE(indexes.size(), 1U);

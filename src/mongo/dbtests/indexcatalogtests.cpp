@@ -108,6 +108,55 @@ private:
     Database* _db;
 };
 
+class IndexCatalogEntryDroppedTest {
+public:
+    IndexCatalogEntryDroppedTest() {
+        const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
+        OperationContext& opCtx = *opCtxPtr;
+        Lock::DBLock lk(&opCtx, _nss.db(), MODE_X);
+        OldClientContext ctx(&opCtx, _nss.ns());
+        WriteUnitOfWork wuow(&opCtx);
+
+        _db = ctx.db();
+        _coll = _db->createCollection(&opCtx, _nss);
+        _catalog = _coll->getIndexCatalog();
+        wuow.commit();
+    }
+
+    void run() {
+        const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
+        OperationContext& opCtx = *opCtxPtr;
+        dbtests::WriteContextForTests ctx(&opCtx, _nss.ns());
+
+        const IndexDescriptor* idDesc = _catalog->findIdIndex(&opCtx);
+        std::shared_ptr<const IndexCatalogEntry> entry = _catalog->getEntryShared(idDesc);
+
+        ASSERT_FALSE(entry->isDropped());
+
+        {
+            Lock::CollectionLock lk(&opCtx, _nss, MODE_X);
+            WriteUnitOfWork wuow(&opCtx);
+            ASSERT_OK(_db->dropCollection(&opCtx, _nss));
+            ASSERT_FALSE(entry->isDropped());
+        }
+
+        ASSERT_FALSE(entry->isDropped());
+
+        {
+            Lock::CollectionLock lk(&opCtx, _nss, MODE_X);
+            WriteUnitOfWork wuow(&opCtx);
+            ASSERT_OK(_db->dropCollection(&opCtx, _nss));
+            wuow.commit();
+            ASSERT_TRUE(entry->isDropped());
+        }
+    }
+
+private:
+    IndexCatalog* _catalog;
+    Collection* _coll;
+    Database* _db;
+};
+
 /**
  * Test for IndexCatalog::refreshEntry().
  */
@@ -182,14 +231,15 @@ private:
     Database* _db;
 };
 
-class IndexCatalogTests : public Suite {
+class IndexCatalogTests : public OldStyleSuiteSpecification {
 public:
-    IndexCatalogTests() : Suite("indexcatalogtests") {}
+    IndexCatalogTests() : OldStyleSuiteSpecification("indexcatalogtests") {}
     void setupTests() {
         add<IndexIteratorTests>();
+        add<IndexCatalogEntryDroppedTest>();
         add<RefreshEntry>();
     }
 };
 
-SuiteInstance<IndexCatalogTests> indexCatalogTests;
+OldStyleSuiteInitializer<IndexCatalogTests> indexCatalogTests;
 }  // namespace IndexCatalogTests

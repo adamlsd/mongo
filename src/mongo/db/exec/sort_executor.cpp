@@ -29,8 +29,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/exec/document_value/value_comparator.h"
 #include "mongo/db/exec/sort_executor.h"
-#include "mongo/db/pipeline/value_comparator.h"
 
 namespace mongo {
 namespace {
@@ -60,45 +60,25 @@ SortExecutor::SortExecutor(SortPattern sortPattern,
       _tempDir(std::move(tempDir)),
       _diskUseAllowed(allowDiskUse) {}
 
-int SortExecutor::Comparator::operator()(const DocumentSorter::Data& lhs,
-                                         const DocumentSorter::Data& rhs) const {
-    Value lhsKey = lhs.first;
-    Value rhsKey = rhs.first;
-    // DocumentSourceSort::populate() has already guaranteed that the sort key is non-empty.
-    // However, the tricky part is deciding what to do if none of the sort keys are present. In that
-    // case, consider the document "less".
-    //
-    // Note that 'comparator' must use binary comparisons here, as both 'lhs' and 'rhs' are
-    // collation comparison keys.
-    ValueComparator comparator;
-    const size_t n = _sort.size();
-    if (n == 1) {  // simple fast case
-        if (_sort[0].isAscending)
-            return comparator.compare(lhsKey, rhsKey);
-        else
-            return -comparator.compare(lhsKey, rhsKey);
+boost::optional<Document> SortExecutor::getNextDoc() {
+    auto wsm = getNextWsm();
+    if (!wsm) {
+        return boost::none;
     }
 
-    // compound sort
-    for (size_t i = 0; i < n; i++) {
-        int cmp = comparator.compare(lhsKey[i], rhsKey[i]);
-        if (cmp) {
-            /* if necessary, adjust the return value by the key ordering */
-            if (!_sort[i].isAscending)
-                cmp = -cmp;
+    // Ensure that this WorkingSetMember only houses a Document. This guarantees that we are not
+    // discarding data inside the working set member (e.g. the RecordId) when returning the Document
+    // to the caller.
+    invariant(wsm->hasOwnedObj());
 
-            return cmp;
-        }
-    }
+    // Transfer metadata from the WorkingSetMember to the Document.
+    MutableDocument mutableDoc{std::move(wsm->doc.value())};
+    mutableDoc.setMetadata(wsm->releaseMetadata());
 
-    /*
-      If we got here, everything matched (or didn't exist), so we'll
-      consider the documents equal for purposes of this sort.
-    */
-    return 0;
+    return mutableDoc.freeze();
 }
 
-boost::optional<Document> SortExecutor::getNext() {
+boost::optional<WorkingSetMember> SortExecutor::getNextWsm() {
     if (_isEOF) {
         return boost::none;
     }
@@ -113,6 +93,24 @@ boost::optional<Document> SortExecutor::getNext() {
 }
 
 void SortExecutor::add(Value sortKey, Document data) {
+    invariant(data.isOwned());
+    WorkingSetMember wsm;
+
+    // Transfer metadata from the Document to the WorkingSetMember.
+    MutableDocument mutableDoc{std::move(data)};
+    wsm.setMetadata(mutableDoc.releaseMetadata());
+
+    wsm.doc.setValue(mutableDoc.freeze());
+    wsm.transitionToOwnedObj();
+    this->add(std::move(sortKey), std::move(wsm));
+}
+
+void SortExecutor::add(Value sortKey, WorkingSetMember data) {
+    // Metadata should be attached directly to the WSM rather than inside the Document.
+    invariant(!data.doc.value().metadata());
+
+    _totalDataSizeBytes += data.getMemUsage();
+
     if (!_sorter) {
         _sorter.reset(DocumentSorter::make(makeSortOptions(), Comparator(_sortPattern)));
     }
@@ -142,6 +140,17 @@ SortOptions SortExecutor::makeSortOptions() const {
     }
 
     return opts;
+}
+
+std::unique_ptr<SortStats> SortExecutor::stats() const {
+    auto stats = std::make_unique<SortStats>();
+    stats->sortPattern =
+        _sortPattern.serialize(SortPattern::SortKeySerialization::kForExplain).toBson();
+    stats->limit = _limit;
+    stats->maxMemoryUsageBytes = _maxMemoryUsageBytes;
+    stats->totalDataSizeBytes = _totalDataSizeBytes;
+    stats->wasDiskUsed = _wasDiskUsed;
+    return stats;
 }
 }  // namespace mongo
 

@@ -2,7 +2,6 @@
 'use strict';
 
 function CollectionValidator() {
-    load('jstests/libs/feature_compatibility_version.js');
     load('jstests/libs/parallelTester.js');
 
     if (!(this instanceof CollectionValidator)) {
@@ -24,8 +23,6 @@ function CollectionValidator() {
         assert.eq(typeof db, 'object', 'Invalid `db` object, is the shell connected to a mongod?');
         assert.eq(typeof obj, 'object', 'The `obj` argument must be an object');
         assert(obj.hasOwnProperty('full'), 'Please specify whether to use full validation');
-
-        const full = obj.full;
 
         // Failed collection validation results are saved in failed_res.
         let full_res = {ok: 1, failed_res: []};
@@ -59,7 +56,7 @@ function CollectionValidator() {
         let collInfo = db.getCollectionInfos(filter);
         for (let collDocument of collInfo) {
             const coll = db.getCollection(collDocument['name']);
-            const res = coll.validate(full);
+            const res = coll.validate(obj);
 
             if (!res.ok || !res.valid) {
                 if (jsTest.options().skipValidationOnNamespaceNotFound &&
@@ -87,8 +84,6 @@ function CollectionValidator() {
     // Run a separate thread to validate collections on each server in parallel.
     const validateCollectionsThread = function(validatorFunc, host) {
         try {
-            load('jstests/libs/feature_compatibility_version.js');
-
             print('Running validate() on ' + host);
             const conn = new Mongo(host);
             conn.setSlaveOk();

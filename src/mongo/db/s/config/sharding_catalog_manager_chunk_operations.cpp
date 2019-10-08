@@ -50,7 +50,7 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_key_pattern.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/str.h"
 
@@ -58,6 +58,7 @@ namespace mongo {
 namespace {
 
 MONGO_FAIL_POINT_DEFINE(migrationCommitVersionError);
+MONGO_FAIL_POINT_DEFINE(skipExpiringOldChunkHistory);
 
 /**
  * Append min, max and version information from chunk to the buffer for logChange purposes.
@@ -554,6 +555,12 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
                 "that the collection was dropped and re-created."};
     }
 
+    // Check if the chunk(s) have already been merged. If so, return success.
+    auto minChunkOnDisk = uassertStatusOK(_findChunkOnConfig(opCtx, nss, chunkBoundaries.front()));
+    if (minChunkOnDisk.getMax().woCompare(chunkBoundaries.back()) == 0) {
+        return Status::OK();
+    }
+
     // Build chunks to be merged
     std::vector<ChunkType> chunksToMerge;
 
@@ -662,7 +669,7 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
         return findResponse.getStatus();
     }
 
-    if (MONGO_FAIL_POINT(migrationCommitVersionError)) {
+    if (MONGO_unlikely(migrationCommitVersionError.shouldFail())) {
         uassert(ErrorCodes::StaleEpoch,
                 "failpoint 'migrationCommitVersionError' generated error",
                 false);
@@ -729,10 +736,12 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     // Update the history of the migrated chunk.
     // Drop the history that is too old (10 seconds of history for now).
     // TODO SERVER-33831 to update the old history removal policy.
-    while (!newHistory.empty() &&
-           newHistory.back().getValidAfter().getSecs() + kHistorySecs <
-               validAfter.get().getSecs()) {
-        newHistory.pop_back();
+    if (!MONGO_unlikely(skipExpiringOldChunkHistory.shouldFail())) {
+        while (!newHistory.empty() &&
+               newHistory.back().getValidAfter().getSecs() + kHistorySecs <
+                   validAfter.get().getSecs()) {
+            newHistory.pop_back();
+        }
     }
 
     if (!newHistory.empty() && newHistory.front().getValidAfter() >= validAfter.get()) {

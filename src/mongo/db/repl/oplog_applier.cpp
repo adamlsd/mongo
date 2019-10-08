@@ -37,7 +37,6 @@
 #include "mongo/db/commands/txn_cmds_gen.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/repl_server_parameters_gen.h"
-#include "mongo/db/repl/sync_tail.h"
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
 
@@ -48,44 +47,10 @@ NoopOplogApplierObserver noopOplogApplierObserver;
 
 using CallbackArgs = executor::TaskExecutor::CallbackArgs;
 
-// static
-std::unique_ptr<ThreadPool> OplogApplier::makeWriterPool() {
-    return makeWriterPool(replWriterThreadCount);
-}
-
-// static
-std::unique_ptr<ThreadPool> OplogApplier::makeWriterPool(int threadCount) {
-    ThreadPool::Options options;
-    options.threadNamePrefix = "repl-writer-worker-";
-    options.poolName = "repl writer worker Pool";
-    options.maxThreads = options.minThreads = static_cast<size_t>(threadCount);
-    options.onCreateThread = [](const std::string&) {
-        Client::initThread(getThreadName());
-        AuthorizationSession::get(cc())->grantInternalAuthorization(&cc());
-    };
-    auto pool = std::make_unique<ThreadPool>(options);
-    pool->startup();
-    return pool;
-}
-
-// static
-std::size_t OplogApplier::getBatchLimitOperations() {
-    return std::size_t(replBatchLimitOperations.load());
-}
-
-// static
-std::size_t OplogApplier::calculateBatchLimitBytes(OperationContext* opCtx,
-                                                   StorageInterface* storageInterface) {
-    auto oplogMaxSizeResult =
-        storageInterface->getOplogMaxSize(opCtx, NamespaceString::kRsOplogNamespace);
-    auto oplogMaxSize = fassert(40301, oplogMaxSizeResult);
-    return std::min(oplogMaxSize / 10, std::size_t(replBatchLimitBytes.load()));
-}
-
 OplogApplier::OplogApplier(executor::TaskExecutor* executor,
                            OplogBuffer* oplogBuffer,
                            Observer* observer,
-                           const OplogApplier::Options& options)
+                           const Options& options)
     : _executor(executor), _oplogBuffer(oplogBuffer), _observer(observer), _options(options) {}
 
 OplogBuffer* OplogApplier::getBuffer() const {
@@ -107,15 +72,23 @@ Future<void> OplogApplier::startup() {
 }
 
 void OplogApplier::shutdown() {
-    _shutdown();
+    // Shutdown will hang if this failpoint is enabled.
+    if (globalFailPointRegistry().find("rsSyncApplyStop")->shouldFail()) {
+        severe() << "Turn off rsSyncApplyStop before attempting clean shutdown";
+        fassertFailedNoTrace(40304);
+    }
 
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    stdx::lock_guard<Latch> lock(_mutex);
     _inShutdown = true;
 }
 
 bool OplogApplier::inShutdown() const {
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    stdx::lock_guard<Latch> lock(_mutex);
     return _inShutdown;
+}
+
+void OplogApplier::waitForSpace(OperationContext* opCtx, std::size_t size) {
+    _oplogBuffer->waitForSpace(opCtx, size);
 }
 
 /**
@@ -299,6 +272,10 @@ StatusWith<OpTime> OplogApplier::multiApply(OperationContext* opCtx, Operations 
     return lastApplied;
 }
 
+const OplogApplier::Options& OplogApplier::getOptions() const {
+    return _options;
+}
+
 void OplogApplier::_consume(OperationContext* opCtx, OplogBuffer* oplogBuffer) {
     // This is just to get the op off the queue; it's been peeked at and queued for application
     // already.
@@ -308,6 +285,35 @@ void OplogApplier::_consume(OperationContext* opCtx, OplogBuffer* oplogBuffer) {
     // successfully.
     BSONObj opToPopAndDiscard;
     invariant(oplogBuffer->tryPop(opCtx, &opToPopAndDiscard) || inShutdown());
+}
+
+std::unique_ptr<ThreadPool> makeReplWriterPool() {
+    return makeReplWriterPool(replWriterThreadCount);
+}
+
+std::unique_ptr<ThreadPool> makeReplWriterPool(int threadCount) {
+    ThreadPool::Options options;
+    options.threadNamePrefix = "repl-writer-worker-";
+    options.poolName = "repl writer worker Pool";
+    options.maxThreads = options.minThreads = static_cast<size_t>(threadCount);
+    options.onCreateThread = [](const std::string&) {
+        Client::initThread(getThreadName());
+        AuthorizationSession::get(cc())->grantInternalAuthorization(&cc());
+    };
+    auto pool = std::make_unique<ThreadPool>(options);
+    pool->startup();
+    return pool;
+}
+
+std::size_t getBatchLimitOplogEntries() {
+    return std::size_t(replBatchLimitOperations.load());
+}
+
+std::size_t getBatchLimitOplogBytes(OperationContext* opCtx, StorageInterface* storageInterface) {
+    auto oplogMaxSizeResult =
+        storageInterface->getOplogMaxSize(opCtx, NamespaceString::kRsOplogNamespace);
+    auto oplogMaxSize = fassert(40301, oplogMaxSizeResult);
+    return std::min(oplogMaxSize / 10, std::size_t(replBatchLimitBytes.load()));
 }
 
 }  // namespace repl

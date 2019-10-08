@@ -31,6 +31,8 @@
 
 #include "mongo/db/query/query_solution.h"
 
+#include <boost/algorithm/string/join.hpp>
+
 #include "mongo/bson/bsontypes.h"
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/simple_bsonelement_comparator.h"
@@ -848,6 +850,27 @@ bool IndexScanNode::operator==(const IndexScanNode& other) const {
 }
 
 //
+// ReturnKeyNode
+//
+
+void ReturnKeyNode::appendToString(str::stream* ss, int indent) const {
+    addIndent(ss, indent);
+    *ss << "RETURN_KEY\n";
+    addIndent(ss, indent + 1);
+    *ss << "sortKeyMetaFields = [" << boost::algorithm::join(sortKeyMetaFields, ", ") << "]\n";
+    addCommon(ss, indent);
+    addIndent(ss, indent + 1);
+    *ss << "Child:" << '\n';
+    children[0]->appendToString(ss, indent + 2);
+}
+
+QuerySolutionNode* ReturnKeyNode::clone() const {
+    auto copy = std::make_unique<ReturnKeyNode>(
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()), std::vector(sortKeyMetaFields));
+    return copy.release();
+}
+
+//
 // ProjectionNode
 //
 
@@ -855,7 +878,7 @@ void ProjectionNode::appendToString(str::stream* ss, int indent) const {
     addIndent(ss, indent);
     *ss << "PROJ\n";
     addIndent(ss, indent + 1);
-    *ss << "proj = " << projection.toString() << '\n';
+    *ss << "proj = " << proj.getProjObj().toString() << '\n';
     addIndent(ss, indent + 1);
     *ss << "type = " << projectionImplementationTypeToString() << '\n';
     addCommon(ss, indent);
@@ -877,7 +900,7 @@ void ProjectionNode::computeProperties() {
     for (auto&& sort : inputSorts) {
         bool sortCompatible = true;
         for (auto&& key : sort) {
-            if (!parsed.isFieldRetainedExactly(key.fieldNameStringData())) {
+            if (!proj.isFieldRetainedExactly(key.fieldNameStringData())) {
                 sortCompatible = false;
                 break;
             }
@@ -898,10 +921,7 @@ void ProjectionNode::cloneProjectionData(ProjectionNode* copy) const {
 
 ProjectionNode* ProjectionNodeDefault::clone() const {
     auto copy = std::make_unique<ProjectionNodeDefault>(
-        std::unique_ptr<QuerySolutionNode>(children[0]->clone()),
-        fullExpression,
-        projection,
-        parsed);
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()), fullExpression, proj);
     ProjectionNode::cloneProjectionData(copy.get());
     return copy.release();
 }
@@ -910,8 +930,7 @@ ProjectionNode* ProjectionNodeCovered::clone() const {
     auto copy = std::make_unique<ProjectionNodeCovered>(
         std::unique_ptr<QuerySolutionNode>(children[0]->clone()),
         fullExpression,
-        projection,
-        parsed,
+        proj,
         coveredKeyObj);
     ProjectionNode::cloneProjectionData(copy.get());
     return copy.release();
@@ -919,10 +938,7 @@ ProjectionNode* ProjectionNodeCovered::clone() const {
 
 ProjectionNode* ProjectionNodeSimple::clone() const {
     auto copy = std::make_unique<ProjectionNodeSimple>(
-        std::unique_ptr<QuerySolutionNode>(children[0]->clone()),
-        fullExpression,
-        projection,
-        parsed);
+        std::unique_ptr<QuerySolutionNode>(children[0]->clone()), fullExpression, proj);
     ProjectionNode::cloneProjectionData(copy.get());
     return copy.release();
 }
@@ -974,7 +990,6 @@ QuerySolutionNode* SortNode::clone() const {
     copy->_sorts = this->_sorts;
     copy->pattern = this->pattern;
     copy->limit = this->limit;
-    copy->allowDiskUse = this->allowDiskUse;
 
     return copy;
 }

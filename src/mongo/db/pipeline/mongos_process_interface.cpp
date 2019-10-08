@@ -163,7 +163,6 @@ boost::optional<Document> MongoSInterface::lookupSingleDocument(
         cmdBuilder.append("find", nss.coll());
     }
     cmdBuilder.append("filter", filterObj);
-    cmdBuilder.append("comment", expCtx->comment);
     if (readConcern) {
         cmdBuilder.append(repl::ReadConcernArgs::kReadConcernFieldName, *readConcern);
     }
@@ -288,6 +287,9 @@ void MongoSInterface::_reportCurrentOpsForIdleSessions(OperationContext* opCtx,
         }
     });
 }
+
+void MongoSInterface::_reportCurrentOpsForTransactionCoordinators(
+    OperationContext* opCtx, bool includeIdle, std::vector<BSONObj>* ops) const {};
 
 std::vector<GenericCursor> MongoSInterface::getIdleCursors(
     const intrusive_ptr<ExpressionContext>& expCtx, CurrentOpUserMode userMode) const {

@@ -239,7 +239,7 @@ private:
         Hotel(int nRooms) : _nRooms(nRooms), _checkedIn(0), _maxRooms(0) {}
 
         void checkIn() {
-            stdx::lock_guard<stdx::mutex> lk(_frontDesk);
+            stdx::lock_guard<Latch> lk(_frontDesk);
             _checkedIn++;
             verify(_checkedIn <= _nRooms);
             if (_checkedIn > _maxRooms)
@@ -247,12 +247,12 @@ private:
         }
 
         void checkOut() {
-            stdx::lock_guard<stdx::mutex> lk(_frontDesk);
+            stdx::lock_guard<Latch> lk(_frontDesk);
             _checkedIn--;
             verify(_checkedIn >= 0);
         }
 
-        stdx::mutex _frontDesk;
+        Mutex _frontDesk = MONGO_MAKE_LATCH("Hotel::_frontDesk");
         int _nRooms;
         int _checkedIn;
         int _maxRooms;
@@ -289,9 +289,9 @@ private:
     }
 };
 
-class All : public Suite {
+class All : public OldStyleSuiteSpecification {
 public:
-    All() : Suite("threading") {}
+    All() : OldStyleSuiteSpecification("threading") {}
 
     void setupTests() {
         // Slack is a test to see how long it takes for another thread to pick up
@@ -307,5 +307,5 @@ public:
     }
 };
 
-SuiteInstance<All> myall;
+OldStyleSuiteInitializer<All> myall;
 }  // namespace ThreadedTests

@@ -59,6 +59,7 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/index_names',
         '$BUILD_DIR/mongo/db/write_concern_options',
+        '$BUILD_DIR/mongo/db/read_write_concern_defaults',
     ]
 )
 
@@ -127,6 +128,9 @@ env.Library(
         '$BUILD_DIR/mongo/util/progress_meter',
         'server_options',
         'generic_cursor',
+    ],
+    LIBDEPS_PRIVATE=[
+        'prepare_conflict_tracker',
     ],
 )
 
@@ -363,6 +367,21 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/bson/util/bson_extract',
+    ],
+)
+
+env.Library(
+    target="read_write_concern_defaults",
+    source=[
+        "read_write_concern_defaults.cpp",
+        env.Idlc('rw_concern_default.idl')[0],
+    ],
+    LIBDEPS=[
+        'write_concern_options',
+        'repl/read_concern_args',
+    ],
+    LIBDEPS_PRIVATE=[
+        "logical_clock",
     ],
 )
 
@@ -755,6 +774,7 @@ env.Library(
         "collection_index_builds_tracker.cpp",
         "database_index_builds_tracker.cpp",
         "index_builds_coordinator.cpp",
+        env.Idlc('enable_two_phase_index_build.idl')[0],
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/base",
@@ -766,12 +786,14 @@ env.Library(
         'catalog/database_holder',
         'db_raii',
         'index_build_entry_helpers',
+        'server_options_core',
         '$BUILD_DIR/mongo/db/catalog/index_build_entry_idl',
         '$BUILD_DIR/mongo/db/catalog/collection',
         '$BUILD_DIR/mongo/db/catalog/collection_catalog',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
         '$BUILD_DIR/mongo/db/s/sharding_api_d',
+        '$BUILD_DIR/mongo/idl/server_parameter',
         '$BUILD_DIR/mongo/util/fail_point',
     ],
 )
@@ -817,6 +839,7 @@ env.Library(
         '$BUILD_DIR/mongo/client/authentication',
         'catalog/database_holder',
         'commands/list_collections_filter',
+        'index_builds_coordinator_interface',
     ],
 )
 
@@ -955,6 +978,16 @@ env.Library(
 )
 
 env.Library(
+    target='projection_executor',
+    source=[
+        'exec/find_projection_executor.cpp',
+    ],
+    LIBDEPS=[
+        'matcher/expressions'
+    ],
+)
+
+env.Library(
     target='query_exec',
     source=[
         'clientcursor.cpp',
@@ -971,7 +1004,6 @@ env.Library(
         'exec/ensure_sorted.cpp',
         'exec/eof.cpp',
         'exec/fetch.cpp',
-        'exec/find_projection_executor.cpp',
         'exec/geo_near.cpp',
         'exec/idhack.cpp',
         'exec/index_scan.cpp',
@@ -985,11 +1017,13 @@ env.Library(
         'exec/plan_stage.cpp',
         'exec/projection.cpp',
         'exec/projection_exec.cpp',
+        'exec/projection_executor.cpp',
         'exec/queued_data_stage.cpp',
         'exec/record_store_fast_count.cpp',
         'exec/requires_all_indices_stage.cpp',
         'exec/requires_collection_stage.cpp',
         'exec/requires_index_stage.cpp',
+        'exec/return_key.cpp',
         'exec/shard_filter.cpp',
         'exec/shard_filterer_impl.cpp',
         'exec/skip.cpp',
@@ -1050,6 +1084,7 @@ env.Library(
         'matcher/expressions_mongod_only',
         'ops/parsed_update',
         'pipeline/pipeline',
+        'projection_executor',
         'query/query_common',
         'query/query_planner',
         'repl/repl_coordinator_interface',
@@ -1771,6 +1806,7 @@ envWithAsio.CppUnitTest(
         '$BUILD_DIR/mongo/executor/async_timer_mock',
         '$BUILD_DIR/mongo/idl/idl_parser',
         '$BUILD_DIR/mongo/idl/server_parameter',
+        '$BUILD_DIR/mongo/rpc/command_status',
         '$BUILD_DIR/mongo/rpc/rpc',
         '$BUILD_DIR/mongo/transport/transport_layer_mock',
         '$BUILD_DIR/mongo/util/clock_source_mock',

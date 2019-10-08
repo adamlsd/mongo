@@ -54,8 +54,7 @@ TEST(SortedDataInterface, CursorIsEOFWhenEmpty) {
     {
         const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
         const std::unique_ptr<SortedDataInterface::Cursor> cursor(sorted->newCursor(opCtx.get()));
-
-        ASSERT(!cursor->seek(makeKeyStringForSeek(sorted.get(), kMinBSONKey, true, true)));
+        ASSERT(!cursor->seek(makeKeyStringForSeek(sorted.get(), BSONObj(), true, true)));
 
         // Cursor at EOF should remain at EOF when advanced
         ASSERT(!cursor->next());
@@ -104,8 +103,7 @@ TEST(SortedDataInterface, ExhaustCursor) {
             WriteUnitOfWork uow(opCtx.get());
             BSONObj key = BSON("" << i);
             RecordId loc(42, i * 2);
-            ASSERT_OK(
-                sorted->insert(opCtx.get(), makeKeyString(sorted.get(), key, loc), loc, true));
+            ASSERT_OK(sorted->insert(opCtx.get(), makeKeyString(sorted.get(), key, loc), true));
             uow.commit();
         }
     }
@@ -120,7 +118,7 @@ TEST(SortedDataInterface, ExhaustCursor) {
         const std::unique_ptr<SortedDataInterface::Cursor> cursor(sorted->newCursor(opCtx.get()));
         for (int i = 0; i < nToInsert; i++) {
             auto entry = i == 0
-                ? cursor->seek(makeKeyStringForSeek(sorted.get(), kMinBSONKey, true, true))
+                ? cursor->seek(makeKeyStringForSeek(sorted.get(), BSONObj(), true, true))
                 : cursor->next();
             ASSERT_EQ(entry, IndexKeyEntry(BSON("" << i), RecordId(42, i * 2)));
         }
@@ -128,6 +126,53 @@ TEST(SortedDataInterface, ExhaustCursor) {
 
         // Cursor at EOF should remain at EOF when advanced
         ASSERT(!cursor->next());
+    }
+}
+
+TEST(SortedDataInterface, ExhaustKeyStringCursor) {
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
+    const std::unique_ptr<SortedDataInterface> sorted(
+        harnessHelper->newSortedDataInterface(/*unique=*/false, /*partial=*/false));
+
+    {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        ASSERT(sorted->isEmpty(opCtx.get()));
+    }
+
+    std::vector<KeyString::Value> keyStrings;
+    int nToInsert = 10;
+    for (int i = 0; i < nToInsert; i++) {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        {
+            WriteUnitOfWork uow(opCtx.get());
+            BSONObj key = BSON("" << i);
+            RecordId loc(42, i * 2);
+            KeyString::Value ks = makeKeyString(sorted.get(), key, loc);
+            keyStrings.push_back(ks);
+            ASSERT_OK(sorted->insert(opCtx.get(), ks, true));
+            uow.commit();
+        }
+    }
+
+    {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        ASSERT_EQUALS(nToInsert, sorted->numEntries(opCtx.get()));
+    }
+
+    {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        const std::unique_ptr<SortedDataInterface::Cursor> cursor(sorted->newCursor(opCtx.get()));
+        for (int i = 0; i < nToInsert; i++) {
+            auto entry = i == 0 ? cursor->seekForKeyString(
+                                      makeKeyStringForSeek(sorted.get(), BSONObj(), true, true))
+                                : cursor->nextKeyString();
+            ASSERT(entry);
+            ASSERT_EQ(entry->keyString, keyStrings.at(i));
+        }
+        ASSERT(!cursor->nextKeyString());
+
+        // Cursor at EOF should remain at EOF when advanced
+        ASSERT(!cursor->nextKeyString());
     }
 }
 
@@ -150,8 +195,7 @@ TEST(SortedDataInterface, ExhaustCursorReversed) {
             WriteUnitOfWork uow(opCtx.get());
             BSONObj key = BSON("" << i);
             RecordId loc(42, i * 2);
-            ASSERT_OK(
-                sorted->insert(opCtx.get(), makeKeyString(sorted.get(), key, loc), loc, true));
+            ASSERT_OK(sorted->insert(opCtx.get(), makeKeyString(sorted.get(), key, loc), true));
             uow.commit();
         }
     }
@@ -178,6 +222,54 @@ TEST(SortedDataInterface, ExhaustCursorReversed) {
     }
 }
 
+TEST(SortedDataInterface, ExhaustKeyStringCursorReversed) {
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
+    const std::unique_ptr<SortedDataInterface> sorted(
+        harnessHelper->newSortedDataInterface(/*unique=*/false, /*partial=*/false));
+
+    {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        ASSERT(sorted->isEmpty(opCtx.get()));
+    }
+
+    std::vector<KeyString::Value> keyStrings;
+    int nToInsert = 10;
+    for (int i = 0; i < nToInsert; i++) {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        {
+            WriteUnitOfWork uow(opCtx.get());
+            BSONObj key = BSON("" << i);
+            RecordId loc(42, i * 2);
+            KeyString::Value ks = makeKeyString(sorted.get(), key, loc);
+            keyStrings.push_back(ks);
+            ASSERT_OK(sorted->insert(opCtx.get(), ks, true));
+            uow.commit();
+        }
+    }
+
+    {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        ASSERT_EQUALS(nToInsert, sorted->numEntries(opCtx.get()));
+    }
+
+    {
+        const ServiceContext::UniqueOperationContext opCtx(harnessHelper->newOperationContext());
+        const std::unique_ptr<SortedDataInterface::Cursor> cursor(
+            sorted->newCursor(opCtx.get(), false));
+        for (int i = nToInsert - 1; i >= 0; i--) {
+            auto entry = (i == nToInsert - 1) ? cursor->seekForKeyString(makeKeyStringForSeek(
+                                                    sorted.get(), kMaxBSONKey, false, true))
+                                              : cursor->nextKeyString();
+            ASSERT(entry);
+            ASSERT_EQ(entry->keyString, keyStrings.at(i));
+        }
+        ASSERT(!cursor->nextKeyString());
+
+        // Cursor at EOF should remain at EOF when advanced
+        ASSERT(!cursor->nextKeyString());
+    }
+}
+
 void testBoundaries(bool unique, bool forward, bool inclusive) {
     const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(
@@ -191,7 +283,7 @@ void testBoundaries(bool unique, bool forward, bool inclusive) {
         WriteUnitOfWork uow(opCtx.get());
         BSONObj key = BSON("" << i);
         RecordId loc(42 + i * 2);
-        ASSERT_OK(sorted->insert(opCtx.get(), makeKeyString(sorted.get(), key, loc), loc, true));
+        ASSERT_OK(sorted->insert(opCtx.get(), makeKeyString(sorted.get(), key, loc), true));
         uow.commit();
     }
 

@@ -144,6 +144,12 @@ private:
 class ParsedAggregationProjection : public TransformerInterface {
 public:
     /**
+     * The name of an internal variable to bind a projection post image to, which is used by the
+     * '_rootReplacementExpression' to replace the content of the transformed document.
+     */
+    static constexpr StringData kProjectionPostImageVarName{"INTERNAL_PROJ_POST_IMAGE"_sd};
+
+    /**
      * Main entry point for a ParsedAggregationProjection.
      *
      * Throws a AssertionException if 'spec' is an invalid projection specification.
@@ -166,7 +172,11 @@ public:
     /**
      * Optimize any expressions contained within this projection.
      */
-    virtual void optimize() {}
+    virtual void optimize() {
+        if (_rootReplacementExpression) {
+            _rootReplacementExpression->optimize();
+        }
+    }
 
     /**
      * Add any dependencies needed by this projection or any sub-expressions to 'deps'.
@@ -179,13 +189,30 @@ public:
      * Apply the projection transformation.
      */
     Document applyTransformation(const Document& input) {
-        return applyProjection(input);
+        auto output = applyProjection(input);
+        if (_rootReplacementExpression) {
+            return _applyRootReplacementExpression(input, output);
+        }
+        return output;
+    }
+
+    /**
+     * Sets 'expr' as a root-replacement expression to this tree. A root-replacement expression,
+     * once evaluated, will replace an entire output document. A projection post image document
+     * will be accessible via the special variable, whose name is stored in
+     * 'kProjectionPostImageVarName', if this expression needs access to it.
+     */
+    void setRootReplacementExpression(boost::intrusive_ptr<Expression> expr) {
+        _rootReplacementExpression = expr;
     }
 
 protected:
     ParsedAggregationProjection(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                 ProjectionPolicies policies)
-        : _expCtx(expCtx), _policies(policies){};
+        : _expCtx(expCtx),
+          _policies(policies),
+          _projectionPostImageVarId{
+              _expCtx->variablesParseState.defineVariable(kProjectionPostImageVarName)} {}
 
     /**
      * Apply the projection to 'input'.
@@ -195,6 +222,26 @@ protected:
     boost::intrusive_ptr<ExpressionContext> _expCtx;
 
     ProjectionPolicies _policies;
+
+    boost::intrusive_ptr<Expression> _rootReplacementExpression;
+
+private:
+    Document _applyRootReplacementExpression(const Document& input, const Document& output) {
+        using namespace fmt::literals;
+
+        _expCtx->variables.setValue(_projectionPostImageVarId, Value{output});
+        auto val = _rootReplacementExpression->evaluate(input, &_expCtx->variables);
+        uassert(51254,
+                "Root-replacement expression must return a document, but got {}"_format(
+                    typeName(val.getType())),
+                val.getType() == BSONType::Object);
+        return val.getDocument();
+    }
+
+    // This variable id is used to bind a projection post-image so that it can be accessed by
+    // root-replacement expressions which apply projection to the entire post-image document, rather
+    // than to a specific field.
+    Variables::Id _projectionPostImageVarId;
 };
 }  // namespace parsed_aggregation_projection
 }  // namespace mongo

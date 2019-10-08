@@ -108,7 +108,6 @@ public:
 
     /**
      * Returns the 'drop-pending' state of this Database.
-     * The database must be locked in MODE_X when calling this function.
      */
     virtual bool isDropPending(OperationContext* opCtx) const = 0;
 
@@ -145,12 +144,6 @@ public:
     virtual Status createView(OperationContext* const opCtx,
                               const NamespaceString& viewName,
                               const CollectionOptions& options) const = 0;
-
-    virtual Collection* getCollection(OperationContext* opCtx,
-                                      const NamespaceString& nss) const = 0;
-
-    virtual Collection* getOrCreateCollection(OperationContext* const opCtx,
-                                              const NamespaceString& nss) const = 0;
 
     /**
      * Arguments are passed by value as they otherwise would be changing as result of renaming.

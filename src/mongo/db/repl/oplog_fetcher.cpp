@@ -41,7 +41,7 @@
 #include "mongo/db/stats/timer_stats.h"
 #include "mongo/rpc/metadata/oplog_query_metadata.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/time_support.h"
 
@@ -370,7 +370,7 @@ Milliseconds OplogFetcher::getAwaitDataTimeout_forTest() const {
 }
 
 Milliseconds OplogFetcher::_getGetMoreMaxTime() const {
-    if (MONGO_FAIL_POINT(setSmallOplogGetMoreMaxTimeMS)) {
+    if (MONGO_unlikely(setSmallOplogGetMoreMaxTimeMS.shouldFail())) {
         return Milliseconds(50);
     }
 
@@ -382,24 +382,31 @@ StatusWith<BSONObj> OplogFetcher::_onSuccessfulBatch(const Fetcher::QueryRespons
     // Stop fetching and return on fail point.
     // This fail point makes the oplog fetcher ignore the downloaded batch of operations and not
     // error out. The FailPointEnabled error will be caught by the AbstractOplogFetcher.
-    if (MONGO_FAIL_POINT(stopReplProducer)) {
+    if (MONGO_unlikely(stopReplProducer.shouldFail())) {
         return Status(ErrorCodes::FailPointEnabled, "stopReplProducer fail point is enabled");
     }
 
     // Stop fetching and return when we reach a particular document. This failpoint should be used
     // with the setParameter bgSyncOplogFetcherBatchSize=1, so that documents are fetched one at a
     // time.
-    MONGO_FAIL_POINT_BLOCK(stopReplProducerOnDocument, fp) {
-        auto opCtx = cc().makeOperationContext();
-        boost::intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext(opCtx.get(), nullptr));
-        auto query = fp.getData()["document"].Obj();
-        Matcher m(query, expCtx);
-        if (!queryResponse.documents.empty() &&
-            m.matches(queryResponse.documents.front()["o"].Obj())) {
-            log() << "stopReplProducerOnDocument fail point is enabled.";
-            return Status(ErrorCodes::FailPointEnabled,
-                          "stopReplProducerOnDocument fail point is enabled");
-        }
+    {
+        Status status = Status::OK();
+        stopReplProducerOnDocument.executeIf(
+            [&](auto&&) {
+                status = {ErrorCodes::FailPointEnabled,
+                          "stopReplProducerOnDocument fail point is enabled."};
+                log() << status.reason();
+            },
+            [&](const BSONObj& data) {
+                auto opCtx = cc().makeOperationContext();
+                boost::intrusive_ptr<ExpressionContext> expCtx(
+                    new ExpressionContext(opCtx.get(), nullptr));
+                Matcher m(data["document"].Obj(), expCtx);
+                return !queryResponse.documents.empty() &&
+                    m.matches(queryResponse.documents.front()["o"].Obj());
+            });
+        if (!status.isOK())
+            return status;
     }
 
     const auto& documents = queryResponse.documents;
@@ -493,7 +500,6 @@ StatusWith<BSONObj> OplogFetcher::_onSuccessfulBatch(const Fetcher::QueryRespons
     // Record time for each batch.
     getmoreReplStats.recordMillis(durationCount<Milliseconds>(queryResponse.elapsedMillis));
 
-    // TODO: back pressure handling will be added in SERVER-23499.
     auto status = _enqueueDocumentsFn(firstDocToApply, documents.cend(), info);
     if (!status.isOK()) {
         return status;

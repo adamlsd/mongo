@@ -150,13 +150,23 @@ Status CollectionBulkLoaderImpl::_insertDocumentsForUncappedCollection(
             return status;
         }
 
-        // Inserts index entries into the external sorter. This will not update
-        // pre-existing indexes.
-        for (size_t index = 0; index < locs.size(); ++index) {
-            status = _addDocumentToIndexBlocks(*iter++, locs.at(index));
-            if (!status.isOK()) {
-                return status;
+        // Inserts index entries into the external sorter. This will not update pre-existing
+        // indexes. Wrap this in a WUOW since the index entry insertion may modify the durable
+        // record store which can throw a write conflict exception.
+        status = writeConflictRetry(_opCtx.get(), "_addDocumentToIndexBlocks", _nss.ns(), [&] {
+            WriteUnitOfWork wunit(_opCtx.get());
+            for (size_t index = 0; index < locs.size(); ++index) {
+                status = _addDocumentToIndexBlocks(*iter++, locs.at(index));
+                if (!status.isOK()) {
+                    return status;
+                }
             }
+            wunit.commit();
+            return Status::OK();
+        });
+
+        if (!status.isOK()) {
+            return status;
         }
     }
     return Status::OK();
@@ -305,12 +315,14 @@ Status CollectionBulkLoaderImpl::commit() {
 void CollectionBulkLoaderImpl::_releaseResources() {
     invariant(&cc() == _opCtx->getClient());
     if (_secondaryIndexesBlock) {
-        _secondaryIndexesBlock->cleanUpAfterBuild(_opCtx.get(), _collection);
+        _secondaryIndexesBlock->cleanUpAfterBuild(
+            _opCtx.get(), _collection, MultiIndexBlock::kNoopOnCleanUpFn);
         _secondaryIndexesBlock.reset();
     }
 
     if (_idIndexBlock) {
-        _idIndexBlock->cleanUpAfterBuild(_opCtx.get(), _collection);
+        _idIndexBlock->cleanUpAfterBuild(
+            _opCtx.get(), _collection, MultiIndexBlock::kNoopOnCleanUpFn);
         _idIndexBlock.reset();
     }
 

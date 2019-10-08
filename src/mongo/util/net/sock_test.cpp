@@ -41,7 +41,7 @@
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/notification.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/net/socket_exception.h"
 
 namespace {
@@ -208,7 +208,7 @@ const char kSocketFailPointName[] = "throwSockExcep";
 class SocketFailPointTest : public unittest::Test {
 public:
     SocketFailPointTest()
-        : _failPoint(getGlobalFailPointRegistry()->getFailPoint(kSocketFailPointName)),
+        : _failPoint(globalFailPointRegistry().find(kSocketFailPointName)),
           _sockets(socketPair(SOCK_STREAM)) {
         ASSERT_TRUE(_failPoint != nullptr);
         ASSERT_TRUE(_sockets.first);

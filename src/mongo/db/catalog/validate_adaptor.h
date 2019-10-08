@@ -29,10 +29,7 @@
 
 #pragma once
 
-#include "mongo/db/catalog/throttle_cursor.h"
-#include "mongo/db/storage/record_store.h"
-#include "mongo/db/storage/sorted_data_interface.h"
-
+#include "mongo/db/catalog/validate_state.h"
 
 namespace mongo {
 
@@ -40,68 +37,61 @@ class IndexConsistency;
 class IndexDescriptor;
 class OperationContext;
 
-enum ValidateCmdLevel : int { kValidateNormal = 0x01, kValidateFull = 0x02 };
-
 /**
- * The record store validate adaptor is used to keep track of the index consistency during
- * a validation that's running.
+ * The validate adaptor is used to keep track of collection and index consistency during a running
+ * collection validation operation.
  */
 class ValidateAdaptor {
     using ValidateResultsMap = std::map<std::string, ValidateResults>;
 
 public:
     ValidateAdaptor(IndexConsistency* indexConsistency,
-                    ValidateCmdLevel level,
+                    CollectionValidation::ValidateState* validateState,
                     ValidateResultsMap* irm)
 
-        : _indexConsistency(indexConsistency), _level(level), _indexNsResultsMap(irm) {}
+        : _indexConsistency(indexConsistency),
+          _validateState(validateState),
+          _indexNsResultsMap(irm) {}
 
     /**
      * Validates the record data and traverses through its key set to keep track of the
      * index consistency.
      */
-    virtual Status validateRecord(
-        OperationContext* opCtx,
-        Collection* coll,
-        const RecordId& recordId,
-        const RecordData& record,
-        const std::unique_ptr<SeekableRecordThrottleCursor>& seekRecordStoreCursor,
-        size_t* dataSize);
+    virtual Status validateRecord(OperationContext* opCtx,
+                                  const RecordId& recordId,
+                                  const RecordData& record,
+                                  size_t* dataSize);
 
     /**
      * Traverses the index getting index entries to validate them and keep track of the index keys
      * for index consistency.
      */
     void traverseIndex(OperationContext* opCtx,
+                       const IndexCatalogEntry* index,
                        int64_t* numTraversedKeys,
-                       const std::unique_ptr<SortedDataInterfaceThrottleCursor>& indexCursor,
-                       const IndexDescriptor* descriptor,
                        ValidateResults* results);
 
     /**
      * Traverses the record store to retrieve every record and go through its document key
      * set to keep track of the index consistency during a validation.
      */
-    void traverseRecordStore(
-        OperationContext* opCtx,
-        Collection* coll,
-        const RecordId& firstRecordId,
-        const std::unique_ptr<SeekableRecordThrottleCursor>& traverseRecordStoreCursor,
-        const std::unique_ptr<SeekableRecordThrottleCursor>& seekRecordStoreCursor,
-        bool background,
-        ValidateResults* results,
-        BSONObjBuilder* output);
+    void traverseRecordStore(OperationContext* opCtx,
+                             ValidateResults* results,
+                             BSONObjBuilder* output);
 
     /**
-     * Validate that the number of document keys matches the number of index keys.
+     * Validates that the number of document keys matches the number of index keys previously
+     * traversed in traverseIndex().
      */
-    void validateIndexKeyCount(const IndexDescriptor* idx,
-                               int64_t numRecs,
-                               ValidateResults& results);
+    void validateIndexKeyCount(const IndexDescriptor* idx, ValidateResults& results);
 
 private:
     IndexConsistency* _indexConsistency;
-    ValidateCmdLevel _level;
+    CollectionValidation::ValidateState* _validateState;
     ValidateResultsMap* _indexNsResultsMap;
+
+    // Saves the record count from the record store traversal to be used later to validate the index
+    // entries count. Reset every time traverseRecordStore() is called.
+    long long _numRecords = 0;
 };
 }  // namespace mongo

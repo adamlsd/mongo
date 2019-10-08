@@ -53,20 +53,18 @@ IDHackStage::IDHackStage(OperationContext* opCtx,
                          CanonicalQuery* query,
                          WorkingSet* ws,
                          const IndexDescriptor* descriptor)
-    : RequiresIndexStage(kStageType, opCtx, descriptor),
+    : RequiresIndexStage(kStageType, opCtx, descriptor, ws),
       _workingSet(ws),
       _key(query->getQueryObj()["_id"].wrap()) {
     _specificStats.indexName = descriptor->indexName();
-    if (nullptr != query->getProj()) {
-        _addKeyMetadata = query->getProj()->wantIndexKey();
-    }
+    _addKeyMetadata = query->getQueryRequest().returnKey();
 }
 
 IDHackStage::IDHackStage(OperationContext* opCtx,
                          const BSONObj& key,
                          WorkingSet* ws,
                          const IndexDescriptor* descriptor)
-    : RequiresIndexStage(kStageType, opCtx, descriptor), _workingSet(ws), _key(key) {
+    : RequiresIndexStage(kStageType, opCtx, descriptor, ws), _workingSet(ws), _key(key) {
     _specificStats.indexName = descriptor->indexName();
 }
 

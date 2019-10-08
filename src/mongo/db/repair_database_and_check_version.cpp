@@ -94,14 +94,16 @@ Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx
 
     // If the server configuration collection, which contains the FCV document, does not exist, then
     // create it.
-    if (!db->getCollection(opCtx, NamespaceString::kServerConfigurationNamespace)) {
+    if (!CollectionCatalog::get(opCtx).lookupCollectionByNamespace(
+            NamespaceString::kServerConfigurationNamespace)) {
         log() << "Re-creating the server configuration collection (admin.system.version) that was "
                  "dropped.";
         uassertStatusOK(
             createCollection(opCtx, fcvNss.db().toString(), BSON("create" << fcvNss.coll())));
     }
 
-    Collection* fcvColl = db->getCollection(opCtx, NamespaceString::kServerConfigurationNamespace);
+    Collection* fcvColl = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(
+        NamespaceString::kServerConfigurationNamespace);
     invariant(fcvColl);
 
     // Restore the featureCompatibilityVersion document if it is missing.
@@ -154,7 +156,8 @@ bool checkIdIndexExists(OperationContext* opCtx, const NamespaceString& nss) {
 
 Status buildMissingIdIndex(OperationContext* opCtx, Collection* collection) {
     MultiIndexBlock indexer;
-    ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(opCtx, collection); });
+    ON_BLOCK_EXIT(
+        [&] { indexer.cleanUpAfterBuild(opCtx, collection, MultiIndexBlock::kNoopOnCleanUpFn); });
 
     const auto indexCatalog = collection->getIndexCatalog();
     const auto idIndexSpec = indexCatalog->getDefaultIdIndexSpec();
@@ -249,7 +252,8 @@ bool hasReplSetConfigDoc(OperationContext* opCtx) {
 void checkForCappedOplog(OperationContext* opCtx, Database* db) {
     const NamespaceString oplogNss(NamespaceString::kRsOplogNamespace);
     invariant(opCtx->lockState()->isDbLockedForMode(oplogNss.db(), MODE_IS));
-    Collection* oplogCollection = db->getCollection(opCtx, oplogNss);
+    Collection* oplogCollection =
+        CollectionCatalog::get(opCtx).lookupCollectionByNamespace(oplogNss);
     if (oplogCollection && !oplogCollection->isCapped()) {
         severe() << "The oplog collection " << oplogNss
                  << " is not capped; a capped oplog is a requirement for replication to function.";
@@ -363,7 +367,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     if (storageGlobalParams.repair) {
         invariant(!storageGlobalParams.readOnly);
 
-        if (MONGO_FAIL_POINT(exitBeforeDataRepair)) {
+        if (MONGO_unlikely(exitBeforeDataRepair.shouldFail())) {
             log() << "Exiting because 'exitBeforeDataRepair' fail point was set.";
             quickExit(EXIT_ABRUPT);
         }
@@ -395,7 +399,8 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         auto db = databaseHolder->getDb(opCtx, fcvNSS.db());
         Collection* versionColl;
         BSONObj featureCompatibilityVersion;
-        if (!db || !(versionColl = db->getCollection(opCtx, fcvNSS)) ||
+        if (!db ||
+            !(versionColl = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(fcvNSS)) ||
             !Helpers::findOne(opCtx,
                               versionColl,
                               BSON("_id" << FeatureCompatibilityVersionParser::kParameterName),
@@ -420,7 +425,7 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     }
 
     if (storageGlobalParams.repair) {
-        if (MONGO_FAIL_POINT(exitBeforeRepairInvalidatesConfig)) {
+        if (MONGO_unlikely(exitBeforeRepairInvalidatesConfig.shouldFail())) {
             log() << "Exiting because 'exitBeforeRepairInvalidatesConfig' fail point was set.";
             quickExit(EXIT_ABRUPT);
         }
@@ -428,16 +433,24 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         // config.
         auto repairObserver = StorageRepairObserver::get(opCtx->getServiceContext());
         repairObserver->onRepairDone(opCtx);
-        if (repairObserver->isDataModified()) {
+        if (repairObserver->getModifications().size() > 0) {
             warning() << "Modifications made by repair:";
             const auto& mods = repairObserver->getModifications();
             for (const auto& mod : mods) {
-                warning() << "  " << mod;
+                warning() << "  " << mod.getDescription();
             }
+        }
+        if (repairObserver->isDataInvalidated()) {
             if (hasReplSetConfigDoc(opCtx)) {
                 warning() << "WARNING: Repair may have modified replicated data. This node will no "
                              "longer be able to join a replica set without a full re-sync";
             }
+        }
+
+        // There were modifications, but only benign ones.
+        if (repairObserver->getModifications().size() > 0 && !repairObserver->isDataInvalidated()) {
+            log() << "Repair has made modifications to unreplicated data. The data is healthy and "
+                     "the node is eligible to be returned to the replica set.";
         }
     }
 
@@ -493,8 +506,8 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         // If the server configuration collection already contains a valid
         // featureCompatibilityVersion document, cache it in-memory as a server parameter.
         if (dbName == "admin") {
-            if (Collection* versionColl =
-                    db->getCollection(opCtx, NamespaceString::kServerConfigurationNamespace)) {
+            if (Collection* versionColl = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(
+                    NamespaceString::kServerConfigurationNamespace)) {
                 BSONObj featureCompatibilityVersion;
                 if (Helpers::findOne(
                         opCtx,

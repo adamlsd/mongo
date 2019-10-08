@@ -46,12 +46,12 @@
 #include "mongo/db/repl/bson_extract_optime.h"
 #include "mongo/db/server_options.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/condition_variable.h"
+#include "mongo/platform/mutex.h"
 #include "mongo/util/background.h"
 #include "mongo/util/debug_util.h"
 #include "mongo/util/exit.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/timer.h"
@@ -82,8 +82,6 @@ typedef SetState::Nodes Nodes;
 using executor::TaskExecutor;
 using CallbackArgs = TaskExecutor::CallbackArgs;
 using CallbackHandle = TaskExecutor::CallbackHandle;
-
-const double socketTimeoutSecs = 5;
 
 // Intentionally chosen to compare worse than all known latencies.
 const int64_t unknownLatency = numeric_limits<int64_t>::max();
@@ -180,13 +178,12 @@ const Seconds ReplicaSetMonitor::kDefaultFindHostTimeout(15);
 bool ReplicaSetMonitor::useDeterministicHostSelection = false;
 
 Seconds ReplicaSetMonitor::getDefaultRefreshPeriod() {
-    MONGO_FAIL_POINT_BLOCK_IF(modifyReplicaSetMonitorDefaultRefreshPeriod,
-                              data,
-                              [&](const BSONObj& data) { return data.hasField("period"); }) {
-        return Seconds{data.getData().getIntField("period")};
-    }
-
-    return kDefaultRefreshPeriod;
+    Seconds r = kDefaultRefreshPeriod;
+    static constexpr auto kPeriodField = "period"_sd;
+    modifyReplicaSetMonitorDefaultRefreshPeriod.executeIf(
+        [&r](const BSONObj& data) { r = Seconds{data.getIntField(kPeriodField)}; },
+        [](const BSONObj& data) { return data.hasField(kPeriodField); });
+    return r;
 }
 
 ReplicaSetMonitor::ReplicaSetMonitor(const SetStatePtr& initialState) : _state(initialState) {}
@@ -242,7 +239,7 @@ auto ReplicaSetMonitor::SetState::scheduleWorkAt(Date_t when, Callback&& cb) con
 void ReplicaSetMonitor::SetState::rescheduleRefresh(SchedulingStrategy strategy) {
     // Reschedule the refresh
 
-    if (!executor) {
+    if (!executor || isMocked) {
         // Without an executor, we can't do refreshes -- we're in a test
         return;
     }
@@ -277,6 +274,10 @@ void ReplicaSetMonitor::SetState::rescheduleRefresh(SchedulingStrategy strategy)
     auto swHandle = scheduleWorkAt(nextScanTime, [this](const CallbackArgs& cbArgs) {
         if (cbArgs.myHandle != refresherHandle)
             return;  // We've been replaced!
+
+        // It is possible that a waiter will have already expired by the point of this rescan.
+        // Thus we notify here to trigger that logic.
+        notify();
 
         _ensureScanInProgress(shared_from_this());
 
@@ -316,7 +317,7 @@ SemiFuture<std::vector<HostAndPort>> ReplicaSetMonitor::getHostsOrRefresh(
 Future<std::vector<HostAndPort>> ReplicaSetMonitor::_getHostsOrRefresh(
     const ReadPreferenceSetting& criteria, Milliseconds maxWait) {
 
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     if (_state->isDropped) {
         return Status(ErrorCodes::ReplicaSetMonitorRemoved,
                       str::stream() << "ReplicaSetMonitor for set " << getName() << " is removed");
@@ -351,7 +352,7 @@ HostAndPort ReplicaSetMonitor::getMasterOrUassert() {
 }
 
 void ReplicaSetMonitor::failedHost(const HostAndPort& host, const Status& status) {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     Node* node = _state->findNode(host);
     if (node)
         node->markFailed(status);
@@ -360,19 +361,19 @@ void ReplicaSetMonitor::failedHost(const HostAndPort& host, const Status& status
 }
 
 bool ReplicaSetMonitor::isPrimary(const HostAndPort& host) const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     Node* node = _state->findNode(host);
     return node ? node->isMaster : false;
 }
 
 bool ReplicaSetMonitor::isHostUp(const HostAndPort& host) const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     Node* node = _state->findNode(host);
     return node ? node->isUp : false;
 }
 
 int ReplicaSetMonitor::getMinWireVersion() const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     int minVersion = 0;
     for (const auto& host : _state->nodes) {
         if (host.isUp) {
@@ -384,7 +385,7 @@ int ReplicaSetMonitor::getMinWireVersion() const {
 }
 
 int ReplicaSetMonitor::getMaxWireVersion() const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     int maxVersion = std::numeric_limits<int>::max();
     for (const auto& host : _state->nodes) {
         if (host.isUp) {
@@ -401,7 +402,7 @@ std::string ReplicaSetMonitor::getName() const {
 }
 
 std::string ReplicaSetMonitor::getServerAddress() const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     // We return our setUri until first confirmation
     return _state->seedConnStr.isValid() ? _state->seedConnStr.toString()
                                          : _state->setUri.connectionString().toString();
@@ -413,7 +414,7 @@ const MongoURI& ReplicaSetMonitor::getOriginalUri() const {
 }
 
 bool ReplicaSetMonitor::contains(const HostAndPort& host) const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     return _state->seedNodes.count(host);
 }
 
@@ -445,7 +446,7 @@ ReplicaSetChangeNotifier& ReplicaSetMonitor::getNotifier() {
 
 // TODO move to correct order with non-statics before pushing
 void ReplicaSetMonitor::appendInfo(BSONObjBuilder& bsonObjBuilder, bool forFTDC) const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
 
     BSONObjBuilder monitorInfo(bsonObjBuilder.subobjStart(getName()));
     if (forFTDC) {
@@ -490,7 +491,7 @@ void ReplicaSetMonitor::disableRefreshRetries_forTest() {
 }
 
 bool ReplicaSetMonitor::isKnownToHaveGoodPrimary() const {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
 
     for (const auto& node : _state->nodes) {
         if (node.isMaster) {
@@ -502,7 +503,7 @@ bool ReplicaSetMonitor::isKnownToHaveGoodPrimary() const {
 }
 
 void ReplicaSetMonitor::runScanForMockReplicaSet() {
-    stdx::lock_guard<stdx::mutex> lk(_state->mutex);
+    stdx::lock_guard<Latch> lk(_state->mutex);
     _ensureScanInProgress(_state);
 
     // This function should only be called from tests using MockReplicaSet and they should use the
@@ -567,7 +568,7 @@ void Refresher::scheduleIsMaster(const HostAndPort& host) {
         // MockReplicaSet only works with DBClient-style access since it injects itself into the
         // ScopedDbConnection pool connection creation.
         try {
-            ScopedDbConnection conn(ConnectionString(host), socketTimeoutSecs);
+            ScopedDbConnection conn(ConnectionString(host), kCheckTimeout.count());
 
             auto timer = Timer();
             auto reply = BSONObj();
@@ -583,11 +584,8 @@ void Refresher::scheduleIsMaster(const HostAndPort& host) {
         return;
     }
 
-    auto request = executor::RemoteCommandRequest(host,
-                                                  "admin",
-                                                  BSON("isMaster" << 1),
-                                                  nullptr,
-                                                  Milliseconds(int64_t(socketTimeoutSecs * 1000)));
+    auto request = executor::RemoteCommandRequest(
+        host, "admin", BSON("isMaster" << 1), nullptr, kCheckTimeout);
     request.sslMode = _set->setUri.getSSLMode();
     auto status =
         _set->executor
@@ -692,7 +690,7 @@ Refresher::NextStep Refresher::getNextStep() {
 
         // Makes sure all other Refreshers in this round return DONE
         _set->currentScan.reset();
-        _set->notify(/*finishedScan*/ true);
+        _set->notify();
 
         LOG(1) << "Refreshing replica set " << _set->name << " took " << _scan->timer.millis()
                << "ms";
@@ -756,7 +754,6 @@ void Refresher::receivedIsMaster(const HostAndPort& from,
     if (_scan->foundUpMaster) {
         // We only update a Node if a master has confirmed it is in the set.
         _set->updateNodeIfInNodes(reply);
-        _set->notify(/*finishedScan*/ false);
     } else {
         // Populate possibleNodes.
         _scan->possibleNodes.insert(reply.members.begin(), reply.members.end());
@@ -766,6 +763,8 @@ void Refresher::receivedIsMaster(const HostAndPort& from,
     // _set->nodes may still not have any nodes with isUp==true, but we have at least found a
     // connectible host that is that claims to be in the set.
     _scan->foundAnyUpNodes = true;
+
+    _set->notify();
 
     if (kDebugBuild)
         _set->checkInvariants();
@@ -777,6 +776,12 @@ void Refresher::failedHost(const HostAndPort& host, const Status& status) {
     Node* node = _set->findNode(host);
     if (node)
         node->markFailed(status);
+
+    if (_scan->waitingFor.empty()) {
+        // If this was the last host that needed a response, we should notify the SetState so that
+        // we can fail any waiters that have timed out.
+        _set->notify();
+    }
 }
 
 void Refresher::startNewScan() {
@@ -982,16 +987,18 @@ void Node::markFailed(const Status& status) {
 }
 
 bool Node::matches(const ReadPreference pref) const {
-    if (!isUp)
+    if (!isUp) {
+        LOG(3) << "Host " << host << " is not up";
         return false;
+    }
 
+    LOG(3) << "Host " << host << " is " << (isMaster ? "primary" : "not primary");
     if (pref == ReadPreference::PrimaryOnly) {
         return isMaster;
     }
 
     if (pref == ReadPreference::SecondaryOnly) {
-        if (isMaster)
-            return false;
+        return !isMaster;
     }
 
     return true;
@@ -1291,8 +1298,13 @@ ConnectionString SetState::possibleConnectionString() const {
     return ConnectionString::forReplicaSet(name, std::move(hosts));
 }
 
-void SetState::notify(bool finishedScan) {
+void SetState::notify() {
+    if (!waiters.size()) {
+        return;
+    }
+
     const auto cachedNow = now();
+    auto shouldQuickFail = areRefreshRetriesDisabledForTest.load() && !currentScan;
 
     for (auto it = waiters.begin(); it != waiters.end();) {
         if (isDropped) {
@@ -1307,10 +1319,13 @@ void SetState::notify(bool finishedScan) {
             // match;
             it->promise.emplaceValue(std::move(match));
             waiters.erase(it++);
-        } else if (finishedScan &&
-                   (it->deadline <= cachedNow || areRefreshRetriesDisabledForTest.load())) {
-            // To preserve prior behavior, we only examine deadlines at the end of a scan.
-            // This ensures that we only report failure after trying to contact all hosts.
+        } else if (it->deadline <= cachedNow) {
+            LOG(1) << "Unable to statisfy read preference " << it->criteria << " by deadline "
+                   << it->deadline;
+            it->promise.setError(makeUnsatisfedReadPrefError(it->criteria));
+            waiters.erase(it++);
+        } else if (shouldQuickFail) {
+            LOG(1) << "Unable to statisfy read preference because tests fail quickly";
             it->promise.setError(makeUnsatisfedReadPrefError(it->criteria));
             waiters.erase(it++);
         } else {
@@ -1340,7 +1355,7 @@ void SetState::drop() {
     isDropped = true;
 
     currentScan.reset();
-    notify(/*finishedScan*/ true);
+    notify();
 
     // No point in notifying if we never started
     if (workingConnStr.isValid()) {

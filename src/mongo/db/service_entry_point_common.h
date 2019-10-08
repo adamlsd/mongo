@@ -34,17 +34,17 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/rpc/message.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/polymorphic_scoped.h"
 
 namespace mongo {
 
-MONGO_FAIL_POINT_DECLARE(rsStopGetMore);
-MONGO_FAIL_POINT_DECLARE(respondWithNotPrimaryInCommandDispatch);
+extern FailPoint rsStopGetMore;
+extern FailPoint respondWithNotPrimaryInCommandDispatch;
 
 // When active, we won't check if we are master in command dispatch. Activate this if you want to
 // test failing during command execution.
-MONGO_FAIL_POINT_DECLARE(skipCheckingForNotMasterInCommandDispatch);
+extern FailPoint skipCheckingForNotMasterInCommandDispatch;
 
 /**
  * Helpers for writing ServiceEntryPointImpl implementations from a reusable core.

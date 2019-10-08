@@ -43,6 +43,7 @@
 #include "mongo/db/client.h"
 #include "mongo/db/command_generic_argument.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builds_coordinator.h"
@@ -55,7 +56,7 @@
 #include "mongo/db/storage/durable_catalog.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/views/view_catalog.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -265,9 +266,11 @@ Status _collModInternal(OperationContext* opCtx,
     StringData dbName = nss.db();
     AutoGetDb autoDb(opCtx, dbName, MODE_X);
     Database* const db = autoDb.getDb();
-    Collection* coll = db ? db->getCollection(opCtx, nss) : nullptr;
+    Collection* coll =
+        db ? CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss) : nullptr;
 
-    MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterDatabaseLock);
+    CurOpFailpointHelpers::waitWhileFailPointEnabled(
+        &hangAfterDatabaseLock, opCtx, "hangAfterDatabaseLock", []() {}, false, nss);
 
     // May also modify a view instead of a collection.
     boost::optional<ViewDefinition> view;
@@ -368,9 +371,9 @@ Status _collModInternal(OperationContext* opCtx,
                 // in cmrNew will be invalidated and the idx pointer in cmrOld will be valid again.
                 cmrNew.idx = coll->getIndexCatalog()->refreshEntry(opCtx, cmrOld.idx);
                 opCtx->recoveryUnit()->registerChange(
-                    new CollModResultChange(oldExpireSecs, newExpireSecs, result));
+                    std::make_unique<CollModResultChange>(oldExpireSecs, newExpireSecs, result));
 
-                if (MONGO_FAIL_POINT(assertAfterIndexUpdate)) {
+                if (MONGO_unlikely(assertAfterIndexUpdate.shouldFail())) {
                     log() << "collMod - assertAfterIndexUpdate fail point enabled.";
                     uasserted(50970, "trigger rollback after the index update");
                 }

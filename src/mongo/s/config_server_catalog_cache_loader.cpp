@@ -40,7 +40,7 @@
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/database_version_helpers.h"
 #include "mongo/s/grid.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -160,7 +160,7 @@ void ConfigServerCatalogCacheLoader::onStepUp() {
 
 void ConfigServerCatalogCacheLoader::shutDown() {
     {
-        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        stdx::lock_guard<Latch> lg(_mutex);
         if (_inShutdown) {
             return;
         }

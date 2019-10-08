@@ -136,7 +136,8 @@ public:
         Lock::GlobalWrite lk(opCtx);
         AutoGetOrCreateDb autoDb(opCtx, dbname, MODE_X);
 
-        Collection* collection = autoDb.getDb()->getCollection(opCtx, toReIndexNss);
+        Collection* collection =
+            CollectionCatalog::get(opCtx).lookupCollectionByNamespace(toReIndexNss);
         if (!collection) {
             if (ViewCatalog::get(autoDb.getDb())->lookup(opCtx, toReIndexNss.ns()))
                 uasserted(ErrorCodes::CommandNotSupportedOnView, "can't re-index a view");
@@ -206,7 +207,9 @@ public:
                                                             "Uninitialized");
 
         // The 'indexer' can throw, so ensure build cleanup occurs.
-        ON_BLOCK_EXIT([&] { indexer->cleanUpAfterBuild(opCtx, collection); });
+        ON_BLOCK_EXIT([&] {
+            indexer->cleanUpAfterBuild(opCtx, collection, MultiIndexBlock::kNoopOnCleanUpFn);
+        });
 
         {
             writeConflictRetry(opCtx, "dropAllIndexes", toReIndexNss.ns(), [&] {
@@ -220,7 +223,7 @@ public:
             });
         }
 
-        if (MONGO_FAIL_POINT(reIndexCrashAfterDrop)) {
+        if (MONGO_unlikely(reIndexCrashAfterDrop.shouldFail())) {
             log() << "exiting because 'reIndexCrashAfterDrop' fail point was set";
             quickExit(EXIT_ABRUPT);
         }

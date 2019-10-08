@@ -58,7 +58,7 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> InternalPlanner::collection
         auto eof = std::make_unique<EOFStage>(opCtx);
         // Takes ownership of 'ws' and 'eof'.
         auto statusWithPlanExecutor = PlanExecutor::make(
-            opCtx, std::move(ws), std::move(eof), NamespaceString(ns), yieldPolicy);
+            opCtx, std::move(ws), std::move(eof), nullptr, yieldPolicy, NamespaceString(ns));
         invariant(statusWithPlanExecutor.isOK());
         return std::move(statusWithPlanExecutor.getValue());
     }
@@ -217,7 +217,7 @@ std::unique_ptr<PlanStage> InternalPlanner::_indexScan(OperationContext* opCtx,
         std::make_unique<IndexScan>(opCtx, std::move(params), ws, nullptr);
 
     if (InternalPlanner::IXSCAN_FETCH & options) {
-        root = std::make_unique<FetchStage>(opCtx, ws, root.release(), nullptr, collection);
+        root = std::make_unique<FetchStage>(opCtx, ws, std::move(root), nullptr, collection);
     }
 
     return root;

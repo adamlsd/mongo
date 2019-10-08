@@ -35,15 +35,15 @@
 
 #include "mongo/executor/task_executor.h"
 #include "mongo/transport/baton.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/functional.h"
 #include "mongo/util/future.h"
 
 namespace mongo {
 namespace executor {
 
-MONGO_FAIL_POINT_DECLARE(networkInterfaceDiscardCommandsBeforeAcquireConn);
-MONGO_FAIL_POINT_DECLARE(networkInterfaceDiscardCommandsAfterAcquireConn);
+extern FailPoint networkInterfaceDiscardCommandsBeforeAcquireConn;
+extern FailPoint networkInterfaceDiscardCommandsAfterAcquireConn;
 
 /**
  * Interface to networking for use by TaskExecutor implementations.

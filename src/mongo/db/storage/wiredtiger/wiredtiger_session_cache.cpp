@@ -94,9 +94,17 @@ void _openCursor(WT_SESSION* session,
         // by a verify or salvage, because we don't employ database locks to protect the oplog.
         throw WriteConflictException();
     }
+
     if (ret != 0) {
-        error() << "Failed to open a WiredTiger cursor. Reason: " << wtRCToStatus(ret)
-                << ", uri: " << uri << ", config: " << config;
+        std::string cursorErrMsg = str::stream()
+            << "Failed to open a WiredTiger cursor. Reason: " << wtRCToStatus(ret)
+            << ", uri: " << uri << ", config: " << config;
+
+        if (ret == ENOENT) {
+            uasserted(ErrorCodes::CursorNotFound, cursorErrMsg);
+        }
+
+        error() << cursorErrMsg;
         error() << "This may be due to data corruption. " << kWTRepairMsg;
 
         fassertFailedNoTrace(50882);
@@ -187,7 +195,7 @@ void WiredTigerSession::closeCursorsForQueuedDrops(WiredTigerKVEngine* engine) {
 }
 
 namespace {
-AtomicWord<unsigned long long> nextTableId(1);
+AtomicWord<unsigned long long> nextTableId(WiredTigerSession::kLastTableId);
 }
 // static
 uint64_t WiredTigerSession::genTableId() {
@@ -227,6 +235,10 @@ void WiredTigerSessionCache::shuttingDown() {
     closeAll();
 }
 
+bool WiredTigerSessionCache::isShuttingDown() {
+    return _shuttingDown.load() & kShuttingDownMask;
+}
+
 void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
                                               bool forceCheckpoint,
                                               bool stableCheckpoint) {
@@ -258,7 +270,7 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
         UniqueWiredTigerSession session = getSession();
         WT_SESSION* s = session->getSession();
         {
-            stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
+            stdx::unique_lock<Latch> lk(_journalListenerMutex);
             JournalListener::Token token = _journalListener->getToken();
             auto config = stableCheckpoint ? "use_timestamp=true" : "use_timestamp=false";
             auto checkpointLock = _engine->getCheckpointLock(opCtx);
@@ -272,7 +284,7 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
     uint32_t start = _lastSyncTime.load();
     // Do the remainder in a critical section that ensures only a single thread at a time
     // will attempt to synchronize.
-    stdx::unique_lock<stdx::mutex> lk(_lastSyncMutex);
+    stdx::unique_lock<Latch> lk(_lastSyncMutex);
     uint32_t current = _lastSyncTime.loadRelaxed();  // synchronized with writes through mutex
     if (current != start) {
         // Someone else synced already since we read lastSyncTime, so we're done!
@@ -284,7 +296,7 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
 
     // This gets the token (OpTime) from the last write, before flushing (either the journal, or a
     // checkpoint), and then reports that token (OpTime) as a durable write.
-    stdx::unique_lock<stdx::mutex> jlk(_journalListenerMutex);
+    stdx::unique_lock<Latch> jlk(_journalListenerMutex);
     JournalListener::Token token = _journalListener->getToken();
 
     // Initialize on first use.
@@ -308,7 +320,7 @@ void WiredTigerSessionCache::waitUntilDurable(OperationContext* opCtx,
 void WiredTigerSessionCache::waitUntilPreparedUnitOfWorkCommitsOrAborts(OperationContext* opCtx,
                                                                         std::uint64_t lastCount) {
     invariant(opCtx);
-    stdx::unique_lock<stdx::mutex> lk(_prepareCommittedOrAbortedMutex);
+    stdx::unique_lock<Latch> lk(_prepareCommittedOrAbortedMutex);
     if (lastCount == _prepareCommitOrAbortCounter.loadRelaxed()) {
         opCtx->waitForConditionOrInterrupt(_prepareCommittedOrAbortedCond, lk, [&] {
             return _prepareCommitOrAbortCounter.loadRelaxed() > lastCount;
@@ -317,14 +329,14 @@ void WiredTigerSessionCache::waitUntilPreparedUnitOfWorkCommitsOrAborts(Operatio
 }
 
 void WiredTigerSessionCache::notifyPreparedUnitOfWorkHasCommittedOrAborted() {
-    stdx::unique_lock<stdx::mutex> lk(_prepareCommittedOrAbortedMutex);
+    stdx::unique_lock<Latch> lk(_prepareCommittedOrAbortedMutex);
     _prepareCommitOrAbortCounter.fetchAndAdd(1);
     _prepareCommittedOrAbortedCond.notify_all();
 }
 
 
 void WiredTigerSessionCache::closeAllCursors(const std::string& uri) {
-    stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+    stdx::lock_guard<Latch> lock(_cacheLock);
     for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
         (*i)->closeAllCursors(uri);
     }
@@ -334,14 +346,14 @@ void WiredTigerSessionCache::closeCursorsForQueuedDrops() {
     // Increment the cursor epoch so that all cursors from this epoch are closed.
     _cursorEpoch.fetchAndAdd(1);
 
-    stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+    stdx::lock_guard<Latch> lock(_cacheLock);
     for (SessionCache::iterator i = _sessions.begin(); i != _sessions.end(); i++) {
         (*i)->closeCursorsForQueuedDrops(_engine);
     }
 }
 
 size_t WiredTigerSessionCache::getIdleSessionsCount() {
-    stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+    stdx::lock_guard<Latch> lock(_cacheLock);
     return _sessions.size();
 }
 
@@ -353,7 +365,7 @@ void WiredTigerSessionCache::closeExpiredIdleSessions(int64_t idleTimeMillis) {
 
     auto cutoffTime = _clockSource->now() - Milliseconds(idleTimeMillis);
     {
-        stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+        stdx::lock_guard<Latch> lock(_cacheLock);
         // Discard all sessions that became idle before the cutoff time
         for (auto it = _sessions.begin(); it != _sessions.end();) {
             auto session = *it;
@@ -373,7 +385,7 @@ void WiredTigerSessionCache::closeAll() {
     SessionCache swap;
 
     {
-        stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+        stdx::lock_guard<Latch> lock(_cacheLock);
         _epoch.fetchAndAdd(1);
         _sessions.swap(swap);
     }
@@ -393,7 +405,7 @@ UniqueWiredTigerSession WiredTigerSessionCache::getSession() {
     invariant(!(_shuttingDown.loadRelaxed() & kShuttingDownMask));
 
     {
-        stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+        stdx::lock_guard<Latch> lock(_cacheLock);
         if (!_sessions.empty()) {
             // Get the most recently used session so that if we discard sessions, we're
             // discarding older ones
@@ -460,7 +472,7 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
     session->setIdleExpireTime(_clockSource->now());
 
     if (session->_getEpoch() == currentEpoch) {  // check outside of lock to reduce contention
-        stdx::lock_guard<stdx::mutex> lock(_cacheLock);
+        stdx::lock_guard<Latch> lock(_cacheLock);
         if (session->_getEpoch() == _epoch.load()) {  // recheck inside the lock for correctness
             returnedToCache = true;
             _sessions.push_back(session);
@@ -477,7 +489,7 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
 
 
 void WiredTigerSessionCache::setJournalListener(JournalListener* jl) {
-    stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
+    stdx::unique_lock<Latch> lk(_journalListenerMutex);
     _journalListener = jl;
 }
 

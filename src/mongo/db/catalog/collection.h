@@ -51,8 +51,8 @@
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot.h"
-#include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/condition_variable.h"
+#include "mongo/platform/mutex.h"
 #include "mongo/util/decorable.h"
 
 namespace mongo {
@@ -136,7 +136,7 @@ private:
     mutable stdx::condition_variable _notifier;
 
     // Mutex used with '_notifier'. Protects access to '_version'.
-    mutable stdx::mutex _mutex;
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("CappedInsertNotifier::_mutex");
 
     // A counter, incremented on insertion of new data into the capped collection.
     //
@@ -333,14 +333,6 @@ public:
      * on the collection.
      */
     virtual Status truncate(OperationContext* const opCtx) = 0;
-
-    /**
-     * forces data into cache.
-     */
-    virtual Status touch(OperationContext* const opCtx,
-                         const bool touchData,
-                         const bool touchIndexes,
-                         BSONObjBuilder* const output) const = 0;
 
     /**
      * Truncate documents newer than the document at 'end' from the capped

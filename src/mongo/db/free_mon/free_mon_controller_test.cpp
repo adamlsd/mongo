@@ -73,6 +73,12 @@
 namespace mongo {
 namespace {
 
+auto makeRandom() {
+    auto seed = SecureRandom::create()->nextInt64();
+    unittest::log() << "PseudoRandom(" << std::showbase << std::hex << seed << std::dec
+                    << std::noshowbase << ")";
+    return PseudoRandom(seed);
+}
 
 class FreeMonMetricsCollectorMock : public FreeMonCollectorInterface {
 public:
@@ -86,7 +92,7 @@ public:
         builder.append("mock", "some data");
 
         {
-            stdx::lock_guard<stdx::mutex> lck(_mutex);
+            stdx::lock_guard<Latch> lck(_mutex);
 
             ++_counter;
 
@@ -105,12 +111,12 @@ public:
     }
 
     std::uint32_t count() {
-        stdx::lock_guard<stdx::mutex> lck(_mutex);
+        stdx::lock_guard<Latch> lck(_mutex);
         return _counter;
     }
 
     void wait() {
-        stdx::unique_lock<stdx::mutex> lck(_mutex);
+        stdx::unique_lock<Latch> lck(_mutex);
         while (_counter < _wait) {
             _condvar.wait(lck);
         }
@@ -130,7 +136,7 @@ private:
 
     std::uint32_t _counter{0};
 
-    stdx::mutex _mutex;
+    Mutex _mutex = MONGO_MAKE_LATCH("FreeMonMetricsCollectorMock::_mutex");
     stdx::condition_variable _condvar;
     std::uint32_t _wait{0};
 };
@@ -158,7 +164,7 @@ public:
      * Set the count of events to wait for.
      */
     void reset(uint32_t count) {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
         ASSERT_EQ(_count, 0UL);
         ASSERT_GT(count, 0UL);
 
@@ -170,7 +176,7 @@ public:
      * Set the payload and signal waiter.
      */
     void set(T payload) {
-        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        stdx::lock_guard<Latch> lock(_mutex);
 
         if (_count > 0) {
             --_count;
@@ -187,7 +193,7 @@ public:
      * Returns boost::none on timeout.
      */
     boost::optional<T> wait_for(Milliseconds duration) {
-        stdx::unique_lock<stdx::mutex> lock(_mutex);
+        stdx::unique_lock<Latch> lock(_mutex);
 
         if (!_condvar.wait_for(
                 lock, duration.toSystemDuration(), [this]() { return _count == 0; })) {
@@ -202,7 +208,7 @@ private:
     stdx::condition_variable _condvar;
 
     // Lock for condition variable and to protect state
-    stdx::mutex _mutex;
+    Mutex _mutex = MONGO_MAKE_LATCH("CountdownLatchResult::_mutex");
 
     // Count to wait fore
     uint32_t _count;
@@ -309,7 +315,7 @@ public:
         auto cdr = req.getMetrics();
 
         {
-            stdx::lock_guard<stdx::mutex> lock(_metricsLock);
+            stdx::lock_guard<Latch> lock(_metricsLock);
             auto metrics = decompressMetrics(cdr);
             _lastMetrics = metrics;
             _countdownMetrics.set(metrics);
@@ -354,7 +360,7 @@ public:
     }
 
     BSONArray getLastMetrics() {
-        stdx::lock_guard<stdx::mutex> lock(_metricsLock);
+        stdx::lock_guard<Latch> lock(_metricsLock);
         return _lastMetrics;
     }
 
@@ -365,7 +371,7 @@ private:
 
     executor::ThreadPoolTaskExecutor* _threadPool;
 
-    stdx::mutex _metricsLock;
+    Mutex _metricsLock = MONGO_MAKE_LATCH("FreeMonNetworkInterfaceMock::_metricsLock");
     BSONArray _lastMetrics;
 
     Options _options;
@@ -455,7 +461,7 @@ repl::ReplicationCoordinatorMock* FreeMonControllerTest::_getReplCoord() const {
 
 // Positive: Ensure deadlines sort properly
 TEST(FreeMonRetryTest, TestRegistration) {
-    PseudoRandom random(0);
+    auto random = makeRandom();
     RegistrationRetryCounter counter(random);
     counter.reset();
 
@@ -480,20 +486,47 @@ TEST(FreeMonRetryTest, TestRegistration) {
     }
 
     // Validate max timeout
-    for (int j = 0; j < 3; j++) {
-        // Fail requests
-        for (int i = 1; i <= 163; ++i) {
-            ASSERT_TRUE(counter.incrementError());
-        }
-        ASSERT_FALSE(counter.incrementError());
 
+    auto characterizeJitter = [](Seconds jitter1, Seconds jitter2) {
+        static constexpr size_t kStage1Retries = 10;
+        static constexpr auto kTMax = Days{2};
+        auto t = Seconds(0);
+        auto base = Seconds(1);
+        size_t i = 0;
+        for (; t < kTMax; ++i) {
+            if (i < kStage1Retries) {
+                base *= 2;
+                t += base + jitter1;
+            } else {
+                t += base + jitter2;
+            }
+        }
+        return i;
+    };
+    // If jitter is small as possible, we'd expect trueMax increments before false.
+    const auto trueMax = characterizeJitter(Seconds{2}, Seconds{60});
+    // If jitter is large as possible, we'd expect trueMin increments before false.
+    const auto trueMin = characterizeJitter(Seconds{9}, Seconds{119});
+
+    // unittest::log() << "trueMin:" << trueMin;
+    // unittest::log() << "trueMax:" << trueMax;
+
+    for (int j = 0; j < 30; j++) {
+        // std::cout << "j: " << j << "\n";
+        // Fail requests
+        size_t trueCount = 0;
+        while (counter.incrementError()) {
+            ++trueCount;
+        }
+        ASSERT_GTE(trueCount, trueMin);
+        ASSERT_LTE(trueCount, trueMax);
         counter.reset();
     }
 }
 
 // Positive: Ensure deadlines sort properly
 TEST(FreeMonRetryTest, TestMetrics) {
-    PseudoRandom random(0);
+    auto random = makeRandom();
     MetricsRetryCounter counter(random);
     counter.reset();
 
@@ -519,13 +552,28 @@ TEST(FreeMonRetryTest, TestMetrics) {
     }
 
     // Validate max timeout
-    for (int j = 0; j < 3; j++) {
-        // Fail requests
-        for (int i = 1; i < 9456; ++i) {
-            ASSERT_TRUE(counter.incrementError());
+    static size_t expectation = [] {
+        // There's technically a jitter in the MetricsRetryCounter but its default
+        // magnitude rounds to 0, so we make an exact expectation.
+        size_t iters = 0;
+        static constexpr auto kDurationMax = Days{7};
+        auto t = Seconds{0};
+        auto base = Seconds{1};
+        for (; t < kDurationMax; ++iters) {
+            if (iters < 6)
+                base *= 2;
+            t += base;
         }
-        ASSERT_FALSE(counter.incrementError());
+        return iters;
+    }();
 
+    for (int j = 0; j < 30; j++) {
+        // Fail requests
+        int iters = 0;
+        while (counter.incrementError()) {
+            ++iters;
+        }
+        ASSERT_EQ(iters, expectation);
         counter.reset();
     }
 }

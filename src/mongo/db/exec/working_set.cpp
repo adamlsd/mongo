@@ -76,19 +76,16 @@ void WorkingSet::clear() {
     // Since working set is now empty, the free list pointer should
     // point to nothing.
     _freeList = INVALID_ID;
-
-    _yieldSensitiveIds.clear();
 }
 
 void WorkingSet::transitionToRecordIdAndIdx(WorkingSetID id) {
     WorkingSetMember* member = get(id);
     member->_state = WorkingSetMember::RID_AND_IDX;
-    _yieldSensitiveIds.push_back(id);
 }
 
 void WorkingSet::transitionToRecordIdAndObj(WorkingSetID id) {
     WorkingSetMember* member = get(id);
-    member->_state = WorkingSetMember::RID_AND_OBJ;
+    member->transitionToRecordIdAndObj();
 }
 
 void WorkingSet::transitionToOwnedObj(WorkingSetID id) {
@@ -96,11 +93,17 @@ void WorkingSet::transitionToOwnedObj(WorkingSetID id) {
     member->transitionToOwnedObj();
 }
 
-std::vector<WorkingSetID> WorkingSet::getAndClearYieldSensitiveIds() {
-    std::vector<WorkingSetID> out;
-    // Clear '_yieldSensitiveIds' by swapping it into the set to be returned.
-    _yieldSensitiveIds.swap(out);
-    return out;
+WorkingSetMember WorkingSet::extract(WorkingSetID wsid) {
+    invariant(wsid < _data.size());
+    WorkingSetMember ret = std::move(_data[wsid].member);
+    free(wsid);
+    return ret;
+}
+
+WorkingSetID WorkingSet::emplace(WorkingSetMember&& wsm) {
+    auto wsid = allocate();
+    *get(wsid) = std::move(wsm);
+    return wsid;
 }
 
 //
@@ -110,7 +113,7 @@ std::vector<WorkingSetID> WorkingSet::getAndClearYieldSensitiveIds() {
 void WorkingSetMember::clear() {
     _metadata = DocumentMetadataFields{};
     keyData.clear();
-    doc = {SnapshotId(), Document()};
+    resetDocument(SnapshotId(), BSONObj());
     _state = WorkingSetMember::INVALID;
 }
 
@@ -123,6 +126,9 @@ void WorkingSetMember::transitionToOwnedObj() {
     _state = OWNED_OBJ;
 }
 
+void WorkingSetMember::transitionToRecordIdAndObj() {
+    _state = WorkingSetMember::RID_AND_OBJ;
+}
 
 bool WorkingSetMember::hasRecordId() const {
     return _state == RID_AND_IDX || _state == RID_AND_OBJ;
@@ -187,4 +193,87 @@ void WorkingSetMember::resetDocument(SnapshotId snapshot, const BSONObj& obj) {
     md.reset(obj, false);
     doc.value() = md.freeze();
 }
+
+void WorkingSetMember::serializeForSorter(BufBuilder& buf) const {
+    // It is not legal to serialize a Document which has metadata attached to it. Any metadata must
+    // reside directly in the WorkingSetMember.
+    invariant(!doc.value().metadata());
+
+    buf.appendChar(static_cast<char>(_state));
+
+    if (hasObj()) {
+        doc.value().serializeForSorter(buf);
+        buf.appendNum(static_cast<unsigned long long>(doc.snapshotId().toNumber()));
+    }
+
+    if (_state == RID_AND_IDX) {
+        // First append the number of index keys, and then encode them in series.
+        buf.appendNum(static_cast<char>(keyData.size()));
+        for (auto&& indexKeyDatum : keyData) {
+            indexKeyDatum.indexKeyPattern.serializeForSorter(buf);
+            indexKeyDatum.keyData.serializeForSorter(buf);
+            buf.appendNum(indexKeyDatum.indexId);
+            buf.appendNum(static_cast<unsigned long long>(indexKeyDatum.snapshotId.toNumber()));
+        }
+    }
+
+    if (hasRecordId()) {
+        buf.appendNum(recordId.repr());
+    }
+
+    _metadata.serializeForSorter(buf);
+}
+
+WorkingSetMember WorkingSetMember::deserializeForSorter(BufReader& buf,
+                                                        const SorterDeserializeSettings&) {
+    WorkingSetMember wsm;
+
+    // First decode the state, which instructs us on how to interpret the rest of the buffer.
+    wsm._state = static_cast<MemberState>(buf.read<char>());
+
+    if (wsm.hasObj()) {
+        wsm.doc.setValue(
+            Document::deserializeForSorter(buf, Document::SorterDeserializeSettings{}));
+        auto snapshotIdRepr = buf.read<LittleEndian<uint64_t>>();
+        auto snapshotId = snapshotIdRepr ? SnapshotId{snapshotIdRepr} : SnapshotId{};
+        wsm.doc.setSnapshotId(snapshotId);
+    }
+
+    if (wsm.getState() == WorkingSetMember::RID_AND_IDX) {
+        auto numKeys = buf.read<char>();
+        wsm.keyData.reserve(numKeys);
+        for (auto i = 0; i < numKeys; ++i) {
+            auto indexKeyPattern =
+                BSONObj::deserializeForSorter(buf, BSONObj::SorterDeserializeSettings{}).getOwned();
+            auto indexKey =
+                BSONObj::deserializeForSorter(buf, BSONObj::SorterDeserializeSettings{}).getOwned();
+            auto indexId = buf.read<LittleEndian<unsigned int>>();
+            auto snapshotIdRepr = buf.read<LittleEndian<uint64_t>>();
+            auto snapshotId = snapshotIdRepr ? SnapshotId{snapshotIdRepr} : SnapshotId{};
+            wsm.keyData.push_back(IndexKeyDatum{
+                std::move(indexKeyPattern), std::move(indexKey), indexId, snapshotId});
+        }
+    }
+
+    if (wsm.hasRecordId()) {
+        wsm.recordId = RecordId{buf.read<LittleEndian<int64_t>>()};
+    }
+
+    DocumentMetadataFields::deserializeForSorter(buf, &wsm._metadata);
+
+    return wsm;
+}
+
+WorkingSetRegisteredIndexId WorkingSet::registerIndexAccessMethod(
+    const IndexAccessMethod* indexAccess) {
+    for (WorkingSetRegisteredIndexId i = 0; i < _registeredIndexes.size(); ++i) {
+        if (_registeredIndexes[i] == indexAccess) {
+            return i;
+        }
+    }
+
+    _registeredIndexes.push_back(indexAccess);
+    return _registeredIndexes.size() - 1;
+}
+
 }  // namespace mongo

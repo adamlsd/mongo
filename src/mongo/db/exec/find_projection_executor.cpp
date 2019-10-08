@@ -49,17 +49,6 @@ Value applySliceProjectionHelper(const Document& input,
                                  size_t fieldPathIndex);
 
 /**
- * Extracts an element from the array 'arr' at position 'elemIndex'. The 'elemIndex' string
- * parameter must hold a value which can be converted to an unsigned integer. If 'elemIndex' is not
- * within array boundaries, an empty Value is returned.
- */
-Value extractArrayElement(const Value& arr, const std::string& elemIndex) {
-    auto index = str::parseUnsignedBase10Integer(elemIndex);
-    invariant(index);
-    return arr[*index];
-}
-
-/**
  * Returns a portion of the 'array', skipping a number of elements as indicated by the 'skip'
  * parameter, either from the beginning of the array (if 'skip' is positive), or from the end
  * of the array (if 'skip' is negative). The 'limit' indicates the number of items to return.
@@ -161,11 +150,17 @@ Value applySliceProjectionHelper(const Document& input,
 }
 }  // namespace
 
-void applyPositionalProjection(const Document& input,
-                               const MatchExpression& matchExpr,
-                               const FieldPath& path,
-                               MutableDocument* output) {
-    invariant(output);
+Value extractArrayElement(const Value& arr, const std::string& elemIndex) {
+    auto index = str::parseUnsignedBase10Integer(elemIndex);
+    invariant(index);
+    return arr[*index];
+}
+
+Document applyPositionalProjection(const Document& preImage,
+                                   const Document& postImage,
+                                   const MatchExpression& matchExpr,
+                                   const FieldPath& path) {
+    MutableDocument output(postImage);
 
     // Try to find the first matching array element from the 'input' document based on the condition
     // specified as 'matchExpr'. If such an element is found, its position within an array will be
@@ -175,7 +170,7 @@ void applyPositionalProjection(const Document& input,
     // invariant to make sure this is the case indeed.
     MatchDetails details;
     details.requestElemMatchKey();
-    invariant(matchExpr.matchesBSON(input.toBson(), &details));
+    invariant(matchExpr.matchesBSON(preImage.toBson(), &details));
 
     // At this stage we know that the 'input' document matches against the specified condition,
     // but the matching array element may not be found. This can happen if the field, specified
@@ -187,7 +182,7 @@ void applyPositionalProjection(const Document& input,
     // found, then we will extract the matching element from this array and will store it as
     // the current sub-path in the 'output' document. Otherwise, just leave the 'output'
     // document untouched.
-    for (auto [ind, subDoc] = std::pair{0ULL, input}; ind < path.getPathLength(); ind++) {
+    for (auto [ind, subDoc] = std::pair{0ULL, postImage}; ind < path.getPathLength(); ind++) {
         switch (auto val = subDoc[path.getFieldName(ind)]; val.getType()) {
             case BSONType::Array: {
                 // Raise an error if we found the first array on the 'path', but the matching array
@@ -205,9 +200,9 @@ void applyPositionalProjection(const Document& input,
                 uassert(
                     51247, "positional operator '.$' element mismatch", !matchingElem.missing());
 
-                output->setNestedField(path.getSubpath(ind),
-                                       Value{std::vector<Value>{matchingElem}});
-                return;
+                output.setNestedField(path.getSubpath(ind),
+                                      Value{std::vector<Value>{matchingElem}});
+                return output.freeze();
             }
             case BSONType::Object:
                 subDoc = val.getDocument();
@@ -216,13 +211,13 @@ void applyPositionalProjection(const Document& input,
                 break;
         }
     }
+
+    return output.freeze();
 }
 
-void applyElemMatchProjection(const Document& input,
-                              const MatchExpression& matchExpr,
-                              const FieldPath& path,
-                              MutableDocument* output) {
-    invariant(output);
+Value applyElemMatchProjection(const Document& input,
+                               const MatchExpression& matchExpr,
+                               const FieldPath& path) {
     invariant(path.getPathLength() == 1);
 
     // Try to find the first matching array element from the 'input' document based on the condition
@@ -231,10 +226,7 @@ void applyElemMatchProjection(const Document& input,
     MatchDetails details;
     details.requestElemMatchKey();
     if (!matchExpr.matchesBSON(input.toBson(), &details)) {
-        // If there is no match, remove the 'path' from the output document (if it exists, otherwise
-        // the call below is a no op).
-        output->remove(path.fullPath());
-        return;
+        return {};
     }
 
     auto val = input[path.fullPath()];
@@ -244,7 +236,7 @@ void applyElemMatchProjection(const Document& input,
     auto matchingElem = extractArrayElement(val, elemMatchKey);
     invariant(!matchingElem.missing());
 
-    output->setField(path.fullPath(), Value{std::vector<Value>{matchingElem}});
+    return Value{std::vector<Value>{matchingElem}};
 }
 
 Document applySliceProjection(const Document& input,

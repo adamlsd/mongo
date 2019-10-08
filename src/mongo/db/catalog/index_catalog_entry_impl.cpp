@@ -60,12 +60,15 @@ namespace mongo {
 using std::string;
 
 IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
+                                             const std::string& ident,
                                              std::unique_ptr<IndexDescriptor> descriptor,
                                              CollectionQueryInfo* const queryInfo)
-    : _descriptor(std::move(descriptor)),
+    : _ident(ident),
+      _descriptor(std::move(descriptor)),
       _queryInfo(queryInfo),
       _ordering(Ordering::make(_descriptor->keyPattern())),
       _isReady(false),
+      _isDropped(false),
       _prefix(DurableCatalog::get(opCtx)->getIndexPrefix(
           opCtx, _descriptor->parentNS(), _descriptor->indexName())) {
     _descriptor->_cachedEntry = this;
@@ -73,7 +76,7 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* const opCtx,
     _isReady = _catalogIsReady(opCtx);
 
     {
-        stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
+        stdx::lock_guard<Latch> lk(_indexMultikeyPathsMutex);
         _isMultikey.store(_catalogIsMultikey(opCtx, &_indexMultikeyPaths));
         _indexTracksPathLevelMultikeyInfo = !_indexMultikeyPaths.empty();
     }
@@ -147,7 +150,7 @@ bool IndexCatalogEntryImpl::isMultikey() const {
 }
 
 MultikeyPaths IndexCatalogEntryImpl::getMultikeyPaths(OperationContext* opCtx) const {
-    stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
+    stdx::lock_guard<Latch> lk(_indexMultikeyPathsMutex);
     return _indexMultikeyPaths;
 }
 
@@ -172,7 +175,7 @@ void IndexCatalogEntryImpl::setMultikey(OperationContext* opCtx,
     }
 
     if (_indexTracksPathLevelMultikeyInfo) {
-        stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
+        stdx::lock_guard<Latch> lk(_indexMultikeyPathsMutex);
         invariant(multikeyPaths.size() == _indexMultikeyPaths.size());
 
         bool newPathIsMultikey = false;
@@ -240,7 +243,7 @@ void IndexCatalogEntryImpl::setMultikey(OperationContext* opCtx,
         _isMultikey.store(true);
 
         if (_indexTracksPathLevelMultikeyInfo) {
-            stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
+            stdx::lock_guard<Latch> lk(_indexMultikeyPathsMutex);
             for (size_t i = 0; i < multikeyPaths.size(); ++i) {
                 _indexMultikeyPaths[i].insert(multikeyPaths[i].begin(), multikeyPaths[i].end());
             }

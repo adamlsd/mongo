@@ -29,20 +29,32 @@
 
 #pragma once
 
+#include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/matcher/expression.h"
-#include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/field_path.h"
 
 namespace mongo {
 namespace projection_executor {
 /**
- * Applies a positional projection on the first array found in the 'path' on the 'input' document.
- * The applied projection is stored in the 'output' document. If the output document contains a
- * field under which the projection is saved, it will be overwritten with the projection value.
+ * Extracts an element from the array 'arr' at position 'elemIndex'. The 'elemIndex' string
+ * parameter must hold a value which can be converted to an unsigned integer. If 'elemIndex' is not
+ * within array boundaries, an empty Value is returned.
+ */
+Value extractArrayElement(const Value& arr, const std::string& elemIndex);
+
+/**
+ * Applies a positional projection on the first array found in the 'path' on a projection
+ * 'preImage' document. The applied projection is merged with a projection 'postImage' document.
  * The 'matchExpr' specifies a condition to locate the first matching element in the array and must
- * match the input document. For example, given:
+ * match the input document. Note that the match expression must be applied to the projection
+ * post-image, as it may contain conditions on fields which are not included into the projection
+ * post-image. So, the pre-image document will be used to match an array and record a position of
+ * the matching element, whilst the actual result will be merged into the post-image.
  *
- *    - the 'input' document {bar: 1, foo: {bar: [1,2,6,10]}}
+ * For example, given:
+ *
+ *    - the 'preImage' document {bar: 1, foo: {bar: [1,2,6,10]}}
+ *    - the 'postImage' document {foo: {bar: [1,2,6,10]}}
  *    - the 'matchExpr' condition {bar: 1, 'foo.bar': {$gte: 5}}
  *    - and the 'path' for the positional projection of 'foo.bar'
  *
@@ -51,34 +63,31 @@ namespace projection_executor {
  * Throws an AssertionException if 'matchExpr' matches the input document, but an array element
  * satisfying positional projection requirements cannot be found.
  */
-void applyPositionalProjection(const Document& input,
-                               const MatchExpression& matchExpr,
-                               const FieldPath& path,
-                               MutableDocument* output);
+Document applyPositionalProjection(const Document& preImage,
+                                   const Document& postImage,
+                                   const MatchExpression& matchExpr,
+                                   const FieldPath& path);
 /**
  * Applies an $elemMatch projection on the array at the given 'path' on the 'input' document. The
- * applied projection is stored in the output document. If the output document contains a field
- * under which the projection is saved, it will be overwritten with the projection value. The
- * 'matchExpr' specifies a condition to locate the first matching element in the array and must
- * contain the $elemMatch operator. This function doesn't enforce this requirement and the caller
- * must ensure that the valid match expression is passed. For example, given:
+ * applied projection is stored in the output Value. The 'matchExpr' specifies a condition to
+ * locate the first matching element in the array and must contain the $elemMatch operator. This
+ * function doesn't enforce this requirement and the caller must ensure that the valid match
+ * expression is passed. For example, given:
  *
  *   - the 'input' document {foo: [{bar: 1}, {bar: 2}, {bar: 3}]}
  *   - the 'matchExpr' condition {foo: {$elemMatch: {bar: {$gt: 1}}}}
  *   - and the 'path' of 'foo'
  *
- * The resulting document will contain the following element: {foo: [{bar: 2}]}
+ * The resulting value will be: [{bar: 2}]
  *
- * If the 'matchExpr' does not match the input document, the function returns without modifying
- * the output document.
+ * If the 'matchExpr' does not match the input document, the function returns a missing value.
  *
  * Since the $elemMatch projection cannot be used with a nested field, the 'path' value must not
  * be a dotted path, otherwise an invariant will be triggered.
  */
-void applyElemMatchProjection(const Document& input,
-                              const MatchExpression& matchExpr,
-                              const FieldPath& path,
-                              MutableDocument* output);
+Value applyElemMatchProjection(const Document& input,
+                               const MatchExpression& matchExpr,
+                               const FieldPath& path);
 /**
  * Applies a $slice projection on the array at the given 'path' on the 'input' document. The applied
  * projection is returned as a Document. The 'skip' parameter indicates the number of items in the

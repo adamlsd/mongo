@@ -43,10 +43,10 @@
 #include "mongo/db/cursor_manager.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/change_stream_proxy.h"
+#include "mongo/db/exec/document_value/document.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/accumulator.h"
-#include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_exchange.h"
 #include "mongo/db/pipeline/document_source_geo_near.h"
@@ -287,7 +287,7 @@ StatusWith<StringMap<ExpressionContext::ResolvedNamespace>> resolveInvolvedNames
             // from a $merge to a collection in a different database. Since we cannot write to
             // views, simply assume that the namespace is a collection.
             resolvedNamespaces[involvedNs.coll()] = {involvedNs, std::vector<BSONObj>{}};
-        } else if (!db || db->getCollection(opCtx, involvedNs)) {
+        } else if (!db || CollectionCatalog::get(opCtx).lookupCollectionByNamespace(involvedNs)) {
             // If the aggregation database exists and 'involvedNs' refers to a collection namespace,
             // then we resolve it as an empty pipeline in order to read directly from the underlying
             // collection. If the database doesn't exist, then we still resolve it as an empty
@@ -338,7 +338,7 @@ Status collatorCompatibleWithPipeline(OperationContext* opCtx,
         return Status::OK();
     }
     for (auto&& potentialViewNs : liteParsedPipeline.getInvolvedNamespaces()) {
-        if (db->getCollection(opCtx, potentialViewNs)) {
+        if (CollectionCatalog::get(opCtx).lookupCollectionByNamespace(potentialViewNs)) {
             continue;
         }
 
@@ -456,6 +456,8 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> createOuterPipelineProxyExe
     const NamespaceString& nss,
     std::unique_ptr<Pipeline, PipelineDeleter> pipeline,
     bool hasChangeStream) {
+    boost::intrusive_ptr<ExpressionContext> expCtx(pipeline->getContext());
+
     // Transfer ownership of the Pipeline to the PipelineProxyStage.
     auto ws = std::make_unique<WorkingSet>();
     auto proxy = hasChangeStream
@@ -467,8 +469,8 @@ std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> createOuterPipelineProxyExe
     // invalidations. The Pipeline may contain PlanExecutors which *are* yielding
     // PlanExecutors and which *are* registered with their respective collection's
     // CursorManager
-    return uassertStatusOK(
-        PlanExecutor::make(opCtx, std::move(ws), std::move(proxy), nss, PlanExecutor::NO_YIELD));
+    return uassertStatusOK(PlanExecutor::make(
+        std::move(expCtx), std::move(ws), std::move(proxy), nullptr, PlanExecutor::NO_YIELD, nss));
 }
 }  // namespace
 
@@ -499,19 +501,15 @@ Status runAggregate(OperationContext* opCtx,
     {
         const LiteParsedPipeline liteParsedPipeline(request);
 
-        try {
-            // Check whether the parsed pipeline supports the given read concern.
-            liteParsedPipeline.assertSupportsReadConcern(
-                opCtx, request.getExplain(), serverGlobalParams.enableMajorityReadConcern);
-        } catch (const DBException& ex) {
-            // If we are in a multi-document transaction, we intercept the 'readConcern'
-            // assertion in order to provide a more descriptive error message and code.
-            if (opCtx->inMultiDocumentTransaction()) {
-                return {ErrorCodes::OperationNotSupportedInTransaction,
-                        ex.toStatus("Operation not permitted in transaction").reason()};
-            }
-            return ex.toStatus();
+        // If we are in a transaction, check whether the parsed pipeline supports
+        // being in a transaction.
+        if (opCtx->inMultiDocumentTransaction()) {
+            liteParsedPipeline.assertSupportsMultiDocumentTransaction(request.getExplain());
         }
+
+        // Check whether the parsed pipeline supports the given read concern.
+        liteParsedPipeline.assertSupportsReadConcern(
+            opCtx, request.getExplain(), serverGlobalParams.enableMajorityReadConcern);
 
         const auto& pipelineInvolvedNamespaces = liteParsedPipeline.getInvolvedNamespaces();
 

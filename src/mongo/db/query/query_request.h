@@ -135,7 +135,6 @@ public:
     // Names of the $meta projection values.
     static const std::string metaGeoNearDistance;
     static const std::string metaGeoNearPoint;
-    static const std::string metaIndexKey;
     static const std::string metaRecordId;
     static const std::string metaSortKey;
     static const std::string metaTextScore;
@@ -258,14 +257,6 @@ public:
 
     void setExplain(bool explain) {
         _explain = explain;
-    }
-
-    const std::string& getComment() const {
-        return _comment;
-    }
-
-    void setComment(const std::string& comment) {
-        _comment = comment;
     }
 
     const BSONObj& getUnwrappedReadPref() const {
@@ -455,11 +446,6 @@ private:
     Status initFullQuery(const BSONObj& top);
 
     /**
-     * Updates the projection object with a $meta projection for the returnKey option.
-     */
-    void addReturnKeyMetaProj();
-
-    /**
      * Updates the projection object with a $meta projection for the showRecordId option.
      */
     void addShowRecordIdMetaProj();
@@ -523,8 +509,6 @@ private:
     boost::optional<long long> _ntoreturn;
 
     bool _explain = false;
-
-    std::string _comment;
 
     // A user-specified maxTimeMS limit, or a value of '0' if not specified.
     int _maxTimeMS = 0;

@@ -41,7 +41,7 @@
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/kv/kv_prefix.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/mutex.h"
 
 namespace mongo {
 
@@ -58,6 +58,7 @@ class IndexCatalogEntryImpl : public IndexCatalogEntry {
 
 public:
     IndexCatalogEntryImpl(OperationContext* opCtx,
+                          const std::string& ident,
                           std::unique_ptr<IndexDescriptor> descriptor,  // ownership passes to me
                           CollectionQueryInfo* queryInfo);              // not owned, optional
 
@@ -66,6 +67,10 @@ public:
     const NamespaceString& ns() const final;
 
     void init(std::unique_ptr<IndexAccessMethod> accessMethod) final;
+
+    const std::string& getIdent() const final {
+        return _ident;
+    }
 
     IndexDescriptor* descriptor() final {
         return _descriptor.get();
@@ -112,6 +117,14 @@ public:
     /// ---------------------
 
     void setIsReady(bool newIsReady) final;
+
+    void setDropped() final {
+        _isDropped.store(true);
+    }
+
+    bool isDropped() const final {
+        return _isDropped.load();
+    }
 
     // --
 
@@ -186,6 +199,8 @@ private:
 
     // -----
 
+    const std::string _ident;
+
     std::unique_ptr<IndexDescriptor> _descriptor;  // owned here
 
     CollectionQueryInfo* _queryInfo;  // not owned here
@@ -199,8 +214,9 @@ private:
 
     // cached stuff
 
-    Ordering _ordering;  // TODO: this might be b-tree specific
-    bool _isReady;       // cache of NamespaceDetails info
+    Ordering _ordering;           // TODO: this might be b-tree specific
+    bool _isReady;                // cache of NamespaceDetails info
+    AtomicWord<bool> _isDropped;  // Whether the index drop is committed.
 
     // Set to true if this index supports path-level multikey tracking.
     // '_indexTracksPathLevelMultikeyInfo' is effectively const after IndexCatalogEntry::init() is
@@ -214,7 +230,8 @@ private:
     // Controls concurrent access to '_indexMultikeyPaths'. We acquire this mutex rather than the
     // RESOURCE_METADATA lock as a performance optimization so that it is cheaper to detect whether
     // there is actually any path-level multikey information to update or not.
-    mutable stdx::mutex _indexMultikeyPathsMutex;
+    mutable Mutex _indexMultikeyPathsMutex =
+        MONGO_MAKE_LATCH("IndexCatalogEntryImpl::_indexMultikeyPathsMutex");
 
     // Non-empty only if '_indexTracksPathLevelMultikeyInfo' is true.
     //

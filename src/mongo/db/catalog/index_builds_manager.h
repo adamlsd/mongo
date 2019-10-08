@@ -36,7 +36,7 @@
 
 #include "mongo/db/catalog/multi_index_block.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/mutex.h"
 
 namespace mongo {
 
@@ -175,7 +175,11 @@ public:
     /**
      * Cleans up the index build state and unregisters it from the manager.
      */
-    void tearDownIndexBuild(OperationContext* opCtx, Collection* collection, const UUID& buildUUID);
+    using OnCleanUpFn = MultiIndexBlock::OnCleanUpFn;
+    void tearDownIndexBuild(OperationContext* opCtx,
+                            Collection* collection,
+                            const UUID& buildUUID,
+                            OnCleanUpFn onCleanUpFn);
 
     /**
      * Returns true if the index build supports background writes while building an index. This is
@@ -205,7 +209,7 @@ private:
     std::shared_ptr<MultiIndexBlock> _getBuilder(const UUID& buildUUID);
 
     // Protects the map data structures below.
-    mutable stdx::mutex _mutex;
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("IndexBuildsManager::_mutex");
 
     // Map of index builders by build UUID. Allows access to the builders so that actions can be
     // taken on and information passed to and from index builds.

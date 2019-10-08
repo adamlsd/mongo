@@ -40,10 +40,10 @@
 #include <vector>
 
 #include "mongo/db/commands/feature_compatibility_version_documentation.h"
+#include "mongo/db/exec/document_value/document.h"
+#include "mongo/db/exec/document_value/value.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/expression_context.h"
-#include "mongo/db/pipeline/value.h"
 #include "mongo/db/query/datetime/date_time_support.h"
 #include "mongo/platform/bits.h"
 #include "mongo/platform/decimal128.h"
@@ -93,7 +93,7 @@ intrusive_ptr<Expression> Expression::parseObject(
     BSONObj obj,
     const VariablesParseState& vps) {
     if (obj.isEmpty()) {
-        return ExpressionObject::create(expCtx, {}, {});
+        return ExpressionObject::create(expCtx, {});
     }
 
     if (obj.firstElementFieldName()[0] == '$') {
@@ -1882,11 +1882,23 @@ ExpressionObject::ExpressionObject(const boost::intrusive_ptr<ExpressionContext>
                                    vector<pair<string, intrusive_ptr<Expression>&>>&& expressions)
     : Expression(expCtx, std::move(_children)), _expressions(std::move(expressions)) {}
 
-intrusive_ptr<ExpressionObject> ExpressionObject::create(
+boost::intrusive_ptr<ExpressionObject> ExpressionObject::create(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
-    std::vector<boost::intrusive_ptr<Expression>> _children,
-    vector<pair<string, intrusive_ptr<Expression>&>>&& expressions) {
-    return new ExpressionObject(expCtx, std::move(_children), std::move(expressions));
+    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>>&&
+        expressionsWithChildrenInPlace) {
+    std::vector<boost::intrusive_ptr<Expression>> children;
+    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>> expressions;
+    for (auto& [unused, expression] : expressionsWithChildrenInPlace)
+        // These 'push_back's must complete before we insert references to the 'children' vector
+        // into the 'expressions' vector since 'push_back' invalidates references.
+        children.push_back(std::move(expression));
+    std::vector<boost::intrusive_ptr<Expression>>::size_type index = 0;
+    for (auto& [fieldName, unused] : expressionsWithChildrenInPlace) {
+        expressions.emplace_back(fieldName, children[index]);
+        ++index;
+    }
+    // It is safe to 'std::move' 'children' since the standard guarantees the references are stable.
+    return new ExpressionObject(expCtx, std::move(children), std::move(expressions));
 }
 
 intrusive_ptr<ExpressionObject> ExpressionObject::parse(
@@ -2611,7 +2623,10 @@ Value ExpressionMeta::evaluate(const Document& root, Variables* variables) const
         case MetaType::kIndexKey:
             return metadata.hasIndexKey() ? Value(metadata.getIndexKey()) : Value();
         case MetaType::kSortKey:
-            return metadata.hasSortKey() ? Value(metadata.getSortKey()) : Value();
+            return metadata.hasSortKey()
+                ? Value(DocumentMetadataFields::serializeSortKey(metadata.isSingleElementKey(),
+                                                                 metadata.getSortKey()))
+                : Value();
         default:
             MONGO_UNREACHABLE;
     }
@@ -2667,17 +2682,19 @@ Value ExpressionMod::evaluate(const Document& root, Variables* variables) const 
 
             double left = lhs.coerceToDouble();
             return Value(fmod(left, right));
-        } else if (leftType == NumberLong || rightType == NumberLong) {
+        }
+
+        if (leftType == NumberLong || rightType == NumberLong) {
             // if either is long, return long
             long long left = lhs.coerceToLong();
             long long rightLong = rhs.coerceToLong();
-            return Value(left % rightLong);
+            return Value(overflow::safeMod(left, rightLong));
         }
 
         // lastly they must both be ints, return int
         int left = lhs.coerceToInt();
         int rightInt = rhs.coerceToInt();
-        return Value(left % rightInt);
+        return Value(overflow::safeMod(left, rightInt));
     } else if (lhs.nullish() || rhs.nullish()) {
         return Value(BSONNULL);
     } else {

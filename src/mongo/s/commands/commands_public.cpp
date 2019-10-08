@@ -46,7 +46,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/request_types/rename_collection_gen.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 
@@ -214,7 +214,7 @@ public:
                 str::stream() << "Invalid target namespace: " << toNss.ns(),
                 toNss.isValid());
 
-        if (MONGO_FAIL_POINT(useRenameCollectionPathThroughConfigsvr)) {
+        if (MONGO_unlikely(useRenameCollectionPathThroughConfigsvr.shouldFail())) {
             bool dropTarget = cmdObj["dropTarget"].trueValue();
             bool stayTemp = cmdObj["stayTemp"].trueValue();
 

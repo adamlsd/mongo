@@ -145,10 +145,6 @@ public:
         result->appendNumber("numInserts", _numInserts);
     }
 
-    virtual Status touch(OperationContext* opCtx, BSONObjBuilder* output) const {
-        return Status::OK();
-    }
-
     void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) const override {}
 
     virtual void updateStatsAfterRepair(OperationContext* opCtx,
@@ -187,14 +183,12 @@ public:
 
     virtual Status insert(OperationContext* opCtx,
                           const KeyString::Value& keyString,
-                          const RecordId& loc,
                           bool dupsAllowed) {
         return Status::OK();
     }
 
     virtual void unindex(OperationContext* opCtx,
                          const KeyString::Value& keyString,
-                         const RecordId& loc,
                          bool dupsAllowed) {}
 
     virtual Status dupKeyCheck(OperationContext* opCtx, const KeyString::Value& keyString) {

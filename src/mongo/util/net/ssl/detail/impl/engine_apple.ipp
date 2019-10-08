@@ -38,6 +38,8 @@
 #include "asio/detail/throw_error.hpp"
 #include "asio/error.hpp"
 
+#include <arpa/inet.h>
+
 #include "mongo/util/log.h"
 #include "mongo/util/net/ssl/apple.hpp"
 #include "mongo/util/net/ssl/detail/engine.hpp"

@@ -46,12 +46,12 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/record_id.h"
-#include "mongo/stdx/mutex.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/platform/mutex.h"
+#include "mongo/util/fail_point.h"
 
 namespace mongo {
 
-MONGO_FAIL_POINT_DECLARE(leaveIndexBuildUnfinishedForShutdown);
+extern FailPoint leaveIndexBuildUnfinishedForShutdown;
 
 class Collection;
 class MatchExpression;
@@ -85,8 +85,17 @@ public:
      *
      * By only requiring this call after init(), we allow owners of the object to exit without
      * further handling if they never use the object.
+     *
+     * `onCleanUp` will be called after all indexes have been removed from the catalog.
      */
-    void cleanUpAfterBuild(OperationContext* opCtx, Collection* collection);
+    using OnCleanUpFn = std::function<void()>;
+    void cleanUpAfterBuild(OperationContext* opCtx, Collection* collection, OnCleanUpFn onCleanUp);
+
+    /**
+     * Not all index aborts need this function, in particular index builds that do not need
+     * to timestamp catalog writes. This is a no-op.
+     */
+    static OnCleanUpFn kNoopOnCleanUpFn;
 
     static bool areHybridIndexBuildsEnabled();
 
@@ -344,7 +353,7 @@ private:
     bool _constraintsChecked = false;
 
     // Protects member variables of this class declared below.
-    mutable stdx::mutex _mutex;
+    mutable Mutex _mutex = MONGO_MAKE_LATCH("MultiIndexBlock::_mutex");
 
     State _state = State::kUninitialized;
     std::string _abortReason;

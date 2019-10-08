@@ -247,11 +247,13 @@ public:
 
     size_t getNumUncommittedSnapshots() override;
 
+    virtual void createWMajorityWriteAvailabilityDateWaiter(repl::OpTime opTime) override;
+
     Status stepUpIfEligible(bool skipDryRun) override;
 
     Status abortCatchupIfNeeded(PrimaryCatchUpConclusionReason reason) override;
 
-    void incrementNumCatchUpOpsIfCatchingUp(int numOps) override;
+    void incrementNumCatchUpOpsIfCatchingUp(long numOps) override;
 
     void signalDropPendingCollectionsRemovedFromStorage() final;
 
@@ -260,6 +262,8 @@ public:
     bool setContainsArbiter() const override;
 
     void attemptToAdvanceStableTimestamp() override;
+
+    void finishRecoveryIfEligible(OperationContext* opCtx) override;
 
 private:
     // Back pointer to the ServiceContext that has started the instance.

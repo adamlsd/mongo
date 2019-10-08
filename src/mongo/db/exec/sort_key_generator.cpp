@@ -50,13 +50,13 @@ namespace mongo {
 const char* SortKeyGeneratorStage::kStageType = "SORT_KEY_GENERATOR";
 
 SortKeyGeneratorStage::SortKeyGeneratorStage(const boost::intrusive_ptr<ExpressionContext>& pExpCtx,
-                                             PlanStage* child,
+                                             std::unique_ptr<PlanStage> child,
                                              WorkingSet* ws,
                                              const BSONObj& sortSpecObj)
     : PlanStage(kStageType, pExpCtx->opCtx),
       _ws(ws),
       _sortKeyGen({{sortSpecObj, pExpCtx}, pExpCtx->getCollator()}) {
-    _children.emplace_back(child);
+    _children.emplace_back(std::move(child));
 }
 
 bool SortKeyGeneratorStage::isEOF() {
@@ -68,14 +68,15 @@ PlanStage::StageState SortKeyGeneratorStage::doWork(WorkingSetID* out) {
     if (stageState == PlanStage::ADVANCED) {
         WorkingSetMember* member = _ws->get(*out);
 
-        auto sortKey = _sortKeyGen.computeSortKey(*member);
-        if (!sortKey.isOK()) {
-            *out = WorkingSetCommon::allocateStatusMember(_ws, sortKey.getStatus());
+        try {
+            auto sortKey = _sortKeyGen.computeSortKey(*member);
+
+            // Add the sort key to the WSM as metadata.
+            member->metadata().setSortKey(std::move(sortKey), _sortKeyGen.isSingleElementKey());
+        } catch (const DBException& computeSortKeyException) {
+            *out = WorkingSetCommon::allocateStatusMember(_ws, computeSortKeyException.toStatus());
             return PlanStage::FAILURE;
         }
-
-        // Add the sort key to the WSM as metadata.
-        member->metadata().setSortKey(sortKey.getValue());
 
         return PlanStage::ADVANCED;
     }

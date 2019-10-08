@@ -180,15 +180,6 @@ add_option('ssl-provider',
     type='choice',
 )
 
-add_option('mmapv1',
-    choices=['auto', 'on', 'off'],
-    const='on',
-    default='auto',
-    help='Enable MMapV1',
-    nargs='?',
-    type='choice',
-)
-
 add_option('wiredtiger',
     choices=['on', 'off'],
     const='on',
@@ -1133,11 +1124,6 @@ endian = get_option( "endian" )
 if endian == "auto":
     endian = sys.byteorder
 
-if endian == "little":
-    env.SetConfigHeaderDefine("MONGO_CONFIG_BYTE_ORDER", "1234")
-elif endian == "big":
-    env.SetConfigHeaderDefine("MONGO_CONFIG_BYTE_ORDER", "4321")
-
 # These preprocessor macros came from
 # http://nadeausoftware.com/articles/2012/02/c_c_tip_how_detect_processor_type_using_compiler_predefined_macros
 #
@@ -1493,8 +1479,7 @@ if (
         get_option('build-fast-and-loose') == 'on' or
         (
             get_option('build-fast-and-loose') == 'auto' and
-            not has_option('release') and
-            not has_option('cache')
+            not has_option('release')
          )
 ):
     # See http://www.scons.org/wiki/GoFastButton for details
@@ -1950,15 +1935,6 @@ if env.TargetOSIs('posix'):
                 '-Wl,-fatal_warnings' if env.TargetOSIs('darwin') else "-Wl,--fatal-warnings",
             ]
         )
-
-mmapv1 = False
-if get_option('mmapv1') == 'auto':
-    # The mmapv1 storage engine is only supported on x86
-    # targets. Unless explicitly requested, disable it on all other
-    # platforms.
-    mmapv1 = (env['TARGET_ARCH'] in ['i386', 'x86_64'])
-elif get_option('mmapv1') == 'on':
-    mmapv1 = True
 
 wiredtiger = False
 if get_option('wiredtiger') == 'on':
@@ -3228,12 +3204,12 @@ def doConfigure(myenv):
     if ssl_provider == 'native':
         if conf.env.TargetOSIs('windows'):
             ssl_provider = 'windows'
-            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_WINDOWS")
+            conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_WINDOWS")
             conf.env.Append( MONGO_CRYPTO=["windows"] )
 
         elif conf.env.TargetOSIs('darwin', 'macOS'):
             ssl_provider = 'apple'
-            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_APPLE")
+            conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_APPLE")
             conf.env.Append( MONGO_CRYPTO=["apple"] )
             conf.env.AppendUnique(FRAMEWORKS=[
                 'CoreFoundation',
@@ -3247,7 +3223,7 @@ def doConfigure(myenv):
         if require_ssl:
             checkOpenSSL(conf)
             # Working OpenSSL available, use it.
-            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_OPENSSL")
+            conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_OPENSSL")
 
             conf.env.Append( MONGO_CRYPTO=["openssl"] )
         else:
@@ -3359,6 +3335,7 @@ def doConfigure(myenv):
             "BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS",
             "BOOST_ENABLE_ASSERT_DEBUG_HANDLER",
             "BOOST_LOG_NO_SHORTHAND_NAMES",
+            "BOOST_LOG_USE_NATIVE_SYSLOG",
             "ABSL_FORCE_ALIGNED_ACCESS",
         ]
     )
@@ -3593,7 +3570,7 @@ def doConfigure(myenv):
 
     # Resolve --enable-free-mon
     if free_monitoring == "auto":
-        if 'enterprise' not in env['MONGO_MODULES']:
+        if 'enterprise' not in conf.env['MONGO_MODULES']:
             free_monitoring = "on"
         else:
             free_monitoring = "off"
@@ -3767,6 +3744,44 @@ if get_option('install-mode') == 'hygienic':
     env["AIB_TARBALL_SUFFIX"] = "tgz"
     env.Tool('auto_install_binaries')
 
+    env.DeclareRoles(
+        roles=[
+
+            env.Role(
+                name="base",
+            ),
+
+            env.Role(
+                name="debug",
+            ),
+
+            env.Role(
+                name="dev",
+                dependencies=[
+                    "runtime"
+                ],
+            ),
+
+            env.Role(
+                name="meta",
+            ),
+
+            env.Role(
+                name="runtime",
+                dependencies=[
+                    # On windows, we want the runtime role to depend
+                    # on the debug role so that PDBs end in the
+                    # runtime package.
+                    "debug" if env.TargetOSIs('windows') else None,
+                ],
+                transitive=True,
+                silent=True,
+            ),
+        ],
+        base_role="base",
+        meta_role="meta",
+    )
+
     env.AddSuffixMapping({
         "$PROGSUFFIX": env.SuffixMap(
             directory="$PREFIX_BINDIR",
@@ -3774,7 +3789,7 @@ if get_option('install-mode') == 'hygienic':
                 "runtime",
             ]
         ),
-        
+
         "$LIBSUFFIX": env.SuffixMap(
             directory="$PREFIX_LIBDIR",
             default_roles=[
@@ -3797,7 +3812,7 @@ if get_option('install-mode') == 'hygienic':
                 "debug",
             ]
         ),
-        
+
         ".dSYM": env.SuffixMap(
             directory="$PREFIX_DEBUGDIR",
             default_roles=[
@@ -3812,25 +3827,7 @@ if get_option('install-mode') == 'hygienic':
             ]
         ),
 
-        ".lib": env.SuffixMap(
-            directory="$PREFIX_LIBDIR",
-            default_roles=[
-                "dev"
-            ]
-        ),
-        
-        ".h": env.SuffixMap(
-            directory="$PREFIX_INCLUDEDIR",
-            default_roles=[
-                "dev",
-            ]
-        ),
     })
-
-    if env.TargetOSIs('windows'):
-        # On windows, we want the runtime role to depend on the debug role so that PDBs
-        # end in the runtime package.
-        env.AddRoleDependencies(role="runtime", dependencies=["debug"])
 
     env.AddPackageNameAlias(
         component="dist",
@@ -4011,7 +4008,6 @@ Export([
     'get_option',
     'has_option',
     'http_client',
-    'mmapv1',
     'mobile_se',
     'module_sconscripts',
     'optBuild',

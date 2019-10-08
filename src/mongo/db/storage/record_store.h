@@ -363,15 +363,6 @@ public:
                                                             bool forward = true) const = 0;
 
     /**
-     * Constructs a cursor over a potentially corrupted store, which can be used to salvage
-     * damaged records. The iterator might return every record in the store if all of them
-     * are reachable and not corrupted.  Returns NULL if not supported.
-     */
-    virtual std::unique_ptr<RecordCursor> getCursorForRepair(OperationContext* opCtx) const {
-        return {};
-    }
-
-    /**
      * Constructs a cursor over a record store that returns documents in a randomized order, and
      * allows storage engines to provide a more efficient way of random sampling of a record store
      * than MongoDB's default sampling methods, which is used when this method returns {}.
@@ -409,15 +400,6 @@ public:
      */
     virtual bool compactSupported() const {
         return false;
-    }
-
-    /**
-     * Does compact() leave RecordIds alone or can they change.
-     *
-     * Only called if compactSupported() returns true.
-     */
-    virtual bool compactsInPlace() const {
-        MONGO_UNREACHABLE;
     }
 
     /**
@@ -466,20 +448,6 @@ public:
     virtual void appendCustomStats(OperationContext* opCtx,
                                    BSONObjBuilder* result,
                                    double scale) const = 0;
-
-    /**
-     * Load all data into cache.
-     * What cache depends on implementation.
-     *
-     * If the underlying storage engine does not support the operation,
-     * returns ErrorCodes::CommandNotSupported
-     *
-     * @param output (optional) - where to put detailed stats
-     */
-    virtual Status touch(OperationContext* opCtx, BSONObjBuilder* output) const {
-        return Status(ErrorCodes::CommandNotSupported,
-                      "this storage engine does not support touch");
-    }
 
     /**
      * Return the RecordId of an oplog entry as close to startingPosition as possible without
@@ -550,6 +518,15 @@ public:
      * Storage engines supporting oplog stones must implement this function.
      */
     virtual void reclaimOplog(OperationContext* opCtx) {
+        MONGO_UNREACHABLE;
+    }
+
+    /**
+     * This should only be called if StorageEngine::supportsOplogStones() is true.
+     * Storage engines supporting oplog stones must implement this function.
+     * Populates `builder` with various statistics pertaining to oplog stones and oplog truncation.
+     */
+    virtual void getOplogTruncateStats(BSONObjBuilder& builder) const {
         MONGO_UNREACHABLE;
     }
 

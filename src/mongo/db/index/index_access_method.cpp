@@ -153,17 +153,15 @@ Status AbstractIndexAccessMethod::insertKeys(OperationContext* opCtx,
     // over the data keys, each of them should point to the doc's RecordId. When iterating over
     // the multikey metadata keys, they should point to the reserved 'kMultikeyMetadataKeyId'.
     for (const auto keyVec : {&keys, &multikeyMetadataKeys}) {
-        const auto& recordId = (keyVec == &keys ? loc : kMultikeyMetadataKeyId);
         for (const auto& keyString : *keyVec) {
             bool unique = _descriptor->unique();
-            Status status =
-                _newInterface->insert(opCtx, keyString, recordId, !unique /* dupsAllowed */);
+            Status status = _newInterface->insert(opCtx, keyString, !unique /* dupsAllowed */);
 
             // When duplicates are encountered and allowed, retry with dupsAllowed. Add the
             // key to the output vector so callers know which duplicate keys were inserted.
             if (ErrorCodes::DuplicateKey == status.code() && options.dupsAllowed) {
                 invariant(unique);
-                status = _newInterface->insert(opCtx, keyString, recordId, true /* dupsAllowed */);
+                status = _newInterface->insert(opCtx, keyString, true /* dupsAllowed */);
 
                 if (status.isOK() && result) {
                     auto key =
@@ -193,7 +191,7 @@ void AbstractIndexAccessMethod::removeOneKey(OperationContext* opCtx,
                                              bool dupsAllowed) {
 
     try {
-        _newInterface->unindex(opCtx, keyString, loc, dupsAllowed);
+        _newInterface->unindex(opCtx, keyString, dupsAllowed);
     } catch (AssertionException& e) {
         log() << "Assertion failure: _unindex failed on: " << _descriptor->parentNS()
               << " for index: " << _descriptor->indexName();
@@ -231,65 +229,43 @@ Status AbstractIndexAccessMethod::initializeAsEmpty(OperationContext* opCtx) {
     return _newInterface->initAsEmpty(opCtx);
 }
 
-Status AbstractIndexAccessMethod::touch(OperationContext* opCtx, const BSONObj& obj) {
-    KeyStringSet keys;
-    // There's no need to compute the prefixes of the indexed fields that cause the index to be
-    // multikey when paging a document's index entries into memory.
-    KeyStringSet* multikeyMetadataKeys = nullptr;
-    MultikeyPaths* multikeyPaths = nullptr;
-    getKeys(obj, GetKeysMode::kEnforceConstraints, &keys, multikeyMetadataKeys, multikeyPaths);
-
-    std::unique_ptr<SortedDataInterface::Cursor> cursor(_newInterface->newCursor(opCtx));
-    for (const auto& keyString : keys) {
-        auto key = KeyString::toBson(keyString.getBuffer(),
-                                     keyString.getSize(),
-                                     getSortedDataInterface()->getOrdering(),
-                                     keyString.getTypeBits());
-        cursor->seekExact(key);
-    }
-
-    return Status::OK();
-}
-
-
-Status AbstractIndexAccessMethod::touch(OperationContext* opCtx) const {
-    return _newInterface->touch(opCtx);
-}
-
 RecordId AbstractIndexAccessMethod::findSingle(OperationContext* opCtx,
                                                const BSONObj& requestedKey) const {
     // Generate the key for this index.
-    boost::optional<KeyString::Value> actualKey;
-    if (_btreeState->getCollator()) {
-        // For performance, call get keys only if there is a non-simple collation.
-        KeyStringSet keys;
-        KeyStringSet* multikeyMetadataKeys = nullptr;
-        MultikeyPaths* multikeyPaths = nullptr;
-        getKeys(requestedKey,
-                GetKeysMode::kEnforceConstraints,
-                &keys,
-                multikeyMetadataKeys,
-                multikeyPaths);
-        invariant(keys.size() == 1);
-        actualKey.emplace(std::move(*keys.begin()));
-    } else {
-        KeyString::HeapBuilder requestedKeyString(getSortedDataInterface()->getKeyStringVersion(),
-                                                  BSONObj::stripFieldNames(requestedKey),
-                                                  getSortedDataInterface()->getOrdering());
-        actualKey.emplace(requestedKeyString.release());
-    }
+    KeyString::Value actualKey = [&]() {
+        if (_btreeState->getCollator()) {
+            // For performance, call get keys only if there is a non-simple collation.
+            KeyStringSet keys;
+            KeyStringSet* multikeyMetadataKeys = nullptr;
+            MultikeyPaths* multikeyPaths = nullptr;
+            getKeys(requestedKey,
+                    GetKeysMode::kEnforceConstraints,
+                    &keys,
+                    multikeyMetadataKeys,
+                    multikeyPaths);
+            invariant(keys.size() == 1);
+            return *keys.begin();
+        } else {
+            KeyString::HeapBuilder requestedKeyString(
+                getSortedDataInterface()->getKeyStringVersion(),
+                BSONObj::stripFieldNames(requestedKey),
+                getSortedDataInterface()->getOrdering());
+            return requestedKeyString.release();
+        }
+    }();
 
     std::unique_ptr<SortedDataInterface::Cursor> cursor(_newInterface->newCursor(opCtx));
     const auto requestedInfo = kDebugBuild ? SortedDataInterface::Cursor::kKeyAndLoc
                                            : SortedDataInterface::Cursor::kWantLoc;
-    auto key = KeyString::toBson(actualKey->getBuffer(),
-                                 actualKey->getSize(),
-                                 getSortedDataInterface()->getOrdering(),
-                                 actualKey->getTypeBits());
-    if (auto kv = cursor->seekExact(key, requestedInfo)) {
+    if (auto kv = cursor->seekExact(actualKey, requestedInfo)) {
         // StorageEngine should guarantee these.
         dassert(!kv->loc.isNull());
-        dassert(kv->key.woCompare(key, /*order*/ BSONObj(), /*considerFieldNames*/ false) == 0);
+        dassert(kv->key.woCompare(KeyString::toBson(actualKey.getBuffer(),
+                                                    actualKey.getSize(),
+                                                    getSortedDataInterface()->getOrdering(),
+                                                    actualKey.getTypeBits()),
+                                  /*order*/ BSONObj(),
+                                  /*considerFieldNames*/ false) == 0);
 
         return kv->loc;
     }
@@ -363,7 +339,7 @@ void AbstractIndexAccessMethod::prepareUpdate(OperationContext* opCtx,
                                               const BSONObj& to,
                                               const RecordId& record,
                                               const InsertDeleteOptions& options,
-                                              UpdateTicket* ticket) {
+                                              UpdateTicket* ticket) const {
     const MatchExpression* indexFilter = index->getFilterExpression();
     if (!indexFilter || indexFilter->matchesBSON(from)) {
         // Override key constraints when generating keys for removal. This only applies to keys
@@ -414,7 +390,7 @@ Status AbstractIndexAccessMethod::update(OperationContext* opCtx,
     }
 
     for (const auto& remKey : ticket.removed) {
-        _newInterface->unindex(opCtx, remKey, ticket.loc, ticket.dupsAllowed);
+        _newInterface->unindex(opCtx, remKey, ticket.dupsAllowed);
     }
 
     // Add all new data keys, and all new multikey metadata keys, into the index. When iterating
@@ -422,9 +398,8 @@ Status AbstractIndexAccessMethod::update(OperationContext* opCtx,
     // the multikey metadata keys, they should point to the reserved 'kMultikeyMetadataKeyId'.
     const auto newMultikeyMetadataKeys = asVector(ticket.newMultikeyMetadataKeys);
     for (const auto keySet : {&ticket.added, &newMultikeyMetadataKeys}) {
-        const auto& recordId = (keySet == &ticket.added ? ticket.loc : kMultikeyMetadataKeyId);
         for (const auto& keyString : *keySet) {
-            Status status = _newInterface->insert(opCtx, keyString, recordId, ticket.dupsAllowed);
+            Status status = _newInterface->insert(opCtx, keyString, ticket.dupsAllowed);
             if (isFatalError(opCtx, status, keyString)) {
                 return status;
             }

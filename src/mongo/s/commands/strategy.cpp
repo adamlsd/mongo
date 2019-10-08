@@ -79,7 +79,7 @@
 #include "mongo/s/session_catalog_router.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/s/transaction_router.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/str.h"
@@ -298,15 +298,15 @@ void execCommandClient(OperationContext* opCtx,
             invocation->run(opCtx, result);
         }
 
-        auto body = result->getBodyBuilder();
-
-        MONGO_FAIL_POINT_BLOCK_IF(failCommand, data, [&](const BSONObj& data) {
-            return CommandHelpers::shouldActivateFailCommandFailPoint(
-                       data, request.getCommandName(), opCtx->getClient(), invocation->ns()) &&
-                data.hasField("writeConcernError");
-        }) {
-            body.append(data.getData()["writeConcernError"]);
-        }
+        failCommand.executeIf(
+            [&](const BSONObj& data) {
+                result->getBodyBuilder().append(data["writeConcernError"]);
+            },
+            [&](const BSONObj& data) {
+                return CommandHelpers::shouldActivateFailCommandFailPoint(
+                           data, request.getCommandName(), opCtx->getClient(), invocation->ns()) &&
+                    data.hasField("writeConcernError");
+            });
     }
 
     auto body = result->getBodyBuilder();
@@ -365,6 +365,11 @@ void runCommand(OperationContext* opCtx,
     }
     opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
 
+    // If the command includes a 'comment' field, set it on the current OpCtx.
+    if (auto commentField = request.body["comment"]) {
+        opCtx->setComment(commentField.wrap());
+    }
+
     auto invocation = command->parse(opCtx, request);
 
     // Set the logical optype, command object and namespace as soon as we identify the command. If
@@ -402,10 +407,6 @@ void runCommand(OperationContext* opCtx,
     }
 
     if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
-        uassert(ErrorCodes::InvalidOptions,
-                str::stream() << "read concern snapshot is not supported on mongos for the command "
-                              << commandName,
-                invocation->supportsReadConcern(readConcernArgs.getLevel()));
         uassert(ErrorCodes::InvalidOptions,
                 "read concern snapshot is not supported with atClusterTime on mongos",
                 !readConcernArgs.getArgsAtClusterTime());
@@ -488,7 +489,7 @@ void runCommand(OperationContext* opCtx,
                 // under a transaction (see the invariant inside ShardConnection). Because of this,
                 // the retargeting error could not have come from a ShardConnection, so we don't
                 // need to reset the connection's in-memory state.
-                if (!MONGO_FAIL_POINT(doNotRefreshShardsOnRetargettingError) &&
+                if (!MONGO_unlikely(doNotRefreshShardsOnRetargettingError.shouldFail()) &&
                     !TransactionRouter::get(opCtx)) {
                     ShardConnection::checkMyConnectionVersions(opCtx, staleNs.ns());
                 }
@@ -637,6 +638,12 @@ DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss
 
     Client* const client = opCtx->getClient();
     AuthorizationSession* const authSession = AuthorizationSession::get(client);
+
+    // The legacy '$comment' operator gets converted to 'comment' by upconvertQueryEntry(). We
+    // set the comment in 'opCtx' so that it can be passed on to the respective shards.
+    if (auto commentField = upconvertedQuery["comment"]) {
+        opCtx->setComment(commentField.wrap());
+    }
 
     Status status = authSession->checkAuthForFind(nss, false);
     audit::logQueryAuthzCheck(client, nss, q.query, status.code());
@@ -994,7 +1001,7 @@ void Strategy::explainFind(OperationContext* opCtx,
             // under a transaction (see the invariant inside ShardConnection). Because of this, the
             // retargeting error could not have come from a ShardConnection, so we don't need to
             // reset the connection's in-memory state.
-            if (!MONGO_FAIL_POINT(doNotRefreshShardsOnRetargettingError) &&
+            if (!MONGO_unlikely(doNotRefreshShardsOnRetargettingError.shouldFail()) &&
                 !TransactionRouter::get(opCtx)) {
                 ShardConnection::checkMyConnectionVersions(opCtx, staleNs.ns());
             }

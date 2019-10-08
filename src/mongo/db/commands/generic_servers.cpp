@@ -40,7 +40,6 @@
 #include "mongo/scripting/engine.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point.h"
-#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/ntservice.h"
@@ -199,7 +198,7 @@ public:
                      const string& ns,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        bool didRotate = rotateLogs(serverGlobalParams.logRenameOnRotate);
+        bool didRotate = rotateLogs(serverGlobalParams.logRenameOnRotate, serverGlobalParams.logV2);
         if (didRotate)
             logProcessDetailsForLogRotate(opCtx->getServiceContext());
         return didRotate;
@@ -332,13 +331,12 @@ void CmdShutdown::shutdownHelper(const BSONObj& cmdObj) {
     ShutdownTaskArgs shutdownArgs;
     shutdownArgs.isUserInitiated = true;
 
-    MONGO_FAIL_POINT_BLOCK(crashOnShutdown, crashBlock) {
-        const std::string crashHow = crashBlock.getData()["how"].str();
-        if (crashHow == "fault") {
+    crashOnShutdown.execute([&](const BSONObj& data) {
+        if (data["how"].str() == "fault") {
             ++*illegalAddress;
         }
         ::abort();
-    }
+    });
 
     log() << "terminating, shutdown command received " << cmdObj;
 
@@ -352,11 +350,10 @@ void CmdShutdown::shutdownHelper(const BSONObj& cmdObj) {
         // The ServiceMain thread will quit for us so just sleep until it does.
         while (true)
             sleepsecs(60);  // Loop forever
-    } else
-#endif
-    {
-        shutdown(EXIT_CLEAN, shutdownArgs);  // this never returns
+        return;
     }
+#endif
+    shutdown(EXIT_CLEAN, shutdownArgs);  // this never returns
 }
 
 }  // namespace mongo

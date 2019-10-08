@@ -99,7 +99,7 @@ public:
     void run() {
         dbtests::WriteContextForTests ctx(&_opCtx, ns());
         Database* db = ctx.db();
-        Collection* coll = db->getCollection(&_opCtx, nss());
+        Collection* coll = CollectionCatalog::get(&_opCtx).lookupCollectionByNamespace(nss());
         if (!coll) {
             WriteUnitOfWork wuow(&_opCtx);
             coll = db->createCollection(&_opCtx, nss());
@@ -138,8 +138,8 @@ public:
             mockStage->pushBack(id);
         }
 
-        unique_ptr<FetchStage> fetchStage(
-            new FetchStage(&_opCtx, &ws, mockStage.release(), nullptr, coll));
+        auto fetchStage =
+            std::make_unique<FetchStage>(&_opCtx, &ws, std::move(mockStage), nullptr, coll);
 
         WorkingSetID id = WorkingSet::INVALID_ID;
         PlanStage::StageState state;
@@ -165,7 +165,7 @@ public:
         Lock::DBLock lk(&_opCtx, nss().db(), MODE_X);
         OldClientContext ctx(&_opCtx, ns());
         Database* db = ctx.db();
-        Collection* coll = db->getCollection(&_opCtx, nss());
+        Collection* coll = CollectionCatalog::get(&_opCtx).lookupCollectionByNamespace(nss());
         if (!coll) {
             WriteUnitOfWork wuow(&_opCtx);
             coll = db->createCollection(&_opCtx, nss());
@@ -207,8 +207,8 @@ public:
         unique_ptr<MatchExpression> filterExpr = std::move(statusWithMatcher.getValue());
 
         // Matcher requires that foo==6 but we only have data with foo==5.
-        unique_ptr<FetchStage> fetchStage(
-            new FetchStage(&_opCtx, &ws, mockStage.release(), filterExpr.get(), coll));
+        auto fetchStage = std::make_unique<FetchStage>(
+            &_opCtx, &ws, std::move(mockStage), filterExpr.get(), coll);
 
         // First call should return a fetch request as it's not in memory.
         WorkingSetID id = WorkingSet::INVALID_ID;
@@ -224,9 +224,9 @@ public:
     }
 };
 
-class All : public Suite {
+class All : public OldStyleSuiteSpecification {
 public:
-    All() : Suite("query_stage_fetch") {}
+    All() : OldStyleSuiteSpecification("query_stage_fetch") {}
 
     void setupTests() {
         add<FetchStageAlreadyFetched>();
@@ -234,6 +234,6 @@ public:
     }
 };
 
-SuiteInstance<All> queryStageFetchAll;
+OldStyleSuiteInitializer<All> queryStageFetchAll;
 
 }  // namespace QueryStageFetch

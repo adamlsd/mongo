@@ -40,7 +40,7 @@
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/kv/kv_prefix.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/mutex.h"
 #include "mongo/util/debug_util.h"
 
 namespace mongo {
@@ -63,6 +63,8 @@ public:
     virtual const NamespaceString& ns() const = 0;
 
     virtual void init(std::unique_ptr<IndexAccessMethod> accessMethod) = 0;
+
+    virtual const std::string& getIdent() const = 0;
 
     virtual IndexDescriptor* descriptor() = 0;
 
@@ -89,6 +91,9 @@ public:
     /// ---------------------
 
     virtual void setIsReady(const bool newIsReady) = 0;
+
+    virtual void setDropped() = 0;
+    virtual bool isDropped() const = 0;
 
     // --
 

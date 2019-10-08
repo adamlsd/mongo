@@ -58,7 +58,6 @@ const char QueryRequest::queryOptionMaxTimeMS[] = "$maxTimeMS";
 
 const string QueryRequest::metaGeoNearDistance("geoNearDistance");
 const string QueryRequest::metaGeoNearPoint("geoNearPoint");
-const string QueryRequest::metaIndexKey("indexKey");
 const string QueryRequest::metaRecordId("recordId");
 const string QueryRequest::metaSortKey("sortKey");
 const string QueryRequest::metaTextScore("textScore");
@@ -91,7 +90,6 @@ const char kLimitField[] = "limit";
 const char kBatchSizeField[] = "batchSize";
 const char kNToReturnField[] = "ntoreturn";
 const char kSingleBatchField[] = "singleBatch";
-const char kCommentField[] = "comment";
 const char kMaxField[] = "max";
 const char kMinField[] = "min";
 const char kReturnKeyField[] = "returnKey";
@@ -265,23 +263,12 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::parseFromFindCommand(unique_p
 
             qr->_wantMore = !el.boolean();
         } else if (fieldName == kAllowDiskUseField) {
-            if (!getTestCommandsEnabled()) {
-                return Status(ErrorCodes::FailedToParse,
-                              "allowDiskUse is not allowed unless test commands are enabled.");
-            }
             Status status = checkFieldType(el, Bool);
             if (!status.isOK()) {
                 return status;
             }
 
             qr->_allowDiskUse = el.boolean();
-        } else if (fieldName == kCommentField) {
-            Status status = checkFieldType(el, String);
-            if (!status.isOK()) {
-                return status;
-            }
-
-            qr->_comment = el.str();
         } else if (fieldName == cmdOptionMaxTimeMS) {
             StatusWith<int> maxTimeMS = parseMaxTimeMS(el);
             if (!maxTimeMS.isOK()) {
@@ -518,10 +505,6 @@ void QueryRequest::asFindCommandInternal(BSONObjBuilder* cmdBuilder) const {
         cmdBuilder->append(kSingleBatchField, true);
     }
 
-    if (!_comment.empty()) {
-        cmdBuilder->append(kCommentField, _comment);
-    }
-
     if (_maxTimeMS > 0) {
         cmdBuilder->append(cmdOptionMaxTimeMS, _maxTimeMS);
     }
@@ -592,17 +575,12 @@ void QueryRequest::asFindCommandInternal(BSONObjBuilder* cmdBuilder) const {
     }
 }
 
-void QueryRequest::addReturnKeyMetaProj() {
-    BSONObjBuilder projBob;
-    projBob.appendElements(_proj);
-    // We use $$ because it's never going to show up in a user's projection.
-    // The exact text doesn't matter.
-    BSONObj indexKey = BSON("$$" << BSON("$meta" << QueryRequest::metaIndexKey));
-    projBob.append(indexKey.firstElement());
-    _proj = projBob.obj();
-}
-
 void QueryRequest::addShowRecordIdMetaProj() {
+    if (_proj["$recordId"]) {
+        // There's already some projection on $recordId. Don't overwrite it.
+        return;
+    }
+
     BSONObjBuilder projBob;
     projBob.appendElements(_proj);
     BSONObj metaRecordId = BSON("$recordId" << BSON("$meta" << QueryRequest::metaRecordId));
@@ -937,7 +915,6 @@ Status QueryRequest::initFullQuery(const BSONObj& top) {
                 // Won't throw.
                 if (e.trueValue()) {
                     _returnKey = true;
-                    addReturnKeyMetaProj();
                 }
             } else if (name == "showDiskLoc") {
                 // Won't throw.
@@ -951,14 +928,6 @@ Status QueryRequest::initFullQuery(const BSONObj& top) {
                     return maxTimeMS.getStatus();
                 }
                 _maxTimeMS = maxTimeMS.getValue();
-            } else if (name == "comment") {
-                // Legacy $comment can be any BSON element. Convert to string if it isn't
-                // already.
-                if (e.type() == BSONType::String) {
-                    _comment = e.str();
-                } else {
-                    _comment = e.toString(false);
-                }
             }
         }
     }
@@ -1004,11 +973,6 @@ void QueryRequest::initFromInt(int options) {
 }
 
 void QueryRequest::addMetaProjection() {
-    // We might need to update the projection object with a $meta projection.
-    if (returnKey()) {
-        addReturnKeyMetaProj();
-    }
-
     if (showRecordId()) {
         addShowRecordIdMetaProj();
     }
@@ -1137,9 +1101,6 @@ StatusWith<BSONObj> QueryRequest::asAggregationCommand() const {
     }
     if (!_hint.isEmpty()) {
         aggregationBuilder.append("hint", _hint);
-    }
-    if (!_comment.empty()) {
-        aggregationBuilder.append("comment", _comment);
     }
     if (!_readConcern.isEmpty()) {
         aggregationBuilder.append("readConcern", _readConcern);

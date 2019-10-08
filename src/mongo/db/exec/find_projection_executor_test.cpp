@@ -29,9 +29,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/exec/document_value/document_value_test_util.h"
 #include "mongo/db/exec/find_projection_executor.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
@@ -39,38 +39,42 @@
 namespace mongo {
 namespace projection_executor {
 namespace positional_projection_tests {
-auto applyPositional(const BSONObj& match,
+/**
+ * Applies a find()-style positional projection at the given 'path' using 'matchSpec' to create
+ * a 'MatchExpression' to match an element on the first array in the 'path'. If no value for
+ * 'postImage' is provided, then the post-image used will be the value passed for the 'preImage'.
+ */
+auto applyPositional(const BSONObj& matchSpec,
                      const std::string& path,
-                     const Document& input,
-                     const Document& output = {}) {
-    MutableDocument doc(output);
+                     const Document& preImage,
+                     boost::optional<Document> postImage = boost::none) {
     boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto matchExpr = uassertStatusOK(MatchExpressionParser::parse(match, expCtx));
-    projection_executor::applyPositionalProjection(input, *matchExpr, path, &doc);
-    return doc.freeze();
+    auto matchExpr = uassertStatusOK(MatchExpressionParser::parse(matchSpec, expCtx));
+    return projection_executor::applyPositionalProjection(
+        preImage, postImage.value_or(preImage), *matchExpr, path);
 }
 
 TEST(PositionalProjection, CorrectlyProjectsSimplePath) {
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{foo: [6]}")},
+    ASSERT_DOCUMENT_EQ(Document{fromjson("{bar: 1, foo: [6]}")},
                        applyPositional(fromjson("{bar: 1, foo: {$gte: 5}}"),
                                        "foo",
                                        Document{fromjson("{bar: 1, foo: [1,2,6,10]}")}));
 }
 
 TEST(PositionalProjection, CorrectlyProjectsDottedPath) {
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{x: {y: [6]}}")},
+    ASSERT_DOCUMENT_EQ(Document{fromjson("{a: 1, x: {y: [6]}}")},
                        applyPositional(fromjson("{a: 1, 'x.y': {$gte: 5}}"),
                                        "x.y",
                                        Document{fromjson("{a: 1, x: {y: [1,2,6,10]}}")}));
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{x: {y: {z: [6]}}}")},
+    ASSERT_DOCUMENT_EQ(Document{fromjson("{a: 1, x: {y: {z: [6]}}}")},
                        applyPositional(fromjson("{a: 1, 'x.y.z': {$gte: 5}}"),
                                        "x.y.z",
                                        Document{fromjson("{a: 1, x: {y: {z: [1,2,6,10]}}}")}));
 }
 
-TEST(PositionalProjection, ProjectsAsEmptyValueIfFieldIsNotArray) {
-    ASSERT_DOCUMENT_EQ(
-        {}, applyPositional(fromjson("{foo: 3}"), "foo", Document{fromjson("{foo: 3}")}));
+TEST(PositionalProjection, ProjectsValueUnmodifiedIfFieldIsNotArray) {
+    auto doc = Document{fromjson("{foo: 3}")};
+    ASSERT_DOCUMENT_EQ(doc, applyPositional(fromjson("{foo: 3}"), "foo", doc));
 }
 
 TEST(PositionalProjection, FailsToProjectPositionalPathComponentsForNestedArrays) {
@@ -111,101 +115,105 @@ TEST(PositionalProjection, FailsToProjectWithMultipleConditionsOnArray) {
 TEST(PositionalProjection, CanMergeWithExistingFieldsInOutputDocument) {
     auto doc = Document{fromjson("{foo: {bar: [1,2,6,10]}}")};
     ASSERT_DOCUMENT_EQ(Document{fromjson("{foo: {bar: [6]}}")},
-                       applyPositional(fromjson("{'foo.bar': {$gte: 5}}"), "foo.bar", doc, doc));
+                       applyPositional(fromjson("{'foo.bar': {$gte: 5}}"), "foo.bar", doc));
 
     doc = Document{fromjson("{bar: 1, foo: {bar: [1,2,6,10]}}")};
-    ASSERT_DOCUMENT_EQ(
-        Document{fromjson("{bar: 1, foo: {bar: [6]}}")},
-        applyPositional(fromjson("{bar: 1, 'foo.bar': {$gte: 5}}"), "foo.bar", doc, doc));
+    ASSERT_DOCUMENT_EQ(Document{fromjson("{bar: 1, foo: {bar: [6]}}")},
+                       applyPositional(fromjson("{bar: 1, 'foo.bar': {$gte: 5}}"), "foo.bar", doc));
 
     doc = Document{fromjson("{bar: 1, foo: 3}")};
-    ASSERT_DOCUMENT_EQ(doc, applyPositional(fromjson("{foo: 3}"), "foo", doc, doc));
+    ASSERT_DOCUMENT_EQ(doc, applyPositional(fromjson("{foo: 3}"), "foo", doc));
+}
+
+TEST(PositionalProjection, AppliesMatchExpressionToPreImageAndStoresResultInPostImage) {
+    auto preImage = Document{fromjson("{foo: 1, bar: [1,2,6,10]}")};
+    auto postImage = Document{fromjson("{bar: [1,2,6,10]}")};
+    ASSERT_DOCUMENT_EQ(Document{fromjson("{bar: [6]}")},
+                       applyPositional(fromjson("{foo: 1, bar: 6}"), "bar", preImage, postImage));
 }
 }  // namespace positional_projection_tests
 
 namespace elem_match_projection_tests {
-auto applyElemMatch(const BSONObj& match,
-                    const std::string& path,
-                    const Document& input,
-                    const Document& output = {}) {
-    MutableDocument doc(output);
+auto applyElemMatch(const BSONObj& match, const std::string& path, const Document& input) {
     boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     auto matchObj = BSON(path << BSON("$elemMatch" << match));
     auto matchExpr = uassertStatusOK(MatchExpressionParser::parse(matchObj, expCtx));
-    projection_executor::applyElemMatchProjection(input, *matchExpr, path, &doc);
-    return doc.freeze();
+    return projection_executor::applyElemMatchProjection(input, *matchExpr, path);
 }
 
 TEST(ElemMatchProjection, CorrectlyProjectsNonObjectElement) {
-    ASSERT_DOCUMENT_EQ(
-        Document{fromjson("{foo: [4]}")},
+    ASSERT_VALUE_EQ(
+        Document{fromjson("{foo: [4]}")}["foo"],
         applyElemMatch(fromjson("{$in: [4]}"), "foo", Document{fromjson("{foo: [1,2,3,4]}")}));
-    ASSERT_DOCUMENT_EQ(
-        Document{fromjson("{foo: [4]}")},
+    ASSERT_VALUE_EQ(
+        Document{fromjson("{foo: [4]}")}["foo"],
         applyElemMatch(fromjson("{$nin: [1,2,3]}"), "foo", Document{fromjson("{foo: [1,2,3,4]}")}));
 }
 
 TEST(ElemMatchProjection, CorrectlyProjectsObjectElement) {
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{foo: [{bar: 6, z: 6}]}")},
-                       applyElemMatch(fromjson("{bar: {$gte: 5}}"),
-                                      "foo",
-                                      Document{fromjson("{foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
-                                                        "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
+    ASSERT_VALUE_EQ(Document{fromjson("{foo: [{bar: 6, z: 6}]}")}["foo"],
+                    applyElemMatch(fromjson("{bar: {$gte: 5}}"),
+                                   "foo",
+                                   Document{fromjson("{foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
+                                                     "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
 }
 
 TEST(ElemMatchProjection, CorrectlyProjectsArrayElement) {
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{foo: [[3,4]]}")},
-                       applyElemMatch(fromjson("{$gt: [1,2]}"),
-                                      "foo",
-                                      Document{fromjson("{foo: [[1,2], [3,4]]}")}));
+    ASSERT_VALUE_EQ(Document{fromjson("{foo: [[3,4]]}")}["foo"],
+                    applyElemMatch(fromjson("{$gt: [1,2]}"),
+                                   "foo",
+                                   Document{fromjson("{foo: [[1,2], [3,4]]}")}));
 }
 
 TEST(ElemMatchProjection, ProjectsAsEmptyDocumentIfInputIsEmpty) {
-    ASSERT_DOCUMENT_EQ({}, applyElemMatch(fromjson("{bar: {$gte: 5}}"), "foo", {}));
+    ASSERT_VALUE_EQ({}, applyElemMatch(fromjson("{bar: {$gte: 5}}"), "foo", {}));
 }
 
 TEST(ElemMatchProjection, RemovesFieldFromOutputDocumentIfUnableToMatchArrayElement) {
-    ASSERT_DOCUMENT_EQ({},
-                       applyElemMatch(fromjson("{bar: {$gte: 5}}"),
-                                      "foo",
-                                      Document{fromjson("{foo: [{bar: 1, z: 1}, "
-                                                        "{bar: 2, z: 2}]}")}));
-    auto doc =
-        Document{fromjson("{bar: 1, foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
-                          "{bar: 6, z: 6}, {bar: 10, z: 10}]}")};
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{bar:1}")},
-                       applyElemMatch(fromjson("{bar: {$gte: 20}}"), "foo", doc, doc));
+    ASSERT_VALUE_EQ({},
+                    applyElemMatch(fromjson("{bar: {$gte: 5}}"),
+                                   "foo",
+                                   Document{fromjson("{foo: [{bar: 1, z: 1}, "
+                                                     "{bar: 2, z: 2}]}")}));
+    ASSERT_VALUE_EQ(
+        {},
+        applyElemMatch(fromjson("{bar: {$gte: 20}}"),
+                       "foo",
+                       Document{fromjson("{bar: 1, foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
+                                         "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
 }
 
 TEST(ElemMatchProjection, CorrectlyProjectsWithMultipleCriteriaInMatchExpression) {
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{foo: [{bar: 2, z: 2}]}")},
-                       applyElemMatch(fromjson("{bar: {$gt: 1, $lt: 6}}"),
-                                      "foo",
-                                      Document{fromjson("{foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
-                                                        "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
+    ASSERT_VALUE_EQ(Document{fromjson("{foo: [{bar: 2, z: 2}]}")}["foo"],
+                    applyElemMatch(fromjson("{bar: {$gt: 1, $lt: 6}}"),
+                                   "foo",
+                                   Document{fromjson("{foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
+                                                     "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
 }
 
-TEST(ElemMatchProjection, CanMergeWithExistingFieldsInOutputDocument) {
-    auto doc =
-        Document{fromjson("{foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
-                          "{bar: 6, z: 6}, {bar: 10, z: 10}]}")};
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{foo: [{bar: 6, z: 6}]}")},
-                       applyElemMatch(fromjson("{bar: {$gte: 5}}"), "foo", doc, doc));
+TEST(ElemMatchProjection, CanMergeWithExistingFieldsInInputDocument) {
+    ASSERT_VALUE_EQ(Document{fromjson("{foo: [{bar: 6, z: 6}]}")}["foo"],
+                    applyElemMatch(fromjson("{bar: {$gte: 5}}"),
+                                   "foo",
+                                   Document{fromjson("{foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
+                                                     "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
 
-    doc =
-        Document{fromjson("{bar: 1, foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
-                          "{bar: 6, z: 6}, {bar: 10, z: 10}]}")};
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{bar:1, foo: [{bar: 6, z: 6}]}")},
-                       applyElemMatch(fromjson("{bar: {$gte: 5}}"), "foo", doc, doc));
+    ASSERT_VALUE_EQ(
+        Document{fromjson("{foo: [{bar: 6, z: 6}]}")}["foo"],
+        applyElemMatch(fromjson("{bar: {$gte: 5}}"),
+                       "foo",
+                       Document{fromjson("{bar: 1, foo: [{bar: 1, z: 1}, {bar: 2, z: 2}, "
+                                         "{bar: 6, z: 6}, {bar: 10, z: 10}]}")}));
 }
 
-TEST(ElemMatchProjection, RemovesFieldFromOutputDocumentIfItContainsNumericSubfield) {
-    auto doc = Document{BSON("foo" << BSON(0 << 3))};
-    ASSERT_DOCUMENT_EQ({}, applyElemMatch(fromjson("{$gt: 2}"), "foo", doc));
+TEST(ElemMatchProjection, RertursEmptyValuefItContainsNumericSubfield) {
+    ASSERT_VALUE_EQ(
+        {}, applyElemMatch(fromjson("{$gt: 2}"), "foo", Document{BSON("foo" << BSON(0 << 3))}));
 
-    doc = Document{BSON("bar" << 1 << "foo" << BSON(0 << 3))};
-    ASSERT_DOCUMENT_EQ(Document{fromjson("{bar: 1}")},
-                       applyElemMatch(fromjson("{$gt: 2}"), "foo", doc, doc));
+    ASSERT_VALUE_EQ({},
+                    applyElemMatch(fromjson("{$gt: 2}"),
+                                   "foo",
+                                   Document{BSON("bar" << 1 << "foo" << BSON(0 << 3))}));
 }
 }  // namespace elem_match_projection_tests
 

@@ -84,7 +84,7 @@ TEST(OpMsg, FireAndForgetInsertWorks) {
         ]
     })")));
 
-    ASSERT_EQ(conn->count("test.collection"), 1u);
+    ASSERT_EQ(conn->count(NamespaceString("test.collection")), 1u);
 }
 
 TEST(OpMsg, DocumentSequenceLargeDocumentMultiInsertWorks) {
@@ -117,7 +117,7 @@ TEST(OpMsg, DocumentSequenceLargeDocumentMultiInsertWorks) {
     Message reply;
     ASSERT_TRUE(conn->call(request, reply, false));
 
-    ASSERT_EQ(conn->count("test.collection"), 3u);
+    ASSERT_EQ(conn->count(NamespaceString("test.collection")), 3u);
     conn->dropCollection("test.collection");
 }
 
@@ -153,7 +153,7 @@ TEST(OpMsg, DocumentSequenceMaxWriteBatchWorks) {
     Message reply;
     ASSERT_TRUE(conn->call(request, reply, false));
 
-    ASSERT_EQ(conn->count("test.collection"), write_ops::kMaxWriteBatchSize);
+    ASSERT_EQ(conn->count(NamespaceString("test.collection")), write_ops::kMaxWriteBatchSize);
     conn->dropCollection("test.collection");
 }
 
@@ -279,12 +279,12 @@ TEST(OpMsg, DocumentSequenceReturnsWork) {
 constexpr auto kDisableChecksum = "dbClientConnectionDisableChecksum";
 
 void disableClientChecksum() {
-    auto failPoint = getGlobalFailPointRegistry()->getFailPoint(kDisableChecksum);
+    auto failPoint = globalFailPointRegistry().find(kDisableChecksum);
     failPoint->setMode(FailPoint::alwaysOn);
 }
 
 void enableClientChecksum() {
-    auto failPoint = getGlobalFailPointRegistry()->getFailPoint(kDisableChecksum);
+    auto failPoint = globalFailPointRegistry().find(kDisableChecksum);
     failPoint->setMode(FailPoint::off);
 }
 
@@ -407,7 +407,7 @@ TEST(OpMsg, ExhaustWithDBClientCursorBehavesCorrectly) {
         conn->insert(nss.toString(), doc, 0);
     }
 
-    ASSERT_EQ(conn->count(nss.toString()), size_t(nDocs));
+    ASSERT_EQ(conn->count(nss), size_t(nDocs));
     unittest::log() << "Finished document insertion.";
 
     // Open an exhaust cursor.

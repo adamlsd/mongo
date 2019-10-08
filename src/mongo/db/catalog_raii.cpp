@@ -35,7 +35,7 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/s/database_sharding_state.h"
 #include "mongo/db/views/view_catalog.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 
 namespace mongo {
 namespace {
@@ -73,10 +73,8 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
     _resolvedNss = CollectionCatalog::get(opCtx).resolveNamespaceStringOrUUID(nsOrUUID);
 
     // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
-    MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
-        const BSONObj& data = customWait.getData();
-        sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
-    }
+    setAutoGetCollectionWait.execute(
+        [&](const BSONObj& data) { sleepFor(Milliseconds(data["waitForMillis"].numberInt())); });
 
     Database* const db = _autoDb.getDb();
     invariant(!nsOrUUID.uuid() || db,
@@ -97,7 +95,7 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
     if (!db)
         return;
 
-    _coll = db->getCollection(opCtx, _resolvedNss);
+    _coll = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(_resolvedNss);
     invariant(!nsOrUUID.uuid() || _coll,
               str::stream() << "Collection for " << _resolvedNss.ns()
                             << " disappeared after successufully resolving "

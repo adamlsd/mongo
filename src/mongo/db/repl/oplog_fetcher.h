@@ -39,12 +39,12 @@
 #include "mongo/db/repl/abstract_oplog_fetcher.h"
 #include "mongo/db/repl/data_replicator_external_state.h"
 #include "mongo/db/repl/repl_set_config.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 
 namespace mongo {
 namespace repl {
 
-MONGO_FAIL_POINT_DECLARE(stopReplProducer);
+extern FailPoint stopReplProducer;
 
 /**
  * The oplog fetcher, once started, reads operations from a remote oplog using a tailable cursor.

@@ -35,7 +35,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/refine_collection_shard_key_gen.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -58,10 +58,9 @@ public:
                 Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
                                                                                              nss));
 
-            if (MONGO_FAIL_POINT(hangRefineCollectionShardKeyAfterRefresh)) {
+            if (MONGO_unlikely(hangRefineCollectionShardKeyAfterRefresh.shouldFail())) {
                 log() << "Hit hangRefineCollectionShardKeyAfterRefresh failpoint";
-                MONGO_FAIL_POINT_PAUSE_WHILE_SET_OR_INTERRUPTED(
-                    opCtx, hangRefineCollectionShardKeyAfterRefresh);
+                hangRefineCollectionShardKeyAfterRefresh.pauseWhileSet(opCtx);
             }
 
             ConfigsvrRefineCollectionShardKey configsvrRefineCollShardKey(

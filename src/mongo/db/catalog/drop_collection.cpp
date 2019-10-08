@@ -44,7 +44,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/views/view_catalog.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -59,18 +59,23 @@ Status _dropView(OperationContext* opCtx,
     if (!db) {
         return Status(ErrorCodes::NamespaceNotFound, "ns not found");
     }
-    auto view = ViewCatalog::get(db)->lookup(opCtx, collectionName.ns());
+    auto view =
+        ViewCatalog::get(db)->lookupWithoutValidatingDurableViews(opCtx, collectionName.ns());
     if (!view) {
         return Status(ErrorCodes::NamespaceNotFound, "ns not found");
     }
+
+    // Validates the view or throws an "invalid view" error.
+    ViewCatalog::get(db)->lookup(opCtx, collectionName.ns());
+
     Lock::CollectionLock collLock(opCtx, collectionName, MODE_IX);
     // Operations all lock system.views in the end to prevent deadlock.
     Lock::CollectionLock systemViewsLock(opCtx, db->getSystemViewsName(), MODE_X);
 
-    if (MONGO_FAIL_POINT(hangDuringDropCollection)) {
+    if (MONGO_unlikely(hangDuringDropCollection.shouldFail())) {
         log() << "hangDuringDropCollection fail point enabled. Blocking until fail point is "
                  "disabled.";
-        MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangDuringDropCollection);
+        hangDuringDropCollection.pauseWhileSet();
     }
 
     AutoStatsTracker statsTracker(opCtx,
@@ -103,15 +108,15 @@ Status _dropCollection(OperationContext* opCtx,
                        DropCollectionSystemCollectionMode systemCollectionMode,
                        BSONObjBuilder& result) {
     Lock::CollectionLock collLock(opCtx, collectionName, MODE_X);
-    Collection* coll = db->getCollection(opCtx, collectionName);
+    Collection* coll = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(collectionName);
     if (!coll) {
         return Status(ErrorCodes::NamespaceNotFound, "ns not found");
     }
 
-    if (MONGO_FAIL_POINT(hangDuringDropCollection)) {
+    if (MONGO_unlikely(hangDuringDropCollection.shouldFail())) {
         log() << "hangDuringDropCollection fail point enabled. Blocking until fail point is "
                  "disabled.";
-        MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangDuringDropCollection);
+        hangDuringDropCollection.pauseWhileSet();
     }
 
     AutoStatsTracker statsTracker(opCtx,
@@ -156,9 +161,9 @@ Status dropCollection(OperationContext* opCtx,
         log() << "CMD: drop " << collectionName;
     }
 
-    if (MONGO_FAIL_POINT(hangDropCollectionBeforeLockAcquisition)) {
+    if (MONGO_unlikely(hangDropCollectionBeforeLockAcquisition.shouldFail())) {
         log() << "Hanging drop collection before lock acquisition while fail point is set";
-        MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangDropCollectionBeforeLockAcquisition);
+        hangDropCollectionBeforeLockAcquisition.pauseWhileSet();
     }
     return writeConflictRetry(opCtx, "drop", collectionName.ns(), [&] {
         AutoGetDb autoDb(opCtx, collectionName.db(), MODE_IX);
@@ -167,7 +172,8 @@ Status dropCollection(OperationContext* opCtx,
             return Status(ErrorCodes::NamespaceNotFound, "ns not found");
         }
 
-        Collection* coll = db->getCollection(opCtx, collectionName);
+        Collection* coll =
+            CollectionCatalog::get(opCtx).lookupCollectionByNamespace(collectionName);
         if (!coll) {
             return _dropView(opCtx, db, collectionName, result);
         } else {

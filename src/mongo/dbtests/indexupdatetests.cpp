@@ -76,7 +76,9 @@ protected:
         try {
             MultiIndexBlock indexer;
 
-            ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(&_opCtx, collection()); });
+            ON_BLOCK_EXIT([&] {
+                indexer.cleanUpAfterBuild(&_opCtx, collection(), MultiIndexBlock::kNoopOnCleanUpFn);
+            });
 
             uassertStatusOK(
                 indexer.init(&_opCtx, collection(), key, MultiIndexBlock::kNoopOnInitFn));
@@ -138,7 +140,8 @@ public:
                                   << static_cast<int>(kIndexVersion) << "unique" << true
                                   << "background" << background);
 
-        ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(&_opCtx, coll); });
+        ON_BLOCK_EXIT(
+            [&] { indexer.cleanUpAfterBuild(&_opCtx, coll, MultiIndexBlock::kNoopOnCleanUpFn); });
 
         ASSERT_OK(indexer.init(&_opCtx, coll, spec, MultiIndexBlock::kNoopOnInitFn).getStatus());
         ASSERT_OK(indexer.insertAllDocumentsInCollection(&_opCtx, coll));
@@ -186,7 +189,8 @@ public:
                                   << static_cast<int>(kIndexVersion) << "unique" << true
                                   << "background" << background);
 
-        ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(&_opCtx, coll); });
+        ON_BLOCK_EXIT(
+            [&] { indexer.cleanUpAfterBuild(&_opCtx, coll, MultiIndexBlock::kNoopOnCleanUpFn); });
 
         ASSERT_OK(indexer.init(&_opCtx, coll, spec, MultiIndexBlock::kNoopOnInitFn).getStatus());
 
@@ -282,7 +286,9 @@ public:
 
 Status IndexBuildBase::createIndex(const std::string& dbname, const BSONObj& indexSpec) {
     MultiIndexBlock indexer;
-    ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(&_opCtx, collection()); });
+    ON_BLOCK_EXIT([&] {
+        indexer.cleanUpAfterBuild(&_opCtx, collection(), MultiIndexBlock::kNoopOnCleanUpFn);
+    });
     Status status =
         indexer.init(&_opCtx, collection(), indexSpec, MultiIndexBlock::kNoopOnInitFn).getStatus();
     if (status == ErrorCodes::IndexAlreadyExists) {
@@ -532,7 +538,7 @@ public:
         client.insert(_ns, BSON("a" << BSONSymbol("mySymbol")));
         ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
                       ErrorCodes::CannotBuildIndexKeys);
-        ASSERT_EQUALS(client.count(_ns), 0U);
+        ASSERT_EQUALS(client.count(_nss), 0U);
     }
 };
 
@@ -547,7 +553,7 @@ public:
         client.createIndex(_ns, indexSpec);
         client.insert(_ns, BSON("a" << BSONSymbol("mySymbol")));
         ASSERT(client.getLastError().empty());
-        ASSERT_EQUALS(client.count(_ns), 1U);
+        ASSERT_EQUALS(client.count(_nss), 1U);
     }
 };
 
@@ -564,7 +570,7 @@ public:
         client.insert(_ns, BSON("a" << BSON("b" << 99 << "c" << BSONSymbol("mySymbol"))));
         ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
                       ErrorCodes::CannotBuildIndexKeys);
-        ASSERT_EQUALS(client.count(_ns), 0U);
+        ASSERT_EQUALS(client.count(_nss), 0U);
     }
 };
 
@@ -581,7 +587,7 @@ public:
         client.insert(_ns, BSON("a" << BSON_ARRAY(99 << BSONSymbol("mySymbol"))));
         ASSERT_EQUALS(client.getLastErrorDetailed()["code"].numberInt(),
                       ErrorCodes::CannotBuildIndexKeys);
-        ASSERT_EQUALS(client.count(_ns), 0U);
+        ASSERT_EQUALS(client.count(_nss), 0U);
     }
 };
 
@@ -592,7 +598,7 @@ public:
         DBDirectClient client(opCtx.get());
         client.dropCollection(_ns);
         client.insert(_ns, BSON("a" << BSON_ARRAY(99 << BSONSymbol("mySymbol"))));
-        ASSERT_EQUALS(client.count(_ns), 1U);
+        ASSERT_EQUALS(client.count(_nss), 1U);
         IndexSpec indexSpec;
         indexSpec.addKey("a").addOptions(BSON("collation" << BSON("locale"
                                                                   << "fr")));
@@ -625,21 +631,32 @@ public:
     }
 };
 
-class IndexUpdateTests : public Suite {
+class IndexUpdateTests : public OldStyleSuiteSpecification {
 public:
-    IndexUpdateTests() : Suite("indexupdate") {}
+    IndexUpdateTests() : OldStyleSuiteSpecification("indexupdate") {}
+
+    // Must be evaluated at test run() time, not static-init time.
+    static bool shouldSkip() {
+        return mongo::storageGlobalParams.engine == "mobile";
+    }
+
+    template <typename T>
+    void addIf() {
+        addNameCallback(nameForTestClass<T>(), [] {
+            if (!shouldSkip())
+                T().run();
+        });
+    }
 
     void setupTests() {
+        // These tests check that index creation ignores the unique constraint when told to.
+        // The mobile storage engine does not support duplicate keys in unique indexes so these
+        // tests are disabled.
+        addIf<InsertBuildIgnoreUnique<true>>();
+        addIf<InsertBuildIgnoreUnique<false>>();
+        addIf<InsertBuildEnforceUnique<true>>();
+        addIf<InsertBuildEnforceUnique<false>>();
 
-        if (mongo::storageGlobalParams.engine != "mobile") {
-            // These tests check that index creation ignores the unique constraint when told to.
-            // The mobile storage engine does not support duplicate keys in unique indexes so these
-            // tests are disabled.
-            add<InsertBuildIgnoreUnique<true>>();
-            add<InsertBuildIgnoreUnique<false>>();
-            add<InsertBuildEnforceUnique<true>>();
-            add<InsertBuildEnforceUnique<false>>();
-        }
         add<InsertBuildIndexInterrupt>();
         add<InsertBuildIdIndexInterrupt>();
         add<SameSpecDifferentOption>();
@@ -661,6 +678,8 @@ public:
         add<BuildingIndexWithCollationWhenSymbolDataExistsShouldFail>();
         add<IndexingSymbolWithInheritedCollationShouldFail>();
     }
-} indexUpdateTests;
+};
+
+OldStyleSuiteInitializer<IndexUpdateTests> indexUpdateTests;
 
 }  // namespace IndexUpdateTests

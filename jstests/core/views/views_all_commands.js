@@ -249,6 +249,7 @@ let viewsCommandTests = {
         expectFailure: true
     },
     getCmdLineOpts: {skip: isUnrelated},
+    getDefaultRWConcern: {skip: isUnrelated},
     getDiagnosticData: {skip: isUnrelated},
     getFreeMonitoringStatus: {skip: isUnrelated},
     getLastError: {skip: isUnrelated},
@@ -408,7 +409,6 @@ let viewsCommandTests = {
             skipSharded: true,
         }
     ],
-    repairCursor: {command: {repairCursor: "view"}, expectFailure: true},
     repairDatabase: {skip: isUnrelated},
     replSetAbortPrimaryCatchUp: {skip: isUnrelated},
     replSetFreeze: {skip: isUnrelated},
@@ -448,6 +448,7 @@ let viewsCommandTests = {
     serverStatus: {command: {serverStatus: 1}, skip: isUnrelated},
     setIndexCommitQuorum: {skip: isUnrelated},
     setCommittedSnapshot: {skip: isAnInternalCommand},
+    setDefaultRWConcern: {skip: isUnrelated},
     setFeatureCompatibilityVersion: {skip: isUnrelated},
     setFreeMonitoring: {skip: isUnrelated},
     setParameter: {skip: isUnrelated},
@@ -500,14 +501,6 @@ let viewsCommandTests = {
     startSession: {skip: isAnInternalCommand},
     stopRecordingTraffic: {skip: isUnrelated},
     top: {skip: "tested in views/views_stats.js"},
-    touch: {
-        command: {touch: "view", data: true},
-        expectFailure: true,
-    },
-    twoPhaseCreateIndexes: {
-        command: {twoPhaseCreateIndexes: "view", indexes: [{key: {x: 1}, name: "x_1"}]},
-        expectFailure: true,
-    },
     unsetSharding: {skip: isAnInternalCommand},
     update: {command: {update: "view", updates: [{q: {x: 1}, u: {x: 2}}]}, expectFailure: true},
     updateRole: {
@@ -531,7 +524,8 @@ let viewsCommandTests = {
     voteCommitIndexBuild: {skip: isUnrelated},
     voteCommitTransaction: {skip: isUnrelated},
     voteAbortTransaction: {skip: isUnrelated},
-    whatsmyuri: {skip: isUnrelated}
+    whatsmyuri: {skip: isUnrelated},
+    whatsmysni: {skip: isUnrelated}
 };
 
 /**

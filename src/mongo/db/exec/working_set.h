@@ -32,9 +32,9 @@
 #include "boost/optional.hpp"
 #include <vector>
 
+#include "mongo/db/exec/document_value/document.h"
+#include "mongo/db/exec/document_value/document_metadata_fields.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/pipeline/document.h"
-#include "mongo/db/pipeline/document_metadata_fields.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/snapshot.h"
 #include "mongo/stdx/unordered_set.h"
@@ -47,13 +47,22 @@ class WorkingSetMember;
 typedef size_t WorkingSetID;
 
 /**
+ * A type used to identify indexes that have been registered with the WorkingSet. A WorkingSetMember
+ * can be associated with a particular index via this id.
+ */
+using WorkingSetRegisteredIndexId = unsigned int;
+
+/**
  * The key data extracted from an index.  Keeps track of both the key (currently a BSONObj) and
  * the index that provided the key.  The index key pattern is required to correctly interpret
  * the key.
  */
 struct IndexKeyDatum {
-    IndexKeyDatum(const BSONObj& keyPattern, const BSONObj& key, const IndexAccessMethod* index)
-        : indexKeyPattern(keyPattern), keyData(key), index(index) {}
+    IndexKeyDatum(const BSONObj& keyPattern,
+                  const BSONObj& key,
+                  WorkingSetRegisteredIndexId indexId,
+                  SnapshotId snapshotId)
+        : indexKeyPattern(keyPattern), keyData(key), indexId(indexId), snapshotId(snapshotId) {}
 
     /**
      * getFieldDotted produces the field with the provided name based on index keyData. The return
@@ -84,7 +93,12 @@ struct IndexKeyDatum {
     // This is the BSONObj for the key that we put into the index.  Owned by us.
     BSONObj keyData;
 
-    const IndexAccessMethod* index;
+    // Associates this index key with an index that has been registered with the WorkingSet. Can be
+    // used to recover pointers to catalog objects for this index from the WorkingSet.
+    WorkingSetRegisteredIndexId indexId;
+
+    // Identifies the storage engine snapshot from which this index key was obtained.
+    SnapshotId snapshotId;
 };
 
 /**
@@ -98,11 +112,6 @@ struct IndexKeyDatum {
  */
 class WorkingSetMember {
 public:
-    /**
-     * Reset to an "empty" state.
-     */
-    void clear();
-
     enum MemberState {
         // Initial state.
         INVALID,
@@ -120,11 +129,22 @@ public:
         OWNED_OBJ,
     };
 
+    struct SorterDeserializeSettings {};
+
+    static WorkingSetMember deserializeForSorter(BufReader& buf, const SorterDeserializeSettings&);
+
+    /**
+     * Reset to an "empty" state.
+     */
+    void clear();
+
     //
     // Member state and state transitions
     //
 
     MemberState getState() const;
+
+    void transitionToRecordIdAndObj();
 
     void transitionToOwnedObj();
 
@@ -135,10 +155,6 @@ public:
     RecordId recordId;
     Snapshotted<Document> doc;
     std::vector<IndexKeyDatum> keyData;
-
-    // True if this WSM has survived a yield in RID_AND_IDX state.
-    // TODO consider replacing by tracking SnapshotIds for IndexKeyDatums.
-    bool isSuspicious = false;
 
     bool hasRecordId() const;
     bool hasObj() const;
@@ -207,6 +223,18 @@ public:
      * deallocation of Document/DocumentStorage objects.
      */
     void resetDocument(SnapshotId snapshot, const BSONObj& obj);
+
+    void serializeForSorter(BufBuilder& buf) const;
+
+    int memUsageForSorter() const {
+        return getMemUsage();
+    }
+
+    WorkingSetMember getOwned() const {
+        auto ret = *this;
+        ret.makeObjOwnedIfNeeded();
+        return ret;
+    }
 
 private:
     friend class WorkingSet;
@@ -280,18 +308,36 @@ public:
     void transitionToOwnedObj(WorkingSetID id);
 
     /**
-     * Returns the list of working set ids that have transitioned into the RID_AND_IDX state since
-     * the last yield. The members corresponding to these ids may have since transitioned to a
-     * different state or been freed, so these cases must be handled by the caller. The list may
-     * also contain duplicates.
-     *
-     * Execution stages are *not* responsible for managing this list, as working set ids are added
-     * to the set automatically by WorkingSet::transitionToRecordIdAndIdx().
-     *
-     * As a side effect, calling this method clears the list of flagged yield sensitive ids kept by
-     * the working set.
+     * Registers an IndexAccessMethod pointer with the WorkingSet, and returns a handle that can be
+     * used to recover the IndexAccessMethod.
      */
-    std::vector<WorkingSetID> getAndClearYieldSensitiveIds();
+    WorkingSetRegisteredIndexId registerIndexAccessMethod(const IndexAccessMethod* indexAccess);
+
+    /**
+     * Returns the IndexAccessMethod for an index that has previously been registered with the
+     * WorkingSet using 'registerIndexAccessMethod()'.
+     */
+    const IndexAccessMethod* retrieveIndexAccessMethod(WorkingSetRegisteredIndexId indexId) const {
+        return _registeredIndexes[indexId];
+    }
+
+    /**
+     * Returns the WorkingSetMember with the given id after removing it from this WorkingSet. The
+     * WSM can be reinstated in the WorkingSet by calling 'emplace()'.
+     *
+     * WorkingSetMembers typically only temporarily live free of their WorkingSet, so calls to
+     * 'extract()' and 'emplace()' should come in pairs.
+     */
+    WorkingSetMember extract(WorkingSetID);
+
+    /**
+     * Puts the given WorkingSetMember into this WorkingSet. Assigns the WorkingSetMember an id and
+     * returns it. This id can be used later to obtain a pointer to the WSM using 'get()'.
+     *
+     * WorkingSetMembers typically only temporarily live free of their WorkingSet, so calls to
+     * 'extract()' and 'emplace()' should come in pairs.
+     */
+    WorkingSetID emplace(WorkingSetMember&&);
 
 private:
     struct MemberHolder {
@@ -310,8 +356,9 @@ private:
     // If _freeList == INVALID_ID, the free list is empty and all elements in _data are in use.
     WorkingSetID _freeList;
 
-    // Contains ids of WSMs that may need to be adjusted when we next yield.
-    std::vector<WorkingSetID> _yieldSensitiveIds;
+    // Holds IndexAccessMethods that have been registered with 'registerIndexAccessMethod()`. The
+    // WorkingSetRegisteredIndexId is the offset into the vector.
+    std::vector<const IndexAccessMethod*> _registeredIndexes;
 };
 
 }  // namespace mongo

@@ -39,8 +39,8 @@
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/condition_variable.h"
+#include "mongo/platform/mutex.h"
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/transport/service_executor.h"
 #include "mongo/transport/session.h"
@@ -49,6 +49,8 @@
 #include "mongo/util/decorable.h"
 #include "mongo/util/periodic_runner.h"
 #include "mongo/util/tick_source.h"
+
+#include <iostream>
 
 namespace mongo {
 
@@ -163,7 +165,7 @@ public:
         Client* next();
 
     private:
-        stdx::unique_lock<stdx::mutex> _lock;
+        stdx::unique_lock<Latch> _lock;
         ClientSet::const_iterator _curr;
         ClientSet::const_iterator _end;
     };
@@ -508,6 +510,14 @@ public:
      */
     BatonHandle makeBaton(OperationContext* opCtx) const;
 
+    uint64_t getCatalogGeneration() const {
+        return _catalogGeneration.load();
+    }
+
+    void incrementCatalogGeneration() {
+        _catalogGeneration.fetchAndAdd(1);
+    }
+
 private:
     class ClientObserverHolder {
     public:
@@ -530,7 +540,7 @@ private:
         std::unique_ptr<ClientObserver> _observer;
     };
 
-    stdx::mutex _mutex;
+    Mutex _mutex = MONGO_MAKE_LATCH("ServiceContext::_mutex");
 
     /**
      * The periodic runner.
@@ -589,6 +599,9 @@ private:
 
     // Counter for assigning operation ids.
     AtomicWord<unsigned> _nextOpId{1};
+
+    // When the catalog is restarted, the generation goes up by one each time.
+    AtomicWord<uint64_t> _catalogGeneration{0};
 
     bool _startupComplete = false;
     stdx::condition_variable _startupCompleteCondVar;

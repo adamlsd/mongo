@@ -40,15 +40,15 @@
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/json.h"
+#include "mongo/db/exec/document_value/document_value_test_util.h"
+#include "mongo/db/exec/document_value/value_comparator.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/aggregation_request.h"
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/pipeline/document_source_group.h"
 #include "mongo/db/pipeline/document_source_mock.h"
-#include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
-#include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/stdx/unordered_set.h"
@@ -210,20 +210,7 @@ TEST_F(DocumentSourceGroupTest, ShouldReportMultipleFieldGroupKeysAsARename) {
     VariablesParseState vps = expCtx->variablesParseState;
     auto x = ExpressionFieldPath::parse(expCtx, "$x", vps);
     auto y = ExpressionFieldPath::parse(expCtx, "$y", vps);
-    auto groupByExpression = [&]() {
-        std::vector<boost::intrusive_ptr<Expression>> children;
-        std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>> expressions;
-        auto doc = std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>>{{"x", x},
-                                                                                         {"y", y}};
-        for (auto& [unused, expression] : doc)
-            children.push_back(std::move(expression));
-        std::vector<boost::intrusive_ptr<Expression>>::size_type index = 0;
-        for (auto& [fieldName, unused] : doc) {
-            expressions.emplace_back(fieldName, children[index]);
-            ++index;
-        }
-        return ExpressionObject::create(expCtx, std::move(children), std::move(expressions));
-    }();
+    auto groupByExpression = ExpressionObject::create(expCtx, {{"x", x}, {"y", y}});
     auto group = DocumentSourceGroup::create(expCtx, groupByExpression, {});
     auto modifiedPathsRet = group->getModifiedPaths();
     ASSERT(modifiedPathsRet.type == DocumentSource::GetModPathsReturn::Type::kAllExcept);
@@ -867,9 +854,10 @@ public:
     }
 };
 
-class All : public Suite {
+class All : public OldStyleSuiteSpecification {
 public:
-    All() : Suite("DocumentSourceGroupTests") {}
+    All() : OldStyleSuiteSpecification("DocumentSourceGroupTests") {}
+
     void setupTests() {
         add<NonObject>();
         add<EmptySpec>();
@@ -923,7 +911,7 @@ public:
     }
 };
 
-SuiteInstance<All> myall;
+OldStyleSuiteInitializer<All> myall;
 
 }  // namespace
 }  // namespace mongo

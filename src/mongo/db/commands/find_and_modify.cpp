@@ -220,13 +220,6 @@ public:
         return AllowedOnSecondary::kNever;
     }
 
-    bool supportsReadConcern(const std::string& dbName,
-                             const BSONObj& cmdObj,
-                             repl::ReadConcernLevel level) const final {
-        return level == repl::ReadConcernLevel::kLocalReadConcern ||
-            level == repl::ReadConcernLevel::kSnapshotReadConcern;
-    }
-
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
@@ -466,9 +459,13 @@ public:
                     autoDb.emplace(opCtx, dbName, MODE_X);
 
                     assertCanWrite(
-                        opCtx, nsString, autoDb->getDb()->getCollection(opCtx, nsString));
+                        opCtx,
+                        nsString,
+                        CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nsString));
 
-                    collection = autoDb->getDb()->getCollection(opCtx, nsString);
+                    collection =
+                        CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nsString);
+                    ;
 
                     // If someone else beat us to creating the collection, do nothing
                     if (!collection) {
@@ -480,7 +477,8 @@ public:
                             db->userCreateNS(opCtx, nsString, defaultCollectionOptions));
                         wuow.commit();
 
-                        collection = autoDb->getDb()->getCollection(opCtx, nsString);
+                        collection =
+                            CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nsString);
                     }
 
                     invariant(collection);

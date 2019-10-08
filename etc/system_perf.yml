@@ -152,6 +152,7 @@ functions:
           mv mongo${extension|} mongodb/bin
           mv mongod${extension|} mongodb/bin
           mv mongos${extension|} mongodb/bin
+          mv mongocryptd mongodb/bin || /bin/true
           mv src/mongo-tools/* mongodb/bin
           if [ -d jstests/hooks ]
           then
@@ -414,6 +415,16 @@ tasks:
     - func: "run test"
     - func: "analyze"
 
+- name: background_validate_cmd
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "background_validate_cmd"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
 - name: validate_cmd
   priority: 5
   commands:
@@ -497,6 +508,16 @@ tasks:
     - func: "prepare environment"
       vars:
         test: "crud_workloads"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
+- name: crud_workloads_majority
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "crud_workloads_majority"
     - func: "deploy cluster"
     - func: "run test"
     - func: "analyze"
@@ -721,6 +742,16 @@ tasks:
     - func: "run test"
     - func: "analyze"
 
+- name: refine_shard_key_transaction_stress
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "refine_shard_key_transaction_stress"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
 - name: secondary_performance
   priority: 5
   commands:
@@ -835,6 +866,16 @@ tasks:
     - func: "run test"
     - func: "analyze"
 
+- name: parallel_insert
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        test: "parallel_insert"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
 #######################################
 #               Modules               #
 #######################################
@@ -876,63 +917,48 @@ modules:
 #######################################
 buildvariants:
 
-# We are explicitly tracking the Linux 64 Amazon variant compile options from evergreen.yml.  If we can get
+# We are explicitly tracking the Amazon Linux 2 variant compile options from etc/evergreen.yml.  If we can get
 # proper artifacts directly from that project, we should do that and remove these tasks.
-- &compile-linux-64-amzn
-  name: compile-linux-64-amzn
-  display_name: Compile on Linux64 Amazon
+- &compile-amazon2
+  name: compile-amazon2
+  display_name: Compile
+  modules:
+    - enterprise
   batchtime: 1440 # 24 hours
-  expansions: &compile-linux-64-amzn-expansions
-    compile_flags: >-
-      --ssl
-      MONGO_DISTMOD=linux-64-amzn-build
-      -j$(grep -c ^processor /proc/cpuinfo)
-      --release
-      --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
+  expansions: &compile-expansions
     platform: linux
     project_dir: &project_dir dsi
     tooltags: ""
     use_scons_cache: true
-  run_on:
-      - "amazon1-2018-build"
-  tasks:
-    - name: compile
-
-- <<: *compile-linux-64-amzn
-  name: wtdevelop-compile-linux-64-amzn
-  display_name: WT Develop Compile on Linux64 Amazon
-  modules:
-    - wtdevelop
-  expansions:
-    <<: *compile-linux-64-amzn-expansions
-    compile-variant: -wtdevelop
-
-- name: compile-amazon2
-  display_name: Compile on Amazon Linux 2
-  modules:
-    - enterprise
-  batchtime: 1440 # 24 hours
-  expansions:
-    <<: *compile-linux-64-amzn-expansions
     compile_flags: >-
       --ssl
       MONGO_DISTMOD=amazon2
       -j$(grep -c ^processor /proc/cpuinfo)
       --release
       --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
-    compile-variant: -enterprise
+      mongocryptd
   run_on:
       - "amazon2-build"
   tasks:
     - name: compile
 
-- name: compile-rhel70
-  display_name: Compile on Rhel70
+- <<: *compile-amazon2
+  name: wtdevelop-compile-amazon2
+  display_name: WT Develop Compile
   modules:
-    - enterprise
+  - wtdevelop
+  - enterprise
+  expansions:
+    <<: *compile-expansions
+    compile-variant: -wtdevelop
+
+- name: compile-rhel70
+  display_name: Compile for Atlas-like
+  modules:
+  - enterprise
   batchtime: 1440 # 24 hours
   expansions:
-    <<: *compile-linux-64-amzn-expansions
+    <<: *compile-expansions
     compile_flags: >-
       --ssl
       MONGO_DISTMOD=rhel70
@@ -941,16 +967,16 @@ buildvariants:
       --variables-files=etc/scons/mongodbtoolchain_v3_gcc.vars
     compile-variant: -rhel70
   run_on:
-      - rhel70-small
+  - rhel70-small
   tasks:
-    - name: compile
+  - name: compile
 
 #######################################
 #         Linux Buildvariants         #
 #######################################
 - name: linux-1-node-replSet
   display_name: Linux 1-Node ReplSet
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: &modules
     - dsi
     - genny
@@ -967,7 +993,7 @@ buildvariants:
       - "rhel70-perf-single"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks: &1nodetasks
     - name: industry_benchmarks
     - name: ycsb_60GB
@@ -994,6 +1020,7 @@ buildvariants:
     - name: big_update
     - name: create_big_index
     - name: create_index
+    - name: parallel_insert
 
 - name: linux-standalone
   display_name: Linux Standalone
@@ -1010,7 +1037,7 @@ buildvariants:
       - "rhel70-perf-single"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks: &standalonetasks
     - name: industry_benchmarks
     - name: ycsb_60GB
@@ -1032,6 +1059,7 @@ buildvariants:
     - name: bestbuy_query
     - name: big_update
     - name: validate_cmd
+    - name: background_validate_cmd
 
 - name: linux-standalone-audit
   display_name: Linux Standalone Audit
@@ -1044,7 +1072,6 @@ buildvariants:
     project_dir: *project_dir
     authentication: enabled
     storageEngine: wiredTiger
-    compile-variant: -enterprise
   run_on:
       - "rhel70-perf-single"
   depends_on:
@@ -1055,9 +1082,30 @@ buildvariants:
     - name: crud_workloads
     - name: smoke_test
 
+- name: linux-1-node-replSet-fle
+  display_name: Linux 1-Node ReplSet FLE
+  batchtime: 1440 # 24 hours
+  modules: *modules
+  expansions:
+    setup: single-replica-fle
+    cluster: single
+    platform: linux
+    project_dir: *project_dir
+    authentication: enabled
+    fle: enabled
+    storageEngine: wiredTiger
+  run_on:
+      - "rhel70-perf-single"
+  depends_on:
+      - name: compile
+        variant: compile-amazon2
+  tasks: &standalonetasks
+    - name: industry_benchmarks
+    - name: linkbench
+
 - name: linux-1-node-replSet-ese-cbc
   display_name: Linux 1-Node ReplSet ESE CBC
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: single-replica-ese-cbc
@@ -1066,7 +1114,6 @@ buildvariants:
     project_dir: *project_dir
     authentication: enabled
     storageEngine: wiredTiger
-    compile-variant: -enterprise
   run_on:
       - "rhel70-perf-single"
   depends_on:
@@ -1078,7 +1125,7 @@ buildvariants:
 
 - name: linux-1-node-replSet-ese-gcm
   display_name: Linux 1-Node ReplSet ESE GCM
-  batchtime: 1440 # 24 hours
+  batchtime: 10080 # 7 days
   modules: *modules
   expansions:
     setup: single-replica-ese-gcm
@@ -1087,7 +1134,6 @@ buildvariants:
     project_dir: *project_dir
     authentication: enabled
     storageEngine: wiredTiger
-    compile-variant: -enterprise
   run_on:
       - "rhel70-perf-single"
   depends_on:
@@ -1112,7 +1158,7 @@ buildvariants:
       - "rhel70-perf-single"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks:
     - name: industry_benchmarks
     - name: smoke_test
@@ -1133,7 +1179,7 @@ buildvariants:
       - "rhel70-perf-shard"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks:
     - name: industry_benchmarks
     - name: crud_workloads
@@ -1152,7 +1198,7 @@ buildvariants:
 
 - name: linux-shard-lite
   display_name: Linux Shard Lite Cluster
-  batchtime: 1440  # 24 hours
+  batchtime: 2880  # 48 hours
   modules: *modules
   expansions:
     setup: shard-lite
@@ -1165,7 +1211,7 @@ buildvariants:
       - "rhel70-perf-shard-lite"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks: &shardlitetasks
     - name: bestbuy_agg
     - name: bestbuy_agg_merge_different_db
@@ -1189,7 +1235,7 @@ buildvariants:
 
 - name: linux-3-node-replSet
   display_name: Linux 3-Node ReplSet
-  batchtime: 1440  # 24 hours
+  batchtime: 2880  # 48 hours
   modules: *modules
   expansions:
     setup: replica
@@ -1202,12 +1248,13 @@ buildvariants:
       - "rhel70-perf-replset"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks: &3nodetasks
     - name: industry_benchmarks
     - name: ycsb_60GB
     - name: industry_benchmarks_secondary_reads
     - name: crud_workloads
+    - name: crud_workloads_majority
     - name: jasper_smoke
     - name: insert_big_docs
     - name: insert_remove
@@ -1215,6 +1262,7 @@ buildvariants:
     - name: mixed_workloads
     - name: misc_workloads
     - name: map_reduce_workloads
+    - name: refine_shard_key_transaction_stress
     - name: smoke_test
     - name: retryable_writes_workloads
     - name: industry_benchmarks_wmajority
@@ -1232,10 +1280,11 @@ buildvariants:
     - name: tpcc
     - name: linkbench
     - name: big_update
+    - name: parallel_insert
 
 - name: linux-3-node-replSet-noflowcontrol
   display_name: Linux 3-Node ReplSet (Flow Control off)
-  batchtime: 1440  # 24 hours
+  batchtime: 10080  # 7 days
   modules: *modules
   expansions:
     setup: replica-noflowcontrol
@@ -1248,11 +1297,12 @@ buildvariants:
       - "rhel70-perf-replset"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks:
     - name: industry_benchmarks
     - name: industry_benchmarks_secondary_reads
     - name: crud_workloads
+    - name: crud_workloads_majority
     - name: service_architecture_workloads
     - name: mixed_workloads
     - name: smoke_test
@@ -1262,6 +1312,7 @@ buildvariants:
     - name: tpcc
     - name: linkbench
     - name: big_update
+    - name: parallel_insert
 
 - name: linux-3-node-replSet-ssl
   display_name: Linux 3-Node ReplSet (SSL)
@@ -1278,14 +1329,14 @@ buildvariants:
       - "rhel70-perf-replset"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks:
     - name: industry_benchmarks
     - name: mixed_workloads
 
 - name: linux-3-node-replSet-initialsync
   display_name: Linux 3-Node ReplSet Initial Sync
-  batchtime: 1440  # 24 hours
+  batchtime: 10080  # 7 days
   modules: *modules
   expansions:
     setup: replica-2node
@@ -1297,7 +1348,7 @@ buildvariants:
     project_dir: *project_dir
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   run_on:
       - "rhel70-perf-replset"
   tasks:
@@ -1321,7 +1372,7 @@ buildvariants:
       - "rhel70-perf-initialsync-logkeeper"
   depends_on:
       - name: compile
-        variant: compile-linux-64-amzn
+        variant: compile-amazon2
   tasks:
     - name: initialsync-logkeeper
 
@@ -1330,7 +1381,7 @@ buildvariants:
 #######################################
 - name: atlas-like-M60
   display_name: M60-Like 3-Node ReplSet
-  batchtime: 1440  # 24 hours
+  batchtime: 2880  # 48 hours
   modules: *modules
   expansions:
     setup: atlas-like-replica
@@ -1350,6 +1401,7 @@ buildvariants:
     - name: ycsb_60GB
     - name: industry_benchmarks_secondary_reads
     - name: crud_workloads
+    - name: crud_workloads_majority
     - name: jasper_smoke
     # - name: insert_remove
     # - name: service_architecture_workloads
@@ -1372,6 +1424,7 @@ buildvariants:
     # - name: tpcc # TPCC with SSL currently broken https://jira.mongodb.org/browse/TIG-1681
     - name: linkbench
     # - name: big_update
+    - name: parallel_insert
 
 
 #######################################
@@ -1393,7 +1446,7 @@ buildvariants:
       - "rhel70-perf-single"
   depends_on:
       - name: compile
-        variant: wtdevelop-compile-linux-64-amzn
+        variant: wtdevelop-compile-amazon2
   tasks: *1nodetasks
 
 - name: wtdevelop-standalone
@@ -1412,7 +1465,7 @@ buildvariants:
       - "rhel70-perf-single"
   depends_on:
       - name: compile
-        variant: wtdevelop-compile-linux-64-amzn
+        variant: wtdevelop-compile-amazon2
   tasks: *standalonetasks
 
 - name: wtdevelop-3-node-replSet
@@ -1431,7 +1484,7 @@ buildvariants:
       - "rhel70-perf-replset"
   depends_on:
       - name: compile
-        variant: wtdevelop-compile-linux-64-amzn
+        variant: wtdevelop-compile-amazon2
   tasks: *3nodetasks
 
 # Disabled: SERVER-35586
@@ -1451,5 +1504,5 @@ buildvariants:
 #      - "rhel70-perf-shard-lite"
 #  depends_on:
 #      - name: compile
-#        variant: wtdevelop-compile-linux-64-amzn
+#        variant: wtdevelop-compile-amazon2
 #  tasks: *shardlitetasks

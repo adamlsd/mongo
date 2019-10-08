@@ -93,12 +93,10 @@ public:
 
     virtual Status insert(OperationContext* opCtx,
                           const KeyString::Value& keyString,
-                          const RecordId& id,
                           bool dupsAllowed);
 
     virtual void unindex(OperationContext* opCtx,
                          const KeyString::Value& keyString,
-                         const RecordId& id,
                          bool dupsAllowed);
 
     virtual void fullValidate(OperationContext* opCtx,
@@ -110,8 +108,6 @@ public:
     virtual Status dupKeyCheck(OperationContext* opCtx, const KeyString::Value& keyString);
 
     virtual bool isEmpty(OperationContext* opCtx);
-
-    virtual Status touch(OperationContext* opCtx) const;
 
     virtual long long getSpaceUsedBytes(OperationContext* opCtx) const;
 
@@ -154,13 +150,11 @@ protected:
     virtual Status _insert(OperationContext* opCtx,
                            WT_CURSOR* c,
                            const KeyString::Value& keyString,
-                           const RecordId& id,
                            bool dupsAllowed) = 0;
 
     virtual void _unindex(OperationContext* opCtx,
                           WT_CURSOR* c,
                           const KeyString::Value& keyString,
-                          const RecordId& id,
                           bool dupsAllowed) = 0;
 
     void setKey(WT_CURSOR* cursor, const WT_ITEM* item);
@@ -217,13 +211,11 @@ public:
     Status _insert(OperationContext* opCtx,
                    WT_CURSOR* c,
                    const KeyString::Value& keyString,
-                   const RecordId& id,
                    bool dupsAllowed) override;
 
     Status _insertTimestampUnsafe(OperationContext* opCtx,
                                   WT_CURSOR* c,
                                   const KeyString::Value& keyString,
-                                  const RecordId& id,
                                   bool dupsAllowed);
 
     Status _insertTimestampSafe(OperationContext* opCtx,
@@ -234,13 +226,11 @@ public:
     void _unindex(OperationContext* opCtx,
                   WT_CURSOR* c,
                   const KeyString::Value& keyString,
-                  const RecordId& id,
                   bool dupsAllowed) override;
 
     void _unindexTimestampUnsafe(OperationContext* opCtx,
                                  WT_CURSOR* c,
                                  const KeyString::Value& keyString,
-                                 const RecordId& id,
                                  bool dupsAllowed);
 
     void _unindexTimestampSafe(OperationContext* opCtx,
@@ -281,13 +271,11 @@ public:
     Status _insert(OperationContext* opCtx,
                    WT_CURSOR* c,
                    const KeyString::Value& keyString,
-                   const RecordId& id,
                    bool dupsAllowed) override;
 
     void _unindex(OperationContext* opCtx,
                   WT_CURSOR* c,
                   const KeyString::Value& keyString,
-                  const RecordId& id,
                   bool dupsAllowed) override;
 };
 

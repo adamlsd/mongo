@@ -70,7 +70,8 @@ Collection* getCollectionForCompact(OperationContext* opCtx,
 
 }  // namespace
 
-Status compactCollection(OperationContext* opCtx, const NamespaceString& collectionNss) {
+StatusWith<int64_t> compactCollection(OperationContext* opCtx,
+                                      const NamespaceString& collectionNss) {
     AutoGetDb autoDb(opCtx, collectionNss.db(), MODE_IX);
     Database* database = autoDb.getDb();
     uassert(ErrorCodes::NamespaceNotFound, "database does not exist", database);
@@ -104,100 +105,23 @@ Status compactCollection(OperationContext* opCtx, const NamespaceString& collect
 
     log(LogComponent::kCommand) << "compact " << collectionNss << " begin";
 
+    auto oldTotalSize = recordStore->storageSize(opCtx) + collection->getIndexSize(opCtx);
     auto indexCatalog = collection->getIndexCatalog();
 
-    if (recordStore->compactsInPlace()) {
-        Status status = recordStore->compact(opCtx);
-        if (!status.isOK())
-            return status;
-
-        // Compact all indexes (not including unfinished indexes)
-        status = indexCatalog->compactIndexes(opCtx);
-        if (!status.isOK())
-            return status;
-
-        log() << "compact " << collectionNss << " end";
-        return status;
-    }
-
-    invariant(opCtx->lockState()->isCollectionLockedForMode(collectionNss, MODE_X));
-
-    // If the storage engine doesn't support compacting in place, make sure no background operations
-    // or indexes are running.
-    const UUID collectionUUID = collection->uuid();
-    BackgroundOperation::assertNoBgOpInProgForNs(collectionNss);
-    IndexBuildsCoordinator::get(opCtx)->assertNoIndexBuildInProgForCollection(collectionUUID);
-
-    std::vector<BSONObj> indexSpecs;
-    {
-        std::unique_ptr<IndexCatalog::IndexIterator> ii(
-            indexCatalog->getIndexIterator(opCtx, false));
-        while (ii->more()) {
-            const IndexDescriptor* descriptor = ii->next()->descriptor();
-
-            // Compact always creates the new index in the foreground.
-            const BSONObj spec =
-                descriptor->infoObj().removeField(IndexDescriptor::kBackgroundFieldName);
-            const BSONObj key = spec.getObjectField("key");
-            const Status keyStatus =
-                index_key_validate::validateKeyPattern(key, descriptor->version());
-            if (!keyStatus.isOK()) {
-                return Status(ErrorCodes::CannotCreateIndex,
-                              str::stream()
-                                  << "Cannot compact collection due to invalid index " << spec
-                                  << ": " << keyStatus.reason() << " For more info see"
-                                  << " http://dochub.mongodb.org/core/index-validation");
-            }
-            indexSpecs.push_back(spec);
-        }
-    }
-
-    // Give a chance to be interrupted *before* we drop all indexes.
-    opCtx->checkForInterrupt();
-
-    {
-        // note that the drop indexes call also invalidates all clientcursors for the namespace,
-        // which is important and wanted here
-        WriteUnitOfWork wunit(opCtx);
-        log() << "compact dropping indexes";
-        indexCatalog->dropAllIndexes(opCtx, true);
-        wunit.commit();
-    }
-
-    MultiIndexBlock indexer;
-    indexer.ignoreUniqueConstraint();  // in compact we should be doing no checking
-
-    // The 'indexer' could throw, so ensure build cleanup occurs.
-    ON_BLOCK_EXIT([&] { indexer.cleanUpAfterBuild(opCtx, collection); });
-
-    Status status =
-        indexer.init(opCtx, collection, indexSpecs, MultiIndexBlock::kNoopOnInitFn).getStatus();
+    Status status = recordStore->compact(opCtx);
     if (!status.isOK())
         return status;
 
-    status = recordStore->compact(opCtx);
+    // Compact all indexes (not including unfinished indexes)
+    status = indexCatalog->compactIndexes(opCtx);
     if (!status.isOK())
         return status;
 
-    log() << "starting index commits";
-    status = indexer.dumpInsertsFromBulk(opCtx);
-    if (!status.isOK())
-        return status;
-
-    {
-        WriteUnitOfWork wunit(opCtx);
-        status = indexer.commit(opCtx,
-                                collection,
-                                MultiIndexBlock::kNoopOnCreateEachFn,
-                                MultiIndexBlock::kNoopOnCommitFn);
-        if (!status.isOK()) {
-            return status;
-        }
-        wunit.commit();
-    }
-
+    auto totalSizeDiff =
+        oldTotalSize - recordStore->storageSize(opCtx) - collection->getIndexSize(opCtx);
+    log() << "compact " << collectionNss << " bytes freed: " << totalSizeDiff;
     log() << "compact " << collectionNss << " end";
-    return Status::OK();
+    return totalSizeDiff;
 }
 
 }  // namespace mongo

@@ -50,7 +50,7 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/query/query_knobs_gen.h"
 #include "mongo/db/service_context.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/represent_as.h"
 #include "mongo/util/str.h"
@@ -503,7 +503,7 @@ Status validateIdIndexSpec(const BSONObj& indexSpec) {
  * expected fields are present at creation time
  */
 Status validateIndexSpecFieldNames(const BSONObj& indexSpec) {
-    if (MONGO_FAIL_POINT(skipIndexCreateFieldNameValidation)) {
+    if (MONGO_unlikely(skipIndexCreateFieldNameValidation.shouldFail())) {
         return Status::OK();
     }
 

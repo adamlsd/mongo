@@ -53,7 +53,7 @@
 #include "mongo/s/config_server_test_fixture.h"
 #include "mongo/s/database_version_helpers.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
@@ -997,7 +997,7 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
     // Enable fail point to cause all updates to fail.  Since we add the databases detected from
     // the shard being added with upserts, but we add the shard document itself via insert, this
     // will allow the shard to be added but prevent the databases from brought into the cluster.
-    auto failPoint = getGlobalFailPointRegistry()->getFailPoint("failAllUpdates");
+    auto failPoint = globalFailPointRegistry().find("failAllUpdates");
     ASSERT(failPoint);
     failPoint->setMode(FailPoint::alwaysOn);
     ON_BLOCK_EXIT([&] { failPoint->setMode(FailPoint::off); });

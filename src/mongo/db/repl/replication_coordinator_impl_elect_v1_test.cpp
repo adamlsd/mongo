@@ -45,7 +45,7 @@
 #include "mongo/db/repl/topology_coordinator.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/unittest/unittest.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 #include <boost/optional/optional_io.hpp>
@@ -374,9 +374,9 @@ TEST_F(ReplCoordTest, ElectionFailsWhenInsufficientVotesAreReceivedDuringDryRun)
                                                                << false << "reason"
                                                                << "don't like him much")));
             voteRequests++;
-            // Check that the node's election candidate metrics are set once it has called an
-            // election.
-            ASSERT_BSONOBJ_NE(
+
+            // Check that the node's election candidate metrics are not set if a dry run fails.
+            ASSERT_BSONOBJ_EQ(
                 BSONObj(),
                 ReplicationMetrics::get(getServiceContext()).getElectionCandidateMetricsBSON());
         } else {
@@ -478,9 +478,7 @@ TEST_F(ReplCoordTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
     replCoordSetMyLastAppliedOpTime(OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100));
     replCoordSetMyLastDurableOpTime(OpTime(Timestamp(100, 1), 0), Date_t() + Seconds(100));
 
-    getGlobalFailPointRegistry()
-        ->getFailPoint("blockHeartbeatReconfigFinish")
-        ->setMode(FailPoint::alwaysOn);
+    globalFailPointRegistry().find("blockHeartbeatReconfigFinish")->setMode(FailPoint::alwaysOn);
 
     // hb reconfig
     NetworkInterfaceMock* net = getNet();
@@ -573,9 +571,7 @@ TEST_F(ReplCoordTest, NodeWillNotStandForElectionDuringHeartbeatReconfig) {
     ASSERT_EQUALS(1,
                   countLogLinesContaining("Not standing for election; processing "
                                           "a configuration change"));
-    getGlobalFailPointRegistry()
-        ->getFailPoint("blockHeartbeatReconfigFinish")
-        ->setMode(FailPoint::off);
+    globalFailPointRegistry().find("blockHeartbeatReconfigFinish")->setMode(FailPoint::off);
 }
 
 TEST_F(ReplCoordTest, ElectionFailsWhenInsufficientVotesAreReceivedDuringRequestVotes) {
@@ -883,7 +879,7 @@ public:
     }
 
     void performSuccessfulTakeover(Date_t takeoverTime,
-                                   TopologyCoordinator::StartElectionReason reason,
+                                   StartElectionReasonEnum reason,
                                    const LastVote& lastVoteExpected) {
         startCapturingLogMessages();
         simulateSuccessfulV1ElectionAt(takeoverTime);
@@ -898,7 +894,7 @@ public:
         ASSERT_EQ(lastVoteExpected.getCandidateIndex(), lastVote.getValue().getCandidateIndex());
         ASSERT_EQ(lastVoteExpected.getTerm(), lastVote.getValue().getTerm());
 
-        if (reason == TopologyCoordinator::StartElectionReason::kPriorityTakeover) {
+        if (reason == StartElectionReasonEnum::kPriorityTakeover) {
             ASSERT_EQUALS(1,
                           countLogLinesContaining("Starting an election for a priority takeover"));
         }
@@ -1272,6 +1268,9 @@ TEST_F(TakeoverTest, CatchupTakeoverCallbackCanceledIfElectionTimeoutRuns) {
                              << "protocolVersion" << 1);
     assertStartSuccess(configObj, HostAndPort("node1", 12345));
     ReplSetConfig config = assertMakeRSConfig(configObj);
+    // Force election timeouts to be exact, with no randomized offset, so that when the election
+    // timeout fires below we still think we can see a majority.
+    getExternalState()->setElectionTimeoutOffsetLimitFraction(0);
 
     auto replCoord = getReplCoord();
     auto now = getNet()->now();
@@ -1448,9 +1447,8 @@ TEST_F(TakeoverTest, SuccessfulCatchupTakeover) {
     ASSERT_EQUALS(1, countLogLinesContaining("Starting an election for a catchup takeover"));
 
     LastVote lastVoteExpected = LastVote(replCoord->getTerm() + 1, 0);
-    performSuccessfulTakeover(catchupTakeoverTime,
-                              TopologyCoordinator::StartElectionReason::kCatchupTakeover,
-                              lastVoteExpected);
+    performSuccessfulTakeover(
+        catchupTakeoverTime, StartElectionReasonEnum::kCatchupTakeover, lastVoteExpected);
 
     // Check that the numCatchUpTakeoversCalled and the numCatchUpTakeoversSuccessful election
     // metrics have been incremented, and that none of the metrics that track the number of
@@ -1707,9 +1705,8 @@ TEST_F(TakeoverTest, PrimaryCatchesUpBeforeHighPriorityNodeCatchupTakeover) {
         config, now + longElectionTimeout, HostAndPort("node2", 12345), currentOptime);
 
     LastVote lastVoteExpected = LastVote(replCoord->getTerm() + 1, 0);
-    performSuccessfulTakeover(priorityTakeoverTime,
-                              TopologyCoordinator::StartElectionReason::kPriorityTakeover,
-                              lastVoteExpected);
+    performSuccessfulTakeover(
+        priorityTakeoverTime, StartElectionReasonEnum::kPriorityTakeover, lastVoteExpected);
 }
 
 TEST_F(TakeoverTest, SchedulesPriorityTakeoverIfNodeHasHigherPriorityThanCurrentPrimary) {
@@ -1801,9 +1798,8 @@ TEST_F(TakeoverTest, SuccessfulPriorityTakeover) {
         config, now + halfElectionTimeout, HostAndPort("node2", 12345), myOptime);
 
     LastVote lastVoteExpected = LastVote(replCoord->getTerm() + 1, 0);
-    performSuccessfulTakeover(priorityTakeoverTime,
-                              TopologyCoordinator::StartElectionReason::kPriorityTakeover,
-                              lastVoteExpected);
+    performSuccessfulTakeover(
+        priorityTakeoverTime, StartElectionReasonEnum::kPriorityTakeover, lastVoteExpected);
 
     // Check that the numPriorityTakeoversCalled and the numPriorityTakeoversSuccessful election
     // metrics have been incremented, and that none of the metrics that track the number of
@@ -1877,8 +1873,12 @@ TEST_F(TakeoverTest, DontCallForPriorityTakeoverWhenLaggedSameSecond) {
     // Mock another round of heartbeat responses that occur after the previous
     // 'priorityTakeoverTime', which should schedule a new priority takeover
     Milliseconds heartbeatInterval = config.getHeartbeatInterval() / 4;
-    now = respondToHeartbeatsUntil(
-        config, now + heartbeatInterval, primaryHostAndPort, currentOpTime);
+    // Run clock forward to the time of the next queued heartbeat request.
+    getNet()->enterNetwork();
+    getNet()->runUntil(now + heartbeatInterval);
+    getNet()->exitNetwork();
+    now = respondToHeartbeatsUntil(config, getNet()->now(), primaryHostAndPort, currentOpTime);
+
     // Make sure that a new priority takeover has been scheduled and at the
     // correct time.
     ASSERT(replCoord->getPriorityTakeover_forTest());
@@ -1891,10 +1891,16 @@ TEST_F(TakeoverTest, DontCallForPriorityTakeoverWhenLaggedSameSecond) {
     replCoordSetMyLastDurableOpTime(closeEnoughOpTime,
                                     Date_t() + Seconds(closeEnoughOpTime.getSecs()));
 
+    // The priority takeover might have been scheduled at a time later than one election
+    // timeout after our initial heartbeat responses, so mock another round of
+    // heartbeat responses to prevent a normal election timeout.
+    Milliseconds halfElectionTimeout = config.getElectionTimeoutPeriod() / 2;
+    now = respondToHeartbeatsUntil(
+        config, now + halfElectionTimeout, primaryHostAndPort, currentOpTime);
+
     LastVote lastVoteExpected = LastVote(replCoord->getTerm() + 1, 0);
-    performSuccessfulTakeover(priorityTakeoverTime,
-                              TopologyCoordinator::StartElectionReason::kPriorityTakeover,
-                              lastVoteExpected);
+    performSuccessfulTakeover(
+        priorityTakeoverTime, StartElectionReasonEnum::kPriorityTakeover, lastVoteExpected);
 }
 
 TEST_F(TakeoverTest, DontCallForPriorityTakeoverWhenLaggedDifferentSecond) {
@@ -1951,8 +1957,11 @@ TEST_F(TakeoverTest, DontCallForPriorityTakeoverWhenLaggedDifferentSecond) {
     // Mock another round of heartbeat responses that occur after the previous
     // 'priorityTakeoverTime', which should schedule a new priority takeover
     Milliseconds heartbeatInterval = config.getHeartbeatInterval() / 4;
-    now = respondToHeartbeatsUntil(
-        config, now + heartbeatInterval, primaryHostAndPort, currentOpTime);
+    // Run clock forward to the time of the next queued heartbeat request.
+    getNet()->enterNetwork();
+    getNet()->runUntil(now + heartbeatInterval);
+    getNet()->exitNetwork();
+    now = respondToHeartbeatsUntil(config, getNet()->now(), primaryHostAndPort, currentOpTime);
 
     // Make sure that a new priority takeover has been scheduled and at the
     // correct time.
@@ -1966,10 +1975,16 @@ TEST_F(TakeoverTest, DontCallForPriorityTakeoverWhenLaggedDifferentSecond) {
     replCoordSetMyLastDurableOpTime(closeEnoughOpTime,
                                     Date_t() + Seconds(closeEnoughOpTime.getSecs()));
 
+    // The priority takeover might have been scheduled at a time later than one election
+    // timeout after our initial heartbeat responses, so mock another round of
+    // heartbeat responses to prevent a normal election timeout.
+    Milliseconds halfElectionTimeout = config.getElectionTimeoutPeriod() / 2;
+    now = respondToHeartbeatsUntil(
+        config, now + halfElectionTimeout, primaryHostAndPort, currentOpTime);
+
     LastVote lastVoteExpected = LastVote(replCoord->getTerm() + 1, 0);
-    performSuccessfulTakeover(priorityTakeoverTime,
-                              TopologyCoordinator::StartElectionReason::kPriorityTakeover,
-                              lastVoteExpected);
+    performSuccessfulTakeover(
+        priorityTakeoverTime, StartElectionReasonEnum::kPriorityTakeover, lastVoteExpected);
 }
 
 TEST_F(ReplCoordTest, NodeCancelsElectionUponReceivingANewConfigDuringDryRun) {

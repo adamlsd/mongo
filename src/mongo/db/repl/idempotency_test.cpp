@@ -60,7 +60,7 @@ protected:
 
     std::string getStatesString(const std::vector<CollectionState>& state1,
                                 const std::vector<CollectionState>& state2,
-                                const MultiApplier::OperationPtrs& opPtrs) override;
+                                const std::vector<OplogEntry>& ops) override;
 
     Status resetState() override;
 
@@ -113,28 +113,28 @@ std::vector<OplogEntry> RandomizedIdempotencyTest::createUpdateSequence(
 
 std::string RandomizedIdempotencyTest::getStatesString(const std::vector<CollectionState>& state1,
                                                        const std::vector<CollectionState>& state2,
-                                                       const MultiApplier::OperationPtrs& opPtrs) {
-    unittest::log() << IdempotencyTest::getStatesString(state1, state2, opPtrs);
+                                                       const std::vector<OplogEntry>& ops) {
+    unittest::log() << IdempotencyTest::getStatesString(state1, state2, ops);
     StringBuilder sb;
     sb << "Ran update ops: ";
     sb << "[ ";
     bool firstIter = true;
-    for (auto op : opPtrs) {
+    for (const auto& op : ops) {
         if (!firstIter) {
             sb << ", ";
         } else {
             firstIter = false;
         }
-        sb << op->toString();
+        sb << op.toString();
     }
     sb << " ]\n";
 
     ASSERT_OK(resetState());
 
     sb << "Start: " << getDoc() << "\n";
-    for (auto op : opPtrs) {
-        ASSERT_OK(runOpInitialSync(*op));
-        sb << "Apply: " << op->getObject() << "\n  ==> " << getDoc() << "\n";
+    for (const auto& op : ops) {
+        ASSERT_OK(runOpInitialSync(op));
+        sb << "Apply: " << op.getObject() << "\n  ==> " << getDoc() << "\n";
     }
 
     sb << "Found from the seed: " << this->seed;
@@ -195,6 +195,21 @@ void RandomizedIdempotencyTest::runIdempotencyTestCase() {
 
 TEST_F(RandomizedIdempotencyTest, CheckUpdateSequencesAreIdempotent) {
     runIdempotencyTestCase();
+}
+
+TEST_F(IdempotencyTest, UpdateTwoFields) {
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    ASSERT_OK(runOpInitialSync(createCollection(kUuid)));
+    ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1, y: [0]}"))));
+
+    auto updateOp1 = update(1, fromjson("{$set: {x: 1}}"));
+    auto updateOp2 = update(1, fromjson("{$set: {x: 2, 'y.0': 2}}"));
+    auto updateOp3 = update(1, fromjson("{$set: {y: 3}}"));
+
+    auto ops = {updateOp1, updateOp2, updateOp3};
+    testOpsAreIdempotent(ops);
 }
 
 }  // namespace

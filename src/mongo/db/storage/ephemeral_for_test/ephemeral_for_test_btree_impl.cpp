@@ -177,16 +177,16 @@ public:
         IndexKeyEntry entry(key.getOwned(), loc);
         if (_data->insert(entry).second) {
             _currentKeySize += key.objsize();
-            opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, true));
+            opCtx->recoveryUnit()->registerChange(
+                std::make_unique<IndexChange>(_data, entry, true));
         }
         return Status::OK();
     }
 
     virtual Status insert(OperationContext* opCtx,
                           const KeyString::Value& keyString,
-                          const RecordId& loc,
                           bool dupsAllowed) {
-        dassert(loc == KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize()));
+        RecordId loc = KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize());
 
         auto key = KeyString::toBson(keyString, _ordering);
 
@@ -205,15 +205,15 @@ public:
         invariant(numDeleted <= 1);
         if (numDeleted == 1) {
             _currentKeySize -= key.objsize();
-            opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, false));
+            opCtx->recoveryUnit()->registerChange(
+                std::make_unique<IndexChange>(_data, entry, false));
         }
     }
 
     virtual void unindex(OperationContext* opCtx,
                          const KeyString::Value& keyString,
-                         const RecordId& loc,
                          bool dupsAllowed) {
-        dassert(loc == KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize()));
+        RecordId loc = KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize());
 
         auto key = KeyString::toBson(keyString, _ordering);
 
@@ -254,11 +254,6 @@ public:
         return _data->empty();
     }
 
-    virtual Status touch(OperationContext* opCtx) const {
-        // already in memory...
-        return Status::OK();
-    }
-
     class Cursor final : public SortedDataInterface::Cursor {
     public:
         Cursor(OperationContext* opCtx,
@@ -286,6 +281,18 @@ public:
             if (_isEOF)
                 return {};
             return *_it;
+        }
+
+        boost::optional<KeyStringEntry> nextKeyString() override {
+            boost::optional<IndexKeyEntry> indexKeyEntry = next(RequestedInfo::kKeyAndLoc);
+            if (!indexKeyEntry) {
+                return {};
+            }
+
+            KeyString::Builder builder(
+                KeyString::Version::kLatestVersion, indexKeyEntry->key, _ordering);
+            builder.appendRecordId(indexKeyEntry->loc);
+            return KeyStringEntry(builder.getValueCopy(), indexKeyEntry->loc);
         }
 
         void setEndPosition(const BSONObj& key, bool inclusive) override {
@@ -327,6 +334,19 @@ public:
             RequestedInfo parts = RequestedInfo::kKeyAndLoc) override {
             const BSONObj query = KeyString::toBsonSafeWithDiscriminator(
                 keyString.getBuffer(), keyString.getSize(), _ordering, keyString.getTypeBits());
+            if (query.isEmpty()) {
+                KeyString::Discriminator discriminator = KeyString::decodeDiscriminator(
+                    keyString.getBuffer(), keyString.getSize(), _ordering, keyString.getTypeBits());
+                // Deduce `inclusive` based on `discriminator` and `_forward`.
+                bool inclusive = (discriminator == KeyString::Discriminator::kInclusive) ||
+                    (_forward ^ (discriminator == KeyString::Discriminator::kExclusiveAfter));
+                _it = inclusive ? _data.begin() : _data.end();
+                _isEOF = (_it == _data.end());
+                if (_isEOF) {
+                    return {};
+                }
+                return *_it;
+            }
             locate(query, _forward ? RecordId::min() : RecordId::max());
             _lastMoveWasRestore = false;
             if (_isEOF)
@@ -346,27 +366,41 @@ public:
             }
         }
 
-        boost::optional<IndexKeyEntry> seekExact(const BSONObj& key, RequestedInfo) {
-            auto kv = _seek(key, true, kKeyAndLoc);
-            if (kv && kv->key.woCompare(key, BSONObj(), /*considerFieldNames*/ false) == 0)
+        boost::optional<IndexKeyEntry> _seekExact(const BSONObj& key, RequestedInfo parts) {
+            auto kv = _seek(key, true, parts);
+            if (!kv || kv->key.woCompare(key, BSONObj(), /*considerFieldNames*/ false) != 0)
+                return {};
+
+            if (parts & SortedDataInterface::Cursor::kWantKey) {
                 return kv;
-            return {};
+            }
+            return IndexKeyEntry{{}, kv->loc};
         }
 
-        boost::optional<KeyStringEntry> seekExact(const KeyString::Value& keyStringValue) {
+        boost::optional<KeyStringEntry> seekExactForKeyString(
+            const KeyString::Value& keyStringValue) override {
             const BSONObj query = KeyString::toBson(keyStringValue.getBuffer(),
                                                     keyStringValue.getSize(),
                                                     _ordering,
                                                     keyStringValue.getTypeBits());
-            auto kv = seekExact(query, kKeyAndLoc);
+            auto kv = _seekExact(query, kKeyAndLoc);
             if (kv) {
-                // We have retrived a valid result from seekExact(). Convert to KeyString
+                // We have retrived a valid result from _seekExact(). Convert to KeyString
                 // and return
                 KeyString::Builder ks(KeyString::Version::V1, kv->key, _ordering);
                 ks.appendRecordId(kv->loc);
                 return KeyStringEntry(ks.getValueCopy(), kv->loc);
             }
             return {};
+        }
+
+        boost::optional<IndexKeyEntry> seekExact(const KeyString::Value& keyStringValue,
+                                                 RequestedInfo parts) override {
+            const BSONObj query = KeyString::toBson(keyStringValue.getBuffer(),
+                                                    keyStringValue.getSize(),
+                                                    _ordering,
+                                                    keyStringValue.getTypeBits());
+            return _seekExact(query, parts);
         }
 
         void save() override {

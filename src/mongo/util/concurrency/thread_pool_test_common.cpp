@@ -35,8 +35,8 @@
 
 #include <memory>
 
-#include "mongo/stdx/condition_variable.h"
-#include "mongo/stdx/mutex.h"
+#include "mongo/platform/condition_variable.h"
+#include "mongo/platform/mutex.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/concurrency/thread_pool_interface.h"
@@ -103,39 +103,37 @@ public:
     }
 };
 
-#define COMMON_THREAD_POOL_TEST(TEST_NAME)                                       \
-    class TPT_##TEST_NAME : public CommonThreadPoolTestFixture {                 \
-    public:                                                                      \
-        TPT_##TEST_NAME(ThreadPoolFactory makeThreadPool)                        \
-            : CommonThreadPoolTestFixture(std::move(makeThreadPool)) {}          \
-                                                                                 \
-    private:                                                                     \
-        void _doTest() override;                                                 \
-        static const TptRegistrationAgent _agent;                                \
-    };                                                                           \
-    const TptRegistrationAgent TPT_##TEST_NAME::_agent(                          \
-        #TEST_NAME, [](ThreadPoolFactory makeThreadPool) {                       \
-            return std::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
-        });                                                                      \
+#define COMMON_THREAD_POOL_TEST(TEST_NAME)                                           \
+    class TPT_##TEST_NAME : public CommonThreadPoolTestFixture {                     \
+    public:                                                                          \
+        TPT_##TEST_NAME(ThreadPoolFactory makeThreadPool)                            \
+            : CommonThreadPoolTestFixture(std::move(makeThreadPool)) {}              \
+                                                                                     \
+    private:                                                                         \
+        void _doTest() override;                                                     \
+        static inline const TptRegistrationAgent _agent{                             \
+            #TEST_NAME, [](ThreadPoolFactory makeThreadPool) {                       \
+                return std::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
+            }};                                                                      \
+    };                                                                               \
     void TPT_##TEST_NAME::_doTest()
 
-#define COMMON_THREAD_POOL_DEATH_TEST(TEST_NAME, MATCH_EXPR)                     \
-    class TPT_##TEST_NAME : public CommonThreadPoolTestFixture {                 \
-    public:                                                                      \
-        TPT_##TEST_NAME(ThreadPoolFactory makeThreadPool)                        \
-            : CommonThreadPoolTestFixture(std::move(makeThreadPool)) {}          \
-                                                                                 \
-    private:                                                                     \
-        void _doTest() override;                                                 \
-        static const TptDeathRegistrationAgent<TPT_##TEST_NAME> _agent;          \
-    };                                                                           \
-    const TptDeathRegistrationAgent<TPT_##TEST_NAME> TPT_##TEST_NAME::_agent(    \
-        #TEST_NAME, [](ThreadPoolFactory makeThreadPool) {                       \
-            return std::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
-        });                                                                      \
-    std::string getDeathTestPattern(TPT_##TEST_NAME*) {                          \
-        return MATCH_EXPR;                                                       \
-    }                                                                            \
+#define COMMON_THREAD_POOL_DEATH_TEST(TEST_NAME, MATCH_EXPR)                         \
+    class TPT_##TEST_NAME : public CommonThreadPoolTestFixture {                     \
+    public:                                                                          \
+        TPT_##TEST_NAME(ThreadPoolFactory makeThreadPool)                            \
+            : CommonThreadPoolTestFixture(std::move(makeThreadPool)) {}              \
+        static std::string getPattern() {                                            \
+            return MATCH_EXPR;                                                       \
+        }                                                                            \
+                                                                                     \
+    private:                                                                         \
+        void _doTest() override;                                                     \
+        static inline const TptDeathRegistrationAgent<TPT_##TEST_NAME> _agent{       \
+            #TEST_NAME, [](ThreadPoolFactory makeThreadPool) {                       \
+                return std::make_unique<TPT_##TEST_NAME>(std::move(makeThreadPool)); \
+            }};                                                                      \
+    };                                                                               \
     void TPT_##TEST_NAME::_doTest()
 
 COMMON_THREAD_POOL_TEST(UnusedPool) {
@@ -203,10 +201,10 @@ COMMON_THREAD_POOL_TEST(RepeatedScheduleDoesntSmashStack) {
     auto& pool = getThreadPool();
     std::function<void()> func;
     std::size_t n = 0;
-    stdx::mutex mutex;
+    auto mutex = MONGO_MAKE_LATCH();
     stdx::condition_variable condvar;
     func = [&pool, &n, &func, &condvar, &mutex, depth]() {
-        stdx::unique_lock<stdx::mutex> lk(mutex);
+        stdx::unique_lock<Latch> lk(mutex);
         if (n < depth) {
             n++;
             lk.unlock();
@@ -223,17 +221,17 @@ COMMON_THREAD_POOL_TEST(RepeatedScheduleDoesntSmashStack) {
     pool.startup();
     pool.join();
 
-    stdx::unique_lock<stdx::mutex> lk(mutex);
+    stdx::unique_lock<Latch> lk(mutex);
     condvar.wait(lk, [&n, depth] { return n == depth; });
 }
 
 }  // namespace
 
 void addTestsForThreadPool(const std::string& suiteName, ThreadPoolFactory makeThreadPool) {
-    auto suite = unittest::Suite::getSuite(suiteName);
+    auto& suite = unittest::Suite::getSuite(suiteName);
     for (auto testCase : threadPoolTestCaseRegistry()) {
-        suite->add(str::stream() << suiteName << "::" << testCase.first,
-                   [testCase, makeThreadPool] { testCase.second(makeThreadPool)->run(); });
+        suite.add(str::stream() << suiteName << "::" << testCase.first,
+                  [testCase, makeThreadPool] { testCase.second(makeThreadPool)->run(); });
     }
 }
 

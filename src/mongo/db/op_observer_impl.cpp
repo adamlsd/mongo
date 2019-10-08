@@ -61,7 +61,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 
 namespace mongo {
 using repl::MutableOplogEntry;
@@ -186,7 +186,7 @@ OpTimeBundle replLogUpdate(OperationContext* opCtx, const OplogUpdateEntryArgs& 
     // oplogLink could have been changed to include pre/postImageOpTime by the previous no-op write.
     repl::appendRetryableWriteInfo(opCtx, &oplogEntry, &oplogLink, args.updateArgs.stmtId);
     opTimes.writeOpTime = logOperation(opCtx, &oplogEntry);
-    opTimes.wallClockTime = oplogEntry.getWallClockTime().get();
+    opTimes.wallClockTime = oplogEntry.getWallClockTime();
     return opTimes;
 }
 
@@ -223,7 +223,7 @@ OpTimeBundle replLogDelete(OperationContext* opCtx,
     // oplogLink could have been changed to include preImageOpTime by the previous no-op write.
     repl::appendRetryableWriteInfo(opCtx, &oplogEntry, &oplogLink, stmtId);
     opTimes.writeOpTime = logOperation(opCtx, &oplogEntry);
-    opTimes.wallClockTime = oplogEntry.getWallClockTime().get();
+    opTimes.wallClockTime = oplogEntry.getWallClockTime();
     return opTimes;
 }
 
@@ -311,6 +311,7 @@ void OpObserverImpl::onAbortIndexBuild(OperationContext* opCtx,
                                        CollectionUUID collUUID,
                                        const UUID& indexBuildUUID,
                                        const std::vector<BSONObj>& indexes,
+                                       const Status& cause,
                                        bool fromMigrate) {
     BSONObjBuilder oplogEntryBuilder;
     oplogEntryBuilder.append("abortIndexBuild", nss.coll());
@@ -322,6 +323,13 @@ void OpObserverImpl::onAbortIndexBuild(OperationContext* opCtx,
         indexesArr.append(indexDoc);
     }
     indexesArr.done();
+
+    BSONObjBuilder causeBuilder(oplogEntryBuilder.subobjStart("cause"));
+    // Some functions that extract a Status from a BSONObj, such as getStatusFromCommandResult(),
+    // expect the 'ok' field.
+    causeBuilder.appendBool("ok", 0);
+    cause.serializeErrorToBSON(&causeBuilder);
+    causeBuilder.done();
 
     MutableOplogEntry oplogEntry;
     oplogEntry.setOpType(repl::OpTypeEnum::kCommand);
@@ -413,16 +421,18 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
 }
 
 void OpObserverImpl::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArgs& args) {
-    MONGO_FAIL_POINT_BLOCK(failCollectionUpdates, extraData) {
-        auto collElem = extraData.getData()["collectionNS"];
-        // If the failpoint specifies no collection or matches the existing one, fail.
-        if (!collElem || args.nss.ns() == collElem.String()) {
+    failCollectionUpdates.executeIf(
+        [&](const BSONObj&) {
             uasserted(40654,
                       str::stream() << "failCollectionUpdates failpoint enabled, namespace: "
                                     << args.nss.ns() << ", update: " << args.updateArgs.update
                                     << " on document with " << args.updateArgs.criteria);
-        }
-    }
+        },
+        [&](const BSONObj& data) {
+            // If the failpoint specifies no collection or matches the existing one, fail.
+            auto collElem = data["collectionNS"];
+            return !collElem || args.nss.ns() == collElem.String();
+        });
 
     // Do not log a no-op operation; see SERVER-21738
     if (args.updateArgs.update.isEmpty()) {
@@ -601,7 +611,7 @@ void OpObserverImpl::onCollMod(OperationContext* opCtx,
     if (!db) {
         return;
     }
-    Collection* coll = db->getCollection(opCtx, nss);
+    Collection* coll = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss);
 
     invariant(coll->uuid() == uuid);
     invariant(DurableCatalog::get(opCtx)->isEqualToMetadataUUID(opCtx, nss, uuid));
@@ -808,7 +818,7 @@ OpTimeBundle logApplyOpsForTransaction(OperationContext* opCtx,
     try {
         OpTimeBundle times;
         times.writeOpTime = logOperation(opCtx, oplogEntry);
-        times.wallClockTime = oplogEntry->getWallClockTime().get();
+        times.wallClockTime = oplogEntry->getWallClockTime();
         if (updateTxnTable) {
             SessionTxnRecord sessionTxnRecord;
             sessionTxnRecord.setLastWriteOpTime(times.writeOpTime);
@@ -971,7 +981,7 @@ void logCommitOrAbortForPreparedTransaction(OperationContext* opCtx,
 
             SessionTxnRecord sessionTxnRecord;
             sessionTxnRecord.setLastWriteOpTime(oplogOpTime);
-            sessionTxnRecord.setLastWriteDate(oplogEntry->getWallClockTime().get());
+            sessionTxnRecord.setLastWriteDate(oplogEntry->getWallClockTime());
             sessionTxnRecord.setState(durableState);
             onWriteOpCompleted(opCtx, {}, sessionTxnRecord);
             wuow.commit();

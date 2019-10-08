@@ -41,12 +41,12 @@
 #include <vector>
 
 #include "mongo/base/init.h"
+#include "mongo/db/exec/document_value/document.h"
+#include "mongo/db/exec/document_value/value.h"
 #include "mongo/db/pipeline/dependencies.h"
-#include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/expression_visitor.h"
 #include "mongo/db/pipeline/field_path.h"
-#include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/variables.h"
 #include "mongo/db/query/datetime/date_time_support.h"
 #include "mongo/db/server_options.h"
@@ -128,7 +128,7 @@ public:
      * Add the fields and variables used in this expression to 'deps'. References to variables which
      * are local to a particular expression will be filtered out of the tracker upon return.
      */
-    void addDependencies(DepsTracker* deps) {
+    void addDependencies(DepsTracker* deps) const {
         _doAddDependencies(deps);
 
         // Filter out references to any local variables.
@@ -822,8 +822,21 @@ public:
     explicit ExpressionArray(const boost::intrusive_ptr<ExpressionContext>& expCtx)
         : ExpressionVariadic<ExpressionArray>(expCtx) {}
 
+    ExpressionArray(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                    std::vector<boost::intrusive_ptr<Expression>>&& children)
+        : ExpressionVariadic<ExpressionArray>(expCtx) {
+        _children = std::move(children);
+    }
+
     Value evaluate(const Document& root, Variables* variables) const final;
     Value serialize(bool explain) const final;
+
+    static boost::intrusive_ptr<ExpressionArray> create(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        std::vector<boost::intrusive_ptr<Expression>>&& children) {
+        return make_intrusive<ExpressionArray>(expCtx, std::move(children));
+    }
+
     boost::intrusive_ptr<Expression> optimize() final;
     const char* getOpName() const final;
 
@@ -1654,7 +1667,7 @@ public:
         return visitor->visit(this);
     }
 
-    DocumentMetadataFields::MetaType getMetaType() {
+    DocumentMetadataFields::MetaType getMetaType() const {
         return _metaType;
     }
 
@@ -1788,8 +1801,8 @@ public:
 
     static boost::intrusive_ptr<ExpressionObject> create(
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        std::vector<boost::intrusive_ptr<Expression>> children,
-        std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>>&& expressions);
+        std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>>&&
+            expressionsWithChildrenInPlace);
 
     /**
      * Parses and constructs an ExpressionObject from 'obj'.

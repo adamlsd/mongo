@@ -66,6 +66,7 @@
 #include "mongo/util/text.h"
 
 #ifndef _WIN32
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #endif
 #include <openssl/asn1.h>
@@ -274,103 +275,6 @@ void DH_get0_pqg(const DH* dh, const BIGNUM** p, const BIGNUM** q, const BIGNUM*
 }
 #endif
 
-/**
- * Multithreaded Support for SSL.
- *
- * In order to allow OpenSSL to work in a multithreaded environment, you
- * may need to provide some callbacks for it to use for locking. The following code
- * sets up a vector of mutexes and provides a thread unique ID number.
- * The so-called SSLThreadInfo class encapsulates most of the logic required for
- * OpenSSL multithreaded support.
- *
- * OpenSSL before version 1.1.0 requires applications provide a callback which emits a thread
- * identifier. This ID is used to store thread specific ERR information. When a thread is
- * terminated, it must call ERR_remove_state or ERR_remove_thread_state. These functions may
- * themselves invoke the application provided callback. These IDs are stored in a hashtable with
- * a questionable hash function. They must be uniformly distributed to prevent collisions.
- */
-class SSLThreadInfo {
-public:
-    static unsigned long getID() {
-        struct CallErrRemoveState {
-            explicit CallErrRemoveState(ThreadIDManager& manager, unsigned long id)
-                : _manager(manager), id(id) {}
-
-            ~CallErrRemoveState() {
-                ERR_remove_state(0);
-                _manager.releaseID(id);
-            };
-
-            ThreadIDManager& _manager;
-            unsigned long id;
-        };
-
-        // NOTE: This logic is fully intentional. Because ERR_remove_state (called within
-        // the destructor of the kRemoveStateFromThread object) re-enters this function,
-        // we must have a two phase protection, otherwise we would access a thread local
-        // during its destruction.
-        static thread_local boost::optional<CallErrRemoveState> threadLocalState;
-        if (!threadLocalState) {
-            threadLocalState.emplace(_idManager, _idManager.reserveID());
-        }
-
-        return threadLocalState->id;
-    }
-
-    static void lockingCallback(int mode, int type, const char* file, int line) {
-        if (mode & CRYPTO_LOCK) {
-            _mutex[type]->lock();
-        } else {
-            _mutex[type]->unlock();
-        }
-    }
-
-    static void init() {
-        CRYPTO_set_id_callback(&SSLThreadInfo::getID);
-        CRYPTO_set_locking_callback(&SSLThreadInfo::lockingCallback);
-
-        while ((int)_mutex.size() < CRYPTO_num_locks()) {
-            _mutex.emplace_back(std::make_unique<stdx::recursive_mutex>());
-        }
-    }
-
-private:
-    SSLThreadInfo() = delete;
-
-    // Note: see SERVER-8734 for why we are using a recursive mutex here.
-    // Once the deadlock fix in OpenSSL is incorporated into most distros of
-    // Linux, this can be changed back to a nonrecursive mutex.
-    static std::vector<std::unique_ptr<stdx::recursive_mutex>> _mutex;
-
-    class ThreadIDManager {
-    public:
-        unsigned long reserveID() {
-            stdx::unique_lock<stdx::mutex> lock(_idMutex);
-            if (!_idLast.empty()) {
-                unsigned long ret = _idLast.top();
-                _idLast.pop();
-                return ret;
-            }
-            return ++_idNext;
-        }
-
-        void releaseID(unsigned long id) {
-            stdx::unique_lock<stdx::mutex> lock(_idMutex);
-            _idLast.push(id);
-        }
-
-    private:
-        // Machinery for producing IDs that are unique for the life of a thread.
-        stdx::mutex _idMutex;       // Protects _idNext and _idLast.
-        unsigned long _idNext = 0;  // Stores the next thread ID to use, if none already allocated.
-        std::stack<unsigned long, std::vector<unsigned long>>
-            _idLast;  // Stores old thread IDs, for reuse.
-    };
-    static ThreadIDManager _idManager;
-};
-std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
-SSLThreadInfo::ThreadIDManager SSLThreadInfo::_idManager;
-
 boost::optional<std::string> getRawSNIServerName(const SSL* const ssl) {
     const char* name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
     if (!name) {
@@ -475,7 +379,7 @@ private:
 
         /** Either returns a cached password, or prompts the user to enter one. */
         StatusWith<StringData> fetchPassword() {
-            stdx::lock_guard<stdx::mutex> lock(_mutex);
+            stdx::lock_guard<Latch> lock(_mutex);
             if (_password->size()) {
                 return StringData(_password->c_str());
             }
@@ -500,7 +404,7 @@ private:
         }
 
     private:
-        stdx::mutex _mutex;
+        Mutex _mutex = MONGO_MAKE_LATCH("PasswordFetcher::_mutex");
         SecureString _password;  // Protected by _mutex
 
         std::string _prompt;
@@ -595,47 +499,12 @@ private:
     static int verify_cb(int ok, X509_STORE_CTX* ctx);
 };
 
-void setupFIPS() {
-// Turn on FIPS mode if requested, OPENSSL_FIPS must be defined by the OpenSSL headers
-#if defined(MONGO_CONFIG_HAVE_FIPS_MODE_SET)
-    int status = FIPS_mode_set(1);
-    if (!status) {
-        severe() << "can't activate FIPS mode: "
-                 << SSLManagerInterface::getSSLErrorMessage(ERR_get_error());
-        fassertFailedNoTrace(16703);
-    }
-    log() << "FIPS 140-2 mode activated";
-#else
-    severe() << "this version of mongodb was not compiled with FIPS support";
-    fassertFailedNoTrace(17089);
-#endif
-}
-
 }  // namespace
 
 // Global variable indicating if this is a server or a client instance
 bool isSSLServer = false;
 
 extern SSLManagerInterface* theSSLManager;
-
-MONGO_INITIALIZER(SetupOpenSSL)(InitializerContext*) {
-    SSL_library_init();
-    SSL_load_error_strings();
-    ERR_load_crypto_strings();
-
-    if (sslGlobalParams.sslFIPSMode) {
-        setupFIPS();
-    }
-
-    // Add all digests and ciphers to OpenSSL's internal table
-    // so that encryption/decryption is backwards compatible
-    OpenSSL_add_all_algorithms();
-
-    // Setup OpenSSL multithreading callbacks and mutexes
-    SSLThreadInfo::init();
-
-    return Status::OK();
-}
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(SSLManager, ("SetupOpenSSL", "EndStartupOptionHandling"))
 (InitializerContext*) {
@@ -1441,9 +1310,19 @@ SSLConnectionInterface* SSLManagerOpenSSL::connect(Socket* socket) {
         _clientContext.get(), socket, (const char*)nullptr, 0);
 
     const auto undotted = removeFQDNRoot(socket->remoteAddr().hostOrIp());
-    int ret = ::SSL_set_tlsext_host_name(sslConn->ssl, undotted.c_str());
-    if (ret != 1)
-        _handleSSLError(sslConn.get(), ret);
+
+    int ret;
+    if (!undotted.empty()) {
+        // only have TLS advertise host name as SNI if it is not an IP address
+        std::array<uint8_t, INET6_ADDRSTRLEN> unusedBuf;
+        if ((inet_pton(AF_INET, undotted.c_str(), unusedBuf.data()) == 0) &&
+            (inet_pton(AF_INET6, undotted.c_str(), unusedBuf.data()) == 0)) {
+            ret = ::SSL_set_tlsext_host_name(sslConn->ssl, undotted.c_str());
+            if (ret != 1) {
+                _handleSSLError(sslConn.get(), ret);
+            }
+        }
+    }
 
     do {
         ret = ::SSL_connect(sslConn->ssl);
@@ -1719,15 +1598,6 @@ StatusWith<stdx::unordered_set<RoleName>> SSLManagerOpenSSL::_parsePeerRoles(X50
     }
 
     return roles;
-}
-
-std::string SSLManagerInterface::getSSLErrorMessage(int code) {
-    // 120 from the SSL documentation for ERR_error_string
-    static const size_t msglen = 120;
-
-    char msg[msglen];
-    ERR_error_string_n(code, msg, msglen);
-    return msg;
 }
 
 void SSLManagerOpenSSL::_handleSSLError(SSLConnectionOpenSSL* conn, int ret) {

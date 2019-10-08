@@ -45,23 +45,6 @@ using std::string;
 namespace mongo {
 namespace repl {
 
-namespace {
-
-constexpr StringData kLocalReadConcernStr = "local"_sd;
-constexpr StringData kMajorityReadConcernStr = "majority"_sd;
-constexpr StringData kLinearizableReadConcernStr = "linearizable"_sd;
-constexpr StringData kAvailableReadConcernStr = "available"_sd;
-constexpr StringData kSnapshotReadConcernStr = "snapshot"_sd;
-
-}  // unnamed namespace
-
-const string ReadConcernArgs::kReadConcernFieldName("readConcern");
-const string ReadConcernArgs::kAfterOpTimeFieldName("afterOpTime");
-const string ReadConcernArgs::kAfterClusterTimeFieldName("afterClusterTime");
-const string ReadConcernArgs::kAtClusterTimeFieldName("atClusterTime");
-
-const string ReadConcernArgs::kLevelFieldName("level");
-
 const OperationContext::Decoration<ReadConcernArgs> handle =
     OperationContext::declareDecoration<ReadConcernArgs>();
 
@@ -105,17 +88,8 @@ ReadConcernLevel ReadConcernArgs::getLevel() const {
     return _level.value_or(ReadConcernLevel::kLocalReadConcern);
 }
 
-ReadConcernLevel ReadConcernArgs::getOriginalLevel() const {
-    // If no read concern specified, default to "local"
-    return _originalLevel.value_or(ReadConcernLevel::kLocalReadConcern);
-}
-
 bool ReadConcernArgs::hasLevel() const {
     return _level.is_initialized();
-}
-
-bool ReadConcernArgs::hasOriginalLevel() const {
-    return _originalLevel.is_initialized();
 }
 
 boost::optional<OpTime> ReadConcernArgs::getArgsOpTime() const {
@@ -131,8 +105,6 @@ boost::optional<LogicalTime> ReadConcernArgs::getArgsAtClusterTime() const {
 }
 
 Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
-    invariant(isEmpty());  // only legal to call on uninitialized object.
-
     if (readConcernElem.eoo()) {
         return Status::OK();
     }
@@ -144,7 +116,11 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
                       str::stream() << kReadConcernFieldName << " field should be an object");
     }
 
-    BSONObj readConcernObj = readConcernElem.Obj();
+    return parse(readConcernElem.Obj());
+}
+
+Status ReadConcernArgs::parse(const BSONObj& readConcernObj) {
+    invariant(isEmpty());  // only legal to call on uninitialized object.
     for (auto&& field : readConcernObj) {
         auto fieldName = field.fieldNameStringData();
         if (fieldName == kAfterOpTimeFieldName) {
@@ -198,7 +174,6 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
                                             << " must be either 'local', 'majority', "
                                                "'linearizable', 'available', or 'snapshot'");
             }
-            _originalLevel = _level;
         } else {
             return Status(ErrorCodes::InvalidOptions,
                           str::stream() << "Unrecognized option in " << kReadConcernFieldName
@@ -258,6 +233,12 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
     return Status::OK();
 }
 
+ReadConcernArgs ReadConcernArgs::fromBSONThrows(const BSONObj& readConcernObj) {
+    ReadConcernArgs rc;
+    uassertStatusOK(rc.parse(readConcernObj));
+    return rc;
+}
+
 void ReadConcernArgs::setMajorityReadMechanism(MajorityReadMechanism mechanism) {
     invariant(*_level == ReadConcernLevel::kMajorityReadConcern);
     _majorityReadMechanism = mechanism;
@@ -271,26 +252,6 @@ ReadConcernArgs::MajorityReadMechanism ReadConcernArgs::getMajorityReadMechanism
 bool ReadConcernArgs::isSpeculativeMajority() const {
     return _level && *_level == ReadConcernLevel::kMajorityReadConcern &&
         _majorityReadMechanism == MajorityReadMechanism::kSpeculative;
-}
-
-Status ReadConcernArgs::upconvertReadConcernLevelToSnapshot() {
-    if (_level && *_level != ReadConcernLevel::kSnapshotReadConcern &&
-        *_level != ReadConcernLevel::kMajorityReadConcern &&
-        *_level != ReadConcernLevel::kLocalReadConcern) {
-        return Status(ErrorCodes::InvalidOptions,
-                      "The readConcern level must be either 'local' or 'majority' in order to "
-                      "upconvert the readConcern level to 'snapshot'");
-    }
-
-    if (_opTime) {
-        return Status(ErrorCodes::InvalidOptions,
-                      str::stream() << "Cannot upconvert the readConcern level to 'snapshot' when '"
-                                    << kAfterOpTimeFieldName << "' is provided");
-    }
-
-    _originalLevel = _level;
-    _level = ReadConcernLevel::kSnapshotReadConcern;
-    return Status::OK();
 }
 
 void ReadConcernArgs::appendInfo(BSONObjBuilder* builder) const {
@@ -327,7 +288,7 @@ void ReadConcernArgs::appendInfo(BSONObjBuilder* builder) const {
     }
 
     if (_opTime) {
-        _opTime->append(&rcBuilder, kAfterOpTimeFieldName);
+        _opTime->append(&rcBuilder, kAfterOpTimeFieldName.toString());
     }
 
     if (_afterClusterTime) {

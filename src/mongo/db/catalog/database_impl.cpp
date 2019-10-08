@@ -75,7 +75,7 @@
 #include "mongo/platform/random.h"
 #include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -122,7 +122,8 @@ DatabaseImpl::DatabaseImpl(const StringData name, uint64_t epoch)
     : _name(name.toString()),
       _epoch(epoch),
       _profileName(_name + ".system.profile"),
-      _viewsName(_name + "." + DurableViewCatalog::viewsCollectionName().toString()) {
+      _viewsName(_name + "." + DurableViewCatalog::viewsCollectionName().toString()),
+      _uniqueCollectionNamespacePseudoRandom(Date_t::now().asInt64()) {
     auto durableViewCatalog = std::make_unique<DurableViewCatalogImpl>(this);
     auto viewCatalog = std::make_unique<ViewCatalog>(std::move(durableViewCatalog));
 
@@ -228,7 +229,7 @@ void DatabaseImpl::setDropPending(OperationContext* opCtx, bool dropPending) {
 }
 
 bool DatabaseImpl::isDropPending(OperationContext* opCtx) const {
-    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
+    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_IS));
     return _dropPending.load();
 }
 
@@ -303,7 +304,7 @@ Status DatabaseImpl::dropView(OperationContext* opCtx, NamespaceString viewName)
 Status DatabaseImpl::dropCollection(OperationContext* opCtx,
                                     NamespaceString nss,
                                     repl::OpTime dropOpTime) const {
-    if (!getCollection(opCtx, nss)) {
+    if (!CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss)) {
         // Collection doesn't exist so don't bother validating if it can be dropped.
         return Status::OK();
     }
@@ -340,7 +341,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
             "dropCollection() cannot accept a valid drop optime when writes are replicated.");
     }
 
-    Collection* collection = getCollection(opCtx, nss);
+    Collection* collection = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss);
 
     if (!collection) {
         return Status::OK();  // Post condition already met.
@@ -429,7 +430,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
           << ") - renaming to drop-pending collection: " << dpns << " with drop optime "
           << dropOpTime;
     {
-        Lock::CollectionLock(opCtx, dpns, MODE_X);
+        Lock::CollectionLock collLk(opCtx, dpns, MODE_X);
         fassert(40464, renameCollection(opCtx, nss, dpns, stayTemp));
     }
 
@@ -468,10 +469,6 @@ Status DatabaseImpl::_finishDropCollection(OperationContext* opCtx,
     return Status::OK();
 }
 
-Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const NamespaceString& nss) const {
-    return CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss);
-}
-
 Status DatabaseImpl::renameCollection(OperationContext* opCtx,
                                       NamespaceString fromNss,
                                       NamespaceString toNss,
@@ -483,13 +480,13 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
 
     invariant(fromNss.db() == _name);
     invariant(toNss.db() == _name);
-    if (getCollection(opCtx, toNss)) {
+    if (CollectionCatalog::get(opCtx).lookupCollectionByNamespace(toNss)) {
         return Status(ErrorCodes::NamespaceExists,
                       str::stream() << "Cannot rename '" << fromNss << "' to '" << toNss
                                     << "' because the destination namespace already exists");
     }
 
-    Collection* collToRename = getCollection(opCtx, fromNss);
+    Collection* collToRename = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(fromNss);
     if (!collToRename) {
         return Status(ErrorCodes::NamespaceNotFound, "collection not found to rename");
     }
@@ -498,7 +495,7 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
                                "collection "
                             << fromNss);
 
-    Collection* toColl = getCollection(opCtx, toNss);
+    Collection* toColl = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(toNss);
     if (toColl) {
         invariant(
             !toColl->getIndexCatalog()->haveAnyIndexesInProgress(),
@@ -530,22 +527,12 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
     return status;
 }
 
-Collection* DatabaseImpl::getOrCreateCollection(OperationContext* opCtx,
-                                                const NamespaceString& nss) const {
-    Collection* c = getCollection(opCtx, nss);
-
-    if (!c) {
-        c = createCollection(opCtx, nss);
-    }
-    return c;
-}
-
 void DatabaseImpl::_checkCanCreateCollection(OperationContext* opCtx,
                                              const NamespaceString& nss,
                                              const CollectionOptions& options) const {
     massert(17399,
             str::stream() << "Cannot create collection " << nss << " - collection already exists.",
-            getCollection(opCtx, nss) == nullptr);
+            CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss) == nullptr);
 
     uassert(14037,
             "can't create user databases on a --configsvr instance",
@@ -685,7 +672,7 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
         }
     }
 
-    MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangBeforeLoggingCreateCollection);
+    hangBeforeLoggingCreateCollection.pauseWhileSet();
 
     opCtx->getServiceContext()->getOpObserver()->onCreateCollection(
         opCtx, collection, nss, optionsWithUUID, fullIdIndexSpec, createOplogSlot);
@@ -704,7 +691,7 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
 
 StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
     OperationContext* opCtx, StringData collectionNameModel) {
-    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
+    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_IX));
 
     // There must be at least one percent sign in the collection name model.
     auto numPercentSign = std::count(collectionNameModel.begin(), collectionNameModel.end(), '%');
@@ -716,22 +703,17 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
                           << collectionNameModel << " must contain at least one percent sign.");
     }
 
-    if (!_uniqueCollectionNamespacePseudoRandom) {
-        _uniqueCollectionNamespacePseudoRandom =
-            std::make_unique<PseudoRandom>(Date_t::now().asInt64());
-    }
-
     const auto charsToChooseFrom =
         "0123456789"
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz"_sd;
     invariant((10U + 26U * 2) == charsToChooseFrom.size());
 
-    auto replacePercentSign = [&, this](const auto& c) {
+    auto replacePercentSign = [&, this](char c) {
         if (c != '%') {
             return c;
         }
-        auto i = _uniqueCollectionNamespacePseudoRandom->nextInt32(charsToChooseFrom.size());
+        auto i = _uniqueCollectionNamespacePseudoRandom.nextInt32(charsToChooseFrom.size());
         return charsToChooseFrom[i];
     };
 
@@ -744,7 +726,7 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
                        replacePercentSign);
 
         NamespaceString nss(_name, collectionName);
-        if (!getCollection(opCtx, nss)) {
+        if (!CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss)) {
             return nss;
         }
     }
@@ -776,7 +758,7 @@ void DatabaseImpl::checkForIdIndexesAndDropPendingCollections(OperationContext* 
         if (nss.isSystem())
             continue;
 
-        Collection* coll = getCollection(opCtx, nss);
+        Collection* coll = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss);
         if (!coll)
             continue;
 
@@ -801,7 +783,7 @@ Status DatabaseImpl::userCreateNS(OperationContext* opCtx,
     if (!NamespaceString::validCollectionComponent(nss.ns()))
         return Status(ErrorCodes::InvalidNamespace, str::stream() << "invalid ns: " << nss);
 
-    Collection* collection = getCollection(opCtx, nss);
+    Collection* collection = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(nss);
 
     if (collection)
         return Status(ErrorCodes::NamespaceExists,

@@ -31,14 +31,14 @@
 
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/config.h"
+#include "mongo/db/exec/document_value/document.h"
+#include "mongo/db/exec/document_value/document_value_test_util.h"
+#include "mongo/db/exec/document_value/value_comparator.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
 #include "mongo/db/pipeline/accumulator.h"
-#include "mongo/db/pipeline/document.h"
-#include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
-#include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/unittest/unittest.h"
@@ -3367,32 +3367,9 @@ TEST(ParseObject, ShouldRejectExpressionAsTheSecondField) {
 // Evaluation.
 //
 
-namespace {
-/**
- * ExpressionObject builds two vectors within it's ::parse() method, one owning and one with names
- * and references to the former. Since the ::create() method bypasses this step, we have to mimic
- * the behavior here.
- */
-auto expressionObjectCreateHelper(
-    const boost::intrusive_ptr<ExpressionContext>& expCtx,
-    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>>>&&
-        expressionsWithChildrenInPlace) {
-    std::vector<boost::intrusive_ptr<Expression>> children;
-    std::vector<std::pair<std::string, boost::intrusive_ptr<Expression>&>> expressions;
-    for (auto& [unused, expression] : expressionsWithChildrenInPlace)
-        children.push_back(std::move(expression));
-    std::vector<boost::intrusive_ptr<Expression>>::size_type index = 0;
-    for (auto& [fieldName, unused] : expressionsWithChildrenInPlace) {
-        expressions.emplace_back(fieldName, children[index]);
-        ++index;
-    }
-    return ExpressionObject::create(expCtx, std::move(children), std::move(expressions));
-}
-}  // namespace
-
 TEST(ExpressionObjectEvaluate, EmptyObjectShouldEvaluateToEmptyDocument) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto object = expressionObjectCreateHelper(expCtx, {});
+    auto object = ExpressionObject::create(expCtx, {});
     ASSERT_VALUE_EQ(Value(Document()), object->evaluate(Document(), &(expCtx->variables)));
     ASSERT_VALUE_EQ(Value(Document()), object->evaluate(Document{{"a", 1}}, &(expCtx->variables)));
     ASSERT_VALUE_EQ(Value(Document()),
@@ -3402,7 +3379,7 @@ TEST(ExpressionObjectEvaluate, EmptyObjectShouldEvaluateToEmptyDocument) {
 TEST(ExpressionObjectEvaluate, ShouldEvaluateEachField) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     auto object =
-        expressionObjectCreateHelper(expCtx, {{"a", makeConstant(1)}, {"b", makeConstant(5)}});
+        ExpressionObject::create(expCtx, {{"a", makeConstant(1)}, {"b", makeConstant(5)}});
     ASSERT_VALUE_EQ(Value(Document{{"a", 1}, {"b", 5}}),
                     object->evaluate(Document(), &(expCtx->variables)));
     ASSERT_VALUE_EQ(Value(Document{{"a", 1}, {"b", 5}}),
@@ -3413,10 +3390,10 @@ TEST(ExpressionObjectEvaluate, ShouldEvaluateEachField) {
 
 TEST(ExpressionObjectEvaluate, OrderOfFieldsInOutputShouldMatchOrderInSpecification) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto object = expressionObjectCreateHelper(expCtx,
-                                               {{"a", ExpressionFieldPath::create(expCtx, "a")},
-                                                {"b", ExpressionFieldPath::create(expCtx, "b")},
-                                                {"c", ExpressionFieldPath::create(expCtx, "c")}});
+    auto object = ExpressionObject::create(expCtx,
+                                           {{"a", ExpressionFieldPath::create(expCtx, "a")},
+                                            {"b", ExpressionFieldPath::create(expCtx, "b")},
+                                            {"c", ExpressionFieldPath::create(expCtx, "c")}});
     ASSERT_VALUE_EQ(
         Value(Document{{"a", "A"_sd}, {"b", "B"_sd}, {"c", "C"_sd}}),
         object->evaluate(Document{{"c", "C"_sd}, {"a", "A"_sd}, {"b", "B"_sd}, {"_id", "ID"_sd}},
@@ -3425,20 +3402,19 @@ TEST(ExpressionObjectEvaluate, OrderOfFieldsInOutputShouldMatchOrderInSpecificat
 
 TEST(ExpressionObjectEvaluate, ShouldRemoveFieldsThatHaveMissingValues) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto object =
-        expressionObjectCreateHelper(expCtx,
-                                     {{"a", ExpressionFieldPath::create(expCtx, "a.b")},
-                                      {"b", ExpressionFieldPath::create(expCtx, "missing")}});
+    auto object = ExpressionObject::create(expCtx,
+                                           {{"a", ExpressionFieldPath::create(expCtx, "a.b")},
+                                            {"b", ExpressionFieldPath::create(expCtx, "missing")}});
     ASSERT_VALUE_EQ(Value(Document{}), object->evaluate(Document(), &(expCtx->variables)));
     ASSERT_VALUE_EQ(Value(Document{}), object->evaluate(Document{{"a", 1}}, &(expCtx->variables)));
 }
 
 TEST(ExpressionObjectEvaluate, ShouldEvaluateFieldsWithinNestedObject) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto object = expressionObjectCreateHelper(
+    auto object = ExpressionObject::create(
         expCtx,
         {{"a",
-          expressionObjectCreateHelper(
+          ExpressionObject::create(
               expCtx,
               {{"b", makeConstant(1)}, {"c", ExpressionFieldPath::create(expCtx, "_id")}})}});
     ASSERT_VALUE_EQ(Value(Document{{"a", Document{{"b", 1}}}}),
@@ -3449,11 +3425,11 @@ TEST(ExpressionObjectEvaluate, ShouldEvaluateFieldsWithinNestedObject) {
 
 TEST(ExpressionObjectEvaluate, ShouldEvaluateToEmptyDocumentIfAllFieldsAreMissing) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto object = expressionObjectCreateHelper(
-        expCtx, {{"a", ExpressionFieldPath::create(expCtx, "missing")}});
+    auto object =
+        ExpressionObject::create(expCtx, {{"a", ExpressionFieldPath::create(expCtx, "missing")}});
     ASSERT_VALUE_EQ(Value(Document{}), object->evaluate(Document(), &(expCtx->variables)));
 
-    auto objectWithNestedObject = expressionObjectCreateHelper(expCtx, {{"nested", object}});
+    auto objectWithNestedObject = ExpressionObject::create(expCtx, {{"nested", object}});
     ASSERT_VALUE_EQ(Value(Document{{"nested", Document{}}}),
                     objectWithNestedObject->evaluate(Document(), &(expCtx->variables)));
 }
@@ -3464,7 +3440,7 @@ TEST(ExpressionObjectEvaluate, ShouldEvaluateToEmptyDocumentIfAllFieldsAreMissin
 
 TEST(ExpressionObjectDependencies, ConstantValuesShouldNotBeAddedToDependencies) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
-    auto object = expressionObjectCreateHelper(expCtx, {{"a", makeConstant(5)}});
+    auto object = ExpressionObject::create(expCtx, {{"a", makeConstant(5)}});
     DepsTracker deps;
     object->addDependencies(&deps);
     ASSERT_EQ(deps.fields.size(), 0UL);
@@ -3473,7 +3449,7 @@ TEST(ExpressionObjectDependencies, ConstantValuesShouldNotBeAddedToDependencies)
 TEST(ExpressionObjectDependencies, FieldPathsShouldBeAddedToDependencies) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     auto object =
-        expressionObjectCreateHelper(expCtx, {{"x", ExpressionFieldPath::create(expCtx, "c.d")}});
+        ExpressionObject::create(expCtx, {{"x", ExpressionFieldPath::create(expCtx, "c.d")}});
     DepsTracker deps;
     object->addDependencies(&deps);
     ASSERT_EQ(deps.fields.size(), 1UL);
@@ -3552,7 +3528,7 @@ TEST(ExpressionObjectOptimizations, OptimizingAnObjectShouldOptimizeSubExpressio
     VariablesParseState vps = expCtx->variablesParseState;
     auto addExpression =
         ExpressionAdd::parse(expCtx, BSON("$add" << BSON_ARRAY(1 << 2)).firstElement(), vps);
-    auto object = expressionObjectCreateHelper(expCtx, {{"a", addExpression}});
+    auto object = ExpressionObject::create(expCtx, {{"a", addExpression}});
     ASSERT_EQ(object->getChildExpressions().size(), 1UL);
 
     auto optimized = object->optimize();
@@ -6223,10 +6199,10 @@ TEST(ExpressionMetaTest, ExpressionMetaSortKey) {
         ExpressionMeta::parse(expCtx, expr.firstElement(), expCtx->variablesParseState);
 
     MutableDocument doc;
-    BSONObj sortKey = BSON("" << 1 << "" << 2);
-    doc.metadata().setSortKey(sortKey);
+    Value sortKey = Value(std::vector<Value>{Value(1), Value(2)});
+    doc.metadata().setSortKey(sortKey, /* isSingleElementSortKey = */ false);
     Value val = expressionMeta->evaluate(doc.freeze(), &expCtx->variables);
-    ASSERT_DOCUMENT_EQ(val.getDocument(), Document(sortKey));
+    ASSERT_BSONOBJ_EQ(val.getDocument().toBson(), BSON("" << 1 << "" << 2));
 }
 
 TEST(ExpressionMetaTest, ExpressionMetaTextScore) {
@@ -6378,9 +6354,10 @@ TEST(ExpressionRegexTest, InvalidUTF8InRegex) {
 
 }  // namespace ExpressionRegexTest
 
-class All : public Suite {
+class All : public OldStyleSuiteSpecification {
 public:
-    All() : Suite("expression") {}
+    All() : OldStyleSuiteSpecification("expression") {}
+
     void setupTests() {
         add<Add::NullDocument>();
         add<Add::NoOperands>();
@@ -6583,7 +6560,7 @@ public:
     }
 };
 
-SuiteInstance<All> myall;
+OldStyleSuiteInitializer<All> myall;
 
 namespace NowAndClusterTime {
 TEST(NowAndClusterTime, BasicTest) {

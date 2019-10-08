@@ -140,7 +140,8 @@ void onConfigDeleteInvalidateCachedCollectionMetadataAndNotify(OperationContext*
     // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit().
     AutoGetCollection autoColl(opCtx, deletedNss, MODE_IX);
 
-    opCtx->recoveryUnit()->registerChange(new CollectionVersionLogOpHandler(opCtx, deletedNss));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<CollectionVersionLogOpHandler>(opCtx, deletedNss));
 }
 
 /**
@@ -155,16 +156,7 @@ void incrementChunkOnInsertOrUpdate(OperationContext* opCtx,
                                     long dataWritten,
                                     bool fromMigrate) {
     const auto& shardKeyPattern = chunkManager.getShardKeyPattern();
-
-    // Each inserted/updated document should contain the shard key. The only instance in which a
-    // document could not contain a shard key is if the insert/update is performed through mongod
-    // explicitly, as opposed to first routed through mongos.
     BSONObj shardKey = shardKeyPattern.extractShardKeyFromDoc(document);
-    if (shardKey.woCompare(BSONObj()) == 0) {
-        warning() << "inserting document " << document.toString() << " without shard key pattern "
-                  << shardKeyPattern << " into a sharded collection";
-        return;
-    }
 
     // Use the shard key to locate the chunk into which the document was updated, and increment the
     // number of bytes tracked for the chunk.
@@ -219,7 +211,8 @@ void ShardServerOpObserver::onInserts(OperationContext* opCtx,
                         uassertStatusOK(ShardIdentityType::fromShardIdentityDocument(insertedDoc));
                     uassertStatusOK(shardIdentityDoc.validate());
                     opCtx->recoveryUnit()->registerChange(
-                        new ShardIdentityLogOpHandler(opCtx, std::move(shardIdentityDoc)));
+                        std::make_unique<ShardIdentityLogOpHandler>(opCtx,
+                                                                    std::move(shardIdentityDoc)));
                 }
             }
         }
@@ -281,7 +274,7 @@ void ShardServerOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateE
             if (setField.hasField(ShardCollectionType::kLastRefreshedCollectionVersionFieldName) &&
                 !setField.getBoolField("refreshing")) {
                 opCtx->recoveryUnit()->registerChange(
-                    new CollectionVersionLogOpHandler(opCtx, updatedNss));
+                    std::make_unique<CollectionVersionLogOpHandler>(opCtx, updatedNss));
             }
 
             if (setField.hasField(ShardCollectionType::kEnterCriticalSectionCounterFieldName)) {

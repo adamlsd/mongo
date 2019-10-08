@@ -320,9 +320,8 @@ SortedDataInterface::SortedDataInterface(const Ordering& ordering, bool isUnique
 
 Status SortedDataInterface::insert(OperationContext* opCtx,
                                    const KeyString::Value& keyString,
-                                   const RecordId& loc,
                                    bool dupsAllowed) {
-    dassert(loc == KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize()));
+    RecordId loc = KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize());
 
     StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
     auto sizeWithoutRecordId =
@@ -387,9 +386,8 @@ Status SortedDataInterface::insert(OperationContext* opCtx,
 
 void SortedDataInterface::unindex(OperationContext* opCtx,
                                   const KeyString::Value& keyString,
-                                  const RecordId& loc,
                                   bool dupsAllowed) {
-    dassert(loc == KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize()));
+    RecordId loc = KeyString::decodeRecordIdAtEnd(keyString.getBuffer(), keyString.getSize());
 
     StringStore* workingCopy(RecoveryUnit::get(opCtx)->getHead());
     std::string removeKeyString;
@@ -599,6 +597,35 @@ SortedDataInterface::Cursor::Cursor(OperationContext* opCtx,
       _KSForIdentStart(_KSForIdentStart),
       _KSForIdentEnd(identEndBSON) {}
 
+bool SortedDataInterface::Cursor::advanceNext() {
+    if (!_atEOF) {
+        // If the last move was restore, then we don't need to advance the cursor, since the user
+        // never got the value the cursor was pointing to in the first place. However,
+        // _lastMoveWasRestore will go through extra logic on a unique index, since unique indexes
+        // are not allowed to return the same key twice.
+        if (_lastMoveWasRestore) {
+            _lastMoveWasRestore = false;
+        } else {
+            // We basically just check to make sure the cursor is in the ident.
+            if (_forward && checkCursorValid()) {
+                ++_forwardIt;
+            } else if (!_forward && checkCursorValid()) {
+                ++_reverseIt;
+            }
+            // We check here to make sure that we are on the correct side of the end position, and
+            // that the cursor is still in the ident after advancing.
+            if (!checkCursorValid()) {
+                _atEOF = true;
+                return false;
+            }
+        }
+    } else {
+        _lastMoveWasRestore = false;
+        return false;
+    }
+    return true;
+}
+
 // This function checks whether or not the cursor end position was set by the user or not.
 bool SortedDataInterface::Cursor::endPosSet() {
     return (_forward && _endPos != boost::none) || (!_forward && _endPosReverse != boost::none);
@@ -693,40 +720,25 @@ void SortedDataInterface::Cursor::setEndPosition(const BSONObj& key, bool inclus
 }
 
 boost::optional<IndexKeyEntry> SortedDataInterface::Cursor::next(RequestedInfo parts) {
-    if (!_atEOF) {
-        // If the last move was restore, then we don't need to advance the cursor, since the user
-        // never got the value the cursor was pointing to in the first place. However,
-        // _lastMoveWasRestore will go through extra logic on a unique index, since unique indexes
-        // are not allowed to return the same key twice.
-        if (_lastMoveWasRestore) {
-            _lastMoveWasRestore = false;
-        } else {
-            // We basically just check to make sure the cursor is in the ident.
-            if (_forward) {
-                if (checkCursorValid()) {
-                    ++_forwardIt;
-                }
-            } else {
-                if (checkCursorValid()) {
-                    ++_reverseIt;
-                }
-            }
-            // We check here to make sure that we are on the correct side of the end position, and
-            // that the cursor is still in the ident after advancing.
-            if (!checkCursorValid()) {
-                _atEOF = true;
-                return boost::none;
-            }
-        }
-    } else {
-        _lastMoveWasRestore = false;
-        return boost::none;
+    if (!advanceNext()) {
+        return {};
     }
 
     if (_forward) {
         return keyStringToIndexKeyEntry(_forwardIt->first, _forwardIt->second, _order);
     }
     return keyStringToIndexKeyEntry(_reverseIt->first, _reverseIt->second, _order);
+}
+
+boost::optional<KeyStringEntry> SortedDataInterface::Cursor::nextKeyString() {
+    if (!advanceNext()) {
+        return {};
+    }
+
+    if (_forward) {
+        return keyStringToKeyStringEntry(_forwardIt->first, _forwardIt->second, _order);
+    }
+    return keyStringToKeyStringEntry(_reverseIt->first, _reverseIt->second, _order);
 }
 
 boost::optional<IndexKeyEntry> SortedDataInterface::Cursor::seekAfterProcessing(BSONObj finalKey) {
@@ -850,26 +862,13 @@ boost::optional<KeyStringEntry> SortedDataInterface::Cursor::seekForKeyString(
     return seekAfterProcessing(keyStringValue);
 }
 
-boost::optional<IndexKeyEntry> SortedDataInterface::Cursor::seekExact(const BSONObj& key,
-                                                                      RequestedInfo) {
-    BSONObj finalKey = BSONObj::stripFieldNames(key);
-    KeyString::Builder keyString(KeyString::Version::V1, finalKey, _order);
-    auto ksEntry = seekExact(keyString.getValueCopy());
-    if (ksEntry) {
-        const BSONObj bson = KeyString::toBson(ksEntry->keyString.getBuffer(),
-                                               ksEntry->keyString.getSize(),
-                                               _order,
-                                               ksEntry->keyString.getTypeBits());
-        auto kv = seekAfterProcessing(bson);
-        if (kv) {
-            return kv;
-        }
-    }
-    return {};
-}
-
-boost::optional<KeyStringEntry> SortedDataInterface::Cursor::seekExact(
+boost::optional<KeyStringEntry> SortedDataInterface::Cursor::seekExactForKeyString(
     const KeyString::Value& keyStringValue) {
+    dassert(KeyString::decodeDiscriminator(keyStringValue.getBuffer(),
+                                           keyStringValue.getSize(),
+                                           _order,
+                                           keyStringValue.getTypeBits()) ==
+            KeyString::Discriminator::kInclusive);
     auto ksEntry = seekForKeyString(keyStringValue);
     if (!ksEntry) {
         return {};
@@ -882,6 +881,23 @@ boost::optional<KeyStringEntry> SortedDataInterface::Cursor::seekExact(
         return KeyStringEntry(ksEntry->keyString, ksEntry->loc);
     }
     return {};
+}
+
+boost::optional<IndexKeyEntry> SortedDataInterface::Cursor::seekExact(
+    const KeyString::Value& keyStringValue, RequestedInfo parts) {
+    auto ksEntry = seekExactForKeyString(keyStringValue);
+    if (!ksEntry) {
+        return {};
+    }
+
+    BSONObj bson;
+    if (parts & SortedDataInterface::Cursor::kWantKey) {
+        bson = KeyString::toBson(ksEntry->keyString.getBuffer(),
+                                 ksEntry->keyString.getSize(),
+                                 _order,
+                                 ksEntry->keyString.getTypeBits());
+    }
+    return IndexKeyEntry(std::move(bson), ksEntry->loc);
 }
 
 void SortedDataInterface::Cursor::save() {

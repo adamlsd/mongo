@@ -72,7 +72,7 @@ namespace repl {
 class BackgroundSync;
 class IsMasterResponse;
 class OpTime;
-struct OpTimeAndWallTime;
+class OpTimeAndWallTime;
 class ReadConcernArgs;
 class ReplSetConfig;
 class ReplSetHeartbeatArgsV1;
@@ -853,6 +853,12 @@ public:
     virtual size_t getNumUncommittedSnapshots() = 0;
 
     /**
+     * Creates a waiter that waits for w:majority write concern to be satisfied up to opTime before
+     * setting the 'wMajorityWriteAvailabilityDate' election candidate metric.
+     */
+    virtual void createWMajorityWriteAvailabilityDateWaiter(OpTime opTime) = 0;
+
+    /**
      * Returns a new WriteConcernOptions based on "wc" but with UNSET syncMode reset to JOURNAL or
      * NONE based on our rsConfig.
      */
@@ -882,7 +888,7 @@ public:
      * Increment the counter for the number of ops applied during catchup if the node is in catchup
      * mode.
      */
-    virtual void incrementNumCatchUpOpsIfCatchingUp(int numOps) = 0;
+    virtual void incrementNumCatchUpOpsIfCatchingUp(long numOps) = 0;
 
     /**
      * Signals that drop pending collections have been removed from storage.
@@ -919,6 +925,10 @@ public:
      */
     virtual void attemptToAdvanceStableTimestamp() = 0;
 
+    /**
+     * If our state is RECOVERING and lastApplied is at least minValid, transition to SECONDARY.
+     */
+    virtual void finishRecoveryIfEligible(OperationContext* opCtx) = 0;
 
 protected:
     ReplicationCoordinator();

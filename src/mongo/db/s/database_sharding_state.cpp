@@ -37,7 +37,7 @@
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/s/database_version_helpers.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -53,7 +53,7 @@ public:
     DatabaseShardingStateMap() {}
 
     DatabaseShardingState& getOrCreate(const StringData dbName) {
-        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        stdx::lock_guard<Latch> lg(_mutex);
 
         auto it = _databases.find(dbName);
         if (it == _databases.end()) {
@@ -69,7 +69,7 @@ public:
 private:
     using DatabasesMap = StringMap<std::shared_ptr<DatabaseShardingState>>;
 
-    stdx::mutex _mutex;
+    Mutex _mutex = MONGO_MAKE_LATCH("DatabaseShardingStateMap::_mutex");
     DatabasesMap _databases;
 };
 

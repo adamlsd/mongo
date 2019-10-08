@@ -54,12 +54,10 @@ public:
 
     Status insert(OperationContext* opCtx,
                   const KeyString::Value& keyString,
-                  const RecordId& recId,
                   bool dupsAllowed) override;
 
     void unindex(OperationContext* opCtx,
                  const KeyString::Value& keyString,
-                 const RecordId& recId,
                  bool dupsAllowed) override;
 
     void fullValidate(OperationContext* opCtx,
@@ -107,6 +105,10 @@ public:
     }
 
 protected:
+    bool _advanceNext();
+
+    KeyStringEntry _getKeyStringEntry();
+
     bool _isDup(OperationContext* opCtx, const KeyString::Value& key);
 
     /**
@@ -119,12 +121,10 @@ protected:
 
     virtual Status _insert(OperationContext* opCtx,
                            const KeyString::Value& keyString,
-                           const RecordId& recId,
                            bool dupsAllowed) = 0;
 
     virtual void _unindex(OperationContext* opCtx,
                           const KeyString::Value& keyString,
-                          const RecordId& recId,
                           bool dupsAllowed) = 0;
 
     class BulkBuilderBase;
@@ -153,12 +153,10 @@ public:
 protected:
     Status _insert(OperationContext* opCtx,
                    const KeyString::Value& keyString,
-                   const RecordId& recId,
                    bool dupsAllowed) override;
 
     void _unindex(OperationContext* opCtx,
                   const KeyString::Value& keyString,
-                  const RecordId& recId,
                   bool dupsAllowed) override;
 };
 
@@ -176,12 +174,10 @@ public:
 protected:
     Status _insert(OperationContext* opCtx,
                    const KeyString::Value& keyString,
-                   const RecordId& recId,
                    bool dupsAllowed) override;
 
     void _unindex(OperationContext* opCtx,
                   const KeyString::Value& keyString,
-                  const RecordId& recId,
                   bool dupsAllowed) override;
 
     const bool _isPartial = false;

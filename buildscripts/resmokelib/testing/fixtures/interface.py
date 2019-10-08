@@ -30,6 +30,10 @@ class Fixture(object, metaclass=registry.make_registry_metaclass(_FIXTURES)):
     # is defined for all subclasses of Fixture.
     REGISTERED_NAME = "Fixture"
 
+    _LAST_STABLE_FCV = "4.2"
+    _LATEST_FCV = "4.4"
+    _LAST_STABLE_BIN_VERSION = "4.2"
+
     def __init__(self, logger, job_num, dbpath_prefix=None):
         """Initialize the fixture with a logger instance."""
 
@@ -47,6 +51,10 @@ class Fixture(object, metaclass=registry.make_registry_metaclass(_FIXTURES)):
         dbpath_prefix = utils.default_if_none(config.DBPATH_PREFIX, dbpath_prefix)
         dbpath_prefix = utils.default_if_none(dbpath_prefix, config.DEFAULT_DBPATH_PREFIX)
         self._dbpath_prefix = os.path.join(dbpath_prefix, "job{}".format(self.job_num))
+
+    def pids(self):
+        """Return any pids owned by this fixture."""
+        raise NotImplementedError("pids must be implemented by Fixture subclasses %s" % self)
 
     def setup(self):
         """Create the fixture."""
@@ -192,6 +200,10 @@ class NoOpFixture(Fixture):
     """
 
     REGISTERED_NAME = "NoOpFixture"
+
+    def pids(self):
+        """:return: any pids owned by this fixture (none for NopFixture)."""
+        return []
 
     def mongo_client(self, read_preference=None, timeout_millis=None):
         """Return the mongo_client connection."""

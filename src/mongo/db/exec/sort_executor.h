@@ -29,7 +29,10 @@
 
 #pragma once
 
-#include "mongo/db/pipeline/document.h"
+#include "mongo/db/exec/document_value/document.h"
+#include "mongo/db/exec/plan_stats.h"
+#include "mongo/db/exec/sort_key_comparator.h"
+#include "mongo/db/exec/working_set.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/query/sort_pattern.h"
 #include "mongo/db/sorter/sorter.h"
@@ -52,7 +55,9 @@ public:
                  std::string tempDir,
                  bool allowDiskUse);
 
-    boost::optional<Document> getNext();
+    boost::optional<Document> getNextDoc();
+
+    boost::optional<WorkingSetMember> getNextWsm();
 
     const SortPattern& sortPattern() const {
         return _sortPattern;
@@ -89,15 +94,32 @@ public:
      */
     void add(Value, Document);
 
+    /**
+     * Add a WorkingSetMember with sort key specified by Value to the DocumentSorter.
+     */
+    void add(Value, WorkingSetMember);
+
+    /**
+     * Returns true if the loading phase has been explicitly completed, and then the stream of
+     * documents has subsequently been exhausted by "get next" calls.
+     */
+    bool isEOF() const {
+        return _isEOF;
+    }
+
+    std::unique_ptr<SortStats> stats() const;
+
 private:
-    using DocumentSorter = Sorter<Value, Document>;
+    using DocumentSorter = Sorter<Value, WorkingSetMember>;
     class Comparator {
     public:
-        Comparator(const SortPattern& sortPattern) : _sort(sortPattern) {}
-        int operator()(const DocumentSorter::Data& lhs, const DocumentSorter::Data& rhs) const;
+        Comparator(const SortPattern& sortPattern) : _sortKeyComparator(sortPattern) {}
+        int operator()(const DocumentSorter::Data& lhs, const DocumentSorter::Data& rhs) const {
+            return _sortKeyComparator(lhs.first, rhs.first);
+        }
 
     private:
-        const SortPattern& _sort;
+        SortKeyComparator _sortKeyComparator;
     };
 
     SortOptions makeSortOptions() const;
@@ -114,5 +136,6 @@ private:
 
     bool _isEOF = false;
     bool _wasDiskUsed = false;
+    uint64_t _totalDataSizeBytes = 0u;
 };
 }  // namespace mongo

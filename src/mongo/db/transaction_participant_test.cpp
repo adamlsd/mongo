@@ -56,7 +56,7 @@
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/clock_source_mock.h"
-#include "mongo/util/fail_point_service.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/net/socket_utils.h"
 #include "mongo/util/tick_source_mock.h"
 
@@ -72,7 +72,7 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
                                 repl::OpTypeEnum opType,
                                 BSONObj object,
                                 OperationSessionInfo sessionInfo,
-                                boost::optional<Date_t> wallClockTime,
+                                Date_t wallClockTime,
                                 boost::optional<StmtId> stmtId,
                                 boost::optional<repl::OpTime> prevWriteOpTimeInTransaction) {
     return repl::OplogEntry(
@@ -262,6 +262,7 @@ protected:
 
         opCtx()->setLogicalSessionId(_sessionId);
         opCtx()->setTxnNumber(_txnNumber);
+        opCtx()->setInMultiDocumentTransaction();
 
         // Normally, committing a transaction is supposed to usassert if the corresponding prepare
         // has not been majority committed. We excempt our unit tests from this expectation.
@@ -298,6 +299,7 @@ protected:
     std::unique_ptr<MongoDOperationContextSession> checkOutSession(
         boost::optional<bool> startNewTxn = true) {
         opCtx()->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
+        opCtx()->setInMultiDocumentTransaction();
         auto opCtxSession = std::make_unique<MongoDOperationContextSession>(opCtx());
         auto txnParticipant = TransactionParticipant::get(opCtx());
         txnParticipant.beginOrContinue(opCtx(), *opCtx()->getTxnNumber(), false, startNewTxn);
@@ -344,6 +346,7 @@ TEST_F(TxnParticipantTest, TransactionThrowsLockTimeoutIfLockIsUnavailable) {
         auto newOpCtx = newClient->makeOperationContext();
         newOpCtx.get()->setLogicalSessionId(newSessionId);
         newOpCtx.get()->setTxnNumber(newTxnNum);
+        newOpCtx.get()->setInMultiDocumentTransaction();
 
         MongoDOperationContextSession newOpCtxSession(newOpCtx.get());
         auto newTxnParticipant = TransactionParticipant::get(newOpCtx.get());
@@ -743,6 +746,7 @@ TEST_F(TxnParticipantTest, KillOpBeforeCommittingPreparedTransaction) {
     }
 
     // Check the session back in.
+    txnParticipant.stashTransactionResources(opCtx());
     sessionCheckout->checkIn(opCtx());
 
     // The transaction state should have been unaffected.
@@ -751,6 +755,7 @@ TEST_F(TxnParticipantTest, KillOpBeforeCommittingPreparedTransaction) {
     auto commitPreparedFunc = [&](OperationContext* opCtx) {
         opCtx->setLogicalSessionId(_sessionId);
         opCtx->setTxnNumber(_txnNumber);
+        opCtx->setInMultiDocumentTransaction();
 
         // Check out the session and continue the transaction.
         auto opCtxSession = std::make_unique<MongoDOperationContextSession>(opCtx);
@@ -783,6 +788,7 @@ TEST_F(TxnParticipantTest, KillOpBeforeAbortingPreparedTransaction) {
     }
 
     // Check the session back in.
+    txnParticipant.stashTransactionResources(opCtx());
     sessionCheckout->checkIn(opCtx());
 
     // The transaction state should have been unaffected.
@@ -791,6 +797,7 @@ TEST_F(TxnParticipantTest, KillOpBeforeAbortingPreparedTransaction) {
     auto commitPreparedFunc = [&](OperationContext* opCtx) {
         opCtx->setLogicalSessionId(_sessionId);
         opCtx->setTxnNumber(_txnNumber);
+        opCtx->setInMultiDocumentTransaction();
 
         // Check out the session and continue the transaction.
         auto opCtxSession = std::make_unique<MongoDOperationContextSession>(opCtx);
@@ -846,7 +853,7 @@ TEST_F(TxnParticipantTest, UnstashFailsShouldLeaveTxnResourceStashUnchanged) {
     ASSERT_FALSE(txnParticipant.getTxnResourceStashLockerForTest()->isLocked());
 
     // Enable fail point.
-    getGlobalFailPointRegistry()->getFailPoint("restoreLocksFail")->setMode(FailPoint::alwaysOn);
+    globalFailPointRegistry().find("restoreLocksFail")->setMode(FailPoint::alwaysOn);
 
     ASSERT_THROWS_CODE(txnParticipant.unstashTransactionResources(opCtx(), "commitTransaction"),
                        AssertionException,
@@ -856,7 +863,7 @@ TEST_F(TxnParticipantTest, UnstashFailsShouldLeaveTxnResourceStashUnchanged) {
     ASSERT_FALSE(txnParticipant.getTxnResourceStashLockerForTest()->isLocked());
 
     // Disable fail point.
-    getGlobalFailPointRegistry()->getFailPoint("restoreLocksFail")->setMode(FailPoint::off);
+    globalFailPointRegistry().find("restoreLocksFail")->setMode(FailPoint::off);
 
     // Should be successfully able to perform lock restore.
     txnParticipant.unstashTransactionResources(opCtx(), "commitTransaction");
@@ -1161,6 +1168,7 @@ TEST_F(TxnParticipantTest, CannotStartNewTransactionWhilePreparedTransactionInPr
              txnNumberToStart = *opCtx()->getTxnNumber() + 1](OperationContext* newOpCtx) {
                 newOpCtx->setLogicalSessionId(lsid);
                 newOpCtx->setTxnNumber(txnNumberToStart);
+                newOpCtx->setInMultiDocumentTransaction();
 
                 MongoDOperationContextSession ocs(newOpCtx);
                 auto txnParticipant = TransactionParticipant::get(newOpCtx);
@@ -1470,7 +1478,9 @@ TEST_F(TxnParticipantTest, ThrowDuringUnpreparedOnTransactionAbort) {
         txnParticipant.abortTransaction(opCtx()), AssertionException, ErrorCodes::OperationFailed);
 }
 
-TEST_F(TxnParticipantTest, ThrowDuringPreparedOnTransactionAbortIsFatal) {
+DEATH_TEST_F(TxnParticipantTest,
+             ThrowDuringPreparedOnTransactionAbortIsFatal,
+             "Caught exception during abort of transaction") {
     auto sessionCheckout = checkOutSession();
     auto txnParticipant = TransactionParticipant::get(opCtx());
     txnParticipant.unstashTransactionResources(opCtx(), "abortTransaction");
@@ -1478,8 +1488,7 @@ TEST_F(TxnParticipantTest, ThrowDuringPreparedOnTransactionAbortIsFatal) {
 
     _opObserver->onTransactionAbortThrowsException = true;
 
-    ASSERT_THROWS_CODE(
-        txnParticipant.abortTransaction(opCtx()), AssertionException, ErrorCodes::OperationFailed);
+    txnParticipant.abortTransaction(opCtx());
 }
 
 TEST_F(TxnParticipantTest, InterruptedSessionsCannotBePrepared) {
@@ -3779,7 +3788,7 @@ TEST_F(TxnParticipantTest, OldestActiveTransactionTimestamp) {
 
         AutoGetOrCreateDb autoDb(opCtx(), nss.db(), MODE_X);
         WriteUnitOfWork wuow(opCtx());
-        auto coll = autoDb.getDb()->getCollection(opCtx(), nss);
+        auto coll = CollectionCatalog::get(opCtx()).lookupCollectionByNamespace(nss);
         ASSERT(coll);
         OpDebug* const nullOpDebug = nullptr;
         ASSERT_OK(
@@ -3791,7 +3800,7 @@ TEST_F(TxnParticipantTest, OldestActiveTransactionTimestamp) {
         Timestamp ts(1, i);
         AutoGetOrCreateDb autoDb(opCtx(), nss.db(), MODE_X);
         WriteUnitOfWork wuow(opCtx());
-        auto coll = autoDb.getDb()->getCollection(opCtx(), nss);
+        auto coll = CollectionCatalog::get(opCtx()).lookupCollectionByNamespace(nss);
         ASSERT(coll);
         auto cursor = coll->getCursor(opCtx());
         while (auto record = cursor->next()) {

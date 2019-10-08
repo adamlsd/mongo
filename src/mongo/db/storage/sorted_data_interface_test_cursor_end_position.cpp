@@ -62,8 +62,9 @@ void testSetEndPosition_Next_Forward(bool unique, bool inclusive) {
     ASSERT_EQ(cursor->next(), IndexKeyEntry(key2, loc1));
     if (inclusive) {
         ASSERT_EQ(cursor->next(), IndexKeyEntry(key3, loc1));
-        if (!unique)
+        if (!unique) {
             ASSERT_EQ(cursor->next(), IndexKeyEntry(key3, loc2));
+        }
     }
     ASSERT_EQ(cursor->next(), boost::none);
     ASSERT_EQ(cursor->next(), boost::none);  // don't resurrect.
@@ -105,8 +106,9 @@ void testSetEndPosition_Next_Reverse(bool unique, bool inclusive) {
               IndexKeyEntry(key5, loc1));
     ASSERT_EQ(cursor->next(), IndexKeyEntry(key4, loc1));
     if (inclusive) {
-        if (!unique)
+        if (!unique) {
             ASSERT_EQ(cursor->next(), IndexKeyEntry(key3, loc2));
+        }
         ASSERT_EQ(cursor->next(), IndexKeyEntry(key3, loc1));
     }
     ASSERT_EQ(cursor->next(), boost::none);
@@ -142,25 +144,25 @@ void testSetEndPosition_Seek_Forward(bool unique, bool inclusive) {
     cursor->setEndPosition(key3, inclusive);
 
     // Directly seeking past end is considered out of range.
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key4, true, true)), boost::none);
-    ASSERT_EQ(cursor->seekExact(key4), boost::none);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key4, true, inclusive)), boost::none);
+    ASSERT_EQ(cursor->seekExact(makeKeyString(sorted.get(), key4)), boost::none);
 
     // Seeking to key3 directly or indirectly is only returned if endPosition is inclusive.
     auto maybeKey3 = inclusive ? boost::make_optional(IndexKeyEntry(key3, loc1)) : boost::none;
 
     // direct
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key3, true, true)), maybeKey3);
-    ASSERT_EQ(cursor->seekExact(key3), maybeKey3);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key3, true, inclusive)), maybeKey3);
+    ASSERT_EQ(cursor->seekExact(makeKeyString(sorted.get(), key3)), maybeKey3);
 
     // indirect
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key2, true, true)), maybeKey3);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key2, true, inclusive)), maybeKey3);
 
     cursor->saveUnpositioned();
     removeFromIndex(opCtx, sorted, {{key3, loc1}});
     cursor->restore();
 
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key2, true, true)), boost::none);
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key3, true, true)), boost::none);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key2, true, inclusive)), boost::none);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key3, true, inclusive)), boost::none);
 }
 TEST(SortedDataInterface, SetEndPosition_Seek_Forward_Unique_Inclusive) {
     testSetEndPosition_Seek_Forward(true, true);
@@ -191,15 +193,16 @@ void testSetEndPosition_Seek_Reverse(bool unique, bool inclusive) {
     cursor->setEndPosition(key2, inclusive);
 
     // Directly seeking past end is considered out of range.
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key1, false, true)), boost::none);
-    ASSERT_EQ(cursor->seekExact(key1), boost::none);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key1, false, inclusive)),
+              boost::none);
+    ASSERT_EQ(cursor->seekExact(makeKeyString(sorted.get(), key1)), boost::none);
 
     // Seeking to key2 directly or indirectly is only returned if endPosition is inclusive.
     auto maybeKey2 = inclusive ? boost::make_optional(IndexKeyEntry(key2, loc1)) : boost::none;
 
     // direct
-    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key2, false, true)), maybeKey2);
-    ASSERT_EQ(cursor->seekExact(key2), maybeKey2);
+    ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key2, false, inclusive)), maybeKey2);
+    ASSERT_EQ(cursor->seekExact(makeKeyString(sorted.get(), key2)), maybeKey2);
 
     // indirect
     ASSERT_EQ(cursor->seek(makeKeyStringForSeek(sorted.get(), key3, false, true)), maybeKey2);

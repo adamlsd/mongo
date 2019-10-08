@@ -63,7 +63,7 @@ public:
         iterator(StringData dbName, uint64_t genNum, const CollectionCatalog& catalog);
         iterator(
             std::map<std::pair<std::string, CollectionUUID>, Collection*>::const_iterator mapIter);
-        const value_type operator*();
+        value_type operator*();
         iterator operator++();
         iterator operator++(int);
         boost::optional<CollectionUUID> uuid();
@@ -126,8 +126,8 @@ public:
     /**
      * Returns the RecoveryUnit's Change for dropping the collection
      */
-    RecoveryUnit::Change* makeFinishDropCollectionChange(std::unique_ptr<Collection>,
-                                                         CollectionUUID uuid);
+    std::unique_ptr<RecoveryUnit::Change> makeFinishDropCollectionChange(
+        std::unique_ptr<Collection>, CollectionUUID uuid);
 
     /**
      * Deregister all the collection objects.
@@ -202,6 +202,8 @@ public:
     /**
      * This functions gets all the database names. The result is sorted in alphabetical ascending
      * order.
+     *
+     * Unlike DatabaseHolder::getNames(), this does not return databases that are empty.
      */
     std::vector<std::string> getAllDbNames() const;
 
@@ -248,8 +250,8 @@ private:
     Collection* _lookupCollectionByUUID(WithLock, CollectionUUID uuid) const;
 
     const std::vector<CollectionUUID>& _getOrdering_inlock(const StringData& db,
-                                                           const stdx::lock_guard<stdx::mutex>&);
-    mutable mongo::stdx::mutex _catalogLock;
+                                                           const stdx::lock_guard<Latch>&);
+    mutable mongo::Mutex _catalogLock;
 
     /**
      * When present, indicates that the catalog is in closed state, and contains a map from UUID
@@ -273,7 +275,7 @@ private:
     uint64_t _generationNumber;
 
     // Protects _resourceInformation.
-    mutable stdx::mutex _resourceLock;
+    mutable Mutex _resourceLock = MONGO_MAKE_LATCH("CollectionCatalog::_resourceLock");
 
     // Mapping from ResourceId to a set of strings that contains collection and database namespaces.
     std::map<ResourceId, std::set<std::string>> _resourceInformation;

@@ -39,25 +39,66 @@
 
 namespace mongo {
 namespace stdx {
-
 /**
- * We're wrapping std::thread here, rather than aliasing it, because we'd like
- * a std::thread that's identical in all ways to the original, but terminates
- * if a new thread cannot be allocated.  We'd like this behavior because we
- * rarely if ever try/catch thread creation, and don't have a strategy for
- * retrying.  Therefore, all throwing does is remove context as to which part
- * of the system failed thread creation (as the exception itself is caught at
- * the top of the stack).
+ * We're wrapping std::thread here, rather than aliasing it, because we'd like to augment some
+ * implicit non-observable behviours into std::thread.  The resulting type should be identical in
+ * all observable ways to the original, but it should terminate if a new thread cannot be allocated,
+ * it should handle `set_terminate` semantics correctly, and it should implicitly allocate a
+ * `sigaltstack` when starting.  We'd like this behavior because we rarely if ever try/catch thread
+ * creation, and don't have a strategy for retrying.  Therefore, all throwing does is remove context
+ * as to which part of the system failed thread creation (as the exception itself is caught at the
+ * top of the stack).  The `sigaltstack` provides the ability to attempt to run stack symbolization
+ * code when a thread overflows its stack.
  *
- * We're putting this in stdx, rather than having it as some kind of
- * mongo::Thread, because the signature and use of the type is otherwise
- * completely identical.  Rather than migrate all callers, it was deemed
- * simpler to make the in place adjustment and retain it in stdx.
+ * We're putting this in stdx, rather than having it as some kind of mongo::Thread, because the
+ * signature and use of the type is otherwise completely identical.
  *
- * We implement this with private inheritance to minimize the overhead of our
- * wrapping and to simplify the implementation.
+ * We implement this with private inheritance to minimize the overhead of our wrapping and to
+ * simplify the implementation.
  */
-class thread : private ::std::thread {  // NOLINT
+class thread : private ::std::thread  // NOLINT
+{
+private:
+    /*
+     * NOTE: The `Function f` parameter must be taken by value, not reference or forwarding
+     * reference, as it is used on the far side of the thread launch, and this ctor has to properly
+     * transfer ownership to the far side's thread.
+     */
+    template <typename Function, typename... Args>
+    static ::std::thread createThread(Function f, Args&&... args) noexcept {
+
+        return std::thread {
+            [
+#if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE
+                signalStack = []{ return std::unique_ptr( new std::byte[ SIGSTKSZ ] ) }(),
+#endif
+                f = std::move(f),
+                pack = std::make_tuple(std::forward<Args>(args)...)
+            ]() mutable noexcept {
+#if defined(_WIN32)
+
+                // On Win32 we have to set the terminate handler per thread.
+                // We set it to our universal terminate handler, which people can register via the
+                // `stdx::set_terminate` hook.
+                ::std::set_terminate(  // NOLINT
+                    ::mongo::stdx::TerminateHandlerDetailsInterface::dispatch);
+
+#elif _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE
+
+                // On Posix, we want to create an alternate signal stack to permit better stack
+                // unwind behaviour.
+                stack_t stack;
+                stack.ss_sp = signalStack.get();
+                stack.ss_size = SIGSTKSZ;
+                stack.ss_flags = 0;
+                ::sigaltstack(&ss, nullptr);
+
+#endif
+                return std::apply(std::move(f), std::move(pack));
+            }
+        };
+    }
+
 public:
     using ::std::thread::id;                  // NOLINT
     using ::std::thread::native_handle_type;  // NOLINT
@@ -75,30 +116,13 @@ public:
      * participate in overload resolution if std::decay_t<Function> is not the same type as thread.
      * That prevents this overload from intercepting calls that might generate implicit conversions
      * before binding to other constructors (specifically move/copy constructors).
-     *
-     * NOTE: The `Function f` parameter must be taken by value, not reference or forwarding
-     * reference, as it is used on the far side of the thread launch, and this ctor has to properly
-     * transfer ownership to the far side's thread.
      */
     template <class Function,
               class... Args,
               std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0>
-    explicit thread(Function f, Args&&... args) noexcept
+    explicit thread(Function&& f, Args&&... args) noexcept
         : ::std::thread::thread(  // NOLINT
-              [
-                  f = std::move(f),
-                  pack = std::make_tuple(std::forward<Args>(args)...)
-              ]() mutable noexcept {
-#if defined(_WIN32)
-                  // On Win32 we have to set the terminate handler per thread.
-                  // We set it to our universal terminate handler, which people can register via the
-                  // `stdx::set_terminate` hook.
-                  ::std::set_terminate(  // NOLINT
-                      ::mongo::stdx::TerminateHandlerDetailsInterface::dispatch);
-#endif
-                  return std::apply(std::move(f), std::move(pack));
-              }) {
-    }
+              createThread(std::forward<Function>(f), std::forward<Args>(args)...)) {}
 
     using ::std::thread::get_id;                // NOLINT
     using ::std::thread::hardware_concurrency;  // NOLINT
@@ -127,7 +151,8 @@ using std::this_thread::sleep_for;    // NOLINT
 using std::this_thread::sleep_until;  // NOLINT
 #else
 template <class Rep, class Period>
-inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) {  // NOLINT
+inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration)  // NOLINT
+{
     if (sleep_duration <= sleep_duration.zero())
         return;
 
@@ -138,19 +163,21 @@ inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) 
     struct timespec sleepVal = {static_cast<std::time_t>(seconds.count()),
                                 static_cast<long>(nanoseconds.count())};
     struct timespec remainVal;
+
     while (nanosleep(&sleepVal, &remainVal) == -1 && errno == EINTR) {
         sleepVal = remainVal;
     }
 }
 
 template <class Clock, class Duration>
-void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  // NOLINT
+void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time)  // NOLINT
+{
     const auto now = Clock::now();
     sleep_for(sleep_time - now);
 }
+
 #endif
 }  // namespace this_thread
-
 }  // namespace stdx
 
 static_assert(std::is_move_constructible_v<stdx::thread>);

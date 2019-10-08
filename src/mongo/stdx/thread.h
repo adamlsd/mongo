@@ -70,7 +70,7 @@ private:
         return std::thread {
             [
 #if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE
-                signalStack = []{ return std::unique_ptr( new std::byte[ SIGSTKSZ ] ) }(),
+                signalStack = []{ return std::unique_ptr( new std::byte[ SIGSTKSZ ] ); }(),
 #endif
                 f = std::move(f),
                 pack = std::make_tuple(std::forward<Args>(args)...)

@@ -151,8 +151,7 @@ using std::this_thread::sleep_for;    // NOLINT
 using std::this_thread::sleep_until;  // NOLINT
 #else
 template <class Rep, class Period>
-inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration)  // NOLINT
-{
+inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) {  // NOLINT
     if (sleep_duration <= sleep_duration.zero())
         return;
 
@@ -163,21 +162,19 @@ inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) 
     struct timespec sleepVal = {static_cast<std::time_t>(seconds.count()),
                                 static_cast<long>(nanoseconds.count())};
     struct timespec remainVal;
-
     while (nanosleep(&sleepVal, &remainVal) == -1 && errno == EINTR) {
         sleepVal = remainVal;
     }
 }
 
 template <class Clock, class Duration>
-void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time)  // NOLINT
-{
+void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  // NOLINT
     const auto now = Clock::now();
     sleep_for(sleep_time - now);
 }
-
 #endif
 }  // namespace this_thread
+
 }  // namespace stdx
 
 static_assert(std::is_move_constructible_v<stdx::thread>);

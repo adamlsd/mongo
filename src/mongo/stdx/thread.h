@@ -59,7 +59,7 @@ namespace stdx {
  * We implement this with private inheritance to minimize the overhead of our wrapping and to
  * simplify the implementation.
  */
-class thread : private ::std::thread  {// NOLINT
+class thread : private ::std::thread {  // NOLINT
 private:
     class SignalStack {
 #if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE || __FreeBSD__
@@ -71,16 +71,13 @@ private:
     public:
         [[nodiscard]] auto installStack() const {
             struct StackGuard {
-                StackGuard(const StackGuard&) = delete;
-                StackGuard(StackGuard&&) = delete;
-                StackGuard& operator=(const StackGuard&) = delete;
-                StackGuard& operator=(StackGuard&&) = delete;
-
                 ~StackGuard() {
                     stack_t stack;
                     stack.ss_flags = SS_DISABLE;
                     sigaltstack(&stack, nullptr);
                 }
+
+                StackGuard(const StackGuard&) = delete;
 
                 explicit StackGuard(std::byte* const allocation) {
                     stack_t stack;
@@ -100,6 +97,7 @@ private:
         [[nodiscard]] auto installStack() const {
             struct Guard {
                 ~Guard() {}  // Mustn't be a trivial dtor, or else it triggers warnings.
+                Guard(const Guard&) = delete;
             };
 
             return Guard{};
@@ -115,37 +113,21 @@ private:
      */
     template <typename Function, typename... Args>
     static ::std::thread createThread(Function f, Args&&... args) noexcept {
-
-        return std::thread {
-            [
-#if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE
-                signalStack = []{ return std::unique_ptr( new std::byte[ SIGSTKSZ ] ); }(),
-#endif
-                f = std::move(f),
-                pack = std::make_tuple(std::forward<Args>(args)...)
-            ]() mutable noexcept {
+        return ::std::thread([
+            signalStack = SignalStack{},
+            f = std::move(f),
+            pack = std::make_tuple(std::forward<Args>(args)...)
+        ]() mutable noexcept {
 #if defined(_WIN32)
-
-                // On Win32 we have to set the terminate handler per thread.
-                // We set it to our universal terminate handler, which people can register via the
-                // `stdx::set_terminate` hook.
-                ::std::set_terminate(  // NOLINT
-                    ::mongo::stdx::TerminateHandlerDetailsInterface::dispatch);
-
-#elif _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE
-
-                // On Posix, we want to create an alternate signal stack to permit better stack
-                // unwind behaviour.
-                stack_t stack;
-                stack.ss_sp = signalStack.get();
-                stack.ss_size = SIGSTKSZ;
-                stack.ss_flags = 0;
-                ::sigaltstack(&ss, nullptr);
-
+            // On Win32 we have to set the terminate handler per thread.
+            // We set it to our universal terminate handler, which people can register via the
+            // `stdx::set_terminate` hook.
+            ::std::set_terminate(::mongo::stdx::TerminateHandlerDetailsInterface::dispatch);
 #endif
-                return std::apply(std::move(f), std::move(pack));
-            }
-        };
+
+            auto guard = signalStack.installStack();
+            return std::apply(std::move(f), std::move(pack));
+        });
     }
 
 public:

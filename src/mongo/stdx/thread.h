@@ -29,7 +29,10 @@
 
 #pragma once
 
+#include <signal.h>
+
 #include <chrono>
+#include <cstdint>
 #include <ctime>
 #include <exception>
 #include <thread>
@@ -56,9 +59,55 @@ namespace stdx {
  * We implement this with private inheritance to minimize the overhead of our wrapping and to
  * simplify the implementation.
  */
-class thread : private ::std::thread  // NOLINT
-{
+class thread : private ::std::thread  {// NOLINT
 private:
+    class SignalStack {
+#if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE || __FreeBSD__
+
+    private:
+        static inline constexpr std::size_t kSignalStackSize = SIGSTKSZ;
+        std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSignalStackSize);
+
+    public:
+        [[nodiscard]] auto installStack() const {
+            struct StackGuard {
+                StackGuard(const StackGuard&) = delete;
+                StackGuard(StackGuard&&) = delete;
+                StackGuard& operator=(const StackGuard&) = delete;
+                StackGuard& operator=(StackGuard&&) = delete;
+
+                ~StackGuard() {
+                    stack_t stack;
+                    stack.ss_flags = SS_DISABLE;
+                    sigaltstack(&stack, nullptr);
+                }
+
+                explicit StackGuard(std::byte* const allocation) {
+                    stack_t stack;
+                    stack.ss_sp = allocation;
+                    stack.ss_size = kSignalStackSize;
+                    stack.ss_flags = 0;
+                    sigaltstack(&stack, nullptr);
+                }
+            };
+
+            return StackGuard{this->stack.get()};
+        }
+
+#else
+
+    public:
+        [[nodiscard]] auto installStack() const {
+            struct Guard {
+                ~Guard() {}  // Mustn't be a trivial dtor, or else it triggers warnings.
+            };
+
+            return Guard{};
+        }
+
+#endif
+    };
+
     /*
      * NOTE: The `Function f` parameter must be taken by value, not reference or forwarding
      * reference, as it is used on the far side of the thread launch, and this ctor has to properly

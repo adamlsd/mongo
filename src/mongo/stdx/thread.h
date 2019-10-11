@@ -41,6 +41,12 @@
 #include "mongo/stdx/exception.h"
 
 namespace mongo {
+
+namespace stdx { class thread; }
+
+const void *getStackForThread( const stdx::thread & );
+std::size_t getStackSizeForThread( const stdx::thread & );
+
 namespace stdx {
 /**
  * We're wrapping std::thread here, rather than aliasing it, because we'd like to augment some
@@ -61,7 +67,14 @@ namespace stdx {
  */
 class thread : private ::std::thread {  // NOLINT
 private:
-    class SignalStack {
+	const void *signalStackBase= nullptr;
+	std::size_t signalStackSize= 0;
+
+	friend const void *mongo::getStackForThread( const stdx::thread & );
+	friend std::size_t mongo::getStackSizeForThread( const stdx::thread & );
+
+    class SignalStack
+	{
 #if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE || __FreeBSD__
 
     private:
@@ -91,6 +104,8 @@ private:
             return StackGuard{this->stack.get()};
         }
 
+		const void *allocation() const { return this->stack.get(); }
+		std::size_t size() const { return kSignalStackSize; }
 #else
 
     public:
@@ -103,6 +118,8 @@ private:
             return Guard{};
         }
 
+		const void *allocation() const { return nullptr; }
+		std::size_t size() const { return 0; }
 #endif
     };
 
@@ -112,11 +129,19 @@ private:
      * transfer ownership to the far side's thread.
      */
     template <typename Function, typename... Args>
-    static ::std::thread createThread(Function f, Args&&... args) noexcept {  // NOLINT
+    static ::std::thread
+	createThread( const void *&stackBase, std::size_t &stackSize, Function f, Args&&... args ) noexcept
+	{  // NOLINT
         return ::std::thread([ //NOLINT
-            signalStack = SignalStack{},
-            f = std::move(f),
-            pack = std::make_tuple(std::forward<Args>(args)...)
+            signalStack= [&stackBase, &stackSize]
+				{
+					SignalStack rv;
+					stackBase= rv.allocation();
+					stackSize= rv.size();
+					return rv;
+				}(),
+            f = std::move( f ),
+            pack = std::make_tuple( std::forward< Args >( args )... )
         ]() mutable noexcept {
 #if defined(_WIN32)
             // On Win32 we have to set the terminate handler per thread.
@@ -129,6 +154,17 @@ private:
             return std::apply(std::move(f), std::move(pack));
         });
     }
+private:
+	struct secret_ctor {};
+
+	template< typename Function, typename ... Args >
+	explicit
+	thread( secret_ctor &&, const void *allocationRegion, std::size_t allocationSize, Function &&f,
+			Args &&... args ) noexcept
+		: ::std::thread( createThread( allocationRegion, allocationSize, std::forward< Function >( f ),
+				std::forward< Args >( args )... ) ),
+		signalStackBase( allocationRegion ),
+		signalStackSize( allocationSize ) {}
 
 public:
     using ::std::thread::id;                  // NOLINT
@@ -150,10 +186,10 @@ public:
      */
     template <class Function,
               class... Args,
-              std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0>
+              std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0,
+              std::enable_if_t<!std::is_same_v<secret_ctor, std::decay_t<Function>>, int> = 0>
     explicit thread(Function&& f, Args&&... args) noexcept
-        : ::std::thread::thread(  // NOLINT
-              createThread(std::forward<Function>(f), std::forward<Args>(args)...)) {}
+        : thread( secret_ctor{}, nullptr, 0, std::forward<Function>(f), std::forward<Args>(args)...) {}
 
     using ::std::thread::get_id;                // NOLINT
     using ::std::thread::hardware_concurrency;  // NOLINT
@@ -210,4 +246,16 @@ void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  
 
 static_assert(std::is_move_constructible_v<stdx::thread>);
 static_assert(std::is_move_assignable_v<stdx::thread>);
+
+inline const void *
+getStackForThread( const stdx::thread &thr )
+{
+	return thr.signalStackBase;
+}
+
+inline std::size_t
+getStackSizeForThread( const stdx::thread &thr )
+{
+	return thr.signalStackSize;
+}
 }  // namespace mongo

@@ -44,8 +44,13 @@ namespace mongo {
 
 namespace stdx { class thread; }
 
-const void *getStackForThread( const stdx::thread & );
-std::size_t getStackSizeForThread( const stdx::thread & );
+struct ThreadInformation
+{
+	const void *signalStackBase;
+	std::size_t signalStackSize;
+};
+
+ThreadInformation getInformationForThread( const stdx::thread & );
 
 namespace stdx {
 /**
@@ -67,11 +72,9 @@ namespace stdx {
  */
 class thread : private ::std::thread {  // NOLINT
 private:
-	const void *signalStackBase= nullptr;
-	std::size_t signalStackSize= 0;
+	ThreadInformation info;
 
-	friend const void *mongo::getStackForThread( const stdx::thread & );
-	friend std::size_t mongo::getStackSizeForThread( const stdx::thread & );
+	friend ThreadInformation mongo::getInformationForThread( const stdx::thread & );
 
     class SignalStack
 	{
@@ -130,14 +133,13 @@ private:
      */
     template <typename Function, typename... Args>
     static ::std::thread
-	createThread( const void *&stackBase, std::size_t &stackSize, Function f, Args&&... args ) noexcept
+	createThread( ThreadInformation &information, Function f, Args&&... args ) noexcept
 	{  // NOLINT
         return ::std::thread([ //NOLINT
-            signalStack= [&stackBase, &stackSize]
+            signalStack= [&information]
 				{
 					SignalStack rv;
-					stackBase= rv.allocation();
-					stackSize= rv.size();
+					information= { rv.allocation(), rv.size() };
 					return rv;
 				}(),
             f = std::move( f ),
@@ -159,12 +161,11 @@ private:
 
 	template< typename Function, typename ... Args >
 	explicit
-	thread( secret_ctor &&, const void *allocationRegion, std::size_t allocationSize, Function &&f,
+	thread( secret_ctor &&, ThreadInformation information, Function &&f,
 			Args &&... args ) noexcept
-		: ::std::thread( createThread( allocationRegion, allocationSize, std::forward< Function >( f ),
+		: ::std::thread( createThread( information, std::forward< Function >( f ),
 				std::forward< Args >( args )... ) ),
-		signalStackBase( allocationRegion ),
-		signalStackSize( allocationSize ) {}
+		info( information ) {}
 
 public:
     using ::std::thread::id;                  // NOLINT
@@ -189,7 +190,8 @@ public:
               std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0,
               std::enable_if_t<!std::is_same_v<secret_ctor, std::decay_t<Function>>, int> = 0>
     explicit thread(Function&& f, Args&&... args) noexcept
-        : thread( secret_ctor{}, nullptr, 0, std::forward<Function>(f), std::forward<Args>(args)...) {}
+        : thread( secret_ctor{}, ThreadInformation{}, std::forward<Function>(f),
+				std::forward<Args>(args)...) {}
 
     using ::std::thread::get_id;                // NOLINT
     using ::std::thread::hardware_concurrency;  // NOLINT
@@ -247,15 +249,9 @@ void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  
 static_assert(std::is_move_constructible_v<stdx::thread>);
 static_assert(std::is_move_assignable_v<stdx::thread>);
 
-inline const void *
-getStackForThread( const stdx::thread &thr )
+inline ThreadInformation
+getInformationForThread( const stdx::thread &thr )
 {
-	return thr.signalStackBase;
-}
-
-inline std::size_t
-getStackSizeForThread( const stdx::thread &thr )
-{
-	return thr.signalStackSize;
+	return thr.info;
 }
 }  // namespace mongo

@@ -110,8 +110,7 @@ int
 main()
 {
     stdx::thread thr( jumpoff );
-    const void *const pos= mongo::getStackForThread( thr );
-    const std::size_t amt= mongo::getStackSizeForThread( thr );
+    const auto [ pos, amt ]= mongo::getInformationForThread( thr );
     std::cout << "Position is: " << pos << std::endl;
     std::cout << "Stack's limit is: " << amt << std::endl;
     thr.join();

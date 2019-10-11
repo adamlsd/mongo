@@ -112,8 +112,8 @@ private:
      * transfer ownership to the far side's thread.
      */
     template <typename Function, typename... Args>
-    static ::std::thread createThread(Function f, Args&&... args) noexcept {
-        return ::std::thread([
+    static ::std::thread createThread(Function f, Args&&... args) noexcept {  // NOLINT
+        return ::std::thread([ //NOLINT
             signalStack = SignalStack{},
             f = std::move(f),
             pack = std::make_tuple(std::forward<Args>(args)...)
@@ -122,7 +122,7 @@ private:
             // On Win32 we have to set the terminate handler per thread.
             // We set it to our universal terminate handler, which people can register via the
             // `stdx::set_terminate` hook.
-            ::std::set_terminate(::mongo::stdx::TerminateHandlerDetailsInterface::dispatch);
+            ::std::set_terminate(::mongo::stdx::TerminateHandlerDetailsInterface::dispatch); // NOLINT
 #endif
 
             auto guard = signalStack.installStack();

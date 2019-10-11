@@ -34,6 +34,11 @@
 #include <stdlib.h>
 
 #include <iostream>
+#include <map>
+#include <algorithm>
+#include <string>
+#include <stdexcept>
+#include <exception>
 
 #include "mongo/stdx/thread.h"
 
@@ -48,7 +53,7 @@ namespace
 
     std::atomic< bool > blockage{ true };
     std::atomic< void * > address;
-
+    std::atomic< void * > mainAddress;
 
     void
     recurse( const int n )
@@ -56,8 +61,6 @@ namespace
         if( n == 10 )
         {
             raise( C::SignalNumber );
-            while( blockage );
-            
         }
         else recurse( n + 1 );
     }
@@ -69,9 +72,15 @@ namespace
         blockage= false;
     }
 
+    std::mutex thrmtx;
+    std::condition_variable cv;
+
     void
     jumpoff()
     {
+        auto lk= std::unique_lock( thrmtx );
+        mainAddress= &lk;
+
         {
             struct sigaction action{};
             action.sa_handler= handler;
@@ -102,18 +111,62 @@ namespace
 
 
         recurse( 0 );
+        cv.notify_one();
+        cv.wait( lk );
+        std::cerr << "Notified in child" << std::endl;
     }
+
+    std::mutex mtx;
+    std::map< std::thread::id, mongo::ThreadInformation > mapping;
+
+    void
+    myListener( const std::thread::id id, const mongo::ThreadInformation info )
+    {
+        auto lk= std::lock_guard( mtx );
+        mapping[ id ]= info;
+        std::cerr << "Mapping installed: " << mapping.count( id ) << std::endl;
+        std::cerr << "Identifier: " << id << std::endl;
+    }
+
+    void
+    myReaper( std::thread::id id )
+    {
+        auto lk= std::lock_guard( mtx );
+        std::cerr << "Reaping identifier: " << id << std::endl;
+        mapping.erase( id );
+    }
+    mongo::ThreadInformation
+    getMapping( const stdx::thread::id &id )
+    {
+        auto lk= std::lock_guard( mtx );
+        std::cerr << "Identifier: " << id << std::endl;
+        return mapping.at( id );
+    }
+
+    mongo::ThreadInformation
+    getMapping( const stdx::thread &thr )
+    {
+        return getMapping( thr.get_id() );
+    }
+
 }  // namespace
 
 
 int
 main()
 {
+    mongo::registerInformationListener( myListener );
+    mongo::registerInformationReaper( myReaper );
+
+    auto lk= std::unique_lock( thrmtx );
     stdx::thread thr( jumpoff );
-    const auto [ pos, amt ]= mongo::getInformationForThread( thr );
+    const auto id= thr.get_id();
+    cv.wait( lk );
+    //const auto [ pos, amt ]= mongo::getInformationForThread( thr );
+    const auto [ pos, amt ]= getMapping( thr );
+    
     std::cout << "Position is: " << pos << std::endl;
     std::cout << "Stack's limit is: " << amt << std::endl;
-    thr.join();
     std::cout << "Local was at: " << address << std::endl;
 
     const auto bAddress= static_cast< const std::byte * >( static_cast< void * >( address ) );
@@ -123,5 +176,26 @@ main()
         std::cout << "Address was out of bounds" << std::endl;
     }
     else std::cout << "Address was in bounds" << std::endl;
+
+    const auto bmAddress= static_cast< const std::byte * >( static_cast< void * >( mainAddress ) );
+    if( bmAddress < bPos || bmAddress > ( bPos + amt ) )
+    {
+        std::cout << "Main address was out of bounds (good)" << std::endl;
+    }
+    else std::cout << "Main Address was in bounds (bad)" << std::endl;
+
+    lk.unlock();
+    cv.notify_one();
+    thr.join();
+
+    try
+    {
+        getMapping( id );
+        abort();
+    }
+    catch( const std::out_of_range & )
+    {
+        std::cerr << "Identifier " << id << " was not found, as expected." << std::endl;
+    }
     return EXIT_SUCCESS;
 }

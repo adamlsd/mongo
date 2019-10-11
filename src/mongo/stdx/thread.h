@@ -42,15 +42,27 @@
 
 namespace mongo {
 
-namespace stdx { class thread; }
-
 struct ThreadInformation
 {
 	const void *signalStackBase;
 	std::size_t signalStackSize;
 };
 
-ThreadInformation getInformationForThread( const stdx::thread & );
+inline std::function< void ( std::thread::id, ThreadInformation ) > listener= []( auto, auto ) {};
+
+void
+registerInformationListener( std::function< void ( std::thread::id, ThreadInformation ) > newListener )
+{
+	listener= std::move( newListener );
+}
+
+inline std::function< void ( std::thread::id ) > reaper= []( auto ) {};
+
+void
+registerInformationReaper( std::function< void ( std::thread::id ) > newReaper )
+{
+	reaper= std::move( newReaper );
+}
 
 namespace stdx {
 /**
@@ -72,10 +84,6 @@ namespace stdx {
  */
 class thread : private ::std::thread {  // NOLINT
 private:
-	ThreadInformation info;
-
-	friend ThreadInformation mongo::getInformationForThread( const stdx::thread & );
-
     class SignalStack
 	{
 #if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE || __FreeBSD__
@@ -88,6 +96,7 @@ private:
         [[nodiscard]] auto installStack() const {
             struct StackGuard {
                 ~StackGuard() {
+					reaper( std::this_thread::get_id() );
                     stack_t stack;
                     stack.ss_flags = SS_DISABLE;
                     sigaltstack(&stack, nullptr);
@@ -101,6 +110,7 @@ private:
                     stack.ss_size = kSignalStackSize;
                     stack.ss_flags = 0;
                     sigaltstack(&stack, nullptr);
+					listener( std::this_thread::get_id(), { allocation, kSignalStackSize } );
                 }
             };
 
@@ -133,18 +143,18 @@ private:
      */
     template <typename Function, typename... Args>
     static ::std::thread
-	createThread( ThreadInformation &information, Function f, Args&&... args ) noexcept
+	createThread( Function f, Args&&... args ) noexcept
 	{  // NOLINT
         return ::std::thread([ //NOLINT
-            signalStack= [&information]
-				{
-					SignalStack rv;
-					information= { rv.allocation(), rv.size() };
-					return rv;
-				}(),
+            signalStack= SignalStack{},
             f = std::move( f ),
             pack = std::make_tuple( std::forward< Args >( args )... )
         ]() mutable noexcept {
+
+			// Installation of the terminate handler shims should happen before `sigaltstack`
+			// installation.  This permits custom handlers to be invoked if the `sigaltstack`
+			// calls fail.  This might happen on Windows systems which provide `sigaltstack`
+			// semantics.
 #if defined(_WIN32)
             // On Win32 we have to set the terminate handler per thread.
             // We set it to our universal terminate handler, which people can register via the
@@ -156,16 +166,6 @@ private:
             return std::apply(std::move(f), std::move(pack));
         });
     }
-private:
-	struct secret_ctor {};
-
-	template< typename Function, typename ... Args >
-	explicit
-	thread( secret_ctor &&, ThreadInformation information, Function &&f,
-			Args &&... args ) noexcept
-		: ::std::thread( createThread( information, std::forward< Function >( f ),
-				std::forward< Args >( args )... ) ),
-		info( information ) {}
 
 public:
     using ::std::thread::id;                  // NOLINT
@@ -187,11 +187,9 @@ public:
      */
     template <class Function,
               class... Args,
-              std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0,
-              std::enable_if_t<!std::is_same_v<secret_ctor, std::decay_t<Function>>, int> = 0>
+              std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0>
     explicit thread(Function&& f, Args&&... args) noexcept
-        : thread( secret_ctor{}, ThreadInformation{}, std::forward<Function>(f),
-				std::forward<Args>(args)...) {}
+        : std::thread( createThread( std::forward<Function>(f), std::forward<Args>(args)...) ) {}
 
     using ::std::thread::get_id;                // NOLINT
     using ::std::thread::hardware_concurrency;  // NOLINT
@@ -249,9 +247,4 @@ void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  
 static_assert(std::is_move_constructible_v<stdx::thread>);
 static_assert(std::is_move_assignable_v<stdx::thread>);
 
-inline ThreadInformation
-getInformationForThread( const stdx::thread &thr )
-{
-	return thr.info;
-}
 }  // namespace mongo

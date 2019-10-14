@@ -49,7 +49,7 @@ namespace stdx = ::mongo::stdx;
 const auto kSignalNumber = SIGINFO;
 
 std::atomic<bool> blockage{true};
-std::atomic<void*> address;
+std::atomic<const void*> address;
 
 void recurse(const int n) {
     if (n == 10) {
@@ -61,7 +61,7 @@ void recurse(const int n) {
 }
 
 void handler(const int n) {
-    address = (void*)&n;
+    address = static_cast<const void*>(&n);
     blockage = false;
 }
 
@@ -96,7 +96,7 @@ void setupSignalMask() {
 
 std::mutex thrmtx;
 std::condition_variable cv;
-std::atomic<void*> mainAddress;
+std::atomic<const void*> mainAddress;
 
 void jumpoff() {
     auto lk = std::unique_lock(thrmtx);
@@ -128,7 +128,7 @@ int main() try {
     const auto [base, amt] = listener.getMapping(thr).altStack;
     std::cerr << "The parent is checking layouts" << std::endl;
 
-    const auto bAddress = static_cast<const std::byte*>(static_cast<void*>(address));
+    const auto bAddress = static_cast<const std::byte*>(static_cast<const void*>(address));
     const auto bBase = static_cast<const std::byte*>(base);
     if (!(bBase <= bAddress && bAddress < (bBase + amt))) {
         std::cout << "Address was out of bounds (addr, range): " << bAddress << ", [" << bBase
@@ -136,7 +136,7 @@ int main() try {
         exit(EXIT_FAILURE);
     }
 
-    const auto bmAddress = static_cast<const std::byte*>(static_cast<void*>(mainAddress));
+    const auto bmAddress = static_cast<const std::byte*>(static_cast<const void*>(mainAddress));
     if (bBase <= bmAddress && bmAddress < (bBase + amt)) {
         std::cout << "Main address was not out of bounds" << std::endl;
         exit(EXIT_FAILURE);

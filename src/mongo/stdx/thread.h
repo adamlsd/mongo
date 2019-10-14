@@ -44,24 +44,31 @@ namespace mongo {
 
 struct ThreadInformation
 {
-	const void *signalStackBase;
-	std::size_t signalStackSize;
+	struct AltStack
+	{
+		void *base;
+		std::size_t size;
+	};
+
+	AltStack altStack;
 };
 
 inline std::function< void ( std::thread::id, ThreadInformation ) > listener= []( auto, auto ) {};
-
-void
-registerInformationListener( std::function< void ( std::thread::id, ThreadInformation ) > newListener )
-{
-	listener= std::move( newListener );
-}
-
 inline std::function< void ( std::thread::id ) > reaper= []( auto ) {};
 
-void
-registerInformationReaper( std::function< void ( std::thread::id ) > newReaper )
+inline void
+resetThreadInformationHandler()
 {
-	reaper= std::move( newReaper );
+	listener= []( auto, auto ){};
+	reaper= []( auto ){};
+}
+
+template< typename T >
+inline void
+registerThreadInformationHandlerType( T &t )
+{
+	listener= [&t]( auto id, auto info ) { return t.report( std::move( id ), std::move( info ) ); };
+	reaper= [&t]( auto id ) { return t.retire( std::move( id ) ); };
 }
 
 namespace stdx {
@@ -86,7 +93,7 @@ class thread : private ::std::thread {  // NOLINT
 private:
     class SignalStack
 	{
-#if _XOPEN_SOURCE >= 500 || _POSIX_C_SOURCE >= 200809L || _BSD_SOURCE || __FreeBSD__
+#if defined( __linux__ ) || defined( __FreeBSD__ )
 
     private:
         static inline constexpr std::size_t kSignalStackSize = SIGSTKSZ;
@@ -94,46 +101,54 @@ private:
 
     public:
         [[nodiscard]] auto installStack() const {
+			struct InfoGuard
+			{
+				InfoGuard( ThreadInformation info ) { listener( std::this_thread::get_id(), info ); }
+				~InfoGuard(){ reaper( std::this_thread::get_id() ); }
+			};
+
             struct StackGuard {
+                StackGuard(const StackGuard&) = delete;
+
+                explicit StackGuard( ThreadInformation::AltStack altStack )
+				{
+                    stack_t stack;
+                    stack.ss_sp = altStack.base;
+                    stack.ss_size = altStack.size;
+                    stack.ss_flags = 0;
+                    sigaltstack(&stack, nullptr);
+                }
+
                 ~StackGuard() {
-					reaper( std::this_thread::get_id() );
                     stack_t stack;
                     stack.ss_flags = SS_DISABLE;
                     sigaltstack(&stack, nullptr);
                 }
-
-                StackGuard(const StackGuard&) = delete;
-
-                explicit StackGuard(std::byte* const allocation) {
-                    stack_t stack;
-                    stack.ss_sp = allocation;
-                    stack.ss_size = kSignalStackSize;
-                    stack.ss_flags = 0;
-                    sigaltstack(&stack, nullptr);
-					listener( std::this_thread::get_id(), { allocation, kSignalStackSize } );
-                }
             };
 
-            return StackGuard{this->stack.get()};
+			struct FullGuard : StackGuard, InfoGuard
+			{
+				explicit FullGuard( ThreadInformation::AltStack altStack )
+					: StackGuard( altStack ), InfoGuard( ThreadInformation{ altStack } ) {}
+			};
+
+            return FullGuard( {this->stack.get(), this->size()} );
         }
 
 		const void *allocation() const { return this->stack.get(); }
 		std::size_t size() const { return kSignalStackSize; }
-#else
+#else // !( defined( __linux__ ) || defined( __FreeBSD__ ) )
 
     public:
         [[nodiscard]] auto installStack() const {
             struct Guard {
-                ~Guard() {}  // Mustn't be a trivial dtor, or else it triggers warnings.
                 Guard(const Guard&) = delete;
+                ~Guard() {}  // Mustn't be a trivial dtor, or else it triggers warnings.
             };
 
             return Guard{};
         }
-
-		const void *allocation() const { return nullptr; }
-		std::size_t size() const { return 0; }
-#endif
+#endif // ( defined( __linux__ ) || defined( __FreeBSD__ ) )
     };
 
     /*
@@ -153,8 +168,8 @@ private:
 
 			// Installation of the terminate handler shims should happen before `sigaltstack`
 			// installation.  This permits custom handlers to be invoked if the `sigaltstack`
-			// calls fail.  This might happen on Windows systems which provide `sigaltstack`
-			// semantics.
+			// calls fail.  This might happen, for example, on Windows systems which provide
+			// `sigaltstack`.
 #if defined(_WIN32)
             // On Win32 we have to set the terminate handler per thread.
             // We set it to our universal terminate handler, which people can register via the
@@ -246,5 +261,4 @@ void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  
 
 static_assert(std::is_move_constructible_v<stdx::thread>);
 static_assert(std::is_move_assignable_v<stdx::thread>);
-
 }  // namespace mongo

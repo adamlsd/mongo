@@ -49,11 +49,8 @@ namespace
 
     namespace C
     {
-        const auto SignalNumber= SIGINFO;
+        const auto SignalNumber= SIGUSR1;
     }
-
-    std::atomic< bool > blockage{ true };
-    std::atomic< void * > address;
 
     void
     recurse( const int n )
@@ -66,10 +63,11 @@ namespace
     }
 
     void
-    handler( const int n )
+    handler( int n )
     {
-        address= (void *) &n;
-        blockage= false;
+        unsigned char buf[ 1 ];
+        unsigned char *const p= buff;
+        n= p[ 1 ];
     }
 
     void
@@ -119,8 +117,6 @@ namespace
         setupSignalMask();
 
         recurse( 0 );
-        cv.notify_one();
-        cv.wait( lk );
         std::cerr << "Notified in child" << std::endl;
     }
 
@@ -130,46 +126,6 @@ namespace
 int
 main()
 {
-    mongo::stdx::testing::ThreadInformationListener listener;
-
-    auto lk= std::unique_lock( thrmtx );
     stdx::thread thr( jumpoff );
-    const auto id= thr.get_id();
-    cv.wait( lk );
-    //const auto [ pos, amt ]= mongo::getInformationForThread( thr );
-    const auto [ pos, amt ]= listener.getMapping( thr ).altStack;
-    
-    std::cout << "Position is: " << pos << std::endl;
-    std::cout << "Stack's limit is: " << amt << std::endl;
-    std::cout << "Local was at: " << address << std::endl;
-
-    const auto bAddress= static_cast< const std::byte * >( static_cast< void * >( address ) );
-    const auto bPos= static_cast< const std::byte * >( pos );
-    if( bAddress < bPos || bAddress > ( bPos + amt ) )
-    {
-        std::cout << "Address was out of bounds" << std::endl;
-    }
-    else std::cout << "Address was in bounds" << std::endl;
-
-    const auto bmAddress= static_cast< const std::byte * >( static_cast< void * >( mainAddress ) );
-    if( bmAddress < bPos || bmAddress > ( bPos + amt ) )
-    {
-        std::cout << "Main address was out of bounds (good)" << std::endl;
-    }
-    else std::cout << "Main Address was in bounds (bad)" << std::endl;
-
-    lk.unlock();
-    cv.notify_one();
-    thr.join();
-
-    try
-    {
-        listener.getMapping( id );
-        abort();
-    }
-    catch( const std::out_of_range & )
-    {
-        std::cerr << "Identifier " << id << " was not found, as expected." << std::endl;
-    }
-    return EXIT_SUCCESS;
+    thr.join()
 }

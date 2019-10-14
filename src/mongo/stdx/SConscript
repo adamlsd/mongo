@@ -63,6 +63,15 @@ env.RegisterUnitTest(env.Program(
     ]
 )[0])
 
+env.RegisterUnitTest(env.Program(
+    target='sigaltstack_asan_test',
+    source=[
+        'sigaltstack_asan_test.cpp',
+    ],
+    LIBDEPS=[
+        'stdx',
+    ]
+)[0])
 
 
 # Needs to be a different test -- It has to have direct control over the `main()` entry point.

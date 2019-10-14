@@ -31,54 +31,42 @@
 
 #include "mongo/stdx/thread.h"
 
-namespace mongo::stdx::testing
-{
-	class ThreadInformationListener
-	{
-		private:
-			mutable std::mutex mtx;
-			std::map< std::thread::id, mongo::ThreadInformation > mapping;
+namespace mongo::stdx::testing {
+class ThreadInformationListener {
+private:
+    mutable std::mutex mtx;
+    std::map<std::thread::id, mongo::ThreadInformation> mapping;
 
-		public:
-			~ThreadInformationListener()
-			{
-				resetThreadInformationHandler();
-			}
+public:
+    ~ThreadInformationListener() {
+        resetThreadInformationHandler();
+    }
 
-			ThreadInformationListener()
-			{
-				registerThreadInformationHandlerType( *this );
-			}
-		
-			void
-			report( const std::thread::id id, const mongo::ThreadInformation info )
-			{
-				const auto lk= std::lock_guard( mtx );
-				std::cerr << "Installing my mappings: " << id << std::endl;
-				assert( !mapping.count( id ) );
-				mapping[ id ]= info;
-			}
+    ThreadInformationListener() {
+        registerThreadInformationHandlerType(*this);
+    }
 
-			void
-			retire( const std::thread::id id )
-			{
-				const auto lk= std::lock_guard( mtx );
-				std::cerr << "Retiring my mappings: " << id << std::endl;
-				mapping.erase( id );
-			}
+    void report(const std::thread::id id, const mongo::ThreadInformation info) {
+        const auto lk = std::lock_guard(mtx);
+        std::cerr << "Installing my mappings: " << id << std::endl;
+        assert(!mapping.count(id));
+        mapping[id] = info;
+    }
 
-			mongo::ThreadInformation
-			getMapping( const stdx::thread::id &id ) const
-			{
-				const auto lk= std::lock_guard( mtx );
-				std::cerr << "Looking at my mappings: " << id << std::endl;
-				return mapping.at( id );
-			}
+    void retire(const std::thread::id id) {
+        const auto lk = std::lock_guard(mtx);
+        std::cerr << "Retiring my mappings: " << id << std::endl;
+        mapping.erase(id);
+    }
 
-			mongo::ThreadInformation
-			getMapping( const stdx::thread &thr ) const
-			{
-				return getMapping( thr.get_id() );
-			}
-	};
-}
+    mongo::ThreadInformation getMapping(const stdx::thread::id& id) const {
+        const auto lk = std::lock_guard(mtx);
+        std::cerr << "Looking at my mappings: " << id << std::endl;
+        return mapping.at(id);
+    }
+
+    mongo::ThreadInformation getMapping(const stdx::thread& thr) const {
+        return getMapping(thr.get_id());
+    }
+};
+}  // namespace mongo::stdx::testing

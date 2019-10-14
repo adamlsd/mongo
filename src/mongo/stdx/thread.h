@@ -41,35 +41,35 @@
 #include "mongo/stdx/exception.h"
 
 namespace mongo {
-struct ThreadInformation
-{
-	struct AltStack
-	{
-		void *base;
-		std::size_t size;
-	};
+struct ThreadInformation {
+    struct AltStack {
+        void* base;
+        std::size_t size;
+    };
 
-	AltStack altStack;
+    AltStack altStack;
 };
 
-inline std::function< void ( std::thread::id, ThreadInformation ) > listener= []( auto, auto ) {};
-inline std::function< void ( std::thread::id ) > reaper= []( auto ) {};
+inline std::function<void(std::thread::id, ThreadInformation)> listener = [](auto, auto) {};
+inline std::function<void(std::thread::id)> reaper = [](auto) {};
 
-inline void
-resetThreadInformationHandler()
-{
-	std::cerr << "Reset" << std::endl;
-	listener= []( auto, auto ){};
-	reaper= []( auto ){};
+inline void resetThreadInformationHandler() {
+    std::cerr << "Reset" << std::endl;
+    listener = [](auto, auto) {};
+    reaper = [](auto) {};
 }
 
-template< typename T >
-inline void
-registerThreadInformationHandlerType( T &t )
-{
-	std::cerr << "Init" << std::endl;
-	listener= [&t]( auto id, auto info ) { std::cerr << "Report called" << std::endl; return t.report( std::move( id ), std::move( info ) ); };
-	reaper= [&t]( auto id ) { std::cerr << "Retire called" << std::endl; return t.retire( std::move( id ) ); };
+template <typename T>
+inline void registerThreadInformationHandlerType(T& t) {
+    std::cerr << "Init" << std::endl;
+    listener = [&t](auto id, auto info) {
+        std::cerr << "Report called" << std::endl;
+        return t.report(std::move(id), std::move(info));
+    };
+    reaper = [&t](auto id) {
+        std::cerr << "Retire called" << std::endl;
+        return t.retire(std::move(id));
+    };
 }
 
 namespace stdx {
@@ -92,33 +92,29 @@ namespace stdx {
  */
 class thread : private ::std::thread {  // NOLINT
 private:
-    class SignalStack
-	{
-#if defined( __linux__ )  // || defined( __FreeBSD__ )
+    class SignalStack {
+#if defined(__linux__)  // || defined( __FreeBSD__ )
     private:
         static inline constexpr std::size_t kSignalStackSize = SIGSTKSZ;
         std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSignalStackSize);
 
     public:
-		static constexpr inline bool enabled= true;
+        static constexpr inline bool enabled = true;
         [[nodiscard]] auto installStack() const {
-			struct InfoGuard
-			{
-				explicit
-				InfoGuard( const ThreadInformation info )
-				{
-					listener( std::this_thread::get_id(), info );
-				}
+            struct InfoGuard {
+                explicit InfoGuard(const ThreadInformation info) {
+                    listener(std::this_thread::get_id(), info);
+                }
 
-				~InfoGuard(){ reaper( std::this_thread::get_id() ); }
-			};
+                ~InfoGuard() {
+                    reaper(std::this_thread::get_id());
+                }
+            };
 
             struct StackGuard {
                 StackGuard(const StackGuard&) = delete;
 
-                explicit
-				StackGuard( const ThreadInformation::AltStack altStack )
-				{
+                explicit StackGuard(const ThreadInformation::AltStack altStack) {
                     stack_t stack;
                     stack.ss_sp = altStack.base;
                     stack.ss_size = altStack.size;
@@ -133,21 +129,24 @@ private:
                 }
             };
 
-			struct FullGuard : StackGuard, InfoGuard
-			{
-				explicit FullGuard( ThreadInformation::AltStack altStack )
-					: StackGuard( altStack ), InfoGuard( ThreadInformation{ altStack } ) {}
-			};
+            struct FullGuard : StackGuard, InfoGuard {
+                explicit FullGuard(ThreadInformation::AltStack altStack)
+                    : StackGuard(altStack), InfoGuard(ThreadInformation{altStack}) {}
+            };
 
-            return FullGuard( {this->stack.get(), this->size()} );
+            return FullGuard({this->stack.get(), this->size()});
         }
 
-		const void *allocation() const { return this->stack.get(); }
-		std::size_t size() const { return kSignalStackSize; }
-#else // !( defined( __linux__ ) || defined( __FreeBSD__ ) )
+        const void* allocation() const {
+            return this->stack.get();
+        }
+        std::size_t size() const {
+            return kSignalStackSize;
+        }
+#else   // !( defined( __linux__ ) || defined( __FreeBSD__ ) )
 
     public:
-		static constexpr inline bool enabled= false;
+        static constexpr inline bool enabled = false;
 
         [[nodiscard]] auto installStack() const {
             struct Guard {
@@ -157,7 +156,7 @@ private:
 
             return Guard{};
         }
-#endif // ( defined( __linux__ ) || defined( __FreeBSD__ ) )
+#endif  // ( defined( __linux__ ) || defined( __FreeBSD__ ) )
     };
 
     /*
@@ -166,19 +165,17 @@ private:
      * transfer ownership to the far side's thread.
      */
     template <typename Function, typename... Args>
-    static ::std::thread
-	createThread( Function f, Args&&... args ) noexcept
-	{  // NOLINT
+    static ::std::thread createThread(Function f, Args&&... args) noexcept {  // NOLINT
         return ::std::thread([ //NOLINT
             signalStack= SignalStack{},
             f = std::move( f ),
             pack = std::make_tuple( std::forward< Args >( args )... )
         ]() mutable noexcept {
 
-			// Installation of the terminate handler shims should happen before `sigaltstack`
-			// installation.  This permits custom handlers to be invoked if the `sigaltstack`
-			// calls fail.  This might happen, for example, on Windows systems which provide
-			// `sigaltstack`.
+        // Installation of the terminate handler shims should happen before `sigaltstack`
+        // installation.  This permits custom handlers to be invoked if the `sigaltstack`
+        // calls fail.  This might happen, for example, on Windows systems which provide
+        // `sigaltstack`.
 #if defined(_WIN32)
             // On Win32 we have to set the terminate handler per thread.
             // We set it to our universal terminate handler, which people can register via the
@@ -192,7 +189,7 @@ private:
     }
 
 public:
-	static constexpr inline bool usingSigaltstacks= SignalStack::enabled;
+    static constexpr inline bool usingSigaltstacks = SignalStack::enabled;
 
     using ::std::thread::id;                  // NOLINT
     using ::std::thread::native_handle_type;  // NOLINT
@@ -215,7 +212,7 @@ public:
               class... Args,
               std::enable_if_t<!std::is_same_v<thread, std::decay_t<Function>>, int> = 0>
     explicit thread(Function&& f, Args&&... args) noexcept
-        : std::thread( createThread( std::forward<Function>(f), std::forward<Args>(args)...) ) {}
+        : std::thread(createThread(std::forward<Function>(f), std::forward<Args>(args)...)) {}
 
     using ::std::thread::get_id;                // NOLINT
     using ::std::thread::hardware_concurrency;  // NOLINT

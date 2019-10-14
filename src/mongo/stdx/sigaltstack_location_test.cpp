@@ -56,13 +56,11 @@ void recurse(const int n) {
         raise(kSignalNumber);
         while (blockage)
             ;
-        std::cerr << "Unblocked" << std::endl;
     } else
         recurse(n + 1);
 }
 
 void handler(const int n) {
-    std::cerr << "Handler called." << std::endl;
     address = (void*)&n;
     blockage = false;
 }
@@ -79,7 +77,7 @@ void installSignalHandler() {
     const auto ec = ::sigaction(kSignalNumber, &action, nullptr);
     const int myErrno = errno;
     if (ec != 0) {
-        std::cerr << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
+        std::cout << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
         exit(EXIT_FAILURE);
     }
 }
@@ -90,7 +88,7 @@ void setupSignalMask() {
     const auto ec = sigprocmask(SIG_UNBLOCK, &sigset, nullptr);
     const int myErrno = errno;
     if (ec != 0) {
-        std::cerr << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
+        std::cout << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
         exit(EXIT_FAILURE);
     }
 }
@@ -108,13 +106,8 @@ void jumpoff() {
     installSignalHandler();
 
     recurse(0);
-    std::cerr << "Recurse done" << std::endl;
     cv.notify_one();
-    std::cerr << "Parent notified" << std::endl;
     cv.wait(lk);
-    std::cerr << "Resumed after parent notification." << std::endl;
-
-    std::cerr << "Thread done" << std::endl;
 }
 
 }  // namespace

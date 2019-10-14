@@ -35,23 +35,14 @@ env.CppUnitTest(
     ],
 )
 
-# The tests for `stdx::set_terminate` need to run outside of the mongo unittest harneses.
-# The tests require altering the global `set_terminate` handler, which our unittest framework
-# doesn't expect to have happen.  Further, the tests have to return successfully from a
-# terminate condition which interacts poorly with the unittest framework.
+# The tests for various `stdx::` core components, such as `stdx::set_terminate` need to
+# run outside of the mongo unittest harneses.  The tests require performing process-level
+# operations, such as altering the global `set_terminate` handler, which our unittest framework
+# doesn't expect to have happen.  Further, the tests sometimes have to return successfully from
+# a terminate condition which interacts poorly with the unittest framework.
 #
 # A set of dedicated binaries to each test case is actually the simplest way to accomplish
-# robust testing of this mechanism.
-
-env.RegisterUnitTest(env.Program(
-    target='sigaltstack_test',
-    source=[
-        'sigaltstack_test.cpp',
-    ],
-    LIBDEPS=[
-        'stdx',
-    ]
-)[0])
+# robust testing of these mechanisms.
 
 env.RegisterUnitTest(env.Program(
     target='sigaltstack_location_test',
@@ -63,18 +54,7 @@ env.RegisterUnitTest(env.Program(
     ]
 )[0])
 
-env.RegisterUnitTest(env.Program(
-    target='sigaltstack_asan_test',
-    source=[
-        'sigaltstack_asan_test.cpp',
-    ],
-    LIBDEPS=[
-        'stdx',
-    ]
-)[0])
 
-
-# Needs to be a different test -- It has to have direct control over the `main()` entry point.
 env.RegisterUnitTest(env.Program(
     target='set_terminate_dispatch_test',
     source=[
@@ -85,7 +65,6 @@ env.RegisterUnitTest(env.Program(
     ]
 )[0])
 
-# Needs to be a different test -- It has to have direct control over the `main()` entry point.
 env.RegisterUnitTest(env.Program(
     target='set_terminate_from_main_die_in_thread_test',
     source=[
@@ -96,7 +75,6 @@ env.RegisterUnitTest(env.Program(
     ]
 )[0])
 
-# Needs to be a different test -- It has to have direct control over the `main()` entry point.
 env.RegisterUnitTest(env.Program(
     target='set_terminate_from_thread_die_in_main_test',
     source=[
@@ -107,7 +85,6 @@ env.RegisterUnitTest(env.Program(
     ]
 )[0])
 
-# Needs to be a different test -- It has to have direct control over the `main()` entry point.
 env.RegisterUnitTest(env.Program(
     target='set_terminate_from_thread_die_in_thread_test',
     source=[

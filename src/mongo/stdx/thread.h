@@ -41,7 +41,6 @@
 #include "mongo/stdx/exception.h"
 
 namespace mongo {
-
 struct ThreadInformation
 {
 	struct AltStack
@@ -59,6 +58,7 @@ inline std::function< void ( std::thread::id ) > reaper= []( auto ) {};
 inline void
 resetThreadInformationHandler()
 {
+	std::cerr << "Reset" << std::endl;
 	listener= []( auto, auto ){};
 	reaper= []( auto ){};
 }
@@ -67,8 +67,9 @@ template< typename T >
 inline void
 registerThreadInformationHandlerType( T &t )
 {
-	listener= [&t]( auto id, auto info ) { return t.report( std::move( id ), std::move( info ) ); };
-	reaper= [&t]( auto id ) { return t.retire( std::move( id ) ); };
+	std::cerr << "Init" << std::endl;
+	listener= [&t]( auto id, auto info ) { std::cerr << "Report called" << std::endl; return t.report( std::move( id ), std::move( info ) ); };
+	reaper= [&t]( auto id ) { std::cerr << "Retire called" << std::endl; return t.retire( std::move( id ) ); };
 }
 
 namespace stdx {
@@ -93,24 +94,30 @@ class thread : private ::std::thread {  // NOLINT
 private:
     class SignalStack
 	{
-#if defined( __linux__ ) || defined( __FreeBSD__ )
-
+#if defined( __linux__ )  // || defined( __FreeBSD__ )
     private:
         static inline constexpr std::size_t kSignalStackSize = SIGSTKSZ;
         std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSignalStackSize);
 
     public:
+		static constexpr inline bool enabled= true;
         [[nodiscard]] auto installStack() const {
 			struct InfoGuard
 			{
-				InfoGuard( ThreadInformation info ) { listener( std::this_thread::get_id(), info ); }
+				explicit
+				InfoGuard( const ThreadInformation info )
+				{
+					listener( std::this_thread::get_id(), info );
+				}
+
 				~InfoGuard(){ reaper( std::this_thread::get_id() ); }
 			};
 
             struct StackGuard {
                 StackGuard(const StackGuard&) = delete;
 
-                explicit StackGuard( ThreadInformation::AltStack altStack )
+                explicit
+				StackGuard( const ThreadInformation::AltStack altStack )
 				{
                     stack_t stack;
                     stack.ss_sp = altStack.base;
@@ -140,6 +147,8 @@ private:
 #else // !( defined( __linux__ ) || defined( __FreeBSD__ ) )
 
     public:
+		static constexpr inline bool enabled= false;
+
         [[nodiscard]] auto installStack() const {
             struct Guard {
                 Guard(const Guard&) = delete;
@@ -183,6 +192,8 @@ private:
     }
 
 public:
+	static constexpr inline bool usingSigaltstacks= SignalStack::enabled;
+
     using ::std::thread::id;                  // NOLINT
     using ::std::thread::native_handle_type;  // NOLINT
 

@@ -47,10 +47,7 @@ namespace
 {
     namespace stdx = ::mongo::stdx;
 
-    namespace C
-    {
-        const auto SignalNumber= SIGINFO;
-    }
+    const auto kSignalNumber= SIGINFO;
 
     std::atomic< bool > blockage{ true };
     std::atomic< void * > address;
@@ -60,7 +57,9 @@ namespace
     {
         if( n == 10 )
         {
-            raise( C::SignalNumber );
+            raise( kSignalNumber );
+            while( blockage );
+            std::cerr << "Unblocked" << std::endl;
         }
         else recurse( n + 1 );
     }
@@ -68,6 +67,7 @@ namespace
     void
     handler( const int n )
     {
+        std::cerr << "Handler called." << std::endl;
         address= (void *) &n;
         blockage= false;
     }
@@ -77,16 +77,17 @@ namespace
     {
         struct sigaction action{};
         action.sa_handler= handler;
-        action.sa_flags= SA_ONSTACK;
+        if constexpr ( stdx::thread::usingSigaltstacks ) action.sa_flags= SA_ONSTACK;
+        else action.sa_flags= 0;
+        
         sigemptyset( &action.sa_mask );
-        const auto ec= ::sigaction( C::SignalNumber, &action, nullptr );
-        int myErrno= errno;
-        std::cerr << "Got ec: " << ec;
+        const auto ec= ::sigaction( kSignalNumber, &action, nullptr );
+        const int myErrno= errno;
         if( ec != 0 )
         {
-            std::cerr << " and errno is: " << myErrno;
+            std::cerr << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
+            exit( EXIT_FAILURE );
         }
-        std::cerr << std::endl;
     }
 
     void
@@ -95,13 +96,12 @@ namespace
         sigset_t sigset;
         sigemptyset( &sigset );
         const auto ec= sigprocmask( SIG_UNBLOCK, &sigset, nullptr );
-        int myErrno= errno;
-        std::cerr << "Got ec: " << ec;
+        const int myErrno= errno;
         if( ec != 0 )
         {
-            std::cerr << " and errno is: " << myErrno;
+            std::cerr << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
+            exit( EXIT_FAILURE );
         }
-        std::cerr << std::endl;
     }
 
 
@@ -115,13 +115,17 @@ namespace
         auto lk= std::unique_lock( thrmtx );
         mainAddress= &lk;
 
-        installSignalHandler();
         setupSignalMask();
+        installSignalHandler();
 
         recurse( 0 );
+        std::cerr << "Recurse done" << std::endl;
         cv.notify_one();
+        std::cerr << "Parent notified" << std::endl;
         cv.wait( lk );
-        std::cerr << "Notified in child" << std::endl;
+        std::cerr << "Resumed after parent notification." << std::endl;
+
+        std::cerr << "Thread done" << std::endl;
     }
 
 }  // namespace
@@ -129,34 +133,36 @@ namespace
 
 int
 main()
+try
 {
+    if constexpr ( !stdx::thread::usingSigaltstacks ) return EXIT_SUCCESS;
     mongo::stdx::testing::ThreadInformationListener listener;
 
     auto lk= std::unique_lock( thrmtx );
     stdx::thread thr( jumpoff );
     const auto id= thr.get_id();
     cv.wait( lk );
+    std::cerr << "The parent has received child notification" << std::endl;
     //const auto [ pos, amt ]= mongo::getInformationForThread( thr );
-    const auto [ pos, amt ]= listener.getMapping( thr ).altStack;
-    
-    std::cout << "Position is: " << pos << std::endl;
-    std::cout << "Stack's limit is: " << amt << std::endl;
-    std::cout << "Local was at: " << address << std::endl;
+    std::cerr << "The parent is looking to the listener" << std::endl;
+    const auto [ base, amt ]= listener.getMapping( thr ).altStack;
+    std::cerr << "The parent is checking layouts" << std::endl;
 
     const auto bAddress= static_cast< const std::byte * >( static_cast< void * >( address ) );
-    const auto bPos= static_cast< const std::byte * >( pos );
-    if( bAddress < bPos || bAddress > ( bPos + amt ) )
+    const auto bBase= static_cast< const std::byte * >( base );
+    if( !( bBase <= bAddress && bAddress < ( bBase + amt ) ) )
     {
-        std::cout << "Address was out of bounds" << std::endl;
+        std::cout << "Address was out of bounds (addr, range): " << bAddress
+                << ", [" << bBase << ", " << bBase + amt << ")" << std::endl;
+        exit( EXIT_FAILURE );
     }
-    else std::cout << "Address was in bounds" << std::endl;
 
     const auto bmAddress= static_cast< const std::byte * >( static_cast< void * >( mainAddress ) );
-    if( bmAddress < bPos || bmAddress > ( bPos + amt ) )
+    if( bBase <= bmAddress && bmAddress < ( bBase + amt ) )
     {
-        std::cout << "Main address was out of bounds (good)" << std::endl;
+        std::cout << "Main address was not out of bounds" << std::endl;
+        exit( EXIT_FAILURE );
     }
-    else std::cout << "Main Address was in bounds (bad)" << std::endl;
 
     lk.unlock();
     cv.notify_one();
@@ -165,11 +171,17 @@ main()
     try
     {
         listener.getMapping( id );
-        abort();
+        std::cerr << "Identifier " << id << " was found, which wasn't expected." << std::endl;
+        exit( EXIT_FAILURE );
     }
     catch( const std::out_of_range & )
     {
-        std::cerr << "Identifier " << id << " was not found, as expected." << std::endl;
+        
     }
     return EXIT_SUCCESS;
+}
+catch( const std::exception &ex )
+{
+    std::cerr << ex.what() << std::endl;
+    throw;
 }

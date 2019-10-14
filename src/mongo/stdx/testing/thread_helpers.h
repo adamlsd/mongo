@@ -54,17 +54,16 @@ namespace mongo::stdx::testing
 			report( const std::thread::id id, const mongo::ThreadInformation info )
 			{
 				const auto lk= std::lock_guard( mtx );
+				std::cerr << "Installing my mappings: " << id << std::endl;
 				assert( !mapping.count( id ) );
 				mapping[ id ]= info;
-				std::cerr << "Mapping installed: " << mapping.count( id ) << std::endl;
-				std::cerr << "Identifier: " << id << std::endl;
 			}
 
 			void
-			retire( std::thread::id id )
+			retire( const std::thread::id id )
 			{
 				const auto lk= std::lock_guard( mtx );
-				std::cerr << "Reaping identifier: " << id << std::endl;
+				std::cerr << "Retiring my mappings: " << id << std::endl;
 				mapping.erase( id );
 			}
 
@@ -72,7 +71,7 @@ namespace mongo::stdx::testing
 			getMapping( const stdx::thread::id &id ) const
 			{
 				const auto lk= std::lock_guard( mtx );
-				std::cerr << "Identifier: " << id << std::endl;
+				std::cerr << "Looking at my mappings: " << id << std::endl;
 				return mapping.at( id );
 			}
 

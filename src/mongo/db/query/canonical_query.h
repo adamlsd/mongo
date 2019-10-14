@@ -128,8 +128,27 @@ public:
     const projection_ast::Projection* getProj() const {
         return _proj.get_ptr();
     }
+
+    projection_ast::Projection* getProj() {
+        return _proj.get_ptr();
+    }
+
     const CollatorInterface* getCollator() const {
         return _collator.get();
+    }
+
+    /**
+     * Returns a bitset indicating what metadata has been requested in the query.
+     */
+    const QueryMetadataBitSet& metadataDeps() const {
+        return _metadataDeps;
+    }
+
+    /**
+     * Allows callers to request metadata in addition to that needed as part of the query.
+     */
+    void requestAdditionalMetadata(const QueryMetadataBitSet& additionalDeps) {
+        _metadataDeps |= additionalDeps;
     }
 
     /**
@@ -209,6 +228,9 @@ private:
     std::unique_ptr<MatchExpression> _root;
 
     boost::optional<projection_ast::Projection> _proj;
+
+    // Keeps track of what metadata has been explicitly requested.
+    QueryMetadataBitSet _metadataDeps;
 
     std::unique_ptr<CollatorInterface> _collator;
 

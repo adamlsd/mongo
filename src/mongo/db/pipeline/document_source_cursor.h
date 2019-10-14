@@ -34,7 +34,6 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/document_source.h"
-#include "mongo/db/pipeline/document_source_limit.h"
 #include "mongo/db/query/explain_options.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
@@ -115,28 +114,6 @@ public:
     }
 
     /**
-     * Informs this object of projection and dependency information.
-     *
-     * @param projection The projection that has been passed down to the query system.
-     * @param deps The output of DepsTracker::toParsedDeps.
-     * @param inputHasMetadata Indicates whether the input BSON object contains metadata fields.
-     */
-    void setProjection(const BSONObj& projection,
-                       const boost::optional<ParsedDeps>& deps,
-                       bool inputHasMetadata) {
-        _projection = projection;
-        _dependencies = deps;
-        _inputHasMetadata = inputHasMetadata;
-    }
-
-    /**
-     * Returns the limit associated with this cursor, or -1 if there is no limit.
-     */
-    long long getLimit() const {
-        return _limit ? _limit->getLimit() : -1;
-    }
-
-    /**
      * If subsequent sources need no information from the cursor, the cursor can simply output empty
      * documents, avoiding the overhead of converting BSONObjs to Documents.
      */
@@ -173,18 +150,14 @@ protected:
     void doDispose() final;
 
     /**
-     * Attempts to combine with any subsequent $limit stages by setting the internal '_limit' field.
-     */
-    Pipeline::SourceContainer::iterator doOptimizeAt(Pipeline::SourceContainer::iterator itr,
-                                                     Pipeline::SourceContainer* container) final;
-
-    /**
      * If '_shouldProduceEmptyDocs' is false, this function hook is called on each 'obj' returned by
      * '_exec' when loading a batch and returns a Document to be added to '_currentBatch'.
      *
-     * The default implementation is a dependency-aware BSONObj-to-Document transformation.
+     * The default implementation is the identity function.
      */
-    virtual Document transformBSONObjToDocument(const BSONObj& obj) const;
+    virtual Document transformDoc(Document&& doc) const {
+        return std::move(doc);
+    }
 
 private:
     /**
@@ -213,12 +186,7 @@ private:
     // BSONObj members must outlive _projection and cursor.
     BSONObj _query;
     BSONObj _sort;
-    BSONObj _projection;
     bool _shouldProduceEmptyDocs = false;
-    bool _inputHasMetadata = false;
-    boost::optional<ParsedDeps> _dependencies;
-    boost::intrusive_ptr<DocumentSourceLimit> _limit;
-    long long _docsAddedToBatches;  // for _limit enforcement
 
     // The underlying query plan which feeds this pipeline. Must be destroyed while holding the
     // collection lock.

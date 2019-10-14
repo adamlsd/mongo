@@ -59,6 +59,7 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_applier.h"
 #include "mongo/db/repl/oplog_applier_impl.h"
+#include "mongo/db/repl/oplog_applier_impl_test_fixture.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -782,9 +783,9 @@ public:
             opPtrs.push_back(&(oplogEntries.back()));
         }
 
-        repl::OplogEntryBatch groupedInsertBatch(opPtrs.cbegin(), opPtrs.cend());
-        ASSERT_OK(repl::applyOplogEntryBatch(
-            _opCtx, groupedInsertBatch, repl::OplogApplication::Mode::kSecondary));
+        repl::OplogEntryOrGroupedInserts groupedInserts(opPtrs.cbegin(), opPtrs.cend());
+        ASSERT_OK(repl::applyOplogEntryOrGroupedInserts(
+            _opCtx, groupedInserts, repl::OplogApplication::Mode::kSecondary));
 
         for (std::int32_t idx = 0; idx < docsToInsert; ++idx) {
             OneOffRead oor(_opCtx, firstInsertTime.addTicks(idx).asTimestamp());
@@ -1306,16 +1307,16 @@ public:
         auto storageInterface = repl::StorageInterface::get(_opCtx);
         auto writerPool = repl::makeReplWriterPool();
         repl::OplogApplierImpl oplogApplier(
-            nullptr,  // task executor. not required for multiApply().
-            nullptr,  // oplog buffer. not required for multiApply().
+            nullptr,  // task executor. not required for applyOplogBatch().
+            nullptr,  // oplog buffer. not required for applyOplogBatch().
             &observer,
             _coordinatorMock,
             _consistencyMarkers,
             storageInterface,
-            repl::applyOplogGroup,
             repl::OplogApplier::Options(repl::OplogApplication::Mode::kSecondary),
             writerPool.get());
-        ASSERT_EQUALS(op2.getOpTime(), unittest::assertGet(oplogApplier.multiApply(_opCtx, ops)));
+        ASSERT_EQUALS(op2.getOpTime(),
+                      unittest::assertGet(oplogApplier.applyOplogBatch(_opCtx, ops)));
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IX);
         assertMultikeyPaths(
@@ -1391,16 +1392,15 @@ public:
         auto writerPool = repl::makeReplWriterPool();
 
         repl::OplogApplierImpl oplogApplier(
-            nullptr,  // task executor. not required for multiApply().
-            nullptr,  // oplog buffer. not required for multiApply().
+            nullptr,  // task executor. not required for applyOplogBatch().
+            nullptr,  // oplog buffer. not required for applyOplogBatch().
             &observer,
             _coordinatorMock,
             _consistencyMarkers,
             storageInterface,
-            repl::applyOplogGroup,
             repl::OplogApplier::Options(repl::OplogApplication::Mode::kInitialSync),
             writerPool.get());
-        auto lastTime = unittest::assertGet(oplogApplier.multiApply(_opCtx, ops));
+        auto lastTime = unittest::assertGet(oplogApplier.applyOplogBatch(_opCtx, ops));
         ASSERT_EQ(lastTime.getTimestamp(), insertTime2.asTimestamp());
 
         // Wait for the index build to finish before making any assertions.
@@ -2298,6 +2298,90 @@ public:
     }
 };
 
+/**
+ * This test asserts that the catalog updates that represent the beginning and end of an aborted
+ * index build are timestamped. The oplog should contain two entries startIndexBuild and
+ * abortIndexBuild. We will inspect the catalog at the timestamp corresponding to each of these
+ * oplog entries.
+ */
+class TimestampAbortIndexBuild : public StorageTimestampTest {
+public:
+    void run() {
+        auto storageEngine = _opCtx->getServiceContext()->getStorageEngine();
+        auto durableCatalog = storageEngine->getCatalog();
+
+        NamespaceString nss("unittests.timestampAbortIndexBuild");
+        reset(nss);
+
+        std::vector<std::string> origIdents;
+        {
+            AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X);
+
+            auto insertTimestamp1 = _clock->reserveTicks(1);
+            auto insertTimestamp2 = _clock->reserveTicks(1);
+
+            // Insert two documents with the same value for field 'a' so that
+            // we will fail to create a unique index.
+            WriteUnitOfWork wuow(_opCtx);
+            insertDocument(autoColl.getCollection(),
+                           InsertStatement(BSON("_id" << 0 << "a" << 1),
+                                           insertTimestamp1.asTimestamp(),
+                                           presentTerm));
+            insertDocument(autoColl.getCollection(),
+                           InsertStatement(BSON("_id" << 1 << "a" << 1),
+                                           insertTimestamp2.asTimestamp(),
+                                           presentTerm));
+            wuow.commit();
+            ASSERT_EQ(2, itCount(autoColl.getCollection()));
+
+            // Save the pre-state idents so we can capture the specific ident related to index
+            // creation.
+            origIdents = durableCatalog->getAllIdents(_opCtx);
+        }
+
+        {
+            DBDirectClient client(_opCtx);
+
+            IndexSpec index1;
+            // Name this index for easier querying.
+            index1.addKeys(BSON("a" << 1)).name("a_1").unique();
+
+            std::vector<const IndexSpec*> indexes;
+            indexes.push_back(&index1);
+            ASSERT_THROWS_CODE(
+                client.createIndexes(nss.ns(), indexes), DBException, ErrorCodes::DuplicateKey);
+        }
+
+        // Confirm that startIndexBuild and abortIndexBuild oplog entries have been written to the
+        // oplog.
+        auto indexStartDocument =
+            queryOplog(BSON("ns" << nss.db() + ".$cmd"
+                                 << "o.startIndexBuild" << nss.coll() << "o.indexes.0.name"
+                                 << "a_1"));
+        auto indexStartTs = indexStartDocument["ts"].timestamp();
+        auto indexAbortDocument =
+            queryOplog(BSON("ns" << nss.db() + ".$cmd"
+                                 << "o.abortIndexBuild" << nss.coll() << "o.indexes.0.name"
+                                 << "a_1"));
+        auto indexAbortTs = indexAbortDocument["ts"].timestamp();
+
+        // Check index state in catalog at oplog entry times for both startIndexBuild and
+        // abortIndexBuild.
+        AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X);
+
+        // We expect one new one new index ident during this index build.
+        assertRenamedCollectionIdentsAtTimestamp(
+            durableCatalog, origIdents, /*expectedNewIndexIdents*/ 1, indexStartTs);
+        ASSERT_FALSE(
+            getIndexMetaData(getMetaDataAtTime(durableCatalog, nss, indexStartTs), "a_1").ready);
+
+        // We expect all new idents to be removed after the index build has aborted.
+        assertRenamedCollectionIdentsAtTimestamp(
+            durableCatalog, origIdents, /*expectedNewIndexIdents*/ 0, indexAbortTs);
+        assertIndexMetaDataMissing(getMetaDataAtTime(durableCatalog, nss, indexAbortTs), "a_1");
+    }
+};
+
 class TimestampIndexDrops : public StorageTimestampTest {
 public:
     void run() {
@@ -2376,6 +2460,76 @@ public:
     }
 };
 
+/**
+ * Test specific OplogApplierImpl subclass that allows for custom applyOplogBatchPerWorker to be run
+ * during multiApply.
+ */
+class SecondaryReadsDuringBatchApplicationAreAllowedApplier : public repl::OplogApplierImpl {
+public:
+    SecondaryReadsDuringBatchApplicationAreAllowedApplier(
+        executor::TaskExecutor* executor,
+        repl::OplogBuffer* oplogBuffer,
+        Observer* observer,
+        repl::ReplicationCoordinator* replCoord,
+        repl::ReplicationConsistencyMarkers* consistencyMarkers,
+        repl::StorageInterface* storageInterface,
+        const OplogApplier::Options& options,
+        ThreadPool* writerPool,
+        OperationContext* opCtx,
+        Promise<bool>* promise,
+        stdx::future<bool>* taskFuture)
+        : repl::OplogApplierImpl(executor,
+                                 oplogBuffer,
+                                 observer,
+                                 replCoord,
+                                 consistencyMarkers,
+                                 storageInterface,
+                                 options,
+                                 writerPool),
+          _testOpCtx(opCtx),
+          _promise(promise),
+          _taskFuture(taskFuture) {}
+
+    Status applyOplogBatchPerWorker(OperationContext* opCtx,
+                                    repl::MultiApplier::OperationPtrs* operationsToApply,
+                                    WorkerMultikeyPathInfo* pathInfo) override;
+
+private:
+    // Pointer to the test's op context. This is distinct from the op context used in
+    // applyOplogBatchPerWorker.
+    OperationContext* _testOpCtx;
+    Promise<bool>* _promise;
+    stdx::future<bool>* _taskFuture;
+};
+
+
+// This apply operation function will block until the reader has tried acquiring a collection lock.
+// This returns BadValue statuses instead of asserting so that the worker threads can cleanly exit
+// and this test case fails without crashing the entire suite.
+Status SecondaryReadsDuringBatchApplicationAreAllowedApplier::applyOplogBatchPerWorker(
+    OperationContext* opCtx,
+    repl::MultiApplier::OperationPtrs* operationsToApply,
+    WorkerMultikeyPathInfo* pathInfo) {
+    if (!_testOpCtx->lockState()->isLockHeldForMode(resourceIdParallelBatchWriterMode, MODE_X)) {
+        return {ErrorCodes::BadValue, "Batch applied was not holding PBWM lock in MODE_X"};
+    }
+
+    // Insert the document. A reader without a PBWM lock should not see it yet.
+    auto status = OplogApplierImpl::applyOplogBatchPerWorker(opCtx, operationsToApply, pathInfo);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    // Signals the reader to acquire a collection read lock.
+    _promise->emplaceValue(true);
+
+    // Block while holding the PBWM lock until the reader is done.
+    if (!_taskFuture->get()) {
+        return {ErrorCodes::BadValue, "Client was holding PBWM lock in MODE_IS"};
+    }
+    return Status::OK();
+}
+
 class SecondaryReadsDuringBatchApplicationAreAllowed : public StorageTimestampTest {
 public:
     void run() {
@@ -2414,56 +2568,29 @@ public:
             taskThread.join();
         });
 
-        // This apply operation function will block until the reader has tried acquiring a
-        // collection lock. This returns BadValue statuses instead of asserting so that the worker
-        // threads can cleanly exit and this test case fails without crashing the entire suite.
-        auto applyOperationFn = [&](OperationContext* opCtx,
-                                    std::vector<const repl::OplogEntry*>* operationsToApply,
-                                    repl::OplogApplierImpl* oa,
-                                    std::vector<MultikeyPathInfo>* pathInfo) -> Status {
-            if (!_opCtx->lockState()->isLockHeldForMode(resourceIdParallelBatchWriterMode,
-                                                        MODE_X)) {
-                return {ErrorCodes::BadValue, "Batch applied was not holding PBWM lock in MODE_X"};
-            }
-
-            // Insert the document. A reader without a PBWM lock should not see it yet.
-            auto status = repl::applyOplogGroup(opCtx, operationsToApply, oa, pathInfo);
-            if (!status.isOK()) {
-                return status;
-            }
-
-            // Signals the reader to acquire a collection read lock.
-            batchInProgress.promise.emplaceValue(true);
-
-            // Block while holding the PBWM lock until the reader is done.
-            if (!taskFuture.get()) {
-                return {ErrorCodes::BadValue, "Client was holding PBWM lock in MODE_IS"};
-            }
-            return Status::OK();
-        };
-
         // Make a simple insert operation.
         BSONObj doc0 = BSON("_id" << 0 << "a" << 0);
         auto insertOp = repl::OplogEntry(BSON("ts" << futureTs << "t" << 1LL << "v" << 2 << "op"
                                                    << "i"
                                                    << "ns" << ns.ns() << "ui" << uuid << "wall"
                                                    << Date_t() << "o" << doc0));
-
         DoNothingOplogApplierObserver observer;
         // Apply the operation.
         auto storageInterface = repl::StorageInterface::get(_opCtx);
         auto writerPool = repl::makeReplWriterPool(1);
-        repl::OplogApplierImpl oplogApplier(
+        SecondaryReadsDuringBatchApplicationAreAllowedApplier oplogApplier(
             nullptr,  // task executor. not required for multiApply().
             nullptr,  // oplog buffer. not required for multiApply().
             &observer,
             _coordinatorMock,
             _consistencyMarkers,
             storageInterface,
-            applyOperationFn,
             repl::OplogApplier::Options(repl::OplogApplication::Mode::kSecondary),
-            writerPool.get());
-        auto lastOpTime = unittest::assertGet(oplogApplier.multiApply(_opCtx, {insertOp}));
+            writerPool.get(),
+            _opCtx,
+            &(batchInProgress.promise),
+            &taskFuture);
+        auto lastOpTime = unittest::assertGet(oplogApplier.applyOplogBatch(_opCtx, {insertOp}));
         ASSERT_EQ(insertOp.getOpTime(), lastOpTime);
 
         joinGuard.dismiss();
@@ -3480,6 +3607,7 @@ public:
         // addIf<TimestampIndexBuildDrain<true>>();
         addIf<TimestampMultiIndexBuilds>();
         addIf<TimestampMultiIndexBuildsDuringRename>();
+        addIf<TimestampAbortIndexBuild>();
         addIf<TimestampIndexDrops>();
         addIf<TimestampIndexBuilderOnPrimary>();
         addIf<SecondaryReadsDuringBatchApplicationAreAllowed>();

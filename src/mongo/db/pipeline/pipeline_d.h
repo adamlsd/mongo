@@ -188,6 +188,7 @@ private:
         std::unique_ptr<GroupFromFirstDocumentTransformation> rewrittenGroupStage,
         const DepsTracker& deps,
         const BSONObj& queryObj,
+        boost::optional<long long> limit,
         const AggregationRequest* aggRequest,
         const MatchExpressionParser::AllowedFeatureSet& matcherFeatures,
         BSONObj* sortObj,
@@ -202,8 +203,7 @@ private:
                                 boost::intrusive_ptr<DocumentSourceCursor> cursor,
                                 DepsTracker deps,
                                 const BSONObj& queryObj = BSONObj(),
-                                const BSONObj& sortObj = BSONObj(),
-                                const BSONObj& projectionObj = BSONObj());
+                                const BSONObj& sortObj = BSONObj());
 };
 
 }  // namespace mongo

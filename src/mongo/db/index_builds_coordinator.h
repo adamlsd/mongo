@@ -139,17 +139,16 @@ public:
         const UUID& buildUUID);
 
     /**
-     * TODO: not yet implemented.
+     * Waits for the index build identified by 'buildUUID' to complete.
      */
-    Future<void> joinIndexBuilds(const NamespaceString& nss,
-                                 const std::vector<BSONObj>& indexSpecs);
+    void joinIndexBuild(OperationContext* opCtx, const UUID& buildUUID);
 
     /**
      * Commits the index build identified by 'buildUUID'.
      */
-    Status commitIndexBuild(OperationContext* opCtx,
-                            const std::vector<BSONObj>& specs,
-                            const UUID& buildUUID);
+    void commitIndexBuild(OperationContext* opCtx,
+                          const std::vector<BSONObj>& specs,
+                          const UUID& buildUUID);
 
     /**
      * Waits for all index builds to stop after they have been interrupted during shutdown.
@@ -207,9 +206,9 @@ public:
     /**
      * Aborts a given index build by index build UUID.
      */
-    Future<void> abortIndexBuildByBuildUUID(OperationContext* opCtx,
-                                            const UUID& buildUUID,
-                                            const std::string& reason);
+    void abortIndexBuildByBuildUUID(OperationContext* opCtx,
+                                    const UUID& buildUUID,
+                                    const std::string& reason);
 
     /**
      * TODO: This is not yet implemented.

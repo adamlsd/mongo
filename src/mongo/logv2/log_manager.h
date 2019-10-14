@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include "mongo/logv2/log_format.h"
+
 #include <memory>
 #include <string>
 
@@ -57,6 +59,8 @@ public:
      * Will attach a default console log appender.
      */
     LogDomain& getGlobalDomain();
+
+    void setOutputFormat(LogFormat format);
 
     /**
      * Detaches the default log backends

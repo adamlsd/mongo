@@ -145,9 +145,9 @@ intrusive_ptr<Expression> Expression::parseExpression(
     // version.
     auto& entry = it->second;
     uassert(ErrorCodes::QueryFeatureNotAllowed,
-            // TODO SERVER-31968 we would like to include the current version and the required
-            // minimum version in this error message, but using
-            // FeatureCompatibilityVersion::toString() would introduce a dependency cycle.
+            // We would like to include the current version and the required minimum version in this
+            // error message, but using FeatureCompatibilityVersion::toString() would introduce a
+            // dependency cycle (see SERVER-31968).
             str::stream() << opName
                           << " is not allowed in the current feature compatibility version. See "
                           << feature_compatibility_version_documentation::kCompatibilityLink
@@ -2634,22 +2634,13 @@ Value ExpressionMeta::evaluate(const Document& root, Variables* variables) const
 }
 
 void ExpressionMeta::_doAddDependencies(DepsTracker* deps) const {
-    if (_metaType == MetaType::kTextScore) {
-        deps->setNeedsMetadata(DepsTracker::MetadataType::TEXT_SCORE, true);
-
+    if (_metaType == MetaType::kSearchScore || _metaType == MetaType::kSearchHighlights) {
         // We do not add the dependencies for SEARCH_SCORE or SEARCH_HIGHLIGHTS because those values
         // are not stored in the collection (or in mongod at all).
-    } else if (_metaType == MetaType::kGeoNearDist) {
-        deps->setNeedsMetadata(DepsTracker::MetadataType::GEO_NEAR_DISTANCE, true);
-    } else if (_metaType == MetaType::kGeoNearPoint) {
-        deps->setNeedsMetadata(DepsTracker::MetadataType::GEO_NEAR_POINT, true);
-    } else if (_metaType == MetaType::kRecordId) {
-        // TODO: SERVER-42560 handle passing of metadata between PlanStage and DS layers.
-    } else if (_metaType == MetaType::kIndexKey) {
-        // TODO: SERVER-42560 handle passing of metadata between PlanStage and DS layers.
-    } else if (_metaType == MetaType::kSortKey) {
-        deps->setNeedsMetadata(DepsTracker::MetadataType::SORT_KEY, true);
+        return;
     }
+
+    deps->setNeedsMetadata(_metaType, true);
 }
 
 /* ----------------------- ExpressionMod ---------------------------- */

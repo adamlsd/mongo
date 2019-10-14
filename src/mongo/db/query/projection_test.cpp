@@ -217,88 +217,73 @@ TEST(QueryProjectionTest, InvalidPositionalProjectionDefaultPathMatchExpression)
 TEST(QueryProjectionTest, ProjectionDefaults) {
     auto proj = createProjection("{}", "{}");
 
-    ASSERT_FALSE(proj.wantSortKey());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
     ASSERT_TRUE(proj.requiresDocument());
     ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
-    ASSERT_FALSE(proj.wantTextScore());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kTextScore]);
 }
 
 TEST(QueryProjectionTest, SortKeyMetaProjectionInExclusionProjection) {
     // A projection with just a $meta projection defaults to an exclusion projection.
     auto proj = createProjection("{}", "{foo: {$meta: 'sortKey'}}");
 
-    ASSERT_BSONOBJ_EQ(proj.getProjObj(), fromjson("{foo: {$meta: 'sortKey'}}"));
-    ASSERT_TRUE(proj.wantSortKey());
-
+    ASSERT_TRUE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
     ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
     ASSERT_TRUE(proj.requiresDocument());
 }
 
 TEST(QueryProjectionTest, SortKeyMetaProjectionInExclusionProjectionWithOtherFields) {
     auto proj = createProjection("{}", "{a: 0, foo: {$meta: 'sortKey'}}");
 
-    ASSERT_BSONOBJ_EQ(proj.getProjObj(), fromjson("{a: 0, foo: {$meta: 'sortKey'}}"));
-    ASSERT_TRUE(proj.wantSortKey());
-
-    ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
+    ASSERT_TRUE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
     ASSERT_TRUE(proj.requiresDocument());
 }
 
 TEST(QueryProjectionTest, SortKeyMetaProjectionInInclusionProjection) {
     auto proj = createProjection("{}", "{a: 1, foo: {$meta: 'sortKey'}}");
 
-    ASSERT_BSONOBJ_EQ(proj.getProjObj(), fromjson("{a: 1, foo: {$meta: 'sortKey'}}"));
-    ASSERT_TRUE(proj.wantSortKey());
-
+    ASSERT_TRUE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
     ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
     ASSERT_FALSE(proj.requiresDocument());
 }
 
 TEST(QueryProjectionTest, SortKeyMetaProjectionDoesNotRequireDocument) {
     auto proj = createProjection("{}", "{a: 1, foo: {$meta: 'sortKey'}, _id: 0}");
 
-    ASSERT_BSONOBJ_EQ(proj.getProjObj(), fromjson("{a: 1, foo: {$meta: 'sortKey'}, _id: 0}"));
-    ASSERT_TRUE(proj.wantSortKey());
-
+    ASSERT_TRUE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
     ASSERT_FALSE(proj.requiresDocument());
     ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
 }
 
 TEST(QueryProjectionTest, SortKeyMetaAndSlice) {
     auto proj = createProjection("{}", "{a: 1, foo: {$meta: 'sortKey'}, _id: 0, b: {$slice: 1}}");
 
-    ASSERT_BSONOBJ_EQ(proj.getProjObj(),
-                      fromjson("{a: 1, foo: {$meta: 'sortKey'}, _id: 0, b: {$slice: 1}}"));
-    ASSERT_TRUE(proj.wantSortKey());
+    ASSERT_TRUE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
     ASSERT_TRUE(proj.requiresDocument());
-
     ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
 }
 
 TEST(QueryProjectionTest, SortKeyMetaAndElemMatch) {
     auto proj =
         createProjection("{}", "{a: 1, foo: {$meta: 'sortKey'}, _id: 0, b: {$elemMatch: {a: 1}}}");
 
-    ASSERT_BSONOBJ_EQ(proj.getProjObj(),
-                      fromjson("{a: 1, foo: {$meta: 'sortKey'}, _id: 0, b: {$elemMatch: {a: 1}}}"));
-    ASSERT_TRUE(proj.wantSortKey());
+    ASSERT_TRUE(proj.metadataDeps()[DocumentMetadataFields::kSortKey]);
     ASSERT_TRUE(proj.requiresDocument());
-
     ASSERT_FALSE(proj.requiresMatchDetails());
-    ASSERT_FALSE(proj.wantGeoNearDistance());
-    ASSERT_FALSE(proj.wantGeoNearPoint());
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearDist]);
+    ASSERT_FALSE(proj.metadataDeps()[DocumentMetadataFields::kGeoNearPoint]);
 }
 
 //

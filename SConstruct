@@ -30,6 +30,12 @@ import mongo.generators as mongo_generators
 EnsurePythonVersion(3, 6)
 EnsureSConsVersion(3, 1, 1)
 
+# Monkey patch SCons.FS.File.release_target_info to be a no-op.
+# See https://github.com/SCons/scons/issues/3454
+def release_target_info_noop(self):
+    pass
+SCons.Node.FS.File.release_target_info = release_target_info_noop
+
 from buildscripts import utils
 from buildscripts import moduleconfig
 
@@ -2821,9 +2827,12 @@ def doConfigure(myenv):
         # because it is much faster. Don't use it if the user has already configured another linker
         # selection manually.
         if not any(flag.startswith('-fuse-ld=') for flag in env['LINKFLAGS']):
-            if AddToLINKFLAGSIfSupported(myenv, '-fuse-ld=gold'):
+            if AddToLINKFLAGSIfSupported(myenv, '-fuse-ld=lld') or AddToLINKFLAGSIfSupported(myenv, '-fuse-ld=gold'):
                 if link_model.startswith("dynamic"):
                     AddToLINKFLAGSIfSupported(myenv, '-Wl,--gdb-index')
+
+            # Our build is already parallel.
+            AddToLINKFLAGSIfSupported(myenv, '-Wl,--no-threads')
 
         # Explicitly enable GNU build id's if the linker supports it.
         AddToLINKFLAGSIfSupported(myenv, '-Wl,--build-id')

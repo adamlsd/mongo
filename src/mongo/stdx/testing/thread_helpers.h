@@ -33,11 +33,20 @@
 #include <mutex>
 
 namespace mongo::stdx::testing {
+/**
+ * This class is a threadsafe `testing::ThreadInformation::Listener` implementation.  This listener
+ * will maintain a table of currently active threads and their `testing::ThreadInformation`.
+ */
 class ThreadInformation::Registrar : mongo::stdx::testing::ThreadInformation::Listener {
 private:
     mutable std::mutex mtx;
     std::map<std::thread::id, ThreadInformation> mapping;
 
+    // Since we create this class by `std::make_unique`, but the constructor itself has to be
+    // public, we use this protected token type to prevent external callers from creating a
+    // `Registar` instance, without notifying the `ThreadInformation::Listener` framework about it.
+    // This is necessary as the fully constructed `Registrar` class must be provided to the
+    // `ThreadInformation::Listener` mechanism via the `Registar::create` factory function.
     class protected_constructor {
         explicit protected_constructor() = default;
         friend Registrar;
@@ -69,6 +78,9 @@ public:
         mapping.erase(id);
     }
 
+    /**
+     * Returns the `ThreadInformation` associated with the `id` parameter.
+     */
     ThreadInformation getMapping(const stdx::thread::id& id) const {
         const auto lk = std::lock_guard(mtx);
         return mapping.at(id);

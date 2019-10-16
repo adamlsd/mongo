@@ -46,14 +46,15 @@
 namespace {
 namespace stdx = ::mongo::stdx;
 
-const auto kSignalNumber = SIGINFO;
+const int kSignal = SIGINFO;
 
 std::atomic<bool> blockage{true};
-std::atomic<const void*> address;
+std::atomic<const void*> handlerStack;
+std::atomic<const void*> threadStack;
 
 void recurse(const int n) {
     if (n == 10) {
-        raise(kSignalNumber);
+        raise(kSignal);
         while (blockage)
             ;
     } else
@@ -61,23 +62,23 @@ void recurse(const int n) {
 }
 
 void handler(const int n) {
-    address = static_cast<const void*>(&n);
+    handlerStack = static_cast<const void*>(&n);
     blockage = false;
 }
 
 void installSignalHandler() {
     struct sigaction action {};
     action.sa_handler = handler;
-    if constexpr (stdx::thread::usingSigaltstacks)
+    if constexpr (stdx::support::SignalStack::kEnabled)
         action.sa_flags = SA_ONSTACK;
     else
         action.sa_flags = 0;
 
     sigemptyset(&action.sa_mask);
-    const auto ec = ::sigaction(kSignalNumber, &action, nullptr);
+    const auto ec = ::sigaction(kSignal, &action, nullptr);
     const int myErrno = errno;
     if (ec != 0) {
-        std::cout << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
+        std::cout << "sigaction failed: " << ec << " and errno is: " << myErrno << std::endl;
         exit(EXIT_FAILURE);
     }
 }
@@ -88,7 +89,7 @@ void setupSignalMask() {
     const auto ec = sigprocmask(SIG_UNBLOCK, &sigset, nullptr);
     const int myErrno = errno;
     if (ec != 0) {
-        std::cout << "Got ec: " << ec << " and errno is: " << myErrno << std::endl;
+        std::cout << "sigprocmask failed: " << ec << " and errno is: " << myErrno << std::endl;
         exit(EXIT_FAILURE);
     }
 }
@@ -96,62 +97,68 @@ void setupSignalMask() {
 
 std::mutex thrmtx;
 std::condition_variable cv;
-std::atomic<const void*> mainAddress;
+
+enum InterlockedThreadState { kNone, kHandlerRun, kRetireChild } interlockedThreadState = kNone;
 
 void jumpoff() {
     auto lk = std::unique_lock(thrmtx);
-    mainAddress = &lk;
+    threadStack = &lk;
 
     setupSignalMask();
     installSignalHandler();
 
     recurse(0);
+    interlockedThreadState = kHandlerRun;
     cv.notify_one();
-    cv.wait(lk);
+    cv.wait(lk, [] { return interlockedThreadState == kRetireChild; });
 }
 
 }  // namespace
 
 
 int main() try {
-    if constexpr (!stdx::thread::usingSigaltstacks)
+    if constexpr (!stdx::support::SignalStack::kEnabled) {
+        std::cout << "No test to run.  No alternate signal stacks on this platform." << std::endl;
         return EXIT_SUCCESS;
-    mongo::stdx::testing::ThreadInformationListener listener;
+    }
+    using mongo::stdx::testing::ThreadInformation;
+    auto listener = ThreadInformation::Registrar::create();
 
     auto lk = std::unique_lock(thrmtx);
     stdx::thread thr(jumpoff);
     const auto id = thr.get_id();
-    cv.wait(lk);
-    std::cerr << "The parent has received child notification" << std::endl;
-    // const auto [ pos, amt ]= mongo::getInformationForThread( thr );
-    std::cerr << "The parent is looking to the listener" << std::endl;
-    const auto [base, amt] = listener.getMapping(thr).altStack;
-    std::cerr << "The parent is checking layouts" << std::endl;
+    cv.wait(lk, [] { return interlockedThreadState == kHandlerRun; });
 
-    const auto bAddress = static_cast<const std::byte*>(static_cast<const void*>(address));
+    const auto [base, amt] = listener->getMapping(thr.get_id()).altStack;
+
+    const auto bHandlerStack = static_cast<const std::byte*>(handlerStack.load());
     const auto bBase = static_cast<const std::byte*>(base);
-    if (!(bBase <= bAddress && bAddress < (bBase + amt))) {
-        std::cout << "Address was out of bounds (addr, range): " << bAddress << ", [" << bBase
-                  << ", " << bBase + amt << ")" << std::endl;
+
+    if (!(bBase <= bHandlerStack && bHandlerStack < (bBase + amt))) {
+        std::cout << "Handler address was out of altstack bounds (addr, range): " << bHandlerStack
+                  << ", [" << bBase << ", " << bBase + amt << ")" << std::endl;
         exit(EXIT_FAILURE);
     }
 
-    const auto bmAddress = static_cast<const std::byte*>(static_cast<const void*>(mainAddress));
-    if (bBase <= bmAddress && bmAddress < (bBase + amt)) {
-        std::cout << "Main address was not out of bounds" << std::endl;
+    const auto bThreadAddress = static_cast<const std::byte*>(threadStack.load());
+    if (bBase <= bThreadAddress && bThreadAddress < (bBase + amt)) {
+        std::cout << "Child thread address was found on the altstack: " << bThreadAddress << ", ["
+                  << bBase << ", " << bBase + amt << ")" << std::endl;
         exit(EXIT_FAILURE);
     }
 
+    interlockedThreadState = kRetireChild;
     lk.unlock();
     cv.notify_one();
     thr.join();
 
     try {
-        listener.getMapping(id);
+        listener->getMapping(id);
         std::cerr << "Identifier " << id << " was found, which wasn't expected." << std::endl;
         exit(EXIT_FAILURE);
     } catch (const std::out_of_range&) {
     }
+    std::cout << "`sigaltstack` testing successful." << std::endl;
     return EXIT_SUCCESS;
 } catch (const std::exception& ex) {
     std::cerr << ex.what() << std::endl;

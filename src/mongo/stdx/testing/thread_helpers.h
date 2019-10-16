@@ -33,38 +33,45 @@
 #include <mutex>
 
 namespace mongo::stdx::testing {
-class ThreadInformationListener {
+class ThreadInformation::Registrar : mongo::stdx::testing::ThreadInformation::Listener {
 private:
     mutable std::mutex mtx;
-    std::map<std::thread::id, mongo::ThreadInformation> mapping;
+    std::map<std::thread::id, ThreadInformation> mapping;
+
+    class protected_constructor {
+        explicit protected_constructor() = default;
+        friend Registrar;
+    };
+
 
 public:
-    ~ThreadInformationListener() {
-        resetThreadInformationHandler();
+    explicit Registrar(protected_constructor) {}
+
+    ~Registrar() {
+        ThreadInformation::Listener::remove(*this);
     }
 
-    ThreadInformationListener() {
-        registerThreadInformationHandlerType(*this);
+    static auto create() {
+        auto rv = std::make_unique<Registrar>(protected_constructor{});
+        ThreadInformation::Listener::add(*rv);
+        return rv;
     }
 
-    void report(const std::thread::id id, const mongo::ThreadInformation info) {
+
+    void activate(const std::thread::id& id, const ThreadInformation& info) override {
         const auto lk = std::lock_guard(mtx);
         assert(!mapping.count(id));
         mapping[id] = info;
     }
 
-    void retire(const std::thread::id id) {
+    void quiesce(const std::thread::id& id) override {
         const auto lk = std::lock_guard(mtx);
         mapping.erase(id);
     }
 
-    mongo::ThreadInformation getMapping(const stdx::thread::id& id) const {
+    ThreadInformation getMapping(const stdx::thread::id& id) const {
         const auto lk = std::lock_guard(mtx);
         return mapping.at(id);
-    }
-
-    mongo::ThreadInformation getMapping(const stdx::thread& thr) const {
-        return getMapping(thr.get_id());
     }
 };
 }  // namespace mongo::stdx::testing

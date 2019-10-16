@@ -46,15 +46,23 @@ namespace mongo {
 namespace stdx {
 
 namespace support {
+/**
+ * Describes a location of an alternate stack for use by threads, via `sigaltstack`.
+ */
 struct AltStack {
-    void* base;
-    std::size_t size;
+    void* base = nullptr;
+    std::size_t size = 0;
 };
 
 class SignalStack;
 }  // namespace support
 
 namespace testing {
+/**
+ * Information about a running thread for use in test programs.
+ * It comes with an installable listener interface to permit tests to monitor thread information as
+ * they need.
+ */
 struct ThreadInformation {
     stdx::support::AltStack altStack;
 
@@ -63,12 +71,19 @@ struct ThreadInformation {
         friend support::SignalStack;
         static inline std::set<Listener*> listeners;
 
+        /**
+         * Notify all testing listeners that a new thread named by `id` has been created that is
+         * described by `information`.
+         */
         static void notifyNew(const std::thread::id& id, const ThreadInformation& information) {
             for (auto* const listener : listeners) {
                 listener->activate(id, information);
             }
         }
 
+        /**
+         * Notify all testing listeners that a thread with `id` has been retired.
+         */
         static void notifyDelete(const std::thread::id& id) {
             for (auto* const listener : listeners) {
                 listener->quiesce(id);
@@ -78,23 +93,73 @@ struct ThreadInformation {
 
     public:
         virtual ~Listener() = default;
-        virtual void activate(const std::thread::id&, const ThreadInformation&) = 0;
+
+        /**
+         * A listener may perform any action it desires when notified that a new thread has been
+         * created.  The `id` of the new thread and the `information` may be used in any way
+         * desired.
+         * NOTE: This function is called in the context of the newly created thread.
+         * NOTE: The `override` must provide its own thread safety, if necessary.
+         */
+        virtual void activate(const std::thread::id& id, const ThreadInformation& information) = 0;
+
+        /**
+         * A listener may perform any action it desires when notified that a thread has been
+         * retured.  The `id` of the expired thread may be used in any way desired.
+         * NOTE: This function is called in the context of the dying thread.
+         * NOTE: The `override` must provide its own thread safety, if necessary.
+         */
         virtual void quiesce(const std::thread::id&) = 0;
 
+        /**
+         * Remove the `deadListener` from the set of testing listeners for thread events.
+         * NOTE: This function is not threadsafe.
+         */
         static void remove(Listener& deadListener) {
             listeners.erase(&deadListener);
         }
+
+        /**
+         * Add the `newListener` to the set of testing listeners for thread events.
+         * NOTE: This function is not threadsafe.
+         */
         static void add(Listener& newListener) {
             listeners.insert(&newListener);
         }
     };
 
+    /**
+     * A default `Registrar` implementation for thread events, intended for testing.
+     * The definition is in another file, as it is not used unless explicitly installed.
+     */
     class Registrar;
 };
 }  // namespace testing
 
 namespace support {
+
+/**
+ * Represents an alternate stack to be installed for handling signals.  On platforms which do not
+ * support `sigaltstack`, this class has a dummy implementation.
+ */
 class SignalStack {
+private:
+    /**
+     * An RAII type to automatically register, with any listeners, and deregister a thread's
+     * `SignalStack` information on creation and retire it on expiry.
+     */
+    struct InfoGuard {
+        InfoGuard(const InfoGuard&) = delete;
+
+        explicit InfoGuard(const testing::ThreadInformation& info) {
+            testing::ThreadInformation::Listener::notifyNew(std::this_thread::get_id(), info);
+        }
+
+        ~InfoGuard() {
+            testing::ThreadInformation::Listener::notifyDelete(std::this_thread::get_id());
+        }
+    };
+
 #if defined(__linux__) || defined(__FreeBSD__)
 private:
     static constexpr std::size_t kSignalStackSize = SIGSTKSZ;
@@ -103,17 +168,14 @@ private:
 public:
     static constexpr bool kEnabled = true;
 
+    /**
+     * Install this stack as a `sigaltstack`, and return a management object to revert back to no
+     * `sigaltstack`, when that object expires.
+     */
     [[nodiscard]] auto installStack() const {
-        struct InfoGuard {
-            explicit InfoGuard(const testing::ThreadInformation& info) {
-                testing::ThreadInformation::Listener::notifyNew(std::this_thread::get_id(), info);
-            }
-
-            ~InfoGuard() {
-                testing::ThreadInformation::Listener::notifyDelete(std::this_thread::get_id());
-            }
-        };
-
+        /**
+         * An RAII type to register and deregister a `sigaltstack`, as specified to its constructor.
+         */
         struct StackGuard {
             StackGuard(const StackGuard&) = delete;
 
@@ -140,6 +202,9 @@ public:
             }
         };
 
+        // When installing a new thread, if using `sigaltstack`s we must RAII guard both the testing
+        // information for listeners and the actual stack itself.  Combining these into a single
+        // type makes this installation function simpler.
         struct FullGuard : StackGuard, InfoGuard {
             explicit FullGuard(const support::AltStack& altStack)
                 : StackGuard(altStack), InfoGuard(testing::ThreadInformation{altStack}) {}
@@ -159,13 +224,13 @@ public:
 public:
     static constexpr bool kEnabled = false;
 
+    /**
+     * This function is the non-`sigaltstack` form of installing a stack.  The thread creation and
+     * destruction events will be broadcast to listeners; however, no actual stacks will be
+     * installed.  A nullptr and 0 size for `AltStack` information indicates this to listeners.
+     */
     [[nodiscard]] auto installStack() const {
-        struct Guard {
-            Guard(const Guard&) = delete;
-            ~Guard() {}  // Mustn't be a trivial dtor, or else it triggers warnings.
-        };
-
-        return Guard{};
+        return InfoGuard{testing::ThreadInformation{support::AltStack{}}};
     }
 #endif  // ( defined( __linux__ ) || defined( __FreeBSD__ ) )
 };
@@ -180,8 +245,8 @@ public:
  * `sigaltstack` when starting.  We'd like this behavior because we rarely if ever try/catch thread
  * creation, and don't have a strategy for retrying.  Therefore, all throwing does is remove context
  * as to which part of the system failed thread creation (as the exception itself is caught at the
- * top of the stack).  The `sigaltstack` provides the ability to attempt to run stack symbolization
- * code when a thread overflows its stack.
+ * top of the stack).  The `sigaltstack` provides, among other things, the ability to attempt to run
+ * stack symbolization code when a thread overflows its stack.
  *
  * We're putting this in stdx, rather than having it as some kind of mongo::Thread, because the
  * signature and use of the type is otherwise completely identical.

@@ -83,7 +83,7 @@ struct ThreadInformation {
          * desired.  This function is called in the context of the newly created thread.  The
          * `override` must provide its own thread safety, if necessary.
          */
-        virtual void activate(const std::thread::id& id, const ThreadInformation& information) = 0;
+        virtual void born(const std::thread::id& id, const ThreadInformation& information) = 0;
 
         /**
          * A listener may perform any action it desires when notified that a thread has been
@@ -91,7 +91,7 @@ struct ThreadInformation {
          * is called in the context of the dying thread.  The `override` must provide its own thread
          * safety, if necessary.
          */
-        virtual void quiesce(const std::thread::id&) = 0;
+        virtual void died(const std::thread::id&) = 0;
 
 
         /**
@@ -102,7 +102,7 @@ struct ThreadInformation {
                               const std::thread::id& id,
                               const ThreadInformation& information) {
             for (auto* const listener : listeners) {
-                listener->activate(id, information);
+                listener->born(id, information);
             }
         }
 
@@ -111,7 +111,7 @@ struct ThreadInformation {
          */
         static void notifyDelete(support::SignalStackToken, const std::thread::id& id) {
             for (auto* const listener : listeners) {
-                listener->quiesce(id);
+                listener->died(id);
             }
         }
 

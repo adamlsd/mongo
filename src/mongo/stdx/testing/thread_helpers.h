@@ -61,12 +61,12 @@ public:
         return rv;
     }
 
-    void activate(const std::thread::id& id, const ThreadInformation& info) override {
+    void born(const std::thread::id& id, const ThreadInformation& info) override {
         const auto lock = std::lock_guard(_access);
         _mapping[id] = info;
     }
 
-    void quiesce(const std::thread::id& id) override {
+    void died(const std::thread::id& id) override {
         const auto lock = std::lock_guard(_access);
         _mapping.erase(id);
     }

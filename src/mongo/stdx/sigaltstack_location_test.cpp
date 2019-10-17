@@ -27,26 +27,22 @@
  *    it in the license file.
  */
 
-#include "mongo/stdx/exception.h"
+#include "mongo/stdx/thread.h"
 
 #include <unistd.h>
 
-#include <stdlib.h>
-
-#include <algorithm>
 #include <exception>
 #include <iostream>
-#include <map>
 #include <stdexcept>
-#include <string>
 
 #include "mongo/stdx/testing/thread_helpers.h"
-#include "mongo/stdx/thread.h"
+
+#if defined(__linux__) || defined(__FreeBSD__)
 
 namespace {
 namespace stdx = ::mongo::stdx;
 
-const int kSignal = SIGINFO;
+const int kSignal = SIGUSR1;
 
 std::atomic<bool> blockage{true};
 std::atomic<const void*> handlerStack;
@@ -164,3 +160,14 @@ int main() try {
     std::cerr << ex.what() << std::endl;
     throw;
 }
+
+#else
+
+int
+main()
+{
+    std::cout << "`sigaltstack` testing skipped on this platform." << std::endl;
+    return EXIT_SUCCESS;
+}
+
+#endif

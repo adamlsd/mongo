@@ -31,8 +31,10 @@
 
 #include <unistd.h>
 
+#include <condition_variable>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 
 #include "mongo/stdx/testing/thread_helpers.h"
@@ -51,8 +53,8 @@ std::atomic<const void*> threadStack;   // NOLINT
 void recurse(const int n) {
     if (n == 10) {
         raise(kSignal);
-        while (blockage)
-            ;
+        while (blockage) {
+        }
     } else
         recurse(n + 1);
 }
@@ -97,7 +99,7 @@ std::condition_variable cv;  // NOLINT
 enum InterlockedThreadState { kNone, kHandlerRun, kRetireChild } interlockedThreadState = kNone;
 
 void jumpoff() {
-    auto lk = std::unique_lock(thrmtx);
+    auto lk = std::unique_lock(thrmtx);  // NOLINT
     threadStack = &lk;
 
     setupSignalMask();
@@ -120,7 +122,7 @@ int main() {
     using mongo::stdx::testing::ThreadInformation;
     auto listener = ThreadInformation::Registrar::create();
 
-    auto lk = std::unique_lock(thrmtx);
+    auto lk = std::unique_lock(thrmtx);  // NOLINT
     stdx::thread thr(jumpoff);
     const auto id = thr.get_id();
     cv.wait(lk, [] { return interlockedThreadState == kHandlerRun; });

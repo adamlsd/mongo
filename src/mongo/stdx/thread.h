@@ -160,13 +160,13 @@ private:
 #if defined(__linux__) || defined(__FreeBSD__)
 private:
     static constexpr auto kSize = std::max(std::size_t{65536}, std::size_t{MINSIGSTKSZ});
-    std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSize);
+    std::unique_ptr<std::byte[]> _stack = std::make_unique<std::byte[]>(kSize);
 
-    const void* allocation() const {
-        return this->stack.get();
+    const void* _allocation() const {
+        return this->_stack.get();
     }
 
-    std::size_t size() const {
+    std::size_t _size() const {
         return kSize;
     }
 
@@ -215,7 +215,7 @@ public:
                 : StackGuard(altStack), InfoGuard(testing::ThreadInformation{altStack}) {}
         };
 
-        return FullGuard({this->stack.get(), this->size()});
+        return FullGuard({this->_stack.get(), this->_size()});
     }
 
 #else   // !( defined( __linux__ ) || defined( __FreeBSD__ ) )

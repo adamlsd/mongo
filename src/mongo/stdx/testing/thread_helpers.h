@@ -41,51 +41,38 @@ namespace mongo::stdx::testing {
  */
 class ThreadInformation::Registrar : mongo::stdx::testing::ThreadInformation::Listener {
 private:
-    mutable std::mutex mtx;
-    std::map<std::thread::id, ThreadInformation> mapping;
+    mutable std::mutex _access;
+    std::map<std::thread::id, ThreadInformation> _mapping;
 
-    // Since we create this class by `std::make_unique`, but the constructor itself has to be
-    // public, we use this protected token type to prevent external callers from creating a
-    // `Registar` instance, without notifying the `ThreadInformation::Listener` framework about it.
-    // This is necessary as the fully constructed `Registrar` class must be provided to the
-    // `ThreadInformation::Listener` mechanism via the `Registar::create` factory function.
-    class protected_constructor {
-        explicit protected_constructor() = default;
-        friend Registrar;
-    };
-
+    explicit Registrar()= default;
 
 public:
-    explicit Registrar(protected_constructor) {}
-
     ~Registrar() {
         ThreadInformation::Listener::remove(*this);
     }
 
     static auto create() {
-        auto rv = std::make_unique<Registrar>(protected_constructor{});
+        std::unique_ptr<Registrar> rv( new Registrar{} );
         ThreadInformation::Listener::add(*rv);
         return rv;
     }
 
-
     void activate(const std::thread::id& id, const ThreadInformation& info) override {
-        const auto lk = std::lock_guard(mtx);
-        assert(!mapping.count(id));
-        mapping[id] = info;
+        const auto lock = std::lock_guard(_access);
+        _mapping[id] = info;
     }
 
     void quiesce(const std::thread::id& id) override {
-        const auto lk = std::lock_guard(mtx);
-        mapping.erase(id);
+        const auto lock = std::lock_guard(_access);
+        _mapping.erase(id);
     }
 
     /**
      * Returns the `ThreadInformation` associated with the `id` parameter.
      */
     ThreadInformation getMapping(const stdx::thread::id& id) const {
-        const auto lk = std::lock_guard(mtx);
-        return mapping.at(id);
+        const auto lock = std::lock_guard(_access);
+        return _mapping.at(id);
     }
 };
 }  // namespace mongo::stdx::testing

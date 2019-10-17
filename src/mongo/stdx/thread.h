@@ -41,9 +41,7 @@
 
 #include "mongo/stdx/exception.h"
 
-namespace mongo {
-
-namespace stdx {
+namespace mongo::stdx {
 
 namespace support {
 /**
@@ -97,31 +95,30 @@ struct ThreadInformation {
         /**
          * A listener may perform any action it desires when notified that a new thread has been
          * created.  The `id` of the new thread and the `information` may be used in any way
-         * desired.
-         * NOTE: This function is called in the context of the newly created thread.
-         * NOTE: The `override` must provide its own thread safety, if necessary.
+         * desired.  This function is called in the context of the newly created thread.  The
+         * `override` must provide its own thread safety, if necessary.
          */
         virtual void activate(const std::thread::id& id, const ThreadInformation& information) = 0;
 
         /**
          * A listener may perform any action it desires when notified that a thread has been
-         * retured.  The `id` of the expired thread may be used in any way desired.
-         * NOTE: This function is called in the context of the dying thread.
-         * NOTE: The `override` must provide its own thread safety, if necessary.
+         * retured.  The `id` of the expired thread may be used in any way desired.  This function
+         * is called in the context of the dying thread.  The `override` must provide its own thread
+         * safety, if necessary.
          */
         virtual void quiesce(const std::thread::id&) = 0;
 
         /**
-         * Remove the `deadListener` from the set of testing listeners for thread events.
-         * NOTE: This function is not threadsafe.
+         * Remove the `deadListener` from the set of testing listeners for thread events.  This
+         * function is not threadsafe.
          */
         static void remove(Listener& deadListener) {
             listeners.erase(&deadListener);
         }
 
         /**
-         * Add the `newListener` to the set of testing listeners for thread events.
-         * NOTE: This function is not threadsafe.
+         * Add the `newListener` to the set of testing listeners for thread events.  This function
+         * is not threadsafe.
          */
         static void add(Listener& newListener) {
             listeners.insert(&newListener);

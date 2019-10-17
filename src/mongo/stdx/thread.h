@@ -53,6 +53,11 @@ struct AltStack {
 };
 
 class SignalStack;
+class SignalStackToken
+{
+	SignalStackToken()= default;
+	friend SignalStack;
+};
 }  // namespace support
 
 namespace testing {
@@ -69,25 +74,6 @@ struct ThreadInformation {
         friend support::SignalStack;
         static inline std::set<Listener*> listeners;
 
-        /**
-         * Notify all testing listeners that a new thread named by `id` has been created that is
-         * described by `information`.
-         */
-        static void notifyNew(const std::thread::id& id, const ThreadInformation& information) {
-            for (auto* const listener : listeners) {
-                listener->activate(id, information);
-            }
-        }
-
-        /**
-         * Notify all testing listeners that a thread with `id` has been retired.
-         */
-        static void notifyDelete(const std::thread::id& id) {
-            for (auto* const listener : listeners) {
-                listener->quiesce(id);
-            }
-        }
-
 
     public:
         virtual ~Listener() = default;
@@ -102,11 +88,31 @@ struct ThreadInformation {
 
         /**
          * A listener may perform any action it desires when notified that a thread has been
-         * retured.  The `id` of the expired thread may be used in any way desired.  This function
+         * retired.  The `id` of the expired thread may be used in any way desired.  This function
          * is called in the context of the dying thread.  The `override` must provide its own thread
          * safety, if necessary.
          */
         virtual void quiesce(const std::thread::id&) = 0;
+
+
+        /**
+         * Notify all testing listeners that a new thread named by `id` has been created that is
+         * described by `information`.
+         */
+        static void notifyNew(support::SignalStackToken ,const std::thread::id& id, const ThreadInformation& information) {
+            for (auto* const listener : listeners) {
+                listener->activate(id, information);
+            }
+        }
+
+        /**
+         * Notify all testing listeners that a thread with `id` has been retired.
+         */
+        static void notifyDelete(support::SignalStackToken,const std::thread::id& id) {
+            for (auto* const listener : listeners) {
+                listener->quiesce(id);
+            }
+        }
 
         /**
          * Remove the `deadListener` from the set of testing listeners for thread events.  This
@@ -127,7 +133,8 @@ struct ThreadInformation {
 
     /**
      * A default `Registrar` implementation for thread events, intended for testing.
-     * The definition is in another file, as it is not used unless explicitly installed.
+     * The definition is in `src/mongo/stdx/testing/thread_helpers.h`, as it is not used unless
+     * explicitly installed.
      */
     class Registrar;
 };
@@ -149,11 +156,11 @@ private:
         InfoGuard(const InfoGuard&) = delete;
 
         explicit InfoGuard(const testing::ThreadInformation& info) {
-            testing::ThreadInformation::Listener::notifyNew(std::this_thread::get_id(), info);
+            testing::ThreadInformation::Listener::notifyNew(SignalStackToken{},std::this_thread::get_id(), info);
         }
 
         ~InfoGuard() {
-            testing::ThreadInformation::Listener::notifyDelete(std::this_thread::get_id());
+            testing::ThreadInformation::Listener::notifyDelete(SignalStackToken{},std::this_thread::get_id());
         }
     };
 

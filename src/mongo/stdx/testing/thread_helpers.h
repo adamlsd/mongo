@@ -38,6 +38,10 @@ namespace mongo::stdx::testing {
 /**
  * This class is a threadsafe `testing::ThreadInformation::Listener` implementation.  This listener
  * will maintain a table of currently active threads and their `testing::ThreadInformation`.
+ *
+ * This class uses `std::thread` and other `std::` things throughout, as it is used in testing
+ * `stdx::` implementations of those built on top of the `std::` things.  This class needs
+ * access to threading operations other than the `stdx::` implementations.
  */
 class ThreadInformation::Registrar : mongo::stdx::testing::ThreadInformation::Listener {
 private:

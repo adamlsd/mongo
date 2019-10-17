@@ -44,9 +44,9 @@ namespace stdx = ::mongo::stdx;
 
 const int kSignal = SIGUSR1;
 
-std::atomic<bool> blockage{true};
-std::atomic<const void*> handlerStack;
-std::atomic<const void*> threadStack;
+std::atomic<bool> blockage{true};       // NOLINT
+std::atomic<const void*> handlerStack;  // NOLINT
+std::atomic<const void*> threadStack;   // NOLINT
 
 void recurse(const int n) {
     if (n == 10) {
@@ -91,8 +91,8 @@ void setupSignalMask() {
 }
 
 
-std::mutex thrmtx;
-std::condition_variable cv;
+std::mutex thrmtx;           // NOLINT
+std::condition_variable cv;  // NOLINT
 
 enum InterlockedThreadState { kNone, kHandlerRun, kRetireChild } interlockedThreadState = kNone;
 
@@ -160,9 +160,7 @@ int main() {
 
 #else
 
-int
-main()
-{
+int main() {
     std::cout << "`sigaltstack` testing skipped on this platform." << std::endl;
     return EXIT_SUCCESS;
 }

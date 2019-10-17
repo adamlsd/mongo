@@ -159,7 +159,7 @@ private:
 
 #if defined(__linux__) || defined(__FreeBSD__)
 private:
-    static constexpr std::size_t kSignalStackSize = SIGSTKSZ;
+    static constexpr std::size_t kSignalStackSize = 65536;
     std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSignalStackSize);
 
 public:

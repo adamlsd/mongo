@@ -167,7 +167,7 @@ private:
         }
     };
 
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__FreeBSD__)  // Support `sigaltstack` on the specified platforms.
 private:
     static constexpr auto kSize = std::max(std::size_t{65536}, std::size_t{MINSIGSTKSZ});
     std::unique_ptr<std::byte[]> _stack = std::make_unique<std::byte[]>(kSize);
@@ -228,7 +228,7 @@ public:
         return FullGuard({this->_stack.get(), this->_size()});
     }
 
-#else   // !( defined( __linux__ ) || defined( __FreeBSD__ ) )
+#else   // No `sigaltstack` support
 
 public:
     static constexpr bool kEnabled = false;
@@ -241,7 +241,7 @@ public:
     [[nodiscard]] auto installStack() const {
         return InfoGuard{testing::ThreadInformation{support::AltStack{}}};
     }
-#endif  // ( defined( __linux__ ) || defined( __FreeBSD__ ) )
+#endif  // End of conditional support for `sigaltstack`
 };
 
 }  // namespace support

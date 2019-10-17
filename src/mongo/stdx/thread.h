@@ -290,7 +290,8 @@ public:
     ~thread() noexcept = default;
     thread(const thread&) = delete;
     thread(thread&& other) noexcept = default;
-    thread& operator=(const thread&) = delete; thread& operator=(thread&& other) noexcept = default;
+    thread& operator=(const thread&) = delete;
+    thread& operator=(thread&& other) noexcept = default;
 
     /**
      * As of C++14, the Function overload for std::thread requires that this constructor only

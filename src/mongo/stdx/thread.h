@@ -159,8 +159,16 @@ private:
 
 #if defined(__linux__) || defined(__FreeBSD__)
 private:
-    static constexpr auto kSignalStackSize = std::max(std::size_t{65536}, std::size_t{SIGSTKSIZE});
-    std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSignalStackSize);
+    static constexpr auto kSize = std::max(std::size_t{65536}, std::size_t{MINSIGSTKSZ});
+    std::unique_ptr<std::byte[]> stack = std::make_unique<std::byte[]>(kSize);
+
+    const void* allocation() const {
+        return this->stack.get();
+    }
+
+    std::size_t size() const {
+        return kSize;
+    }
 
 public:
     static constexpr bool kEnabled = true;
@@ -210,12 +218,6 @@ public:
         return FullGuard({this->stack.get(), this->size()});
     }
 
-    const void* allocation() const {
-        return this->stack.get();
-    }
-    std::size_t size() const {
-        return kSignalStackSize;
-    }
 #else   // !( defined( __linux__ ) || defined( __FreeBSD__ ) )
 
 public:

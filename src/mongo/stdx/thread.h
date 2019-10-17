@@ -53,10 +53,9 @@ struct AltStack {
 };
 
 class SignalStack;
-class SignalStackToken
-{
-	SignalStackToken()= default;
-	friend SignalStack;
+class SignalStackToken {
+    SignalStackToken() = default;
+    friend SignalStack;
 };
 }  // namespace support
 
@@ -99,7 +98,9 @@ struct ThreadInformation {
          * Notify all testing listeners that a new thread named by `id` has been created that is
          * described by `information`.
          */
-        static void notifyNew(support::SignalStackToken ,const std::thread::id& id, const ThreadInformation& information) {
+        static void notifyNew(support::SignalStackToken,
+                              const std::thread::id& id,
+                              const ThreadInformation& information) {
             for (auto* const listener : listeners) {
                 listener->activate(id, information);
             }
@@ -108,7 +109,7 @@ struct ThreadInformation {
         /**
          * Notify all testing listeners that a thread with `id` has been retired.
          */
-        static void notifyDelete(support::SignalStackToken,const std::thread::id& id) {
+        static void notifyDelete(support::SignalStackToken, const std::thread::id& id) {
             for (auto* const listener : listeners) {
                 listener->quiesce(id);
             }
@@ -156,11 +157,13 @@ private:
         InfoGuard(const InfoGuard&) = delete;
 
         explicit InfoGuard(const testing::ThreadInformation& info) {
-            testing::ThreadInformation::Listener::notifyNew(SignalStackToken{},std::this_thread::get_id(), info);
+            testing::ThreadInformation::Listener::notifyNew(
+                SignalStackToken{}, std::this_thread::get_id(), info);
         }
 
         ~InfoGuard() {
-            testing::ThreadInformation::Listener::notifyDelete(SignalStackToken{},std::this_thread::get_id());
+            testing::ThreadInformation::Listener::notifyDelete(SignalStackToken{},
+                                                               std::this_thread::get_id());
         }
     };
 

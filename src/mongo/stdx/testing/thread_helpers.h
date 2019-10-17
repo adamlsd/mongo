@@ -30,7 +30,9 @@
 #pragma once
 
 #include "mongo/stdx/thread.h"
+
 #include <mutex>
+#include <map>
 
 namespace mongo::stdx::testing {
 /**

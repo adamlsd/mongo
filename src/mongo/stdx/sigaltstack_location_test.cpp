@@ -112,7 +112,7 @@ void jumpoff() {
 }  // namespace
 
 
-int main() try {
+int main() {
     if constexpr (!stdx::support::SignalStack::kEnabled) {
         std::cout << "No test to run.  No alternate signal stacks on this platform." << std::endl;
         return EXIT_SUCCESS;
@@ -156,9 +156,6 @@ int main() try {
     }
     std::cout << "`sigaltstack` testing successful." << std::endl;
     return EXIT_SUCCESS;
-} catch (const std::exception& ex) {
-    std::cerr << ex.what() << std::endl;
-    throw;
 }
 
 #else

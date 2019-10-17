@@ -51,65 +51,90 @@
 
 namespace mongo {
 
-namespace {
-void* runFunc(void* ctx) {
-    std::unique_ptr<std::function<void()>> taskPtr(static_cast<std::function<void()>*>(ctx));
-    (*taskPtr)();
+    namespace
+    {
+        void* runFunc(void* ctx) {
+            std::unique_ptr<unique_function<void()>> taskPtr(static_cast<unique_function<void()>*>(ctx));
+            (*taskPtr)();
 
-    return nullptr;
-}
-}  // namespace
+            return nullptr;
+        }
+    }  // namespace
 
-Status launchServiceWorkerThread(std::function<void()> task) {
 
-    try {
-#if defined(_WIN32)
-        stdx::thread(std::move(task)).detach();
-#else
+    #ifndef _WIN32
+    struct PThreadAttributes
+    {
         pthread_attr_t attrs;
-        pthread_attr_init(&attrs);
-        pthread_attr_setdetachstate(&attrs, PTHREAD_CREATE_DETACHED);
 
-        static const rlim_t kStackSize =
-            1024 * 1024;  // if we change this we need to update the warning
+        ~PThreadAttributes()
+        {
+            pthread_attr_destroy( &attrs );
+        }
 
-        struct rlimit limits;
-        invariant(getrlimit(RLIMIT_STACK, &limits) == 0);
-        if (limits.rlim_cur > kStackSize) {
-            size_t stackSizeToSet = kStackSize;
+        PThreadAttributes()
+        {
+            pthread_attr_init( &attrs );
+        }
+    };
+    #endif
+}
+
+auto
+mongo::launchServiceWorkerThread( unique_function< void() > task ) -> Status
+try
+{
+#if defined(_WIN32)
+    stdx::thread(std::move(task)).detach();
+#else
+    PthreadAttributes attrs;
+    pthread_attr_setdetachstate(&attrs.attrs, PTHREAD_CREATE_DETACHED);
+
+    static const rlim_t kStackSize =
+        1024 * 1024;  // if we change this we need to update the warning
+
+    struct rlimit limits;
+    invariant(getrlimit(RLIMIT_STACK, &limits) == 0);
+    if (limits.rlim_cur > kStackSize) {
+        size_t stackSizeToSet = kStackSize;
 #if !__has_feature(address_sanitizer)
-            if (kDebugBuild)
-                stackSizeToSet /= 2;
+        if (kDebugBuild)
+            stackSizeToSet /= 2;
 #endif
-            int failed = pthread_attr_setstacksize(&attrs, stackSizeToSet);
-            if (failed) {
-                const auto ewd = errnoWithDescription(failed);
-                warning() << "pthread_attr_setstacksize failed: " << ewd;
-            }
-        } else if (limits.rlim_cur < 1024 * 1024) {
-            warning() << "Stack size set to " << (limits.rlim_cur / 1024) << "KB. We suggest 1MB";
-        }
-
-        pthread_t thread;
-        auto ctx = std::make_unique<std::function<void()>>(std::move(task));
-        int failed = pthread_create(&thread, &attrs, runFunc, ctx.get());
-
-        pthread_attr_destroy(&attrs);
-
+        int failed = pthread_attr_setstacksize(&attrs.attrs, stackSizeToSet);
         if (failed) {
-            log() << "pthread_create failed: " << errnoWithDescription(failed);
-            throw std::system_error(
-                std::make_error_code(std::errc::resource_unavailable_try_again));
+            const auto ewd = errnoWithDescription(failed);
+            warning() << "pthread_attr_setstacksize failed: " << ewd;
         }
-
-        ctx.release();
-#endif
-
-    } catch (...) {
-        return {ErrorCodes::InternalError, "failed to create service entry worker thread"};
+    } else if (limits.rlim_cur < 1024 * 1024) {
+        warning() << "Stack size set to " << (limits.rlim_cur / 1024) << "KB. We suggest 1MB";
     }
 
-    return Status::OK();
-}
+    auto wrappedTask=
+        [
+            signalStack= stdx::support::SignalStack{},
+            task= std::move( task )
+        ]
+        {
+            auto guard= signalStack.installStack();
+            return task();
+        };
 
-}  // namespace mongo
+    auto ctx = std::make_unique<unique_function<void()>>(std::move(wrappedTask));
+    pthread_t thread;
+    const int failed = pthread_create(&thread, &attrs, runFunc, ctx.get());
+
+    if (failed) {
+        log() << "pthread_create failed: " << errnoWithDescription(failed);
+        throw std::system_error(
+            std::make_error_code(std::errc::resource_unavailable_try_again));
+    }
+
+    ctx.release();
+#endif
+
+    return Status::OK();
+
+} catch (...) {
+    return {ErrorCodes::InternalError, "failed to create service entry worker thread"};
+}

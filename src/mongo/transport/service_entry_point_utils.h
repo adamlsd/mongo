@@ -29,12 +29,12 @@
 
 #pragma once
 
-#include <functional>
+#include "mongo/util/functional.h"
 
 #include "mongo/transport/session.h"
 
 namespace mongo {
 
-Status launchServiceWorkerThread(std::function<void()> task);
+Status launchServiceWorkerThread(unique_function<void()> task);
 
 }  // namespace mongo

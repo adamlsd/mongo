@@ -251,7 +251,7 @@ public:
  * We implement this with private inheritance to minimize the overhead of our wrapping and to
  * simplify the implementation.
  */
-class thread : private ::std::thread {  // NOLINT
+class thread : private ::std::thread {
 private:
     /*
      * NOTE: The `Function f` parameter must be taken by value, not reference or forwarding
@@ -259,20 +259,21 @@ private:
      * transfer ownership to the far side's thread.
      */
     template <typename Function, typename... Args>
-    static ::std::thread createThread(Function&& f, Args&&... args) noexcept {  // NOLINT
-        return ::std::thread([ //NOLINT
-            signalStack= support::SignalStack{},
-            f = std::decay_t< Function >{ std::forward< Function >( f ) },
-            pack = std::make_tuple( std::forward< Args >( args )... )
+    static ::std::thread createThread(Function&& f, Args&&... args) noexcept {
+        return ::std::thread([
+            signalStack = support::SignalStack{},
+            f = std::decay_t<Function>{std::forward<Function>(f)},
+            pack = std::make_tuple(std::forward<Args>(args)...)
         ]() mutable noexcept {
-
-        // Installation of the terminate handler support mechanisms should happen before
-        // `sigaltstack` installation, as the terminate semantics are implemented at a lower level.
 #if defined(_WIN32)
             // On Win32 we have to set the terminate handler per thread.
             // We set it to our universal terminate handler, which people can register via the
             // `stdx::set_terminate` hook.
-            ::std::set_terminate(::mongo::stdx::TerminateHandlerDetailsInterface::dispatch); // NOLINT
+
+            // Installation of the terminate handler support mechanisms should happen before
+            // `sigaltstack` installation, as the terminate semantics are implemented at a lower
+            // level.
+            ::std::set_terminate(::mongo::stdx::TerminateHandlerDetailsInterface::dispatch);
 #endif
 
             auto guard = signalStack.installStack();
@@ -281,16 +282,15 @@ private:
     }
 
 public:
-    using ::std::thread::id;                  // NOLINT
-    using ::std::thread::native_handle_type;  // NOLINT
+    using ::std::thread::id;
+    using ::std::thread::native_handle_type;
 
     thread() noexcept = default;
 
     ~thread() noexcept = default;
     thread(const thread&) = delete;
     thread(thread&& other) noexcept = default;
-    thread& operator=(const thread&) = delete;
-    thread& operator=(thread&& other) noexcept = default;
+    thread& operator=(const thread&) = delete; thread& operator=(thread&& other) noexcept = default;
 
     /**
      * As of C++14, the Function overload for std::thread requires that this constructor only
@@ -304,16 +304,16 @@ public:
     explicit thread(Function&& f, Args&&... args) noexcept
         : std::thread(createThread(std::forward<Function>(f), std::forward<Args>(args)...)) {}
 
-    using ::std::thread::get_id;                // NOLINT
-    using ::std::thread::hardware_concurrency;  // NOLINT
-    using ::std::thread::joinable;              // NOLINT
-    using ::std::thread::native_handle;         // NOLINT
+    using ::std::thread::get_id;
+    using ::std::thread::hardware_concurrency;
+    using ::std::thread::joinable;
+    using ::std::thread::native_handle;
 
-    using ::std::thread::detach;  // NOLINT
-    using ::std::thread::join;    // NOLINT
+    using ::std::thread::detach;
+    using ::std::thread::join;
 
     void swap(thread& other) noexcept {
-        this->::std::thread::swap(other);  // NOLINT
+        this->::std::thread::swap(other);
     }
 };
 
@@ -323,22 +323,21 @@ inline void swap(thread& lhs, thread& rhs) noexcept {
 }
 
 namespace this_thread {
-using std::this_thread::get_id;  // NOLINT
-using std::this_thread::yield;   // NOLINT
+using std::this_thread::get_id;
+using std::this_thread::yield;
 
 #ifdef _WIN32
-using std::this_thread::sleep_for;    // NOLINT
-using std::this_thread::sleep_until;  // NOLINT
+using std::this_thread::sleep_for;
+using std::this_thread::sleep_until;
 #else
 template <class Rep, class Period>
-inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) {  // NOLINT
+inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) {
     if (sleep_duration <= sleep_duration.zero())
         return;
 
-    const auto seconds =
-        std::chrono::duration_cast<std::chrono::seconds>(sleep_duration);  // NOLINT
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(sleep_duration);
     const auto nanoseconds =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_duration - seconds);  // NOLINT
+        std::chrono::duration_cast<std::chrono::nanoseconds>(sleep_duration - seconds);
     struct timespec sleepVal = {static_cast<std::time_t>(seconds.count()),
                                 static_cast<long>(nanoseconds.count())};
     struct timespec remainVal;
@@ -348,15 +347,14 @@ inline void sleep_for(const std::chrono::duration<Rep, Period>& sleep_duration) 
 }
 
 template <class Clock, class Duration>
-void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {  // NOLINT
+void sleep_until(const std::chrono::time_point<Clock, Duration>& sleep_time) {
     const auto now = Clock::now();
     sleep_for(sleep_time - now);
 }
 #endif
 }  // namespace this_thread
 
-}  // namespace stdx
+}  // namespace mongo::stdx
 
-static_assert(std::is_move_constructible_v<stdx::thread>);
-static_assert(std::is_move_assignable_v<stdx::thread>);
-}  // namespace mongo
+static_assert(std::is_move_constructible_v<mongo::stdx::thread>);
+static_assert(std::is_move_assignable_v<mongo::stdx::thread>);

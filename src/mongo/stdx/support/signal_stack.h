@@ -59,7 +59,7 @@ namespace testing {
  * they need.
  */
 struct ThreadInformation {
-    stdx::support::AltStack altStack;
+    support::AltStack altStack;
 
     class Listener {
     private:
@@ -78,10 +78,11 @@ struct ThreadInformation {
         virtual void born(const std::thread::id& id, const ThreadInformation& information) = 0;
 
         /**
-         * A listener may perform any action it desires when notified that a thread has been
+         * A listener may perform any action it desires when notified that a thread is being
          * retired.  The `id` of the expired thread may be used in any way desired.  This function
          * is called in the context of the dying thread.  The `override` must provide its own thread
-         * safety, if necessary.
+         * safety, if necessary.  The none of the resources directly owned by the thread's
+         * initialization code have been released yet, when this function is called.
          */
         virtual void died(const std::thread::id&) = 0;
 

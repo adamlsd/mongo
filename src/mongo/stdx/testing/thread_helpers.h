@@ -31,8 +31,8 @@
 
 #include "mongo/stdx/thread.h"
 
-#include <mutex>
 #include <map>
+#include <mutex>
 
 namespace mongo::stdx::testing {
 /**
@@ -48,7 +48,7 @@ private:
     mutable std::mutex _access;
     std::map<std::thread::id, ThreadInformation> _mapping;
 
-    explicit Registrar()= default;
+    explicit Registrar() = default;
 
 public:
     ~Registrar() {
@@ -56,7 +56,7 @@ public:
     }
 
     static auto create() {
-        std::unique_ptr<Registrar> rv( new Registrar{} );
+        std::unique_ptr<Registrar> rv(new Registrar{});
         ThreadInformation::Listener::add(*rv);
         return rv;
     }

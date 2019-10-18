@@ -152,7 +152,7 @@ int main() {
 
     try {
         listener->getMapping(id);
-        std::cerr << "Identifier " << id << " was found, which wasn't expected." << std::endl;
+        std::cout << "Identifier " << id << " was found, which wasn't expected." << std::endl;
         exit(EXIT_FAILURE);
     } catch (const std::out_of_range&) {
     }

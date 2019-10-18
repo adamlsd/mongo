@@ -43,7 +43,7 @@ namespace mongo::stdx::testing {
  * `stdx::` implementations of those built on top of the `std::` things.  This class needs
  * access to threading operations other than the `stdx::` implementations.
  */
-class ThreadInformation::Registrar : mongo::stdx::testing::ThreadInformation::Listener {
+class ThreadInformation::Registrar : ThreadInformation::Listener {
 private:
     mutable std::mutex _access;
     std::map<std::thread::id, ThreadInformation> _mapping;

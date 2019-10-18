@@ -38,12 +38,10 @@
 
 namespace mongo::stdx {
 namespace support {
-class SignalStackToken;
-
 /**
  * Describes a location of an alternate stack for use by threads, via `sigaltstack`.
  */
-struct AltStack {
+struct AltStackDescription {
     void* base = nullptr;
     std::size_t size = 0;
 };
@@ -59,11 +57,34 @@ namespace testing {
  * they need.
  */
 struct ThreadInformation {
-    support::AltStack altStack;
+    support::AltStackDescription altStack;
+	struct InfoGuard;
 
     class Listener {
     private:
         static inline std::set<Listener*> listeners;
+		friend InfoGuard;
+
+        /**
+         * Notify all testing listeners that a new thread named by `id` has been created that is
+         * described by `information`.
+         */
+        static void notifyNew(
+                              const std::thread::id& id,
+                              const ThreadInformation& information) {
+            for (auto* const listener : listeners) {
+                listener->born(id, information);
+            }
+        }
+
+        /**
+         * Notify all testing listeners that a thread with `id` has been retired.
+         */
+        static void notifyDelete( const std::thread::id& id) {
+            for (auto* const listener : listeners) {
+                listener->died(id);
+            }
+        }
 
 
     public:
@@ -88,27 +109,6 @@ struct ThreadInformation {
 
 
         /**
-         * Notify all testing listeners that a new thread named by `id` has been created that is
-         * described by `information`.
-         */
-        static void notifyNew(support::SignalStackToken&&,
-                              const std::thread::id& id,
-                              const ThreadInformation& information) {
-            for (auto* const listener : listeners) {
-                listener->born(id, information);
-            }
-        }
-
-        /**
-         * Notify all testing listeners that a thread with `id` has been retired.
-         */
-        static void notifyDelete(support::SignalStackToken&&, const std::thread::id& id) {
-            for (auto* const listener : listeners) {
-                listener->died(id);
-            }
-        }
-
-        /**
          * Remove the `deadListener` from the set of testing listeners for thread events.  This
          * function is not threadsafe.
          */
@@ -126,6 +126,25 @@ struct ThreadInformation {
     };
 
     /**
+     * An RAII type to automatically register, with any listeners, and deregister a thread's
+     * `SignalStack` information on creation and retire it on expiry.
+     */
+    struct InfoGuard {
+        InfoGuard(const InfoGuard&) = delete;
+
+        explicit InfoGuard(const testing::ThreadInformation& info) {
+            testing::ThreadInformation::Listener::notifyNew(
+                 std::this_thread::get_id(), info);
+        }
+
+        ~InfoGuard() {
+            testing::ThreadInformation::Listener::notifyDelete(
+                                                               std::this_thread::get_id());
+        }
+    };
+
+
+    /**
      * A default `Registrar` implementation for thread events, intended for testing.
      * The definition is in `src/mongo/stdx/testing/thread_helpers.h`, as it is not used unless
      * explicitly installed.
@@ -135,37 +154,12 @@ struct ThreadInformation {
 }  // namespace testing
 
 namespace support {
-class SignalStack;
-
-class SignalStackToken {
-    SignalStackToken() = default;
-    friend SignalStack;
-};
-
 /**
  * Represents an alternate stack to be installed for handling signals.  On platforms which do not
  * support `sigaltstack`, this class has a dummy implementation.
  */
 class SignalStack {
 private:
-    /**
-     * An RAII type to automatically register, with any listeners, and deregister a thread's
-     * `SignalStack` information on creation and retire it on expiry.
-     */
-    struct InfoGuard {
-        InfoGuard(const InfoGuard&) = delete;
-
-        explicit InfoGuard(const testing::ThreadInformation& info) {
-            testing::ThreadInformation::Listener::notifyNew(
-                SignalStackToken{}, std::this_thread::get_id(), info);
-        }
-
-        ~InfoGuard() {
-            testing::ThreadInformation::Listener::notifyDelete(SignalStackToken{},
-                                                               std::this_thread::get_id());
-        }
-    };
-
 #if defined(__linux__) || defined(__FreeBSD__)  // Support `sigaltstack` on the specified platforms.
 private:
     static constexpr auto kSize = std::max(std::size_t{65536}, std::size_t{MINSIGSTKSZ});
@@ -193,7 +187,7 @@ public:
         struct StackGuard {
             StackGuard(const StackGuard&) = delete;
 
-            explicit StackGuard(const support::AltStack& altStack) {
+            explicit StackGuard(const support::AltStackDescription& altStack) {
                 stack_t stack;
                 stack.ss_sp = altStack.base;
                 stack.ss_size = altStack.size;
@@ -219,12 +213,7 @@ public:
         // When installing a new thread, if using `sigaltstack`s we must RAII guard both the testing
         // information for listeners and the actual stack itself.  Combining these into a single
         // type makes this installation function simpler.
-        struct FullGuard : StackGuard, InfoGuard {
-            explicit FullGuard(const support::AltStack& altStack)
-                : StackGuard(altStack), InfoGuard(testing::ThreadInformation{altStack}) {}
-        };
-
-        return FullGuard({this->_stack.get(), this->_size()});
+        return StackGuard({this->_stack.get(), this->_size()});
     }
 
 #else   // No `sigaltstack` support
@@ -238,7 +227,11 @@ public:
      * installed.  A nullptr and 0 size for `AltStack` information indicates this to listeners.
      */
     [[nodiscard]] auto installStack() const {
-        return InfoGuard{testing::ThreadInformation{support::AltStack{}}};
+		struct Guard {
+			Guard( const Guard & )= delete;
+			~Guard() {}
+		};
+        return Guard{};
     }
 #endif  // End of conditional support for `sigaltstack`
 };

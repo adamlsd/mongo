@@ -114,20 +114,26 @@ void jumpoff() {
 }  // namespace
 
 
-int main() {
+int main() try {
     if constexpr (!stdx::support::SignalStack::kEnabled) {
-        std::cout << "No test to run.  No alternate signal stacks on this platform." << std::endl;
+        std::cout << "No test to run.  No alternate signal stacks enabled on this platform." << std::endl;
         return EXIT_SUCCESS;
     }
     using mongo::stdx::testing::ThreadInformation;
     auto listener = ThreadInformation::Registrar::create();
+    std::cout << "Child thread started" << std::endl;
 
     auto lk = std::unique_lock(thrmtx);  // NOLINT
     stdx::thread thr(jumpoff);
     const auto id = thr.get_id();
+    std::cout << "Waiting for child" << std::endl;
     cv.wait(lk, [] { return interlockedThreadState == kHandlerRun; });
+    std::cout << "Yielded from child" << std::endl;
 
-    const auto [base, amt] = listener->getMapping(thr.get_id()).altStack;
+    const auto mapping= listener->getMapping(thr.get_id());
+    std::cout << "mapping call done" << std::endl;
+    const auto [base, amt] = mapping.altStack;
+    std::cout << "Got mapping data" << std::endl;
 
     const auto bHandlerStack = static_cast<const std::byte*>(handlerStack.load());
     const auto bBase = static_cast<const std::byte*>(base);
@@ -158,6 +164,11 @@ int main() {
     }
     std::cout << "`sigaltstack` testing successful." << std::endl;
     return EXIT_SUCCESS;
+}
+catch( const std::exception &ex )
+{
+    std::cout << "Problem: " << ex.what() << std::endl;
+    abort();
 }
 
 #else

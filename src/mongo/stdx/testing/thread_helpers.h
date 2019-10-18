@@ -74,9 +74,14 @@ public:
     /**
      * Returns the `ThreadInformation` associated with the `id` parameter.
      */
-    ThreadInformation getMapping(const stdx::thread::id& id) const {
+    ThreadInformation getMapping(const stdx::thread::id& id) const try {
         const auto lock = std::lock_guard(_access);
         return _mapping.at(id);
     }
+	catch( const std::exception &ex )
+	{
+		std::cout << "Exception: " << ex.what() << std::endl;
+		throw;
+	}
 };
 }  // namespace mongo::stdx::testing
